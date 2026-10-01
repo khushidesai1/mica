@@ -1,0 +1,20 @@
+# Builds only. Deploying the API and enabling the Slack rollout is a separate reviewed step.
+steps:
+  - id: build-slack-agent
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - SCIENCE_IMAGE=${_SCIENCE_IMAGE}
+      - -f
+      - docker/Dockerfile.slack-agent
+      - -t
+      - ${_SLACK_IMAGE}
+      - .
+images: ['${_SLACK_IMAGE}']
+substitutions:
+  _SCIENCE_IMAGE: REPLACE_WITH_EXISTING_PINNED_SCIENCE_IMAGE
+  _SLACK_IMAGE: us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/slack-agent:claude
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1800s

@@ -1,0 +1,17 @@
+project_id               = "my-research-project"
+region                   = "us-central1"
+environment              = "staging"
+api_image                = "us-central1-docker.pkg.dev/my-research-project/pistachio-staging/api@sha256:REPLACE"
+science_image            = "us-central1-docker.pkg.dev/my-research-project/pistachio-staging/science@sha256:REPLACE"
+batch_network            = "default"
+batch_subnetwork         = "default"
+control_plane_url        = "https://pistachio.example.org"
+tool_build_trigger       = "REPLACE_WITH_PRECONFIGURED_TRIGGER_ID"
+allowed_emails           = "[\"researcher@example.org\"]"
+oauth_client_id          = "REPLACE.apps.googleusercontent.com"
+web_session_days         = 14
+oauth_client_secret_version = "REPLACE_SECRET_VERSION"
+openai_api_key_version       = "REPLACE_SECRET_VERSION"
+slack_user_map           = "{\"U123\":\"researcher@example.org\"}"
+gmail_account            = "pistachio@example.org"
+monthly_budget_usd       = 200

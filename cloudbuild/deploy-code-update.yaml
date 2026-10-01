@@ -1,0 +1,111 @@
+steps:
+  - id: build-api
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args:
+      - build
+      - --build-arg
+      - PYTHON_IMAGE=${_PYTHON_IMAGE}
+      - -f
+      - docker/Dockerfile.api
+      - -t
+      - ${_API_IMAGE}
+      - .
+  - id: build-science
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args:
+      - build
+      - --build-arg
+      - PYTHON_IMAGE=${_SCIENCE_BASE_IMAGE}
+      - -f
+      - docker/Dockerfile.science
+      - -t
+      - ${_SCIENCE_IMAGE}
+      - .
+  - id: export-api-contract
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["build-api"]
+    entrypoint: bash
+    args:
+      - -ceu
+      - docker run --rm -v /workspace:/workspace:ro --entrypoint python "${_API_IMAGE}" /workspace/scripts/check_worker_compatibility.py export - > /workspace/api-execution-contract.json
+  - id: check-worker-contract
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["build-science", "export-api-contract"]
+    args: [run, --rm, -v, /workspace:/workspace:ro, --entrypoint, python, "${_SCIENCE_IMAGE}", /workspace/scripts/check_worker_compatibility.py, check, /workspace/api-execution-contract.json]
+  - id: push-api
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["check-worker-contract"]
+    args: [push, "${_API_IMAGE}"]
+  - id: push-science
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["check-worker-contract"]
+    args: [push, "${_SCIENCE_IMAGE}"]
+  - id: smoke-science-runtime
+    name: ${_SCIENCE_IMAGE}
+    waitFor: ["push-science"]
+    entrypoint: python
+    args:
+      - -c
+      - |
+        import asyncio
+        import tempfile
+        from pathlib import Path
+        from pistachio.config import Settings
+        from pistachio.execution.backends import LocalExecutor
+        from pistachio.models import ExecutionBundle, ResourcePlan, TaskContract, ToolPlan
+
+        script = '''"""Smoke-test the isolated Matplotlib runtime."""
+        import argparse
+        import matplotlib
+        from pathlib import Path
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--input-dir", type=Path, required=True)
+        parser.add_argument("--output-dir", type=Path, required=True)
+        parser.add_argument("--seed", type=int, default=0)
+        args = parser.parse_args()
+        args.output_dir.mkdir(parents=True, exist_ok=True)
+        (args.output_dir / "matplotlib-version.txt").write_text(matplotlib.__version__)
+        '''
+        with tempfile.TemporaryDirectory(prefix="pistachio-smoke-") as workdir:
+            bundle = ExecutionBundle(
+                task_id="task_runtime_smoke",
+                script=script,
+                contract=TaskContract(objective="Runtime smoke test", requires_execution=True),
+                resource_plan=ResourcePlan(),
+                tool_plan=ToolPlan(),
+            )
+            settings = Settings(env="test", artifact_root=Path(workdir))
+            result = asyncio.run(LocalExecutor(settings).execute(bundle))
+            if result.exit_code:
+                raise RuntimeError(result.stderr)
+  - id: deploy-api-and-science
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    waitFor: ["push-api", "smoke-science-runtime"]
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        api_image="${_API_IMAGE}"
+        science_image="${_SCIENCE_IMAGE}"
+        api_digest="$$(gcloud artifacts docker images describe "$${api_image}" --format='value(image_summary.digest)')"
+        science_digest="$$(gcloud artifacts docker images describe "$${science_image}" --format='value(image_summary.digest)')"
+        api_repository="$${api_image%:*}"
+        science_repository="$${science_image%:*}"
+        gcloud run services update "${_CLOUD_RUN_SERVICE}" \
+          --project="$PROJECT_ID" \
+          --region="${_REGION}" \
+          --platform=managed \
+          --image="$${api_repository}@$${api_digest}" \
+          --update-env-vars="PISTACHIO_BATCH_IMAGE=$${science_repository}@$${science_digest}"
+timeout: 1800s
+options:
+  logging: CLOUD_LOGGING_ONLY
+substitutions:
+  _PYTHON_IMAGE: python:3.12.12-slim
+  _SCIENCE_BASE_IMAGE: python:3.12.12-slim
+  _API_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/api:code-update
+  _SCIENCE_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/science:code-update
+  _CLOUD_RUN_SERVICE: pistachio-staging
+  _REGION: us-central1

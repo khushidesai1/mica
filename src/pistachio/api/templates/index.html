@@ -1,0 +1,1241 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Pistachio · Your research workspace</title>
+    <link rel="icon" type="image/svg+xml" href="/assets/pista_logo.svg">
+    <style>
+      :root { color-scheme: light; font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; --ink: #293b30; --muted: #747c72; --green: #40613b; --line: #e5e8df; }
+      * { box-sizing: border-box; }
+      body { margin: 0; background: #fafbf8; color: var(--ink); }
+      h1, h2, h3, p { margin-top: 0; }
+      h2 { font-size: 1.25rem; font-weight: 600; letter-spacing: -.03em; }
+      label { display: block; margin: .8rem 0 .3rem; font-weight: 550; }
+      input, select, textarea, button { font: inherit; }
+      input, select, textarea { width: 100%; padding: .75rem .9rem; color: var(--ink); border: 1px solid var(--line); border-radius: 10px; background: #fff; }
+      textarea { resize: vertical; min-height: 130px; }
+      button { border: 0; padding: .7rem 1.1rem; border-radius: 9px; background: var(--green); color: white; cursor: pointer; font-weight: 550; }
+      button:hover { filter: brightness(.96); }
+      button:disabled { cursor: default; opacity: .5; }
+      :focus-visible { outline: 2px solid #64825a; outline-offset: 3px; }
+      a { color: var(--green); }
+      .muted { color: #667066; }
+      .app-shell { display: grid; grid-template-columns: 250px minmax(0, 1fr); min-height: 100dvh; }
+      .sidebar { display: flex; flex-direction: column; position: sticky; top: 0; height: 100dvh; padding: 27px 19px 16px; background: #f0f2eb; border-right: 1px solid #e8ebe2; }
+      .brand { display: flex; align-items: center; gap: 9px; margin-bottom: 32px; color: var(--ink); text-decoration: none; font-size: 26px; letter-spacing: -.9px; font-weight: 600; }
+      .brand img, .welcome-logo { mix-blend-mode: multiply; object-fit: contain; }
+      .brand-caption { display: block; font-size: 10px; color: #737d6d; font-weight: 400; letter-spacing: .2px; margin-top: -5px; }
+      .eyebrow { color: #65745c; text-transform: uppercase; letter-spacing: 1.5px; font-size: 10px; font-weight: 650; }
+      .sidebar select { background: #fafbf7; border-color: #e0e5d9; font-size: 13px; }
+      .text-button { background: transparent; color: #617055; padding: .6rem .4rem; font-size: 12px; }
+      .sidebar-section .text-button { margin: 4px 0 17px; }
+      .new-task { width: 100%; display: flex; align-items: center; gap: 10px; text-align: left; background: #e0e7d7; color: #3b5233; border: 1px solid #d6e0ca; }
+      .new-task span { font-size: 20px; line-height: 1; }
+      .sidebar-footer { margin-top: auto; padding-top: 18px; }
+      .sidebar-footer > button { text-align: left; width: 100%; display: flex; justify-content: space-between; }
+      .account { display: flex; align-items: center; gap: 8px; padding-top: 16px; border-top: 1px solid #e0e5d9; font-size: 11px; color: #687260; }
+      .account > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .avatar { display: grid; place-items: center; flex: 0 0 27px; height: 27px; border-radius: 50%; background: #dfe6d6; color: #506447; }
+      main { min-width: 0; display: flex; flex-direction: column; }
+      .workspace-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 77px; padding: 0 38px; border-bottom: 1px solid #eef0e9; }
+      .breadcrumb, .header-actions { display: flex; align-items: center; gap: 13px; font-size: 12px; color: #697561; min-width: 0; }
+      #workspace-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 240px; color: #4e5e46; }
+      .breadcrumb-divider { color: #c2c9bb; }
+      .workspace-content { width: min(100%, 860px); margin: 0 auto; padding: 0 42px 36px; flex: 1; }
+      .welcome { padding-top: clamp(32px, 8vh, 100px); text-align: center; }
+      .welcome-logo { margin-bottom: 12px; }
+      .welcome .eyebrow { margin-bottom: 14px; }
+      h1 { font: 46px/1.13 Georgia, "Times New Roman", serif; letter-spacing: -1.6px; color: #354832; margin-bottom: 18px; font-weight: 400; }
+      .intro { color: #697561; font-size: 14px; margin-bottom: 32px; }
+      .composer { padding: 17px 20px 15px; border: 1px solid #dfe6d7; background: #fff; border-radius: 18px; box-shadow: 0 8px 30px #354a3010; }
+      .composer:focus-within { border-color: #99ad89; box-shadow: 0 8px 32px #354a3015; }
+      .composer textarea { border: none; border-radius: 0; padding: 4px 0; min-height: 110px; outline: none; line-height: 1.8; background: transparent; }
+      textarea::placeholder, input::placeholder { color: #6b7764; }
+      .composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .composer-footer > span { font-size: 11px; }
+      .composer-footer button { font-size: 12px; }
+      .composer-footer button span { margin-left: 10px; }
+      .welcome-notes { display: flex; justify-content: center; gap: 24px; color: #68755d; font-size: 10px; margin-top: 22px; }
+      .welcome-notes span::before { content: '·'; margin-right: 6px; color: #a2b48c; }
+      .empty-hint { text-align: center; font-size: 12px; color: #617055; margin-top: 16px; }
+      .workspace-footer { padding: 18px; text-align: center; color: #6b7764; font-size: 10px; letter-spacing: .25px; }
+      .workspace-footer span { margin: 0 8px; }
+      .conversation-panel { padding-top: 28px; }
+      .summary { white-space: pre-wrap; overflow-wrap: anywhere; }
+      .conversation-turn { padding: 20px 0; line-height: 1.85; }
+      .conversation-turn strong { display: block; margin-bottom: 8px; color: #63775b; font-size: 11px; letter-spacing: .4px; }
+      .conversation-turn[data-role="user"] { background: #f0f3eb; border-radius: 14px; padding: 15px 20px; margin: 12px 0 14px 40px; }
+      .status-pill { white-space: nowrap; border-radius: 20px; padding: 4px 10px; background: #eaf0e2; color: #4f6741; font-size: 10px; }
+      .status-pill[data-status="FAILED"] { background: #f7eae5; color: #904d3d; }
+      .section-heading { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+      .section-heading span { font-size: 11px; }
+      pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f0f3eb; color: #475642; padding: 1rem; border-radius: 10px; font-size: 12px; }
+      #output { box-sizing: border-box; max-width: 100%; max-height: 28rem; overflow: auto; white-space: pre; overflow-wrap: normal; }
+      .technical-details { margin-top: 30px; padding-top: 15px; border-top: 1px solid var(--line); color: #78836f; font-size: 12px; }
+      dialog { border: 1px solid #e4e8de; border-radius: 20px; background: #fafbf8; color: var(--ink); padding: 30px; width: min(480px, calc(100% - 32px)); max-height: calc(100dvh - 40px); box-shadow: 0 24px 100px #26361e20; }
+      dialog::backdrop { background: #24301e40; backdrop-filter: blur(4px); }
+      .dialog-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+      .dialog-heading h2 { margin-bottom: 6px; font-size: 24px; }
+      .dialog-heading .eyebrow { margin-bottom: 6px; }
+      .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 24px; }
+      .secondary { background: #edf0e8; color: #617055; }
+      .icon-button { background: transparent; color: #6a795f; font-size: 22px; line-height: 1; padding: 7px; }
+      .optional-members { font-size: 12px; padding-top: 8px; }
+      .optional-members span { margin-left: 8px; font-weight: 400; }
+      .memory-dialog { width: min(620px, calc(100% - 32px)); }
+      .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+      .skip-link { position: fixed; left: 16px; top: -100px; background: white; padding: 12px; z-index: 10; }
+      .skip-link:focus { top: 10px; }
+      .mobile-only { display: none; }
+      .stage { display: inline-block; margin-top: .6rem; padding: .25rem .55rem; border-radius: 999px; background: #dce8d8; color: #31502d; font-size: .9rem; }
+      .approval { margin-top: 1rem; padding: 1rem; border: 1px solid #b8c9b3; border-radius: 10px; }
+      .approval h3 { margin: 0 0 .25rem; }
+      .field { margin-top: .8rem; padding-top: .6rem; border-top: 1px solid #e4e8e1; }
+      .field.invalid { border-left: 4px solid #a33b32; padding-left: .75rem; }
+      .field small { display: block; color: #667066; margin-top: .2rem; }
+      .custom-value { margin-top: .55rem; }
+      .approval-status { margin-top: 1rem; padding: .7rem .8rem; border-radius: 8px; }
+      .approval-status.info { background: #eef2f8; color: #29486f; }
+      .approval-status.success { background: #e7f3e3; color: #285426; }
+      .approval-status.error { background: #f9e7e4; color: #7a2821; }
+      .feedback { display: none; margin: .8rem 0; padding: .75rem 1rem; border-radius: 8px; }
+      .feedback.info { display: block; background: #eef2f8; color: #29486f; }
+      .feedback.success { display: block; background: #e7f3e3; color: #285426; }
+      .feedback.error { display: block; background: #f9e7e4; color: #7a2821; }
+      .task-history { margin-top: 0; }
+      .history-toggle { font-size: 1.15rem; }
+      .task-count { color: #667066; font-weight: 500; }
+      .task-list {
+        display: grid; gap: .55rem; margin-top: .8rem; max-height: 26rem;
+        overflow-y: auto; overscroll-behavior: contain; padding-right: .25rem;
+      }
+      .task-row { margin: 0; text-align: left; background: #eef4eb; color: #172318; }
+      .task-row strong, .task-row small { display: block; }
+      .task-row small { margin-top: .2rem; color: #667066; }
+      .memory-list { display: grid; gap: .75rem; margin-top: 1rem; }
+      .memory-card {
+        padding: .9rem 1rem; border: 1px solid #dde3da; border-radius: 10px;
+        background: #fafcf9;
+      }
+      .memory-card-header {
+        display: flex; align-items: center; justify-content: space-between;
+        gap: 1rem; margin-bottom: .7rem;
+      }
+      .memory-task-name { min-width: 0; overflow-wrap: anywhere; font-size: 1rem; }
+      .memory-actions { display: flex; flex: 0 0 auto; gap: .4rem; }
+      button.memory-action {
+        width: auto; min-width: 0; margin: 0; padding: .35rem .65rem;
+        border: 1px solid #b9c6b5; border-radius: 6px; background: white;
+        color: #31502d; font-size: .82rem; line-height: 1.2;
+      }
+      button.memory-action:hover { background: #eef4eb; }
+      button.memory-action.forget { border-color: #ddc5c1; color: #7a2821; }
+      button.memory-action.forget:hover { background: #f9e7e4; }
+      .task-controls { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #dde3da; }
+      .task-controls textarea { min-height: 78px; }
+      .task-control-actions { display: flex; gap: .65rem; }
+      .task-control-actions button { width: auto; flex: 1; }
+      button.cancel-task { background: #8b342d; }
+      .artifact-list { display: flex; flex-wrap: wrap; gap: .4rem; }
+      .artifact-chip {
+        display: inline-block; max-width: 100%; padding: .28rem .55rem;
+        border-radius: 999px; background: #eef4eb; color: #31502d;
+        font-size: .82rem; line-height: 1.3; overflow-wrap: anywhere;
+      }
+      a.artifact-chip { text-decoration: none; }
+      a.artifact-chip:hover { background: #dce8d8; text-decoration: underline; }
+      .task-artifacts { margin-top: 1.25rem; }
+      .task-artifact-grid {
+        display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: .7rem; margin-top: .6rem;
+      }
+      .task-artifact {
+        display: flex; min-width: 0; flex-direction: column; gap: .55rem;
+        padding: .75rem; border: 1px solid #dde3da; border-radius: 10px;
+        background: #fafcf9;
+      }
+      .task-artifact-preview {
+        display: block; width: 100%; max-height: 240px; object-fit: contain;
+        border-radius: 6px; background: white;
+      }
+      .task-artifact-link { color: #31502d; font-weight: 650; overflow-wrap: anywhere; }
+      .task-artifact.bundle {
+        grid-column: 1 / -1; flex-direction: row; align-items: center;
+        justify-content: space-between;
+      }
+      .task-artifact.bundle strong, .task-artifact.bundle small { display: block; }
+      .task-artifact.bundle small { color: #667066; }
+      .memory-content { margin: 0; color: #4f5b50; font-size: .92rem; }
+      [hidden] { display: none !important; }
+      details { margin-top: 1rem; }
+      details summary { cursor: pointer; font-weight: 650; }
+      .task-history { margin-top: 26px; min-height: 0; overflow-y: auto; }
+      .history-toggle { font-size: 10px; letter-spacing: .8px; text-transform: uppercase; color: #68755f; font-weight: 600; }
+      #task-search { background: transparent; border-color: #e0e5d9; font-size: 11px; padding: 7px 9px; margin-top: 12px; }
+      .task-list { max-height: 26rem; gap: 3px; }
+      .task-row { width: 100%; padding: 10px; background: transparent; border-radius: 8px; }
+      .task-row:hover, .task-row[aria-current="true"] { background: #e4eadd; }
+      .task-row strong { font-size: 12px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .task-row small { font-size: 10px; color: #65715d; }
+      .task-controls { padding-top: 0; border: 0; margin-top: 30px; }
+      .followup-composer textarea { min-height: 65px; }
+      .task-control-actions { justify-content: space-between; align-items: center; }
+      .task-control-actions button { flex: initial; width: auto; font-size: 12px; }
+      button.cancel-task { color: #987061; background: transparent; }
+      .approval { background: #f3f6ee; border: 1px solid #e3e9da; border-radius: 15px; padding: 22px; }
+      .approval > button { margin-top: 18px; }
+      .approval h3 { font-size: 16px; }
+      .task-artifact, .memory-card { border-color: #e8ecdf; border-radius: 12px; background: #f5f7f1; }
+      @media (max-width: 850px) {
+        .app-shell { grid-template-columns: 215px minmax(0, 1fr); }
+        .sidebar { padding: 22px 14px 14px; }
+        .workspace-content { padding: 0 24px 26px; }
+        .workspace-header { padding: 0 24px; }
+        .welcome-notes { gap: 10px; flex-wrap: wrap; }
+        .header-actions { gap: 5px; }
+        #download-conversation { font-size: 10px; }
+      }
+      @media (max-width: 620px) {
+        .app-shell { display: block; }
+        .sidebar { display: none; position: static; width: 100%; height: auto; border-bottom: 1px solid var(--line); }
+        .sidebar.is-open { display: flex; }
+        .sidebar .brand { margin-bottom: 12px; }
+        .sidebar .task-list { max-height: 180px; }
+        .sidebar-footer { padding-top: 12px; }
+        .mobile-only { display: inline-block; }
+        .workspace-header { padding: 0 15px; min-height: 64px; }
+        .workspace-content { padding: 0 20px 24px; }
+        .breadcrumb { gap: 8px; }
+        #workspace-name { max-width: 100px; }
+        #view-name { display: none; }
+        .header-actions { gap: 4px; }
+        h1 { font-size: 38px; }
+        .welcome { padding-top: 32px; }
+        .intro { font-size: 13px; }
+        .composer { padding: 14px; }
+        .composer-footer > span { max-width: 115px; }
+        .welcome-notes { gap: 6px 16px; }
+        .task-artifact-grid { grid-template-columns: 1fr; }
+        .memory-card-header { align-items: flex-start; }
+        .conversation-turn[data-role="user"] { margin-left: 15px; }
+        dialog { padding: 23px; }
+      }
+
+      /* Shared interaction tokens and viewport layout. */
+      :root { --sidebar-width: 280px; --control-radius: 10px; --motion: 180ms; --ease: cubic-bezier(.2,.7,.2,1); }
+      body { overflow: hidden; }
+      .app-shell { height: 100dvh; min-height: 0; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); transition: grid-template-columns 220ms var(--ease); }
+      .app-shell.sidebar-collapsed { grid-template-columns: 0 minmax(0, 1fr); }
+      .sidebar { height: 100%; min-width: 0; position: relative; overflow: hidden; padding: 24px 16px 14px; gap: 4px; }
+      .sidebar-collapsed .sidebar { visibility: hidden; padding-inline: 0; }
+      .sidebar > :not(.task-history) { flex-shrink: 0; }
+      .sidebar .brand { margin-bottom: 20px; padding-right: 20px; }
+      .sidebar-close { position: absolute; top: 26px; right: 10px; }
+      .sidebar .eyebrow { margin-bottom: 8px; }
+      .sidebar-section .text-button { margin: 5px 0 12px; }
+      .task-history:not(.is-collapsed) { display: flex; flex: 1 1 120px; flex-direction: column; min-height: 170px; margin-top: 20px; overflow: hidden; }
+      .task-history.is-collapsed { flex: 0 0 auto; margin-top: 20px; }
+      .history-toggle, #task-search { flex-shrink: 0; }
+      .history-toggle { display: flex; align-items: center; gap: 5px; width: 100%; min-height: 32px; padding: 0; background: transparent; text-align: left; }
+      .history-toggle:hover { background: #e9eee2; }
+      .history-toggle::before { content: '▾'; }
+      .history-toggle[aria-expanded="false"]::before { content: '▸'; }
+      .history-body { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+      .task-list { flex: 1; min-height: 0; max-height: none; overflow-y: auto; scrollbar-gutter: stable; align-content: start; grid-auto-rows: max-content; }
+      .task-row { min-width: 0; }
+      .task-row strong { white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; line-height: 1.5; }
+      .sidebar-footer { padding-top: 12px; margin-top: auto; }
+      .sidebar-resize { position: absolute; top: 0; right: 0; bottom: 0; width: 6px; cursor: col-resize; touch-action: none; z-index: 4; border-radius: 6px; transition: background var(--motion); }
+      .sidebar-resize:hover, .sidebar-resize:focus-visible { background: #40613b35; }
+      .app-shell.is-resizing { transition: none; user-select: none; }
+      main { height: 100%; min-height: 0; display: grid; grid-template-columns: minmax(0,1fr); grid-template-rows: auto minmax(0,1fr) auto auto; }
+      main > * { min-width: 0; }
+      .workspace-header { min-height: 68px; padding: 10px 24px; flex-wrap: wrap; }
+      .header-actions { margin-left: auto; }
+      .workspace-content { width: 100%; max-width: none; min-height: 0; padding: 0 max(24px, calc((100% - 780px) / 2)) 24px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; scroll-behavior: smooth; }
+      .welcome { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 28px 0; }
+      .welcome-logo { flex-shrink: 0; }
+      .welcome .intro { margin-bottom: 8px; }
+      .composer-dock { width: min(100%, 860px); margin: 0 auto; padding: 12px 40px 0; background: #fafbf8; max-height: 45dvh; overflow-y: auto; }
+      .composer-dock .task-controls { margin: 0; }
+      .composer textarea { min-height: 62px; max-height: 18dvh; }
+      .welcome-notes { margin-top: 12px; }
+      .workspace-footer { padding: 9px 16px 12px; padding-bottom: max(12px, env(safe-area-inset-bottom)); }
+      .conversation-panel { padding-top: 18px; }
+      button, .artifact-chip, .task-artifact-link, details > summary { transition: background-color var(--motion) var(--ease), color var(--motion) var(--ease), border-color var(--motion) var(--ease), box-shadow var(--motion) var(--ease); }
+      button { min-height: 40px; border-radius: var(--control-radius); padding: 9px 14px; font-size: 13px; font-weight: 550; line-height: 1.4; }
+      button:hover { filter: none; background-color: #344f30; }
+      button:active:not(:disabled) { box-shadow: inset 0 1px 3px #17231824; }
+      button:disabled { cursor: not-allowed; opacity: .5; }
+      .text-button, .icon-button { background: transparent; color: #586c4e; }
+      .text-button:hover, .icon-button:hover { background: #e9eee2; color: #30492c; }
+      .secondary, .new-task { background: #e5ecdD; color: #3b5233; border: 1px solid #d9e3cf; }
+      .secondary:hover, .new-task:hover { background: #d8e4cd; }
+      .icon-button { width: 40px; padding: 8px; flex-shrink: 0; font-size: 21px; }
+      .task-control-actions button, .composer-footer button, .header-actions button { font-size: 12px; }
+      .task-row:hover, .task-row[aria-current="true"] { background: #e0e8d7; }
+      .task-row { font-size: 12px; }
+      button.cancel-task { color: #80584a; }
+      button.cancel-task:hover { background: #f2e8e2; }
+      button.memory-action { min-height: 36px; border-radius: var(--control-radius); }
+      .workspace-picker { display: flex; align-items: center; gap: 10px; text-align: left; width: 100%; padding: 11px; border: 1px solid #dce4d4; background: #fafcf7; color: var(--ink); }
+      .workspace-picker:hover { background: #e7eedf; border-color: #c6d5b8; }
+      .workspace-avatar { display: grid; place-items: center; width: 34px; height: 34px; flex-shrink: 0; border-radius: 9px; background: #e1e9d7; color: #4a663b; font-weight: 650; }
+      .workspace-picker-label { flex: 1; min-width: 0; }
+      .workspace-picker-label strong { display: block; font-size: 13px; overflow-wrap: anywhere; }
+      .workspace-picker-label small { display: block; font-size: 11px; color: #68755f; margin-top: 3px; }
+      #workspace-search { margin: 16px 0 12px; }
+      .workspace-options { max-height: 40dvh; overflow-y: auto; display: grid; gap: 5px; }
+      .workspace-option { width: 100%; display: flex; gap: 12px; align-items: center; text-align: left; background: transparent; color: var(--ink); border: 1px solid transparent; }
+      .workspace-option:hover { background: #edf2e7; }
+      .workspace-option[aria-pressed="true"] { background: #e7efde; border-color: #cbdcbd; }
+      .workspace-option .workspace-check { margin-left: auto; font-size: 12px; color: #526d40; }
+      .picker-create { margin-top: 16px; width: 100%; }
+      dialog[open] { animation: panel-in 180ms var(--ease); }
+      dialog[open]::backdrop { animation: backdrop-in 180ms ease; }
+      .conversation-turn { animation: panel-in 180ms var(--ease); }
+      @keyframes panel-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
+      @keyframes backdrop-in { from { opacity: 0; } to { opacity: 1; } }
+      .sidebar-backdrop { display: none; }
+      @media (max-height: 620px) and (min-width: 621px) {
+        .sidebar { overflow-y: auto; }
+        .task-history:not(.is-collapsed) { flex-shrink: 0; }
+        .welcome-logo { width: 60px; height: 58px; margin-bottom: 5px; }
+        h1 { font-size: 34px; }
+        .welcome .eyebrow { margin-bottom: 7px; }
+      }
+      @media (max-width: 850px) { .composer-dock { padding-inline: 24px; } #workspace-name { max-width: 160px; } }
+      @media (max-width: 620px) {
+        .app-shell, .app-shell.sidebar-collapsed { display: block; height: 100dvh; }
+        .sidebar, .sidebar-collapsed .sidebar { display: flex; position: fixed; z-index: 20; top: 0; left: 0; bottom: 0; width: min(320px, calc(100vw - 48px)); height: 100dvh; padding: 24px 16px 14px; visibility: hidden; transform: translateX(-100%); transition: transform 220ms var(--ease), visibility 220ms; overflow-y: auto; box-shadow: 12px 0 40px #24301e18; }
+        .sidebar.is-open { visibility: visible; transform: translateX(0); }
+        .sidebar .task-list { max-height: none; }
+        .sidebar-backdrop:not([hidden]) { display: block; position: fixed; inset: 0; width: 100%; height: 100%; z-index: 19; border-radius: 0; background: #24301e40; backdrop-filter: blur(2px); }
+        .sidebar-resize { display: none; }
+        .workspace-header { padding: 8px 12px; gap: 6px; flex-wrap: wrap; }
+        .breadcrumb { flex: 1; }
+        #workspace-name { max-width: 145px; }
+        .header-actions { margin-left: auto; }
+        .header-actions button { font-size: 11px; padding-inline: 8px; }
+        .workspace-content { padding-inline: 18px; }
+        .composer-dock { padding: 10px 14px 0; max-height: 48dvh; }
+        .composer { padding: 12px 14px; }
+        .welcome { padding: 20px 0; }
+        .welcome-logo { width: 70px; height: 67px; }
+        h1 { font-size: 34px; }
+        .welcome-notes { display: none; }
+        .workspace-footer { font-size: 9px; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip-link" href="#workspace">Skip to conversation</a>
+    <div class="app-shell">
+      <button type="button" id="sidebar-backdrop" class="sidebar-backdrop" aria-label="Close navigation" tabindex="-1" hidden></button>
+      <aside class="sidebar" id="sidebar" aria-label="Workspace navigation">
+        <button type="button" id="sidebar-close" class="icon-button sidebar-close" aria-label="Collapse sidebar" title="Collapse sidebar">‹</button>
+        <a class="brand" href="/" aria-label="Pistachio home">
+          <img src="/assets/pista_logo.svg" alt="" width="48" height="46">
+          <span>pistachio<span class="brand-caption">A space for discovery</span></span>
+        </a>
+        <div class="sidebar-section">
+          <p class="eyebrow">Your workspace</p>
+          <select id="project" form="task-form" hidden aria-hidden="true" tabindex="-1">
+            {% if not projects %}<option value="">Choose a project</option>{% endif %}
+            {% for project in projects %}
+            <option value="{{ project.id }}" data-slug="{{ project.slug }}">{{ project.name }}</option>
+            {% endfor %}
+          </select>
+          <button type="button" id="workspace-picker" class="workspace-picker" aria-haspopup="dialog" aria-controls="workspace-dialog">
+            <span class="workspace-avatar" aria-hidden="true" id="workspace-initial">P</span>
+            <span class="workspace-picker-label"><strong id="workspace-current">Choose a workspace</strong><small>Switch workspace</small></span>
+            <span aria-hidden="true">⌄</span>
+          </button>
+          <button type="button" id="open-project" class="text-button"><span aria-hidden="true">＋</span> Create project</button>
+        </div>
+        <button type="button" id="new-task" class="new-task"><span aria-hidden="true">＋</span> New analysis</button>
+        <section id="recent-task-panel" class="task-history" aria-label="Recent analyses">
+          <button type="button" id="history-toggle" class="history-toggle" aria-expanded="true" aria-controls="history-body">Recent analyses <span id="recent-task-count" class="task-count"></span></button>
+          <div id="history-body" class="history-body">
+            <input id="task-search" type="search" placeholder="Find an analysis…" aria-label="Search recent analyses">
+            <div id="recent-tasks" class="task-list">Select a project to see its analyses.</div>
+          </div>
+        </section>
+        <div class="sidebar-footer">
+          <button type="button" id="open-memory" class="text-button">Project memory <span aria-hidden="true">↗</span></button>
+          <div class="account"><span class="avatar" aria-hidden="true">{{ principal[0] | upper }}</span><span title="{{ principal }}">{{ principal }}</span></div>
+        </div>
+        <div id="sidebar-resize" class="sidebar-resize" role="separator" tabindex="0" aria-label="Resize sidebar" aria-orientation="vertical" aria-valuemin="220" aria-valuemax="420" aria-valuenow="280" title="Drag to resize, or use arrow keys"></div>
+      </aside>
+      <main id="workspace" tabindex="-1">
+        <header class="workspace-header">
+          <div class="breadcrumb"><button type="button" id="sidebar-toggle" class="icon-button" aria-controls="sidebar" aria-expanded="true" aria-label="Toggle workspace navigation">☰</button><span id="workspace-name">Workspace</span><span class="breadcrumb-divider">/</span><span id="view-name">New analysis</span></div>
+          <div class="header-actions"><span id="task-state" class="status-pill" role="status" aria-live="polite" hidden></span><button type="button" id="download-conversation" class="text-button" hidden>Download transcript</button></div>
+        </header>
+        <div class="workspace-content" id="conversation-scroll">
+          <div id="view-feedback" class="feedback" role="status" aria-live="polite"></div>
+          <div id="welcome" class="welcome">
+            <img src="/assets/pista_logo.svg" class="welcome-logo" alt="Pistachio" width="104" height="100">
+            <p class="eyebrow">Curiosity, meet clarity</p>
+            <h1>What would you like<br>to explore?</h1>
+            <p class="intro">A thoughtful space for your data, questions, and discoveries.</p>
+          </div>
+          <section id="conversation-panel" class="conversation-panel" aria-label="Analysis conversation" hidden>
+            <div id="summary" class="summary"></div>
+            <div id="approval-feedback" class="feedback" role="status" aria-live="polite"></div>
+            <div id="approvals"></div>
+            <div id="task-artifacts" class="task-artifacts" hidden>
+              <div class="section-heading"><h2>Results &amp; files</h2><span class="muted">Ready to explore</span></div>
+              <div id="task-artifact-grid" class="task-artifact-grid"></div>
+            </div>
+            <details id="technical-details" class="technical-details">
+              <summary>Run details</summary>
+              <p class="muted">Execution stages, settings, and diagnostic records.</p>
+              <pre id="output">Ready.</pre>
+            </details>
+          </section>
+        </div>
+        <div class="composer-dock">
+          <section id="new-analysis" class="new-analysis" aria-label="New analysis">
+            <form id="task-form" class="composer">
+              <label for="prompt" class="sr-only">Your analysis request</label>
+              <textarea id="prompt" required placeholder="Describe your question, the data you’re working with, and what you’d like to find out…"></textarea>
+              <div class="composer-footer"><span class="muted">Your question is the starting point.</span><button id="submit-task" type="submit">Start analysis <span aria-hidden="true">↗</span></button></div>
+            </form>
+            <div id="submit-feedback" class="feedback" role="status" aria-live="polite"></div>
+            <p id="no-project-hint" class="empty-hint" {% if projects %}hidden{% endif %}>Create a project to keep your conversations and results together. <button type="button" class="text-button" id="empty-create-project">Create project →</button></p>
+            <div class="welcome-notes"><span>Project-scoped context</span><span>Reproducible analyses</span><span>You guide the decisions</span></div>
+          </section>
+            <div id="task-controls" class="task-controls" hidden>
+              <form id="context-form" class="composer followup-composer">
+                <label for="additional-context" class="sr-only">Add to this request</label>
+                <textarea id="additional-context" maxlength="20000" placeholder="Add a detail, clarify a choice, or refine the plan…"></textarea>
+                <div class="task-control-actions"><button id="cancel-task" class="cancel-task text-button" type="button">Stop analysis</button><button id="add-context" type="submit">Send update <span aria-hidden="true">↑</span></button></div>
+              </form>
+              <div id="task-control-feedback" class="feedback" role="status" aria-live="polite"></div>
+            </div>
+        </div>
+        <footer class="workspace-footer">Pistachio <span aria-hidden="true">·</span> Room to think. Tools to discover.</footer>
+      </main>
+    </div>
+    <dialog id="workspace-dialog" aria-labelledby="workspace-dialog-title">
+      <div class="dialog-heading"><div><p class="eyebrow">Your research spaces</p><h2 id="workspace-dialog-title">Switch workspace</h2></div><button type="button" class="icon-button" data-close="workspace-dialog" aria-label="Close workspace chooser">×</button></div>
+      <label class="sr-only" for="workspace-search">Find a workspace</label>
+      <input id="workspace-search" type="search" placeholder="Search by name or handle…" autocomplete="off" autofocus>
+      <div id="workspace-options" class="workspace-options" aria-label="Available workspaces"></div>
+      <p id="workspace-empty" class="muted" role="status" hidden>No matching workspaces.</p>
+      <button type="button" id="picker-create-project" class="secondary picker-create">＋ Create a project</button>
+    </dialog>
+    <dialog id="project-dialog" aria-labelledby="project-dialog-title">
+      <div class="dialog-heading"><div><p class="eyebrow">Make room for a new question</p><h2 id="project-dialog-title">Create a project</h2></div><button type="button" class="icon-button" data-close="project-dialog" aria-label="Close create project">×</button></div>
+      <p class="muted">Keep related analyses, results, and context in one place.</p>
+      <form id="project-form">
+        <label for="project-name">Project name</label>
+        <input id="project-name" required maxlength="120" placeholder="e.g. Spatial neighborhood atlas" autofocus>
+        <label for="project-slug">Project handle</label>
+        <input id="project-slug" required pattern="[a-z0-9-]+" placeholder="spatial-neighborhood-atlas" aria-describedby="slug-help">
+        <small id="slug-help" class="muted">A short name for connecting this project across interfaces.</small>
+        <details class="optional-members"><summary>Invite collaborators <span class="muted">optional</span></summary><label for="project-members">Member emails</label><input id="project-members" type="text" placeholder="researcher@example.org, collaborator@example.org"></details>
+        <div id="project-feedback" class="feedback" role="status" aria-live="polite"></div>
+        <div class="dialog-actions"><button type="button" class="secondary" data-close="project-dialog">Cancel</button><button type="submit">Create project</button></div>
+      </form>
+    </dialog>
+    <dialog id="memory-dialog" class="memory-dialog" aria-labelledby="memory-title">
+      <div class="dialog-heading"><div><p class="eyebrow">A little continuity</p><h2 id="memory-title">Project memory</h2></div><button type="button" class="icon-button" data-close="memory-dialog" aria-label="Close project memory">×</button></div>
+      <p class="muted">Saved task outputs available to this project.</p>
+      <div id="memories" class="memory-list"></div>
+    </dialog>
+    <script>
+      const form = document.querySelector('#task-form');
+      const projectForm = document.querySelector('#project-form');
+      const output = document.querySelector('#output');
+      const summary = document.querySelector('#summary');
+      const approvals = document.querySelector('#approvals');
+      const approvalFeedback = document.querySelector('#approval-feedback');
+      const memoryBox = document.querySelector('#memories');
+      const recentTasks = document.querySelector('#recent-tasks');
+      const recentTaskCount = document.querySelector('#recent-task-count');
+      const projectSelector = document.querySelector('#project');
+      const taskArtifacts = document.querySelector('#task-artifacts');
+      const taskArtifactGrid = document.querySelector('#task-artifact-grid');
+      const taskControls = document.querySelector('#task-controls');
+      const contextForm = document.querySelector('#context-form');
+      const additionalContext = document.querySelector('#additional-context');
+      const addContextButton = document.querySelector('#add-context');
+      const cancelTaskButton = document.querySelector('#cancel-task');
+      const taskControlFeedback = document.querySelector('#task-control-feedback');
+      let currentTask = null;
+      const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+      function setApprovalFeedback(message = '', tone = 'info') {
+        approvalFeedback.textContent = message;
+        approvalFeedback.className = message ? `feedback ${tone}` : 'feedback';
+      }
+      function responseError(body, fallback) {
+        if (typeof body?.detail === 'string') return body.detail;
+        if (typeof body?.error === 'string') return body.error;
+        return fallback;
+      }
+      const projectDialog = document.querySelector('#project-dialog');
+      const memoryDialog = document.querySelector('#memory-dialog');
+      const projectFeedback = document.querySelector('#project-feedback');
+      const submitFeedback = document.querySelector('#submit-feedback');
+      const promptInput = document.querySelector('#prompt');
+      const submitButton = document.querySelector('#submit-task');
+      const taskSearch = document.querySelector('#task-search');
+      const drafts = new Map();
+      const contextDrafts = new Map();
+      const historyToggle = document.querySelector('#history-toggle');
+      historyToggle.addEventListener('click', () => {
+        const collapsed = historyToggle.getAttribute('aria-expanded') === 'true';
+        historyToggle.setAttribute('aria-expanded', String(!collapsed));
+        document.querySelector('#history-body').hidden = collapsed;
+        document.querySelector('#recent-task-panel').classList.toggle('is-collapsed', collapsed);
+      });
+      let selectedProject = projectSelector.value;
+      let viewEpoch = 0;
+      const statusLabels = {RECEIVED: 'Getting started', PLANNING: 'Planning',
+        NEEDS_APPROVAL: 'Your input needed', NEEDS_INPUT: 'Your input needed',
+        SUBMITTING: 'Preparing to run', QUEUED: 'Queued', RUNNING: 'Running',
+        SUCCEEDED: 'Complete', FAILED: 'Needs attention', CANCELLED: 'Stopped'};
+      function syncWorkspace() {
+        document.querySelector('#workspace-name').textContent =
+          projectSelector.selectedOptions[0]?.textContent || 'Your workspace';
+        const activeName = projectSelector.selectedOptions[0]?.textContent || 'Choose a workspace';
+        document.querySelector('#workspace-current').textContent = activeName;
+        document.querySelector('#workspace-initial').textContent = activeName.slice(0, 1).toUpperCase();
+        document.querySelector('#workspace-picker').setAttribute('aria-label', `Switch workspace: ${activeName}`);
+        submitButton.disabled = !projectSelector.value;
+        document.querySelector('#no-project-hint').hidden = Boolean(projectSelector.value);
+        document.querySelector('#open-memory').disabled = !projectSelector.value;
+      }
+      function startNewAnalysis() {
+        viewEpoch += 1;
+        setViewFeedback();
+        if (currentTask) contextDrafts.set(currentTask.id, additionalContext.value);
+        currentTask = null;
+        taskControls.hidden = true;
+        closeMobileSidebar();
+        document.querySelector('#welcome').hidden = false;
+        document.querySelector('#new-analysis').hidden = false;
+        document.querySelector('#conversation-panel').hidden = true;
+        document.querySelector('#task-state').hidden = true;
+        document.querySelector('#download-conversation').hidden = true;
+        document.querySelector('#view-name').textContent = 'New analysis';
+        summary.replaceChildren(); delete summary.dataset.taskId; approvals.replaceChildren();
+        setApprovalFeedback(); setTaskControlFeedback();
+        submitFeedback.textContent = ''; submitFeedback.className = 'feedback';
+        additionalContext.value = '';
+        document.querySelector('#technical-details').open = false;
+        window.history.replaceState(null, '', '/');
+        for (const row of recentTasks.querySelectorAll('.task-row')) row.removeAttribute('aria-current');
+        syncWorkspace();
+        promptInput.focus();
+      }
+      const workspaceDialog = document.querySelector('#workspace-dialog');
+      const workspaceSearch = document.querySelector('#workspace-search');
+      const workspaceOptions = document.querySelector('#workspace-options');
+      function renderWorkspaces() {
+        workspaceOptions.replaceChildren();
+        const query = workspaceSearch.value.trim().toLowerCase();
+        for (const option of projectSelector.options) {
+          if (!option.value || !`${option.textContent} ${option.dataset.slug || ''}`.toLowerCase().includes(query)) continue;
+          const button = document.createElement('button');
+          button.type = 'button'; button.className = 'workspace-option';
+          button.setAttribute('aria-pressed', String(option.value === projectSelector.value));
+          const avatar = document.createElement('span'); avatar.className = 'workspace-avatar';
+          avatar.textContent = option.textContent.slice(0, 1).toUpperCase(); avatar.setAttribute('aria-hidden', 'true');
+          const labels = document.createElement('span'); labels.className = 'workspace-picker-label';
+          const name = document.createElement('strong'); name.textContent = option.textContent;
+          const handle = document.createElement('small'); handle.textContent = option.dataset.slug || '';
+          labels.append(name, handle); button.append(avatar, labels);
+          if (option.value === projectSelector.value) {
+            const check = document.createElement('span'); check.className = 'workspace-check';
+            check.textContent = '✓ Current'; button.append(check);
+          }
+          button.addEventListener('click', () => {
+            const changed = projectSelector.value !== option.value;
+            projectSelector.value = option.value; workspaceDialog.close();
+            if (changed) projectSelector.dispatchEvent(new Event('change'));
+            closeMobileSidebar();
+          });
+          workspaceOptions.append(button);
+        }
+        document.querySelector('#workspace-empty').hidden = Boolean(workspaceOptions.childElementCount);
+      }
+      document.querySelector('#workspace-picker').addEventListener('click', () => {
+        workspaceSearch.value = ''; renderWorkspaces(); workspaceDialog.showModal(); workspaceSearch.focus();
+      });
+      workspaceSearch.addEventListener('input', renderWorkspaces);
+      workspaceDialog.addEventListener('keydown', event => {
+        if (!['ArrowDown', 'ArrowUp'].includes(event.key)) return;
+        const options = [...workspaceOptions.querySelectorAll('button')];
+        if (!options.length) return;
+        event.preventDefault();
+        const index = options.indexOf(document.activeElement);
+        const next = index < 0 ? (event.key === 'ArrowDown' ? 0 : options.length - 1)
+          : (index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length;
+        options[next].focus();
+      });
+      document.querySelector('#picker-create-project').addEventListener('click', openProjectDialog);
+      document.querySelector('#new-task').addEventListener('click', startNewAnalysis);
+      function openProjectDialog() { workspaceDialog.close(); projectDialog.showModal(); }
+      document.querySelector('#open-project').addEventListener('click', openProjectDialog);
+      document.querySelector('#empty-create-project').addEventListener('click', openProjectDialog);
+      document.querySelector('#open-memory').addEventListener('click', () => {
+        memoryDialog.showModal(); loadMemories();
+      });
+      document.querySelectorAll('[data-close]').forEach(button => button.addEventListener('click',
+        () => document.getElementById(button.dataset.close).close()));
+      for (const dialog of [projectDialog, memoryDialog, workspaceDialog]) {
+        dialog.addEventListener('click', event => {
+          const rect = dialog.getBoundingClientRect();
+          if (event.target === dialog && (event.clientX < rect.left || event.clientX > rect.right
+              || event.clientY < rect.top || event.clientY > rect.bottom)) dialog.close();
+        });
+      }
+      const shell = document.querySelector('.app-shell');
+      const sidebar = document.querySelector('#sidebar');
+      const sidebarToggle = document.querySelector('#sidebar-toggle');
+      const sidebarBackdrop = document.querySelector('#sidebar-backdrop');
+      const smallScreen = window.matchMedia('(max-width: 620px)');
+      function setSidebar(open, restoreFocus = false) {
+        if (smallScreen.matches) {
+          sidebar.classList.toggle('is-open', open);
+          sidebarBackdrop.hidden = !open;
+          document.querySelector('#workspace').inert = open;
+        } else {
+          shell.classList.toggle('sidebar-collapsed', !open);
+          sidebarBackdrop.hidden = true;
+          document.querySelector('#workspace').inert = false;
+        }
+        sidebar.inert = !open;
+        sidebarToggle.setAttribute('aria-expanded', String(open));
+        if (restoreFocus) sidebarToggle.focus();
+      }
+      function closeMobileSidebar() { if (smallScreen.matches) setSidebar(false, true); }
+      sidebarToggle.addEventListener('click', () => {
+        const open = sidebarToggle.getAttribute('aria-expanded') !== 'true';
+        setSidebar(open);
+        if (open) document.querySelector('#workspace-picker').focus();
+      });
+      document.querySelector('#sidebar-close').addEventListener('click', () => setSidebar(false, true));
+      sidebarBackdrop.addEventListener('click', () => setSidebar(false, true));
+      sidebar.addEventListener('keydown', event => {
+        if (event.key === 'Escape') { event.preventDefault(); setSidebar(false, true); }
+        // Keep keyboard navigation inside the mobile navigation overlay.
+        if (smallScreen.matches && event.key === 'Tab' && sidebar.classList.contains('is-open')) {
+          const controls = [...sidebar.querySelectorAll('button, a, input, summary')]
+            .filter(item => !item.disabled && item.getClientRects().length);
+          const first = controls[0], last = controls[controls.length - 1];
+          if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+          if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+        }
+      });
+      smallScreen.addEventListener('change', () => {
+        sidebar.classList.remove('is-open'); setSidebar(!smallScreen.matches);
+      });
+      setSidebar(!smallScreen.matches);
+      const resizeHandle = document.querySelector('#sidebar-resize');
+      let sidebarWidth = 280;
+      function resizeSidebar(width) {
+        sidebarWidth = Math.round(Math.max(220, Math.min(420, window.innerWidth - 360, width)));
+        shell.style.setProperty('--sidebar-width', `${sidebarWidth}px`);
+        resizeHandle.setAttribute('aria-valuenow', String(sidebarWidth));
+      }
+      resizeHandle.addEventListener('pointerdown', event => {
+        if (event.button !== 0) return;
+        resizeHandle.setPointerCapture(event.pointerId); shell.classList.add('is-resizing');
+      });
+      resizeHandle.addEventListener('pointermove', event => {
+        if (resizeHandle.hasPointerCapture(event.pointerId)) resizeSidebar(event.clientX);
+      });
+      function stopResizing() { shell.classList.remove('is-resizing'); }
+      resizeHandle.addEventListener('pointerup', event => {
+        if (resizeHandle.hasPointerCapture(event.pointerId)) resizeHandle.releasePointerCapture(event.pointerId);
+        stopResizing();
+      });
+      resizeHandle.addEventListener('lostpointercapture', stopResizing);
+      resizeHandle.addEventListener('keydown', event => {
+        const widths = {ArrowLeft: sidebarWidth - 20, ArrowRight: sidebarWidth + 20, Home: 220, End: 420};
+        if (event.key in widths) { event.preventDefault(); resizeSidebar(widths[event.key]); }
+      });
+      window.addEventListener('resize', () => { if (!smallScreen.matches) resizeSidebar(sidebarWidth); });
+      let customSlug = false;
+      document.querySelector('#project-slug').addEventListener('input', () => { customSlug = true; });
+      document.querySelector('#project-name').addEventListener('input', event => {
+        if (!customSlug) document.querySelector('#project-slug').value = event.target.value
+          .toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      });
+      projectForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const button = projectForm.querySelector('[type="submit"]');
+        button.disabled = true; button.textContent = 'Creating…';
+        projectFeedback.className = 'feedback'; projectFeedback.textContent = '';
+        try {
+          const members = document.querySelector('#project-members').value
+            .split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
+          const response = await fetch('/api/v1/projects', {
+            method: 'POST', headers: {'content-type': 'application/json'},
+            body: JSON.stringify({name: document.querySelector('#project-name').value.trim(),
+              slug: document.querySelector('#project-slug').value.trim().toLowerCase(), members})
+          });
+          const body = await response.json();
+          if (!response.ok) throw new Error(responseError(body, 'Could not create project.'));
+          drafts.set(selectedProject, promptInput.value);
+          const option = new Option(body.name, body.id); option.dataset.slug = body.slug; projectSelector.add(option);
+          projectSelector.value = body.id; selectedProject = body.id;
+          promptInput.value = ''; taskSearch.value = '';
+          projectForm.reset(); customSlug = false; projectDialog.close();
+          startNewAnalysis(); loadRecentTasks(); loadMemories();
+        } catch (error) {
+          projectFeedback.textContent = error.message; projectFeedback.className = 'feedback error';
+        } finally { button.disabled = false; button.textContent = 'Create project'; }
+      });
+      function filterTasks() {
+        const query = taskSearch.value.toLowerCase().trim();
+        for (const row of recentTasks.querySelectorAll('.task-row')) {
+          row.hidden = !row.textContent.toLowerCase().includes(query);
+        }
+      }
+      taskSearch.addEventListener('input', filterTasks);
+      document.querySelector('#download-conversation').addEventListener('click', () => {
+        if (!currentTask) return;
+        const transcript = (currentTask.conversation || []).map(message => {
+          const speaker = message.role === 'user' ? 'You' : 'Pistachio';
+          return `${speaker}\n${message.text}`;
+        }).join('\n\n────────────────────────\n\n');
+        const url = URL.createObjectURL(new Blob([transcript + '\n'], {type: 'text/plain;charset=utf-8'}));
+        const link = document.createElement('a'); link.href = url;
+        link.download = `${(currentTask.public_name || 'pistachio').replace(/[^a-zA-Z0-9_-]/g, '-')}-transcript.txt`;
+        document.body.append(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      });
+      for (const textarea of [promptInput, additionalContext]) {
+        textarea.addEventListener('keydown', event => {
+          if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && !textarea.disabled) {
+            event.preventDefault();
+            if (textarea === promptInput && !submitButton.disabled) form.requestSubmit();
+            if (textarea === additionalContext && !addContextButton.disabled) contextForm.requestSubmit();
+          }
+        });
+      }
+      syncWorkspace();
+      async function loadMemories() {
+        if (!projectSelector.value) return;
+        const projectId = projectSelector.value;
+        const response = await fetch(`/api/v1/projects/${projectId}/memories`);
+        const memories = await response.json();
+        if (projectSelector.value !== projectId) return;
+        if (!response.ok) {
+          memoryBox.textContent = responseError(memories, 'Could not load project memory.');
+          return;
+        }
+        memoryBox.replaceChildren();
+        for (const memory of memories) {
+          const row = document.createElement('article');
+          row.className = 'memory-card';
+          const header = document.createElement('div');
+          header.className = 'memory-card-header';
+          const title = document.createElement('strong');
+          title.className = 'memory-task-name';
+          title.textContent = memory.source_task_name || 'Saved project memory';
+          const actions = document.createElement('div');
+          actions.className = 'memory-actions';
+          const pin = document.createElement('button');
+          pin.type = 'button';
+          pin.className = 'memory-action';
+          pin.textContent = memory.status === 'pinned' ? 'Unpin' : 'Pin';
+          pin.onclick = async () => {
+            await fetch(`/api/v1/projects/${projectSelector.value}/memories/${memory.id}`, {
+              method: 'PATCH', headers: {'content-type': 'application/json'},
+              body: JSON.stringify({status: memory.status === 'pinned' ? 'active' : 'pinned'})
+            }); await loadMemories();
+          };
+          const forget = document.createElement('button');
+          forget.type = 'button';
+          forget.className = 'memory-action forget';
+          forget.textContent = 'Forget';
+          forget.onclick = async () => {
+            await fetch(`/api/v1/projects/${projectSelector.value}/memories/${memory.id}`, {method: 'DELETE'});
+            await loadMemories();
+          };
+          actions.append(pin, forget);
+          header.append(title, actions);
+          row.append(header);
+          if (memory.artifact_names?.length) {
+            const artifacts = document.createElement('div');
+            artifacts.className = 'artifact-list';
+            const bundled = memory.artifact_names.length > 4 && memory.source_task_id;
+            const artifactNames = bundled
+              ? [`Download ${memory.artifact_names.length} artifacts (.zip)`]
+              : memory.artifact_names;
+            for (const [index, artifactName] of artifactNames.entries()) {
+              const artifact = document.createElement(memory.source_task_id ? 'a' : 'span');
+              artifact.className = 'artifact-chip';
+              artifact.textContent = artifactName;
+              if (memory.source_task_id) {
+                artifact.href = bundled
+                  ? `/api/v1/tasks/${encodeURIComponent(memory.source_task_id)}/artifacts/archive`
+                  : `/api/v1/tasks/${encodeURIComponent(memory.source_task_id)}/artifacts/${index}/download`;
+                artifact.setAttribute('download', '');
+              }
+              artifacts.append(artifact);
+            }
+            row.append(artifacts);
+          } else if (!memory.source_task_name) {
+            const content = document.createElement('p');
+            content.className = 'memory-content';
+            content.textContent = memory.content;
+            row.append(content);
+          }
+          memoryBox.append(row);
+        }
+        if (!memories.length) memoryBox.textContent = 'No project memories yet.';
+      }
+      async function loadRecentTasks() {
+        if (!projectSelector.value) {
+          recentTaskCount.textContent = '';
+          recentTasks.textContent = 'Create a project first.';
+          return;
+        }
+        const projectId = projectSelector.value;
+        try {
+          const response = await fetch(
+            `/api/v1/projects/${encodeURIComponent(projectId)}/tasks?limit=20`
+          );
+          const tasks = await response.json();
+          if (projectSelector.value !== projectId) return;
+          if (!response.ok) throw new Error(responseError(tasks, 'Could not load recent tasks.'));
+          recentTaskCount.textContent = `(${tasks.length})`;
+          const existing = new Map([...recentTasks.querySelectorAll('.task-row')]
+            .map(button => [button.dataset.taskId, button]));
+          if (!existing.size) recentTasks.replaceChildren();
+          const ids = new Set(tasks.map(task => task.id));
+          for (const [id, button] of existing) if (!ids.has(id)) button.remove();
+          for (const [index, task] of tasks.entries()) {
+            const button = existing.get(task.id) || document.createElement('button');
+            button.type = 'button';
+            button.className = 'task-row';
+            button.dataset.taskId = task.id;
+            button.title = task.prompt;
+            button.setAttribute('aria-current', String(currentTask?.id === task.id));
+            const title = button.querySelector('strong') || document.createElement('strong');
+            title.textContent = task.prompt.slice(0, 120);
+            const detail = button.querySelector('small') || document.createElement('small');
+            detail.textContent =
+              `${statusLabels[task.status] || task.status} · ${new Date(task.updated_at).toLocaleDateString(undefined, {month: 'short', day: 'numeric'})}`;
+            if (!button.childElementCount) button.append(title, detail);
+            button.onclick = () => {
+              closeMobileSidebar();
+              window.history.replaceState(null, '', `/?task=${encodeURIComponent(task.id)}`);
+              watchTask(task.id);
+            };
+            if (recentTasks.children[index] !== button) recentTasks.insertBefore(button, recentTasks.children[index] || null);
+          }
+          filterTasks();
+          if (!tasks.length) recentTasks.textContent = 'No tasks for this project yet.';
+        } catch (error) {
+          if (projectSelector.value !== projectId) return;
+          recentTaskCount.textContent = '';
+          recentTasks.textContent = `Could not load recent tasks: ${error.message}`;
+        }
+      }
+      function showApprovals(task) {
+        approvals.replaceChildren();
+        for (const approval of task.approvals.filter(item => item.status === 'pending')) {
+          const card = document.createElement('div');
+          card.className = 'approval';
+          const heading = document.createElement('h3');
+          heading.textContent = approval.title;
+          const detail = document.createElement('div');
+          detail.className = 'muted'; detail.textContent = approval.detail;
+          card.append(heading, detail);
+          const fields = approval.payload?.fields || [];
+          const inputs = [];
+          const actionStatus = document.createElement('div');
+          actionStatus.className = 'approval-status';
+          actionStatus.setAttribute('role', 'status');
+          actionStatus.setAttribute('aria-live', 'polite');
+          actionStatus.hidden = true;
+          const setActionStatus = (message, tone = 'info') => {
+            actionStatus.textContent = message;
+            actionStatus.className = `approval-status ${tone}`;
+            actionStatus.hidden = !message;
+            setApprovalFeedback(message, tone);
+          };
+          for (const field of fields) {
+            const row = document.createElement('div'); row.className = 'field';
+            const label = document.createElement('label');
+            label.textContent = field.label || field.name || field.id;
+            let input;
+            if (Array.isArray(field.options) && field.options.length) {
+              input = document.createElement('select');
+              const values = field.options.filter(value =>
+                !/^(approve|change|other)\b/i.test(String(value))
+              );
+              if (field.proposed_value && !values.includes(String(field.proposed_value))) {
+                values.unshift(String(field.proposed_value));
+              }
+              for (const rawValue of values) {
+                const option = document.createElement('option');
+                const value = String(rawValue);
+                const needsCustomValue = /^(provide|specify)\b/i.test(value);
+                option.value = needsCustomValue ? `__custom__:${value}` : value;
+                option.textContent = needsCustomValue ? `${value}…` : value;
+                option.selected = value === String(field.proposed_value ?? '');
+                input.append(option);
+              }
+              const otherOption = document.createElement('option');
+              otherOption.value = '__other__'; otherOption.textContent = 'Other…';
+              input.append(otherOption);
+            } else {
+              input = document.createElement('input');
+              const value = field.proposed_value ?? field.value ?? '';
+              input.value = Array.isArray(value) ? value.join(', ') : String(value);
+            }
+            input.dataset.fieldId = field.id || field.name;
+            input.id = `approval-${approval.id}-${inputs.length}`;
+            label.htmlFor = input.id;
+            input.required = true;
+            let customInput = null;
+            let customBox = null;
+            if (input.tagName === 'SELECT') {
+              customBox = document.createElement('div');
+              customBox.className = 'custom-value'; customBox.hidden = true;
+              customInput = document.createElement('input');
+              customInput.placeholder = 'Enter a custom value';
+              customInput.setAttribute('aria-label', `Custom value for ${label.textContent}`);
+              customBox.append(customInput);
+              const syncCustomInput = (focus = false) => {
+                const isOther = input.value === '__other__' || input.value.startsWith('__custom__:');
+                customBox.hidden = !isOther;
+                customInput.required = isOther;
+                row.classList.remove('invalid');
+                setActionStatus('', 'info');
+                if (isOther && focus) customInput.focus();
+              };
+              input.addEventListener('change', () => syncCustomInput(true));
+              syncCustomInput();
+            }
+            const note = document.createElement('small');
+            note.textContent = [field.rationale || field.scientific_impact, field.source]
+              .filter(Boolean).join(' · ');
+            row.append(label, input);
+            if (customBox) row.append(customBox);
+            row.append(note); card.append(row);
+            inputs.push({control: input, customInput, row, label: label.textContent});
+          }
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.textContent = fields.length ? 'Confirm these settings' : `Approve: ${approval.title}`;
+          button.onclick = async () => {
+            const epoch = viewEpoch;
+            try {
+              let responseText = '';
+              if (fields.length) {
+                const resolved = inputs.map(({control, customInput, row, label}) => {
+                  const customSelected = control.value === '__other__'
+                    || control.value.startsWith('__custom__:');
+                  const value = customSelected ? customInput.value.trim() : control.value.trim();
+                  return {id: control.dataset.fieldId, value, customSelected, customInput, row, label};
+                });
+                const missing = resolved.find(item => !item.value);
+                if (missing) {
+                  missing.row.classList.add('invalid');
+                  const message = `Enter a custom value for ${missing.label} before confirming.`;
+                  setActionStatus(message, 'error');
+                  (missing.customSelected ? missing.customInput : missing.row).focus?.();
+                  missing.row.scrollIntoView({behavior: 'smooth', block: 'center'});
+                  return;
+                }
+                const values = Object.fromEntries(resolved.map(item => [item.id, item.value]));
+                responseText = JSON.stringify({values});
+              } else if (['SCIENTIFIC_STEP', 'HYPERPARAMETER'].includes(approval.kind)) {
+                return;
+              }
+              button.disabled = true;
+              button.textContent = 'Sending settings…';
+              card.setAttribute('aria-busy', 'true');
+              setActionStatus('Sending settings…', 'info');
+              const response = await fetch(`/api/v1/tasks/${task.id}/approvals/${approval.id}`, {
+                method: 'POST', headers: {'content-type': 'application/json'},
+                body: JSON.stringify({approved: true, response: responseText || ''})
+              });
+              const updated = await response.json();
+              if (epoch !== viewEpoch) return;
+              if (!response.ok) {
+                throw new Error(responseError(updated, `Request failed (${response.status}).`));
+              }
+              setActionStatus(
+                updated.planner_version >= 2
+                  ? 'Settings received. Continuing from the approved plan…'
+                  : 'Settings received. Updating the plan…',
+                'success'
+              );
+              renderTask(updated); showApprovals(updated);
+              const finalTask = await watchTask(updated.id);
+              if (!finalTask) return;
+              if (finalTask.status === 'FAILED') {
+                setApprovalFeedback(`Processing failed: ${finalTask.error || 'Unknown error.'}`, 'error');
+              } else if (finalTask.status === 'NEEDS_APPROVAL') {
+                setApprovalFeedback('Settings processed. Another review is ready below.', 'success');
+              } else if (finalTask.status === 'NEEDS_INPUT') {
+                setApprovalFeedback('Settings processed. More input is needed below.', 'info');
+              } else {
+                setApprovalFeedback(`Settings processed. Task status: ${finalTask.status}.`, 'success');
+              }
+            } catch (error) {
+              setActionStatus(`Could not process settings: ${error.message}`, 'error');
+              button.disabled = false;
+              button.textContent = fields.length
+                ? 'Confirm these settings' : `Approve: ${approval.title}`;
+              card.removeAttribute('aria-busy');
+            }
+          };
+          card.append(actionStatus, button); approvals.append(card);
+        }
+      }
+      function renderConversation(task) {
+        const scroller = document.querySelector('#conversation-scroll');
+        const nearBottom = scroller.scrollHeight - scroller.clientHeight - scroller.scrollTop < 100;
+        const previousTask = summary.dataset.taskId;
+        if (previousTask !== task.id) { summary.replaceChildren(); summary.dataset.taskId = task.id; }
+        const existing = new Map([...summary.querySelectorAll('[data-message-id]')].map(node => [node.dataset.messageId, node]));
+        let added = false;
+        for (const message of task.conversation || []) {
+          if (existing.has(message.id)) continue;
+          if (!summary.childElementCount) summary.textContent = '';
+          const turn = document.createElement('div');
+          turn.className = 'conversation-turn'; turn.dataset.role = message.role; turn.dataset.messageId = message.id;
+          const speaker = document.createElement('strong'); speaker.textContent = message.role === 'user' ? 'You' : 'Pistachio';
+          const content = document.createElement('div'); content.textContent = message.text;
+          turn.append(speaker, content); summary.append(turn); added = true;
+        }
+        if (!summary.childElementCount) summary.textContent = 'No saved conversation yet.';
+        if (added && (nearBottom || previousTask !== task.id)) requestAnimationFrame(() => {
+          const immediate = previousTask !== task.id || window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          scroller.scrollTo({top: scroller.scrollHeight, behavior: immediate ? 'instant' : 'smooth'});
+        });
+      }
+      function renderArtifacts(task) {
+        const artifacts = task.result?.artifacts || [];
+        taskArtifactGrid.replaceChildren();
+        taskArtifacts.hidden = task.status !== 'SUCCEEDED' || !artifacts.length;
+        if (taskArtifacts.hidden) return;
+        const figureCount = artifacts.filter(artifact => {
+          const mediaType = artifact.media_type || '';
+          return mediaType.startsWith('image/')
+            || /\.(png|jpe?g|gif|webp|svg)$/i.test(artifact.name);
+        }).length;
+        if (figureCount > 4) {
+          const card = document.createElement('div');
+          card.className = 'task-artifact bundle';
+          const details = document.createElement('div');
+          const name = document.createElement('strong');
+          name.textContent = `${task.public_name}-artifacts.zip`;
+          const count = document.createElement('small');
+          count.textContent = `${artifacts.length} files bundled for download`;
+          details.append(name, count);
+          const link = document.createElement('a');
+          link.className = 'task-artifact-link';
+          link.href = `/api/v1/tasks/${encodeURIComponent(task.id)}/artifacts/archive`;
+          link.download = '';
+          link.textContent = 'Download ZIP';
+          card.append(details, link);
+          taskArtifactGrid.append(card);
+          return;
+        }
+        for (const [index, artifact] of artifacts.entries()) {
+          const card = document.createElement('article');
+          card.className = 'task-artifact';
+          const url = `/api/v1/tasks/${encodeURIComponent(task.id)}/artifacts/${index}/download`;
+          const mediaType = artifact.media_type || '';
+          const isImage = mediaType.startsWith('image/')
+            || /\.(png|jpe?g|gif|webp|svg)$/i.test(artifact.name);
+          if (isImage) {
+            const preview = document.createElement('img');
+            preview.className = 'task-artifact-preview';
+            preview.src = url;
+            preview.alt = artifact.name;
+            preview.loading = 'lazy';
+            card.append(preview);
+          }
+          const link = document.createElement('a');
+          link.className = 'task-artifact-link';
+          link.href = url;
+          link.download = '';
+          link.textContent = artifact.name;
+          card.append(link);
+          taskArtifactGrid.append(card);
+        }
+      }
+      function renderTask(task) {
+        if (currentTask?.id !== task.id) {
+          if (currentTask) contextDrafts.set(currentTask.id, additionalContext.value);
+          additionalContext.value = contextDrafts.get(task.id) || '';
+          document.querySelector('#technical-details').open = false;
+        }
+        currentTask = task;
+        document.querySelector('#welcome').hidden = true;
+        document.querySelector('#new-analysis').hidden = true;
+        document.querySelector('#conversation-panel').hidden = false;
+        document.querySelector('#view-name').textContent = 'Conversation';
+        const badge = document.querySelector('#task-state');
+        badge.hidden = false; badge.textContent = statusLabels[task.status] || task.status;
+        badge.dataset.status = task.status;
+        document.querySelector('#download-conversation').hidden = !(task.conversation || []).length;
+        if (projectSelector.value !== task.envelope.project_id) {
+          projectSelector.value = task.envelope.project_id;
+          selectedProject = projectSelector.value; syncWorkspace(); loadRecentTasks();
+        }
+        for (const row of recentTasks.querySelectorAll('.task-row')) {
+          row.setAttribute('aria-current', String(row.dataset.taskId === task.id));
+        }
+        renderConversation(task);
+        output.textContent = JSON.stringify(task, null, 2);
+        renderArtifacts(task);
+        const terminal = ['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(task.status);
+        const acceptsContext = ['RECEIVED', 'PLANNING', 'NEEDS_INPUT', 'NEEDS_APPROVAL']
+          .includes(task.status);
+        taskControls.hidden = terminal;
+        additionalContext.disabled = !acceptsContext;
+        addContextButton.disabled = !acceptsContext;
+        addContextButton.textContent = acceptsContext ? 'Send update' : 'Execution already started';
+        cancelTaskButton.disabled = terminal;
+      }
+      async function watchTask(taskId) {
+        const epoch = ++viewEpoch;
+        setViewFeedback();
+        additionalContext.disabled = true;
+        addContextButton.disabled = true;
+        cancelTaskButton.disabled = true;
+        approvals.replaceChildren(); setApprovalFeedback(); setTaskControlFeedback();
+        let pollDelay = 1200;
+        while (epoch === viewEpoch) {
+          try {
+            const response = await fetch(`/api/v1/tasks/${encodeURIComponent(taskId)}`);
+            const task = await response.json();
+            if (epoch !== viewEpoch) return null;
+            if (!response.ok) {
+              const message = response.status === 404 ? 'This analysis could not be found. Choose another analysis or start a new one.'
+                : `Could not open this analysis: ${responseError(task, 'Please try again.')}`;
+              setViewFeedback(message, 'error');
+              return null;
+            }
+            setViewFeedback();
+            renderTask(task);
+            if (!['RECEIVED', 'PLANNING', 'SUBMITTING', 'QUEUED', 'RUNNING'].includes(task.status)) {
+              showApprovals(task); loadMemories(); loadRecentTasks(); return task;
+            }
+          } catch (error) {
+            if (epoch !== viewEpoch) return null;
+            setViewFeedback(
+              'Connection interrupted. The task continues in Google Cloud; reconnecting…');
+          }
+          await wait(pollDelay);
+          pollDelay = Math.min(Math.round(pollDelay * 1.35), 4000);
+        }
+        return null;
+      }
+      function setViewFeedback(message = '', tone = 'info') {
+        const feedback = document.querySelector('#view-feedback');
+        feedback.textContent = message;
+        feedback.className = message ? `feedback ${tone}` : 'feedback';
+      }
+      function setTaskControlFeedback(message = '', tone = 'info') {
+        taskControlFeedback.textContent = message;
+        taskControlFeedback.className = message ? `feedback ${tone}` : 'feedback';
+      }
+      contextForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const message = additionalContext.value.trim();
+        if (!currentTask || !message) return;
+        const epoch = viewEpoch;
+        addContextButton.disabled = true;
+        setTaskControlFeedback('Adding your update…');
+        try {
+          const response = await fetch(
+            `/api/v1/tasks/${encodeURIComponent(currentTask.id)}/context`,
+            {
+              method: 'POST', headers: {'content-type': 'application/json'},
+              body: JSON.stringify({message})
+            }
+          );
+          const task = await response.json();
+          if (epoch !== viewEpoch) return;
+          if (!response.ok) throw new Error(responseError(task, 'Could not add context.'));
+          additionalContext.value = '';
+          setTaskControlFeedback('Update submitted.', 'success');
+          renderTask(task);
+          await watchTask(task.id);
+        } catch (error) {
+          if (epoch !== viewEpoch) return;
+          setTaskControlFeedback(error.message, 'error');
+          addContextButton.disabled = false;
+        }
+      });
+      cancelTaskButton.addEventListener('click', async () => {
+        if (!currentTask || !window.confirm('Cancel this task?')) return;
+        const epoch = viewEpoch;
+        cancelTaskButton.disabled = true;
+        setTaskControlFeedback('Cancelling…');
+        try {
+          const response = await fetch(
+            `/api/v1/tasks/${encodeURIComponent(currentTask.id)}/cancel`, {method: 'POST'}
+          );
+          const task = await response.json();
+          if (epoch !== viewEpoch) return;
+          if (!response.ok) throw new Error(responseError(task, 'Could not cancel task.'));
+          renderTask(task);
+          setTaskControlFeedback('Task cancelled.', 'success');
+          await loadRecentTasks();
+        } catch (error) {
+          if (epoch !== viewEpoch) return;
+          setTaskControlFeedback(error.message, 'error');
+          cancelTaskButton.disabled = false;
+        }
+      });
+      projectSelector.addEventListener('change', () => {
+        drafts.set(selectedProject, promptInput.value);
+        selectedProject = projectSelector.value;
+        promptInput.value = drafts.get(selectedProject) || '';
+        taskSearch.value = ''; recentTasks.textContent = 'Loading analyses…'; recentTaskCount.textContent = ''; startNewAnalysis(); loadMemories(); loadRecentTasks();
+      });
+      loadMemories();
+      loadRecentTasks();
+      // The task service is channel-independent: keep this project feed current even when
+      // work was submitted from Slack or another connected surface.
+      window.setInterval(() => {
+        if (document.visibilityState === 'visible') loadRecentTasks();
+      }, 5000);
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!projectSelector.value || submitButton.disabled) return;
+        const epoch = viewEpoch;
+        submitButton.disabled = true; submitButton.textContent = 'Starting…';
+        submitFeedback.textContent = ''; submitFeedback.className = 'feedback';
+        try {
+          const response = await fetch('/api/v1/tasks', {
+            method: 'POST', headers: {'content-type': 'application/json'},
+            body: JSON.stringify({project_id: projectSelector.value,
+              prompt: promptInput.value, source: 'web'})
+          });
+          const task = await response.json();
+          if (epoch !== viewEpoch) { loadRecentTasks(); return; }
+          if (!response.ok) throw new Error(responseError(task, 'Could not start this analysis.'));
+          promptInput.value = ''; drafts.delete(projectSelector.value);
+          window.history.replaceState(null, '', `/?task=${encodeURIComponent(task.id)}`);
+          renderTask(task); await watchTask(task.id);
+        } catch (error) {
+          submitFeedback.textContent = error.message; submitFeedback.className = 'feedback error';
+        } finally { submitButton.textContent = 'Start analysis ↗'; syncWorkspace(); }
+      });
+      const initialTaskId = new URLSearchParams(window.location.search).get('task');
+      if (initialTaskId) watchTask(initialTaskId);
+    </script>
+  </body>
+</html>

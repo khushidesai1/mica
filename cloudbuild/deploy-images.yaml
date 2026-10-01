@@ -1,0 +1,33 @@
+steps:
+  - id: build-api
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - PYTHON_IMAGE=${_PYTHON_IMAGE}
+      - -f
+      - docker/Dockerfile.api
+      - -t
+      - ${_API_IMAGE}
+      - .
+  - id: build-science
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - PYTHON_IMAGE=${_PYTHON_IMAGE}
+      - -f
+      - docker/Dockerfile.science
+      - -t
+      - ${_SCIENCE_IMAGE}
+      - .
+images:
+  - ${_API_IMAGE}
+  - ${_SCIENCE_IMAGE}
+timeout: 3600s
+options:
+  logging: CLOUD_LOGGING_ONLY
+substitutions:
+  _PYTHON_IMAGE: python:3.12.12-slim
+  _API_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/api:bootstrap
+  _SCIENCE_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/science:bootstrap

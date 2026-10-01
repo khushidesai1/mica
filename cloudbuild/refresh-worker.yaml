@@ -1,0 +1,27 @@
+steps:
+  - id: build-worker
+    name: gcr.io/cloud-builders/docker
+    args: [build, -f, docker/Dockerfile.worker-refresh, --build-arg, "API_IMAGE=${_API_IMAGE}", --build-arg, "SCIENCE_IMAGE=${_SCIENCE_BASE_IMAGE}", -t, "${_SCIENCE_IMAGE}", .]
+  - id: export-api-contract
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    entrypoint: bash
+    args:
+      - -ceu
+      - docker run --rm -v /workspace:/workspace:ro --entrypoint python "${_API_IMAGE}" /workspace/scripts/check_worker_compatibility.py export - > /workspace/api-execution-contract.json
+  - id: check-worker-contract
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-worker, export-api-contract]
+    args: [run, --rm, -v, /workspace:/workspace:ro, --entrypoint, python, "${_SCIENCE_IMAGE}", /workspace/scripts/check_worker_compatibility.py, check, /workspace/api-execution-contract.json]
+  - id: push-worker
+    name: gcr.io/cloud-builders/docker
+    waitFor: [check-worker-contract]
+    args: [push, "${_SCIENCE_IMAGE}"]
+images: ["${_SCIENCE_IMAGE}"]
+timeout: 1800s
+options:
+  logging: CLOUD_LOGGING_ONLY
+substitutions:
+  _API_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/api@sha256:REPLACE
+  _SCIENCE_BASE_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/science@sha256:REPLACE
+  _SCIENCE_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/science:worker-refresh

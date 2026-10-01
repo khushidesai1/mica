@@ -1,0 +1,10 @@
+FROM python:3.12.12-slim
+ARG COMMIT_SHA
+LABEL org.opencontainers.image.revision=$COMMIT_SHA
+WORKDIR /opt/tool
+COPY tool-source /opt/tool/source
+RUN pip install --no-cache-dir /opt/tool/source && \
+    find /opt/tool/source -type d -name .git -prune -exec rm -rf {} +
+USER 65532:65532
+ENTRYPOINT ["python"]
+

@@ -1,0 +1,14 @@
+# Small acceptance runtime; production still uses the separately reviewed science image.
+FROM python:3.12.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap util-linux build-essential cmake flex bison \
+    && rm -rf /var/lib/apt/lists/*
+COPY docker/constraints-development-test.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+ENV PYTHONDONTWRITEBYTECODE=1 MPLBACKEND=Agg
+# louvain 0.8.2 imports pkg_resources at runtime.
+RUN pip install --no-cache-dir setuptools==80.9.0
+WORKDIR /work
+COPY tests/test_neighborhood_acceptance.py /acceptance/test_neighborhood_acceptance.py
+COPY tests/fixtures/neighborhood /acceptance/fixtures/neighborhood
+RUN OMP_NUM_THREADS=2 OPENBLAS_NUM_THREADS=2 MPLCONFIGDIR=/tmp/mpl \
+    python -m pytest -q -rs -p no:cacheprovider --noconftest /acceptance/test_neighborhood_acceptance.py

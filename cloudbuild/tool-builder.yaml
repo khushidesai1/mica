@@ -1,0 +1,41 @@
+steps:
+  - name: gcr.io/cloud-builders/git
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        git clone --filter=blob:none "${_SOURCE_URL}" tool-source
+        git -C tool-source checkout --detach "${_COMMIT_SHA}"
+        test "$(git -C tool-source rev-parse HEAD)" = "${_COMMIT_SHA}"
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - COMMIT_SHA=${_COMMIT_SHA}
+      - -f
+      - docker/Dockerfile.approved-tool
+      - -t
+      - ${_IMAGE_URI}
+      - .
+  - name: gcr.io/cloud-builders/docker
+    args: [push, "${_IMAGE_URI}"]
+  - name: "${_IMAGE_URI}"
+    entrypoint: python
+    args:
+      - -c
+      - "import importlib; importlib.import_module('${_IMPORT_NAME}')"
+  - name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        gcloud artifacts docker images describe "${_IMAGE_URI}" --show-package-vulnerability
+images: ["${_IMAGE_URI}"]
+options:
+  logging: CLOUD_LOGGING_ONLY
+substitutions:
+  _TOOL_ID: pending-tool
+  _SOURCE_URL: https://example.invalid/repository.git
+  _COMMIT_SHA: 0000000000000000000000000000000000000000
+  _IMAGE_URI: us-central1-docker.pkg.dev/example/tools/pending:commit
+  _IMPORT_NAME: package

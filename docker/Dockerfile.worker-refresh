@@ -1,0 +1,9 @@
+# Refresh application code from the exact deployed API while preserving scientific dependencies.
+ARG API_IMAGE
+ARG SCIENCE_IMAGE
+FROM ${API_IMAGE} AS api
+FROM ${SCIENCE_IMAGE}
+USER root
+COPY --from=api /usr/local/lib/python3.12/site-packages/pistachio /usr/local/lib/python3.12/site-packages/pistachio
+COPY --from=api /app/src /opt/pistachio/src
+USER 65532:65532

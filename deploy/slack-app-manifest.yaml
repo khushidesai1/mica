@@ -1,0 +1,31 @@
+# Reference delta for the EXISTING Slack app. Keep its current request URL and
+# unrelated settings; do not import as a new app. Reinstall only for scope changes.
+display_information:
+  name: Pistachio
+features:
+  bot_user:
+    display_name: Pistachio
+    always_online: false
+oauth_config:
+  scopes:
+    bot:
+      - chat:write
+      - im:history
+      - files:read
+      - files:write
+      - reactions:write
+      - users:read
+      # Optional channel mentions (the existing bot DM needs none of these):
+      - app_mentions:read
+      - channels:history
+      - groups:history
+settings:
+  socket_mode_enabled: false
+  event_subscriptions:
+    # Preserve the current /integrations/slack/events request_url in app settings.
+    bot_events:
+      - message.im
+      # Optional channel use:
+      - app_mention
+      - message.channels
+      - message.groups

@@ -1,0 +1,9 @@
+claude-agent-sdk==0.2.163
+slack-bolt==1.27.0
+slack-sdk==3.39.0
+aiohttp==3.14.3
+google-cloud-storage==3.4.0
+pydantic-settings==2.15.0
+httpx==0.28.1
+google-auth==2.41.1
+pyarrow==25.0.1

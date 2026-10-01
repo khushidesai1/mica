@@ -1,0 +1,7 @@
+# Reference for manual diagnostics only. Production Batch job_spec supplies CLI flags.
+implicit-dirs: true
+file-cache:
+  max-size-mb: 400000
+  cache-file-for-range-read: true
+# Split the cache cap across mounted buckets; use a separate cache-dir per bucket.
+# The Batch host mount and container bind mount must both be read-only.

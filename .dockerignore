@@ -1,0 +1,17 @@
+.git
+.venv
+.venv-slack
+.pistachio
+.pytest_cache
+.mypy_cache
+.ruff_cache
+__pycache__
+infra/.terraform
+tests
+
+!tests/
+tests/*
+!tests/test_neighborhood_acceptance.py
+!tests/fixtures/
+!tests/fixtures/neighborhood/
+!tests/fixtures/neighborhood/*.py

@@ -1,0 +1,40 @@
+steps:
+  - id: build-api
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: [build, --build-arg, "PYTHON_IMAGE=${_PYTHON_IMAGE}", -f, docker/Dockerfile.api, -t, "${_API_IMAGE}", .]
+  - id: build-science
+    name: gcr.io/cloud-builders/docker
+    waitFor: ["-"]
+    args: [build, --build-arg, "PYTHON_IMAGE=${_SCIENCE_BASE_IMAGE}", -f, docker/Dockerfile.science, -t, "${_SCIENCE_IMAGE}", .]
+  - id: export-api-contract
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-api]
+    entrypoint: bash
+    args:
+      - -ceu
+      - docker run --rm -v /workspace:/workspace:ro --entrypoint python "${_API_IMAGE}" /workspace/scripts/check_worker_compatibility.py export - > /workspace/api-execution-contract.json
+  - id: check-worker-contract
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-science, export-api-contract]
+    args: [run, --rm, -v, /workspace:/workspace:ro, --entrypoint, python, "${_SCIENCE_IMAGE}", /workspace/scripts/check_worker_compatibility.py, check, /workspace/api-execution-contract.json]
+  - id: push-api
+    name: gcr.io/cloud-builders/docker
+    waitFor: [check-worker-contract]
+    args: [push, "${_API_IMAGE}"]
+  - id: push-science
+    name: gcr.io/cloud-builders/docker
+    waitFor: [check-worker-contract]
+    args: [push, "${_SCIENCE_IMAGE}"]
+images:
+  - ${_API_IMAGE}
+  - ${_SCIENCE_IMAGE}
+timeout: 3600s
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+substitutions:
+  _PYTHON_IMAGE: python:3.12.12-slim@sha256:f3fa41d74a768c2fce8016b98c191ae8c1bacd8f1152870a3f9f87d350920b7c
+  _SCIENCE_BASE_IMAGE: python:3.12.12-slim@sha256:f3fa41d74a768c2fce8016b98c191ae8c1bacd8f1152870a3f9f87d350920b7c
+  _API_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/api:protocol2
+  _SCIENCE_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/science:protocol2

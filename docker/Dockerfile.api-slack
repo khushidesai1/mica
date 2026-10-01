@@ -1,0 +1,12 @@
+# Preserve all deployed web code; patch only the three Slack integration points.
+ARG API_IMAGE
+FROM ${API_IMAGE}
+USER root
+RUN pip install aiohttp==3.14.3
+COPY scripts/patch_slack_api.py /tmp/patch_slack_api.py
+RUN python /tmp/patch_slack_api.py
+COPY src/pistachio/agents/analysis /tmp/analysis
+COPY src/pistachio/api/slack_analysis.py /tmp/slack_analysis.py
+RUN python -c "import importlib.util,pathlib,shutil; p=pathlib.Path(importlib.util.find_spec('pistachio').origin).parent; shutil.copytree('/tmp/analysis',p/'agents/analysis',dirs_exist_ok=True); shutil.copyfile('/tmp/slack_analysis.py',p/'api/slack_analysis.py')" && \
+    python -c "from fastapi.testclient import TestClient; from pistachio.api.app import create_app; from pistachio.config import Settings; assert Settings().slack_agent_backend == 'existing'; c=TestClient(create_app()); assert c.get('/api/v1/internal/slack-analysis/credentials/'+'a'*32).status_code == 503"
+USER 65532:65532

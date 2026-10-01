@@ -1,0 +1,18 @@
+# Extend the existing pinned science image; web workers keep their current image.
+ARG SCIENCE_IMAGE
+FROM ${SCIENCE_IMAGE}
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends socat && rm -rf /var/lib/apt/lists/*
+COPY deploy/requirements-bot.txt /tmp/requirements-bot.txt
+RUN pip install -r /tmp/requirements-bot.txt
+WORKDIR /opt/pistachio
+COPY pyproject.toml README.md ./
+COPY src ./src
+COPY tools ./tools
+COPY templates ./templates
+RUN pip install --no-deps . && mkdir -p /srv/pistachio/work /opt/sci/bin && \
+    ln -sf /usr/local/bin/python /opt/sci/bin/python && chown -R 65532:65532 /srv/pistachio
+ENV HOME=/srv/pistachio AGENT_WORK_ROOT=/srv/pistachio/work AGENT_STATE_DB=/srv/pistachio/state.db
+USER 65532:65532
+ENTRYPOINT []
+CMD ["python", "-m", "pistachio.agents.analysis.batch_worker"]

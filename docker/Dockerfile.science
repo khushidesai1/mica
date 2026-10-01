@@ -1,0 +1,27 @@
+ARG PYTHON_IMAGE=python:3.12.12-slim
+FROM ${PYTHON_IMAGE}
+
+USER root
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HOME=/tmp/pistachio-home \
+    XDG_CONFIG_HOME=/tmp/pistachio-config \
+    XDG_CACHE_HOME=/tmp/pistachio-cache \
+    MPLCONFIGDIR=/tmp/pistachio-matplotlib \
+    MPLBACKEND=Agg
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      libgomp1 libhdf5-dev libopenblas0-pthread bubblewrap util-linux \
+      build-essential cmake flex bison && \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/pistachio
+COPY docker/constraints-science.txt /tmp/constraints.txt
+RUN pip install -r /tmp/constraints.txt
+COPY pyproject.toml README.md ./
+COPY src ./src
+RUN pip install --no-deps . && chown -R 65532:65532 /opt/pistachio
+
+USER 65532:65532
+CMD ["python", "-m", "pistachio.worker.main"]

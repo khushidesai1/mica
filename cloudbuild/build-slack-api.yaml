@@ -1,0 +1,17 @@
+steps:
+  - id: build-slack-api
+    name: gcr.io/cloud-builders/docker
+    args: [build, --build-arg, 'API_IMAGE=${_BASE_API_IMAGE}', -f, docker/Dockerfile.api-slack, -t, '${_API_IMAGE}', .]
+  - id: fingerprint-deployed-web
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -ceu
+      - docker run --rm -v /workspace:/workspace:ro --entrypoint python '${_BASE_API_IMAGE}' /workspace/scripts/check_slack_preservation.py export > /workspace/deployed-web-hashes.json
+  - id: verify-preserved-web
+    name: gcr.io/cloud-builders/docker
+    args: [run, --rm, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_slack_preservation.py, check, /workspace/deployed-web-hashes.json]
+images: ['${_API_IMAGE}']
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1800s
