@@ -6,7 +6,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -124,7 +124,15 @@ class Settings(BaseSettings):
     def split_emails(cls, value: object) -> object:
         if isinstance(value, str):
             return tuple(part.strip().lower() for part in value.split(",") if part.strip())
+        if isinstance(value, (list, tuple)):
+            return tuple(str(part).strip().lower() for part in value if str(part).strip())
         return value
+
+    @model_validator(mode="after")
+    def validate_auth_environment(self) -> Settings:
+        if self.auth_mode == "dev" and self.env not in {"local", "test"}:
+            raise ValueError("dev authentication is permitted only in local/test environments")
+        return self
 
     @field_validator("artifact_root", "docker_artifact_root", mode="before")
     @classmethod

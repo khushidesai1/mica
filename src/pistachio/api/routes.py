@@ -31,6 +31,7 @@ from pistachio.models import (
     TaskStatus,
     TaskSubmission,
     ToolStatus,
+    new_id,
     utcnow,
 )
 from pistachio.services.artifacts import (
@@ -183,7 +184,10 @@ async def create_task(
     request: TaskSubmission, principal: PrincipalDep, services: ServicesDep
 ) -> TaskRecord:
     envelope = TaskEnvelope(
-        **request.model_dump(),
+        **request.model_dump(exclude={"source", "conversation_id", "external_event_id"}),
+        source=TaskSource.WEB,
+        conversation_id=new_id("conv"),
+        external_event_id=new_id("evt"),
         principal_id=principal.id,
     )
     task, created = await services.tasks.create(envelope)

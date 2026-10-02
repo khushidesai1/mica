@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from typing import Any, cast
 
 from agents.items import TResponseInputItem
 
+from pistachio.models import TaskEnvelope
 from pistachio.storage.base import Repository
+
+
+def session_key(envelope: TaskEnvelope) -> str:
+    scope = "\0".join((envelope.project_id, envelope.principal_id, envelope.conversation_id))
+    return "conv_" + hashlib.sha256(scope.encode()).hexdigest()[:32]
 
 
 class RepositorySession:

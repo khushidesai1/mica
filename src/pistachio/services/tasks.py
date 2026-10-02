@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from pistachio.agents.context import ContextBuilder
 from pistachio.agents.harness import AgentHarness
 from pistachio.agents.memory import MemoryManager, MemoryPolicyViolation, ProjectCompactor
+from pistachio.agents.session import session_key
 from pistachio.config import Settings
 from pistachio.connectors.notifications import TaskNotifier
 from pistachio.connectors.presentation import TaskConversationAgent
@@ -33,6 +34,7 @@ from pistachio.models import (
     ExecutionBundle,
     FigurePlan,
     MasterPlan,
+    MemoryStatus,
     ParameterClass,
     PlanHandoff,
     ProgressStatus,
@@ -53,6 +55,7 @@ from pistachio.models import (
     ToolInvocation,
     ToolRecord,
     ToolStatus,
+    new_id,
     utcnow,
 )
 from pistachio.services.amendments import (
@@ -498,6 +501,12 @@ class TaskService:
                 )
                 task.error = None
                 for candidate in plan.memory_candidates:
+                    candidate = candidate.model_copy(update={
+                        "id": new_id("mem"), "owner_id": None, "version": 1,
+                        "embedding": [], "status": MemoryStatus.CANDIDATE,
+                        "supersedes_id": None, "created_at": utcnow(), "updated_at": utcnow(),
+                        "last_used_at": None,
+                    })
                     candidate.project_id = project.id
                     candidate.source_task_id = task.id
                     with suppress(MemoryPolicyViolation):
@@ -1527,7 +1536,7 @@ class TaskService:
             if await self.compactor.should_compact(task.envelope.project_id):
                 job = asyncio.create_task(
                     self._compact_project_session(
-                        task.envelope.project_id, task.envelope.conversation_id
+                        task.envelope.project_id, session_key(task.envelope)
                     )
                 )
                 self._maintenance.add(job)
@@ -2223,7 +2232,7 @@ class TaskService:
                 continue
             await self.compactor.compact(project.id, force=True)
             tasks = await self.repository.list_tasks(project.id, limit=100)
-            for conversation_id in {task.envelope.conversation_id for task in tasks}:
+            for conversation_id in {session_key(task.envelope) for task in tasks}:
                 await self.repository.replace_session_items(conversation_id, [])
             await self.memory_manager.inactivate_stale(project.id)
             count += 1

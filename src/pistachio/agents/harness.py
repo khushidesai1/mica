@@ -14,7 +14,7 @@ from agents.memory import OpenAIResponsesCompactionSession
 from openai.types.shared import Reasoning
 
 from pistachio.agents.authority import METHOD_AUTHORITY
-from pistachio.agents.session import RepositorySession
+from pistachio.agents.session import RepositorySession, session_key
 from pistachio.config import Settings
 from pistachio.models import (
     AgentTaskPlan,
@@ -447,15 +447,15 @@ class AgentHarness:
             self.query_agent,
             prompt,
             context=AgentRunContext(task_id, envelope.project_id, envelope.principal_id),
-            session=self._session(envelope.conversation_id),
+            session=self._session(session_key(envelope)),
             max_turns=12,
         )
         if isinstance(result.final_output, AgentTaskPlan):
             return result.final_output
         return AgentTaskPlan.model_validate(result.final_output)
 
-    async def compact_session(self, conversation_id: str) -> None:
-        await self._session(conversation_id).run_compaction(
+    async def compact_session(self, session_id: str) -> None:
+        await self._session(session_id).run_compaction(
             {"force": True, "store": False, "compaction_mode": "input"}
         )
 

@@ -231,7 +231,7 @@ def test_artifact_delivery_downloads_four_files_and_bundles_five(tmp_path) -> No
                 ArtifactRef(
                     name=path.name,
                     uri=path.resolve().as_uri(),
-                        media_type="image/png",
+                    media_type="image/png",
                     size_bytes=len(content),
                     checksum_sha256=hashlib.sha256(content).hexdigest(),
                 )
@@ -273,12 +273,8 @@ def test_artifact_delivery_downloads_four_files_and_bundles_five(tmp_path) -> No
         individual_manifest = client.get(
             f"/api/v1/tasks/{four.id}/artifact-delivery", headers=headers
         )
-        individual = client.get(
-            f"/api/v1/tasks/{four.id}/artifacts/0/download", headers=headers
-        )
-        bundle_manifest = client.get(
-            f"/api/v1/tasks/{five.id}/artifact-delivery", headers=headers
-        )
+        individual = client.get(f"/api/v1/tasks/{four.id}/artifacts/0/download", headers=headers)
+        bundle_manifest = client.get(f"/api/v1/tasks/{five.id}/artifact-delivery", headers=headers)
         code_manifest = client.get(
             f"/api/v1/tasks/{four_with_code.id}/artifact-delivery", headers=headers
         )
@@ -389,9 +385,7 @@ def test_plan_and_stage_detail_endpoints(tmp_path) -> None:
     }
 
 
-def test_batch_completion_event_is_released_after_failed_processing(
-    tmp_path, monkeypatch
-) -> None:
+def test_batch_completion_event_is_released_after_failed_processing(tmp_path, monkeypatch) -> None:
     settings = Settings(
         env="test",
         auth_mode="dev",
@@ -472,3 +466,41 @@ def test_batch_completion_event_is_released_after_failed_processing(
     assert duplicate.status_code == 200
     assert duplicate.json() == {"status": "duplicate"}
     assert completion.calls == 2
+
+
+def test_web_task_identity_is_always_server_assigned(tmp_path):
+    settings = Settings(env="test", auth_mode="iap", artifact_root=tmp_path)
+    repo = InMemoryRepository()
+    app = create_app(settings=settings, repository=repo)
+    headers = {"x-goog-authenticated-user-email": "accounts.google.com:alice@example.org"}
+    with TestClient(app) as client:
+        project = client.post(
+            "/api/v1/projects", headers=headers, json={"slug": "forged", "name": "Forged"}
+        ).json()
+        body = {
+            "project_id": project["id"],
+            "prompt": "hello",
+            "source": "slack",
+            "conversation_id": "victim",
+            "external_event_id": "process:victim",
+        }
+        first = client.post("/api/v1/tasks", headers=headers, json=body)
+        second = client.post("/api/v1/tasks", headers=headers, json=body)
+        assert first.status_code == second.status_code == 202
+        a, b = first.json()["envelope"], second.json()["envelope"]
+        assert a["source"] == b["source"] == "web"
+        assert a["conversation_id"] != b["conversation_id"] != "victim"
+        assert a["external_event_id"] != b["external_event_id"] != "process:victim"
+        assert a["principal_id"] == "alice@example.org"
+
+
+def test_deployed_dev_auth_is_rejected_and_allowlist_normalized():
+    import pytest
+
+    for env in ("staging", "production"):
+        with pytest.raises(ValueError, match="dev authentication"):
+            Settings(_env_file=None, env=env, auth_mode="dev")
+    for values in ([" Alice@Example.org "], (" Alice@Example.org ",), " Alice@Example.org "):
+        assert Settings(_env_file=None, allowed_emails=values).allowed_emails == (
+            "alice@example.org",
+        )

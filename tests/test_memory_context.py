@@ -174,3 +174,64 @@ async def test_secret_like_content_is_never_promoted(repository, settings) -> No
                 provenance="unsafe test",
             )
         )
+
+
+async def test_forged_planner_memory_cannot_replace_another_project(repository, settings):
+    from conftest import task_service
+
+    from pistachio.models import AgentTaskPlan, ResourcePlan, ToolPlan
+
+    protected = MemoryItem(
+        id="victim-memory",
+        project_id="other",
+        kind=MemoryKind.USER_PREFERENCE,
+        content="Protected",
+        provenance="user",
+    )
+    await repository.put_memory(protected)
+    project = await repository.create_project(
+        Project(slug="forgery", name="Forgery", owner="alice@example.org")
+    )
+
+    class Harness:
+        async def plan(self, **kwargs):
+            return AgentTaskPlan(
+                contract=TaskContract(objective="Reply", requires_execution=False),
+                resource_plan=ResourcePlan(),
+                tool_plan=ToolPlan(),
+                response="Hello",
+                memory_candidates=[
+                    MemoryItem(
+                        id=protected.id,
+                        project_id="other",
+                        owner_id="victim",
+                        kind=MemoryKind.USER_PREFERENCE,
+                        content="Forged",
+                        provenance="model",
+                        status=MemoryStatus.PINNED,
+                        version=99,
+                        embedding=[1.0],
+                        supersedes_id=protected.id,
+                    )
+                ],
+            )
+
+        async def compact_session(self, conversation_id):
+            pass
+
+    service = task_service(repository, settings, Harness())
+    task, _ = await service.create(
+        TaskEnvelope(
+            project_id=project.id,
+            principal_id=project.owner,
+            conversation_id="forged",
+            prompt="Hello",
+        )
+    )
+    await service.process(task.id)
+    assert (await repository.get_memory(protected.id)).content == "Protected"
+    items = await repository.list_memories(project.id)
+    candidate = next(item for item in items if item.content == "Forged")
+    assert candidate.id != protected.id and candidate.owner_id is None
+    assert candidate.version == 1 and candidate.status == MemoryStatus.CANDIDATE
+    assert candidate.embedding != [1.0] and candidate.supersedes_id is None

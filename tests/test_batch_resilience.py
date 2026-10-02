@@ -47,7 +47,7 @@ class NoopHarness:
 async def test_nested_sandbox_exception_is_rejected_in_production(tmp_path) -> None:
     image = "us-central1-docker.pkg.dev/example/runtime@sha256:" + "a" * 64
     settings = Settings(
-        env="production", artifact_root=tmp_path, batch_image=image,
+        env="production", auth_mode="iap", artifact_root=tmp_path, batch_image=image,
         batch_nested_sandbox_opt_in=True,
         gcp_project="test-project", gcs_bucket="test-bucket",
         batch_service_account="test@example.iam.gserviceaccount.com",
