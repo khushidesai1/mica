@@ -18,9 +18,11 @@ from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 from slack_sdk.web.async_client import AsyncWebClient
 
+from .access import worker_permitted
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .direct import record_exchange
+from .identity import user_key
 from .outputs import files_under
 from .preflight import check
 from .runner import Context, Runner
@@ -67,14 +69,6 @@ async def main(event_id: str) -> None:
         saved: dict[str, Any] = json.loads(storage.get(pointer)[0])
     except FileNotFoundError:
         saved = {}
-    restored = False
-    if saved.get("archive"):
-        try:
-            storage.bucket.blob(saved["archive"]).download_to_filename(str(archive))
-            restore(archive, home)
-            restored = True
-        except NotFound:
-            logging.warning("Thread checkpoint expired; continuing with Slack history")
     url = os.environ["PISTACHIO_CONTROL_PLANE_URL"].rstrip("/")
     token = await asyncio.to_thread(id_token.fetch_id_token, GoogleRequest(), url)  # type: ignore[no-untyped-call]
     async with httpx.AsyncClient(timeout=30) as client:
@@ -90,6 +84,24 @@ async def main(event_id: str) -> None:
         raise ValueError("Slack credential has not been configured")
     check(settings)
     slack = AsyncWebClient(token=settings.slack_bot_token.get_secret_value())
+    if not await asyncio.to_thread(worker_permitted, storage, request, saved, settings=settings):
+        if request.get("notice_ts"):
+            await slack.chat_update(
+                channel=request["payload"]["event"]["channel"],
+                ts=request["notice_ts"],
+                text="Project access is unavailable.",
+            )
+        return
+    restored = False
+    if saved.get("archive"):
+        try:
+            storage.bucket.blob(saved["archive"]).download_to_filename(str(archive))
+            restore(archive, home)
+            restored = True
+        except NotFound:
+            logging.warning(
+                "Thread checkpoint expired; continuing with the saved brief and bounded transcript"
+            )
     if request.get("notice_ts"):
         try:
             await slack.chat_update(
@@ -112,7 +124,23 @@ async def main(event_id: str) -> None:
             draft = data["workdir"] / "outputs/PROJECT.md"
             draft.parent.mkdir(parents=True, exist_ok=True)
             draft.write_text(data["project_md"])
-    agent = SlackAgent(settings, storage, sessions, Runner(settings), slack)
+    agent = SlackAgent(
+        settings,
+        storage,
+        sessions,
+        Runner(
+            settings,
+            user_memory=request.get("user_memory", "") if request.get("private") else "",
+            project_name=request.get("project_name", ""),
+        ),
+        slack,
+        run_prefix=(
+            f"projects/_users/{user_key(request['principal'])}/runs/{request['project_id']}/{thread_key}"
+            if request["private"]
+            else ""
+        ),
+        authorized=lambda: worker_permitted(storage, request, saved, settings=settings),
+    )
     payload["event"]["_notice_ts"] = request.get("notice_ts")
     payload["event"]["_conversation_context"] = saved.get("messages", [])
     try:
@@ -121,7 +149,11 @@ async def main(event_id: str) -> None:
         state = sessions.get(event["channel"], event.get("thread_ts") or event["ts"])
     finally:
         sessions.close()  # Flush SQLite WAL before archiving.
-    if not agent.completed or not state:
+    if (
+        not agent.completed
+        or not state
+        or not await asyncio.to_thread(worker_permitted, storage, request, saved, settings=settings)
+    ):
         return
     snapshot(archive, home)
     archive_key = f"{PREFIX}/events/{event_id}/checkpoint.tar.gz"

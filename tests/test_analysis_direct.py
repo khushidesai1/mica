@@ -3,28 +3,26 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from analysis_helpers import seed_project
 from test_analysis_batch import bridge, payload  # noqa: F401
 
 from pistachio.agents.analysis import batch, direct
-from pistachio.agents.analysis.projects import Projects
+from pistachio.agents.analysis.registry import read_brief
 
 
 @pytest.fixture
 def chat(bridge, monkeypatch):  # noqa: F811
     bridge.settings.storage = "local"
     store = batch.GCSStorage(bridge.app.gcs_bucket)
-    projects = Projects(store, bridge.settings)
-    projects.bind("D1", "liver", "gs://lab-data/liver/", "U1")
-    projects.save_brief("liver", b"# Project\nSpecies: TODO")
+    pid = seed_project(store)
     bridge.test_slack.conversations_replies.return_value = {"messages": []}
-    monkeypatch.setattr(direct, "AsyncWebClient", lambda **kw: bridge.test_slack)
     bridge.decision = AsyncMock(
         return_value=direct.Decision(
             route="reply", reply="Updated.", draft="# Project\nSpecies: human (user provided)"
         )
     )
     monkeypatch.setattr(direct, "decide", bridge.decision)
-    bridge.store, bridge.projects = store, projects
+    bridge.store, bridge.pid = store, pid
     return bridge
 
 
@@ -37,11 +35,11 @@ async def test_direct_edits_save_and_followups_never_create_workers(chat):
     pointer = f"projects/_threads/{record['thread_key']}/checkpoint.json"
     state = json.loads(chat.store.get(pointer)[0])
     assert "human" in state["context"]["project_md"]
-    assert "TODO" in chat.projects.brief("liver")[0]
+    assert "TODO" in read_brief(chat.store, chat.pid)[0]
     for i, command in enumerate(["brief", "save brief", "help", "cancel"], start=2):
         event = await chat.accept(payload(f"{i}.0", "1.0", command))
         assert await chat.process(event, 0) == "complete"
-    assert "human" in chat.projects.brief("liver")[0]
+    assert "human" in read_brief(chat.store, chat.pid)[0]
     assert chat.decision.await_count == 1
     chat.test_client.create_job.assert_not_called()
     assert not any(k.startswith("claude-slot") for k in chat.repository.event_claims)
@@ -82,7 +80,7 @@ async def test_direct_failure_does_not_fall_back_to_compute(chat):
     event = await chat.accept(payload(text="Please revise my brief"))
     assert await chat.process(event, 0) == "failed"
     chat.test_client.create_job.assert_not_called()
-    assert "TODO" in chat.projects.brief("liver")[0]
+    assert "TODO" in read_brief(chat.store, chat.pid)[0]
 
 
 async def test_retry_after_state_write_reuses_decision(chat, monkeypatch):

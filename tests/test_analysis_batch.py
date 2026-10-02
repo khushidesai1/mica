@@ -47,7 +47,9 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     settings.cloud_tasks_service_account = "control@example.com"
     settings.control_plane_url = "https://existing.run.app"
     settings.slack_user_map = {"T1:U1": "alice@example.com", "T1:U2": "bob@example.com"}
-    agent_settings = Settings(_env_file=None, data_buckets="lab-data", storage="local")
+    agent_settings = Settings(
+        _env_file=None, memory_auto_edit=False, data_buckets="lab-data", storage="local"
+    )
     monkeypatch.setattr(batch, "Settings", lambda: agent_settings)
     client = Mock()
     states = {}
@@ -72,20 +74,20 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     slack = AsyncMock()
     slack.chat_postMessage.return_value = {"ts": "9.0"}
     monkeypatch.setattr("slack_sdk.web.async_client.AsyncWebClient", lambda **kw: slack)
-    from pistachio.agents.analysis import direct
-    from pistachio.agents.analysis.projects import Projects
+    from analysis_helpers import seed_project
 
-    projects = Projects(storage, agent_settings)
-    projects.bind("D1", "liver", "gs://lab-data/liver/", "U1")
+    from pistachio.agents.analysis import direct
+
+    pid = seed_project(storage)
     monkeypatch.setattr(
         direct,
         "decide",
         AsyncMock(return_value=direct.Decision(route="compute", reply="Computation needed.")),
     )
-    monkeypatch.setattr(direct, "AsyncWebClient", lambda **kw: slack)
     slack.conversations_replies.return_value = {"messages": []}
     result = BatchBridge(settings, repository)
     result.test_client, result.test_states, result.test_slack = client, states, slack
+    result.store, result.pid = storage, pid
     return result
 
 
@@ -266,6 +268,7 @@ async def test_existing_dm_routes_and_worker_credential_boundary(bridge, monkeyp
     with pytest.raises(HTTPException):
         await slack_analysis.credentials(event_id, request, Response())  # Not running yet.
     await bridge.process(event_id, 0)
+    monkeypatch.setattr(slack_analysis, "GCSStorage", lambda bucket: bridge.store)
     response = Response()
     keys = await slack_analysis.credentials(event_id, request, response)
     assert keys == {"ANTHROPIC_API_KEY": "test-key", "SLACK_BOT_TOKEN": "test-slack"}
@@ -291,11 +294,11 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
     from dataclasses import asdict
 
     import httpx
+    from analysis_helpers import seed_project
     from test_analysis_slack import FakeRunner
 
     from pistachio.agents.analysis import batch_worker
     from pistachio.agents.analysis.config import CHECKPOINT_PREFIX
-    from pistachio.agents.analysis.projects import Projects
     from pistachio.agents.analysis.runner import Context
 
     home = tmp_path / "worker"
@@ -322,9 +325,7 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
                 raise NotFound("expired") from exc
 
     storage.bucket = SimpleNamespace(blob=Blob)
-    projects = Projects(storage, settings)
-    projects.bind("D1", "liver", "gs://lab-data/liver/", "U1")
-    projects.save_brief("liver", b"Frozen original brief")
+    pid = seed_project(storage, brief=b"Frozen original brief")
     runner = FakeRunner()
     slack = AsyncMock()
     slack.auth_test.return_value = {"user_id": "BOT"}
@@ -338,19 +339,30 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
     monkeypatch.setattr(batch_worker, "Settings", lambda **kw: settings)
     monkeypatch.setattr(batch_worker, "GCSStorage", lambda bucket: storage)
     monkeypatch.setattr(batch_worker, "check", lambda settings: None)
-    monkeypatch.setattr(batch_worker, "Runner", lambda settings: runner)
+    monkeypatch.setattr(batch_worker, "Runner", lambda settings, **kwargs: runner)
     monkeypatch.setattr(batch_worker, "AsyncWebClient", lambda **kw: slack)
     monkeypatch.setattr(batch_worker.id_token, "fetch_id_token", lambda *args: "identity")
     monkeypatch.setattr(batch_worker.httpx, "AsyncClient", lambda **kw: http)
     monkeypatch.setenv("PISTACHIO_CONTROL_PLANE_URL", "https://existing.run.app")
     pointer = "projects/_threads/thread/checkpoint.json"
     ctx = Context(
-        home / "work/liver/D1-1.0",
+        home / f"work/{pid}/D1-1.0",
         Path("/mnt/gcs/lab-data/liver"),
-        "liver",
+        pid,
         "Frozen original brief",
         thread_ts="1.0",
     )
+    storage.put(
+        pointer,
+        json.dumps({"context": asdict(ctx), "turn": 0, "is_init": False}, default=str).encode(),
+    )
+    from pistachio.agents.analysis import access
+    from pistachio.agents.analysis.registry import Registry
+
+    grant = access.Grant(
+        "alice@example.com", True, {}, Registry(storage).load(), pid, True, "T1:D1"
+    )
+    ctx.workdir = Path(access.private_workdir(settings, grant, "thread", 0))
     storage.put(
         pointer,
         json.dumps({"context": asdict(ctx), "turn": 0, "is_init": False}, default=str).encode(),
@@ -362,6 +374,11 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
                 {
                     "payload": payload(f"{turn}.0", "1.0" if turn > 1 else None),
                     "thread_key": "thread",
+                    "protocol": 2,
+                    "principal": "alice@example.com",
+                    "project_id": pid,
+                    "private": True,
+                    "access_signature": grant.signature,
                 }
             ).encode(),
         )
@@ -379,7 +396,9 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
             assert (
                 Path(saved["context"]["workdir"]) / "outputs/PROJECT.md"
             ).read_text() == expected
-        projects.save_brief("liver", b"Changed brief for future threads")
+        from pistachio.agents.analysis.registry import read_brief, write_brief
+
+        write_brief(storage, pid, b"Changed brief for future threads", read_brief(storage, pid)[1])
         shutil.rmtree(home)  # End this disposable worker; preserve only GCS.
         home.mkdir()
         if turn == 2:

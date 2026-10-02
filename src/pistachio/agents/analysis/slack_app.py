@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from typing import Any
 
@@ -33,11 +34,15 @@ class SlackAgent:
         sessions: Sessions,
         runner: Runner,
         client: AsyncWebClient,
+        *,
+        run_prefix: str = "",
+        authorized: Callable[[], bool] | None = None,
     ) -> None:
         self.settings, self.storage, self.sessions = settings, storage, sessions
         self.runner, self.client = runner, client
         self.last_reply = ""
         self.completed = False
+        self.run_prefix, self.authorized = run_prefix, authorized
 
     async def say(self, key: tuple[str, str], text: str) -> AsyncSlackResponse:
         return await self.client.chat_postMessage(
@@ -100,6 +105,8 @@ class SlackAgent:
 
         async def update(text: str) -> None:
             nonlocal last, latest
+            if self.authorized and not await asyncio.to_thread(self.authorized):
+                raise PermissionError("Project access changed during computation")
             latest = text
             if time.monotonic() - last >= 5:
                 last = time.monotonic()
@@ -111,6 +118,8 @@ class SlackAgent:
         async def heartbeat() -> None:
             while True:
                 await asyncio.sleep(HEARTBEAT_SECONDS)
+                if self.authorized and not await asyncio.to_thread(self.authorized):
+                    return
                 elapsed = int(time.monotonic() - started)
                 try:
                     await self.client.chat_update(
@@ -128,12 +137,22 @@ class SlackAgent:
             pulse.cancel()
             with suppress(asyncio.CancelledError):
                 await pulse
+        if self.authorized and not await asyncio.to_thread(self.authorized):
+            raise PermissionError("Project access changed during computation")
         ctx.session_id = result.session_id
         self.last_reply = result.text
         self.sessions.save(key[0], ctx, turn, is_init)
         try:
             await asyncio.to_thread(
-                publish, self.storage, ctx, result, turn, user, prompt, self.settings.model
+                publish,
+                self.storage,
+                ctx,
+                result,
+                turn,
+                user,
+                prompt,
+                self.settings.model,
+                self.run_prefix,
             )
         except Exception:
             log.exception("Provenance upload failed: %s", key)
@@ -174,6 +193,8 @@ class SlackAgent:
             )
         except Exception:
             log.warning("Final status update failed: %s", key, exc_info=True)
+        if self.authorized and not await asyncio.to_thread(self.authorized):
+            raise PermissionError("Project access changed before delivery")
         for chunk in chunks(to_mrkdwn(result.text)):
             await self.say(key, chunk)
         if result.error:
@@ -188,6 +209,8 @@ class SlackAgent:
                 )
             else:
                 uploads.append({"file": str(path), "filename": path.name})
+        if uploads and self.authorized and not await asyncio.to_thread(self.authorized):
+            raise PermissionError("Project access changed before file delivery")
         if uploads:
             await self.client.files_upload_v2(
                 channel=key[0], thread_ts=key[1], file_uploads=uploads

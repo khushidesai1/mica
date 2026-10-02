@@ -36,6 +36,7 @@ class ProjectEntry(BaseModel):
     members: set[str] = Field(default_factory=set)
     data_uri: str
     created_at: str = Field(default_factory=now)
+    access_revision: int = 0
     published_channels: set[str] = Field(default_factory=set)
 
 
@@ -156,6 +157,8 @@ class RegistryDoc(BaseModel):
         if target == owner:
             raise ValueError("The owner always has access.")
         members = self.projects[project_id].members
+        if (target in members) == remove:
+            self.projects[project_id].access_revision += 1
         if remove:
             members.discard(target)
         else:
@@ -171,6 +174,8 @@ class RegistryDoc(BaseModel):
             raise ValueError("Choose a Slack channel, not a DM.")
         channels = self.projects[project_id].published_channels
         key = f"{team}:{channel}"
+        if (key in channels) == remove:
+            self.projects[project_id].access_revision += 1
         if remove:
             channels.discard(key)
         else:
@@ -179,7 +184,11 @@ class RegistryDoc(BaseModel):
 
     def access_signature(self, email: str) -> str:
         # A lost source-project grant invalidates private contexts using its memories.
-        return hashlib.sha256(json.dumps(sorted(self.visible(email))).encode()).hexdigest()
+        return hashlib.sha256(
+            json.dumps(
+                sorted((pid, p.access_revision) for pid, p in self.visible(email).items())
+            ).encode()
+        ).hexdigest()
 
 
 class Registry:

@@ -67,7 +67,14 @@ class TurnResult:
     duration: float = 0
 
 
-def build_options(ctx: Context, settings: Settings, *, sandbox: bool = True) -> ClaudeAgentOptions:
+def build_options(
+    ctx: Context,
+    settings: Settings,
+    *,
+    sandbox: bool = True,
+    user_memory: str = "",
+    project_name: str = "",
+) -> ClaudeAgentOptions:
     if not sandbox and platform.system() != "Darwin":
         raise ValueError("--no-sandbox is available only for local macOS development")
 
@@ -124,7 +131,7 @@ def build_options(ctx: Context, settings: Settings, *, sandbox: bool = True) -> 
         system_prompt={
             "type": "preset",
             "preset": "claude_code",
-            "append": prompts.build_system_append(ctx, settings),
+            "append": prompts.build_system_append(ctx, settings, user_memory, project_name),
         },
         setting_sources=[],
         tools=tools,
@@ -198,8 +205,16 @@ def truncate(value: Any) -> Any:
 
 
 class Runner:
-    def __init__(self, settings: Settings, *, sandbox: bool = True) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        sandbox: bool = True,
+        user_memory: str = "",
+        project_name: str = "",
+    ) -> None:
         self.settings, self.sandbox = settings, sandbox
+        self.user_memory, self.project_name = user_memory, project_name
 
     async def run_turn(
         self, ctx: Context, prompt: str, on_status: Callable[[str], Awaitable[None]]
@@ -212,7 +227,14 @@ class Runner:
             details, got_result = "", False
             try:
                 async for msg in query(
-                    prompt=prompt, options=build_options(ctx, self.settings, sandbox=self.sandbox)
+                    prompt=prompt,
+                    options=build_options(
+                        ctx,
+                        self.settings,
+                        sandbox=self.sandbox,
+                        user_memory=self.user_memory,
+                        project_name=self.project_name,
+                    ),
                 ):
                     if isinstance(msg, AssistantMessage):
                         for block in msg.content:

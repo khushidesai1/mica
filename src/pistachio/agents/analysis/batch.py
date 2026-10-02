@@ -21,9 +21,12 @@ from google.cloud import batch_v1
 from pistachio.config import Settings as AppSettings
 from pistachio.storage.base import Repository
 
+from . import access, user_memory
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .data_links import init_args
+from .identity import user_key
+from .registry import Registry
 from .storage import GCSStorage
 
 log = logging.getLogger(__name__)
@@ -303,10 +306,20 @@ class BatchBridge:
             )
             from .data_links import message_text
 
-            if (
-                message_text(record["payload"]["event"].get("text", "")).lower() == "cancel"
-            ):
-                await self.cancel(event_id, record)
+            if message_text(record["payload"]["event"].get("text", "")).lower() == "cancel":
+                grant = await asyncio.to_thread(
+                    access.resolve,
+                    self.app,
+                    self.settings,
+                    GCSStorage(self.app.gcs_bucket),
+                    record,
+                )
+                if grant.email and (grant.private or grant.allowed):
+                    await self.cancel(event_id, record)
+                else:
+                    from .direct import finish
+
+                    await finish(self, event_id, record, access.deny_text(grant))
             elif not previous or previous["status"] in {"complete", "failed"}:
                 await self.advance(event_id, record)
             else:
@@ -325,10 +338,7 @@ class BatchBridge:
             await self.repository.release_event(mutex, claim.token)
 
     async def advance(self, event_id: str, record: dict[str, Any]) -> None:
-        if (
-            record["status"] == "pending"
-            and record.get("route") != "compute"
-        ):
+        if record["status"] == "pending" and record.get("route") != "compute":
             from .direct import handle
 
             try:
@@ -343,12 +353,55 @@ class BatchBridge:
                     else "Conversation service unavailable. Please retry."
                 )
                 await self.notify(event_id, record, "failed", f"Couldn’t complete: {detail}")
-                if record.get("config_token"):
-                    await self.repository.release_event("claude-config", record["config_token"])
                 return
         client = batch_v1.BatchServiceClient()
         parent = f"projects/{self.app.gcp_project}/locations/{self.app.gcp_region}"
         name = f"{parent}/jobs/claude-{event_id}"
+        if record["status"] in {"pending", "submitting"} and not record.get("cancel_requested"):
+            grant = await asyncio.to_thread(
+                access.resolve,
+                self.app,
+                self.settings,
+                GCSStorage(self.app.gcs_bucket),
+                record,
+            )
+            if (
+                not grant.allowed
+                or record.get("memory_epoch", 0)
+                != await asyncio.to_thread(
+                    access.memory_epoch, GCSStorage(self.app.gcs_bucket), grant
+                )
+                or not grant.has_context
+                or (record.get("decision_access") and record["decision_access"] != grant.signature)
+            ):
+                await self.notify(
+                    event_id,
+                    record,
+                    "denied",
+                    access.deny_text(grant)
+                    if not grant.allowed
+                    else "Project access changed. Send a new request.",
+                )
+                if record.get("slot_token"):
+                    with suppress(NotFound):
+                        await asyncio.to_thread(client.delete_job, name=name)
+                    record.update(
+                        cancel_requested=True,
+                        status="running",
+                        started=record.get("started", time.time()),
+                    )
+                else:
+                    record["status"] = "failed"
+                    return
+            else:
+                record.update(
+                    principal=grant.email,
+                    project_id=grant.project_id,
+                    project_name=grant.project.name,
+                    private=grant.private,
+                    access_signature=grant.signature,
+                    protocol=2,
+                )
         if record.get("cancel_requested") and record["status"] == "submitting":
             # A submission may have failed before creating the job. Never create it now.
             record.update(status="running", started=record.get("started", time.time()))
@@ -401,6 +454,29 @@ class BatchBridge:
                 "payload": record["payload"],
                 "thread_key": record["thread_key"],
                 "notice_ts": record.get("notice_ts"),
+                "protocol": 2,
+                "principal": record["principal"],
+                "project_id": record["project_id"],
+                "project_name": record["project_name"],
+                "private": record["private"],
+                "access_signature": record["access_signature"],
+                "memory_epoch": record.get("memory_epoch", 0),
+                "user_memory": (
+                    user_memory.render(
+                        await asyncio.to_thread(user_memory.load, storage, record["principal"]),
+                        await asyncio.to_thread(Registry(storage).load),
+                        record["principal"],
+                        record["payload"]["event"].get("text", ""),
+                    )
+                    if record["private"]
+                    else ""
+                ),
+                "run_prefix": (
+                    f"projects/_users/{user_key(record['principal'])}/runs/"
+                    f"{record['project_id']}/{record['thread_key']}"
+                    if record["private"]
+                    else ""
+                ),
             }
             await asyncio.to_thread(
                 storage.put,
@@ -464,11 +540,21 @@ class BatchBridge:
                     "The Spot worker stopped before completing your request. "
                     "The previous saved session is retained. Send a new message to retry.",
                 )
+            if record["status"] == "complete":
+                storage = GCSStorage(self.app.gcs_bucket)
+                grant = await asyncio.to_thread(
+                    access.resolve, self.app, self.settings, storage, record
+                )
+                exchange = next(
+                    (m for m in grant.state.get("messages", []) if m.get("id") == event_id), None
+                )
+                if exchange:
+                    await user_memory.after_turn(
+                        self, event_id, record, storage, exchange["assistant"]
+                    )
             await self.repository.release_event(
                 f"claude-slot:{record['slot']}", record["slot_token"]
             )
-            if record.get("config_token"):
-                await self.repository.release_event("claude-config", record["config_token"])
 
     async def cancel(self, event_id: str, record: dict[str, Any]) -> None:
         """Cancel earlier queued/running work without submitting a job for the command."""
@@ -500,10 +586,6 @@ class BatchBridge:
                             await self.notify(
                                 cursor, prior, "cancelled", "Cancelled before starting."
                             )
-                            if prior.get("config_token"):
-                                await self.repository.release_event(
-                                    "claude-config", prior["config_token"]
-                                )
                         elif prior["status"] not in {"complete", "failed"}:
                             client = batch_v1.BatchServiceClient()
                             name = (

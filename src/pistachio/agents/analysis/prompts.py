@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from .user_memory import RULES
+
 if TYPE_CHECKING:
     from .config import Settings
     from .runner import Context
@@ -91,7 +93,9 @@ working directory, and draft a project brief for {data_path}.
 """
 
 
-def build_system_append(ctx: Context, settings: Settings) -> str:
+def build_system_append(
+    ctx: Context, settings: Settings, user_memory: str = "", project_name: str = ""
+) -> str:
     if ctx.survey_only:
         return (
             "You are drafting a quick project brief for a lab. Use only init_inventory.json "
@@ -106,9 +110,9 @@ def build_system_append(ctx: Context, settings: Settings) -> str:
         data_path=ctx.data_path,
         sci_python=settings.sci_python,
         tools_dir=settings.tools_dir,
-        project_slug=ctx.project_slug,
+        project_slug=project_name or ctx.project_slug,
         project_md=ctx.project_md,
-    )
+    ) + ("\n# Your memory (private to you)\n" + RULES + "\n" + user_memory if user_memory else "")
 
 
 def build_init(ctx: Context, settings: Settings) -> str:

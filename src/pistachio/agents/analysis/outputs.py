@@ -40,8 +40,10 @@ def publish(
     user: str,
     prompt: str,
     model: str,
+    run_prefix: str = "",
 ) -> None:
-    prefix = f"projects/{ctx.project_slug}/runs/{ctx.thread_ts}/turn-{turn}"
+    root = run_prefix or f"projects/{ctx.project_slug}/runs/{ctx.thread_ts}"
+    prefix = f"{root}/turn-{turn}"
     for path in [*result.files, *files_under(ctx.workdir / "code")]:
         storage.upload(f"{prefix}/{path.relative_to(ctx.workdir)}", path)
     storage.put(

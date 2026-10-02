@@ -9,17 +9,20 @@ from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, Field
-from slack_sdk.web.async_client import AsyncWebClient
 
-from .data_links import init_args, message_text
-from .projects import Project, Projects
+from . import access, commands, user_memory
+from .data_links import message_text
+from .registry import Registry, read_brief, write_brief
 from .storage import Storage
 from .survey import inventory
 
 if TYPE_CHECKING:
     from .batch import BatchBridge
 
-SYSTEM = """You are Pistachio, a lab assistant in Slack. Handle conversation directly.
+SYSTEM = (
+    user_memory.RULES
+    + "\n"
+    + """You are Pistachio, a lab assistant in Slack. Handle conversation directly.
 You have the project brief, recent conversation, and optionally a bounded init inventory.
 Use route_request exactly once. Choose reply for questions answerable from this context,
 planning, clarifications, explanations of existing results, and all brief edits. Choose compute
@@ -43,6 +46,7 @@ shared save occurred. For compute you may also revise the draft if the user supp
 Keep reply concise, Slack-formatted, under 3000 characters. No markdown headings or tables.
 If you lack context to understand a follow-up, ask instead of guessing or launching a worker.
 """
+)
 
 
 class Decision(BaseModel):
@@ -91,29 +95,6 @@ async def decide(key: str, model: str, context: dict[str, Any]) -> Decision:
     return result
 
 
-def read_state(storage: Storage, thread_key: str) -> dict[str, Any]:
-    try:
-        state: dict[str, Any] = json.loads(
-            storage.get(f"projects/_threads/{thread_key}/checkpoint.json")[0]
-        )
-    except FileNotFoundError:
-        return {}
-    # Older workers stored the draft only in run outputs, not in the small context record.
-    if state.get("context") and not state.get("direct_version"):
-        ctx = state["context"]
-        for turn in range(int(state.get("turn", 0)), max(0, int(state.get("turn", 0)) - 10), -1):
-            try:
-                data = storage.get(
-                    f"projects/{ctx['project_slug']}/runs/{ctx['thread_ts']}/turn-{turn}/outputs/PROJECT.md"
-                )[0]
-                if len(data) < 100_000:
-                    ctx.update(project_md=data.decode(), brief_generation=None)
-                    break
-            except FileNotFoundError:
-                continue
-    return state
-
-
 def record_exchange(state: dict[str, Any], event_id: str, text: str, reply: str) -> None:
     messages = [m for m in state.get("messages", []) if m.get("id") != event_id]
     messages.append({"id": event_id, "user": text[:6000], "assistant": reply[:6000]})
@@ -121,207 +102,229 @@ def record_exchange(state: dict[str, Any], event_id: str, text: str, reply: str)
     state["direct_version"] = 1
 
 
+async def finish(bridge: BatchBridge, event_id: str, record: dict[str, Any], reply: str) -> bool:
+    await bridge.notify(event_id, record, "complete", reply)
+    if record.get("notice_text") != reply:
+        raise RuntimeError("Slack reply delivery failed; retry the saved response")
+    record["status"] = "complete"
+    return True
+
+
+async def download_brief(bridge: BatchBridge, event: dict[str, Any]) -> bytes:
+    files = event["files"]
+    if len(files) != 1 or not files[0].get("name", "").lower().endswith(".md"):
+        raise ValueError("Attach one UTF-8 .md file with brief.")
+    url = files[0].get("url_private_download", "")
+    parsed = urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "files.slack.com"
+        or parsed.port not in {None, 443}
+        or parsed.username
+        or parsed.password
+    ):
+        raise ValueError("The attachment must be a private Slack file.")
+    async with (
+        httpx.AsyncClient(timeout=20, follow_redirects=False) as client,
+        client.stream(
+            "GET",
+            url,
+            headers={
+                "Authorization": f"Bearer {bridge.app.slack_bot_token}",
+            },
+        ) as response,
+    ):
+        if response.status_code != 200:
+            raise ValueError("Slack did not return the attached file.")
+        data = bytearray()
+        async for chunk in response.aiter_bytes(8192):
+            data.extend(chunk)
+            if len(data) >= 100_000:
+                raise ValueError("The brief must be under 100 KB.")
+    bytes(data).decode("utf-8")
+    return bytes(data)
+
+
 async def handle(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage
 ) -> bool:
-    """Return False only for an explicit computation decision."""
+    """Return False only for an authorized computation with a durable thread context."""
     event = record["payload"]["event"]
     text = message_text(event.get("text", ""))
-    lower = text.lower()
-    state = await asyncio.to_thread(read_state, storage, record["thread_key"])
-    ctx = state.get("context")
-    if lower == "help":
-        reply = (
-            "Send questions, project details, or brief corrections here—no worker or "
-            "Markdown upload needed. Use `init <slug> gs://bucket/prefix/`, `brief`, "
-            "`save brief`, or `cancel`. A Spot worker starts only for data inspection, "
-            "computation, or plots."
+    grant = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
+    if not grant.email:
+        return await finish(bridge, event_id, record, access.deny_text(grant))
+    cmd = commands.parse(event.get("text", ""))
+    registry = Registry(storage)
+    if cmd:
+        memory_reply = await asyncio.to_thread(user_memory.command, cmd, grant, storage, event_id)
+        if memory_reply is not None:
+            return await finish(bridge, event_id, record, memory_reply)
+    if cmd and cmd.name != "init":
+        reply = await asyncio.to_thread(
+            commands.run, cmd, grant, registry, bridge.app, record, event_id
         )
-        decision = Decision(route="reply", reply=reply)
+        if reply is not None:
+            return await finish(bridge, event_id, record, reply)
+    is_init = bool(cmd and cmd.name == "init")
+    if is_init:
+        assert cmd
+        if grant.has_context and not record.get("direct_init"):
+            raise ValueError("Start init in a new thread.")
+        await asyncio.to_thread(bridge.resolve_data, record)
+        pid = await asyncio.to_thread(
+            registry.update,
+            event_id,
+            grant.email,
+            text,
+            lambda d: d.create_and_bind(
+                record["payload"]["team_id"],
+                event["channel"],
+                grant.email,
+                cmd.args[0],
+                cmd.args[1],
+                private=grant.private,
+                force=cmd.force,
+            ),
+        )
+        record["direct_init"] = True
+        await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+        doc = await asyncio.to_thread(registry.load)
+        grant = access.Grant(
+            grant.email,
+            grant.private,
+            grant.state,
+            doc,
+            pid,
+            doc.can_use(pid, grant.email),
+            grant.channel_key,
+            grant.has_context,
+        )
+    if not grant.allowed:
+        return await finish(bridge, event_id, record, access.deny_text(grant))
+    epoch = await asyncio.to_thread(access.memory_epoch, storage, grant)
+    state = await asyncio.to_thread(
+        access.fresh_private_state, storage, grant, bridge.settings, record["thread_key"], epoch
+    )
+    record.setdefault("memory_epoch", epoch)
+    if record["memory_epoch"] != epoch:
+        return await finish(
+            bridge, event_id, record, "Memory changed. Send a new request to use fresh context."
+        )
+    ctx = state.get("context")
+    if not ctx:
+        brief, generation = await asyncio.to_thread(read_brief, storage, grant.project_id)
+        uri = urlsplit(grant.project.data_uri)
+        thread = event.get("thread_ts") or event["ts"]
+        ctx = dict(
+            workdir=(
+                access.private_workdir(bridge.settings, grant, record["thread_key"], epoch)
+                if grant.private
+                else str(
+                    bridge.settings.work_root / grant.project_id / f"{event['channel']}-{thread}"
+                )
+            ),
+            data_path=str(bridge.settings.data_mount_root / uri.netloc / uri.path.lstrip("/")),
+            project_slug=grant.project_id,
+            project_md=brief,
+            brief_generation=generation,
+            session_id=None,
+            thread_ts=thread,
+            survey_only=False,
+        )
+        state.update(context=ctx, turn=0, is_init=is_init, messages=[])
+    if event.get("files") or (cmd and cmd.name == "save brief"):
+        if event.get("files") and (not cmd or cmd.name != "brief"):
+            raise ValueError("To replace the brief, attach one UTF-8 .md file with brief.")
+        data = (
+            await download_brief(bridge, event)
+            if event.get("files")
+            else ctx["project_md"].encode()
+        )
+        current = await asyncio.to_thread(
+            access.resolve, bridge.app, bridge.settings, storage, record
+        )
+        if not current.allowed:
+            return await finish(bridge, event_id, record, access.deny_text(current))
+        generation = await asyncio.to_thread(
+            write_brief, storage, grant.project_id, data, ctx["brief_generation"]
+        )
+        ctx.update(project_md=data.decode(), brief_generation=generation)
+        decision = Decision(
+            route="reply",
+            reply=(
+                "Brief saved for project members and authorized channels. "
+                "This thread and new threads "
+                "will use it; other existing threads keep their snapshots."
+            ),
+        )
+    elif cmd and cmd.name == "brief":
+        decision = Decision(
+            route="reply", reply="Current thread brief:\n" + ctx["project_md"][:3150]
+        )
+    elif record.get("direct_decision"):
+        decision = Decision.model_validate(record["direct_decision"])
     else:
-        args = init_args(text)
-        settings = bridge.settings
-        if args:
-            if ctx and not record.get("direct_init"):
-                raise ValueError("Start init in a new thread.")
+        await bridge.notify(event_id, record, "replying", "Working on it…")
+        model_context = {
+            "request": text,
+            "brief": ctx["project_md"],
+            "data_path": ctx["data_path"],
+            "project_name": grant.project.name,
+            "recent_messages": state.get("messages", []),
+        }
+        memory_text = ""
+        if grant.private:
+            memory_doc = await asyncio.to_thread(user_memory.load, storage, grant.email)
+            memory_text = user_memory.render(memory_doc, grant.doc, grant.email, text)
+            if not is_init:
+                model_context["user_memory"] = memory_text
+        if is_init:
+            assert cmd
             settings, _ = await asyncio.to_thread(bridge.resolve_data, record)
-            if not record.get("config_token"):
-                claim = await bridge.repository.begin_event("claude-config", lease_seconds=240)
-                if claim.status != "claimed":
-                    await bridge.notify(
-                        event_id, record, "waiting", "Waiting for another project setup to finish."
-                    )
-                    return True
-                record["config_token"] = claim.token
-                await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
-        projects = Projects(storage, settings)
-        project: Project | None
-        if not ctx or args:
-            await asyncio.to_thread(projects.reload)
-            if args:
-                project = await asyncio.to_thread(
-                    projects.bind, event["channel"], args[0], args[1], event["user"], args[2]
-                )
-                record["direct_init"] = True
-                await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
-            else:
-                project = projects.channels.get(event["channel"])
-            if project:
-                brief, generation = await asyncio.to_thread(projects.brief, project.slug)
-                # Validation of the actual mounted bucket happens before any compute job.
-                uri = urlsplit(project.data_uri)
-                thread = event.get("thread_ts") or event["ts"]
-                ctx = dict(
-                    workdir=str(settings.work_root / project.slug / f"{event['channel']}-{thread}"),
-                    data_path=str(settings.data_mount_root / uri.netloc / uri.path.lstrip("/")),
-                    project_slug=project.slug,
-                    project_md=brief,
-                    brief_generation=generation,
-                    session_id=None,
-                    thread_ts=thread,
-                    survey_only=False,
-                )
-                state.update(context=ctx, turn=0, is_init=bool(args))
-        if not ctx:
-            decision = Decision(
-                route="reply",
-                reply=(
-                    "This chat isn't linked to data yet. Send "
-                    "`init <project-slug> gs://bucket/prefix/`. You can add project details "
-                    "and revise the brief in chat afterward."
-                ),
+            model_context["init_inventory"] = await asyncio.to_thread(
+                inventory, cmd.args[1], settings
             )
-        elif event.get("files"):
-            files = event["files"]
-            if (
-                lower != "brief"
-                or len(files) != 1
-                or not files[0].get("name", "").lower().endswith(".md")
-            ):
-                raise ValueError(
-                    "Describe your request in chat. To optionally replace the brief, "
-                    "attach one UTF-8 .md file with `brief`."
-                )
-            url = files[0].get("url_private_download", "")
-            parsed = urlsplit(url)
-            if (
-                parsed.scheme != "https"
-                or parsed.hostname != "files.slack.com"
-                or parsed.port not in {None, 443}
-                or parsed.username
-                or parsed.password
-            ):
-                raise ValueError("The attachment must be a private Slack file.")
-            async with (
-                httpx.AsyncClient(timeout=20, follow_redirects=False) as client,
-                client.stream(
-                    "GET", url, headers={"Authorization": f"Bearer {bridge.app.slack_bot_token}"}
-                ) as response,
-            ):
-                if response.status_code != 200:
-                    raise ValueError("Slack did not return the attached file.")
-                data = bytearray()
-                async for chunk in response.aiter_bytes(8192):
-                    data.extend(chunk)
-                    if len(data) >= 100_000:
-                        raise ValueError("The brief must be under 100 KB.")
-            await asyncio.to_thread(projects.save_brief, ctx["project_slug"], bytes(data))
-            ctx["project_md"], ctx["brief_generation"] = await asyncio.to_thread(
-                projects.brief, ctx["project_slug"]
+            model_context["request"] += "\nDraft an initial brief directly, without computation."
+        decision = await decide(
+            bridge.app.anthropic_api_key.get_secret_value(), bridge.settings.model, model_context
+        )
+        if is_init and (decision.route != "reply" or decision.draft is None):
+            raise ValueError("Could not draft the initial brief. Please retry init in this thread.")
+        if is_init and memory_text:
+            # Keep suggestions outside the draft and out of the draft-generating model call.
+            suggestions = (
+                "\nFrom your private memory (please confirm before using here):\n"
+                + memory_text[:900]
             )
-            decision = Decision(
-                route="reply",
-                reply=(
-                    "Brief saved. Future updates can be provided in ordinary chat; "
-                    "no replacement file is needed."
-                ),
-            )
-        elif lower == "save brief":
-            # Explicit user command is the only shared write; keep this thread's snapshot too.
-            await asyncio.to_thread(
-                projects.save_brief, ctx["project_slug"], ctx["project_md"].encode()
-            )
-            ctx["project_md"], ctx["brief_generation"] = await asyncio.to_thread(
-                projects.brief, ctx["project_slug"]
-            )
-            decision = Decision(
-                route="reply",
-                reply=(
-                    "Brief saved. This thread and new threads will use it. "
-                    "Keep replying with details or corrections as needed."
-                ),
-            )
-        elif lower == "brief":
-            decision = Decision(
-                route="reply",
-                reply="Current thread brief:\n"
-                + ctx["project_md"][:3150]
-                + ("\n… (brief continues)" if len(ctx["project_md"]) > 3150 else "")
-                + "\nReply with corrections or missing details; no file upload needed.",
-            )
-        elif record.get("direct_decision"):
-            decision = Decision.model_validate(record["direct_decision"])
-        else:
-            await bridge.notify(
-                event_id,
-                record,
-                "replying",
-                "Working on it…",
-            )
-            if "messages" not in state:
-                slack = AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5)
-                history = await slack.conversations_replies(
-                    channel=event["channel"],
-                    ts=event.get("thread_ts") or event["ts"],
-                    latest=event["ts"],
-                    inclusive=False,
-                    limit=100,
-                )
-                history_messages: list[dict[str, Any]] = history.get("messages", [])
-                state["messages"] = [
-                    {"user" if not m.get("bot_id") else "assistant": m.get("text", "")[:6000]}
-                    for m in history_messages[-24:]
-                ]
-            model_context = {
-                "request": text,
-                "brief": ctx["project_md"],
-                "data_path": ctx["data_path"],
-                "recent_messages": state.get("messages", []),
-            }
-            if args:
-                sample = await asyncio.to_thread(inventory, args[1], settings)
-                model_context["init_inventory"] = sample
-                model_context["request"] += (
-                    "\nDraft an initial brief directly, without computation."
-                )
-            decision = await decide(
-                bridge.app.anthropic_api_key.get_secret_value(), settings.model, model_context
-            )
-            if args and (decision.route != "reply" or decision.draft is None):
-                raise ValueError(
-                    "Could not draft the initial brief. Please retry init in this thread."
-                )
-            record["direct_decision"] = decision.model_dump()
-            await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
-    if ctx and decision.draft is not None:
-        ctx.update(project_md=decision.draft, brief_generation=None)
+            decision.reply = decision.reply[:2400] + suggestions
+        record["direct_decision"] = decision.model_dump()
+        record["decision_access"] = grant.signature
+        await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+    current = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
+    # Init's binding may have moved in another thread, but this turn is fixed to its created ID.
+    if is_init and not current.has_context:
+        current.project_id = grant.project_id
+        current.allowed = current.doc.can_use(grant.project_id, grant.email)
+    if (
+        not current.allowed
+        or await asyncio.to_thread(access.memory_epoch, storage, current) != epoch
+        or (record.get("decision_access") and record["decision_access"] != current.signature)
+    ):
+        return await finish(bridge, event_id, record, "Project access changed. Send a new request.")
+    if decision.draft is not None:
+        ctx["project_md"] = decision.draft  # Keep the generation of the base shared brief.
     if decision.route == "reply":
         record_exchange(state, event_id, text, decision.reply)
     else:
         state["direct_version"] = 1
     await asyncio.to_thread(
-        storage.put,
-        f"projects/_threads/{record['thread_key']}/checkpoint.json",
-        json.dumps(state).encode(),
+        storage.put, access.checkpoint_key(record["thread_key"]), json.dumps(state).encode()
     )
     if decision.route == "compute":
         record["route"] = "compute"
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
         return False
-    await bridge.notify(event_id, record, "complete", decision.reply)
-    if record.get("notice_text") != decision.reply:
-        raise RuntimeError("Slack reply delivery failed; retry the saved response")
-    record["status"] = "complete"
-    if record.get("config_token"):
-        await bridge.repository.release_event("claude-config", record["config_token"])
-    return True
+    completed = await finish(bridge, event_id, record, decision.reply)
+    await user_memory.after_turn(bridge, event_id, record, storage, decision.reply)
+    return completed

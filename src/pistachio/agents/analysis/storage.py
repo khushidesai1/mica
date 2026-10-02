@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import threading
 from collections.abc import Callable
@@ -42,7 +43,8 @@ class LocalStorage:
         temporary.replace(path)
 
     def put_if(self, key: str, data: bytes, generation: str | None) -> str:
-        with _LOCAL_LOCK:
+        with _LOCAL_LOCK, (self.root / ".cas.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
             try:
                 current = self.get(key)[1]
             except FileNotFoundError:

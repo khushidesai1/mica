@@ -198,3 +198,20 @@ async def test_image_preview_denied_before_large_content_enters_stream(tmp_path)
     assert (
         image.stat().st_size == 6_500_000
     )  # Full-resolution artifact remains available to upload.
+
+
+async def test_private_memory_is_in_system_only(setup, monkeypatch):
+    ctx, settings = setup
+    calls = []
+
+    async def query(**kw):
+        calls.append(kw)
+        yield result(result="Done")
+
+    monkeypatch.setattr(runner, "query", query)
+    await Runner(settings, user_memory="PRIVATE-PREFERENCE", project_name="liver").run_turn(
+        ctx, "plot", AsyncMock()
+    )
+    assert "PRIVATE-PREFERENCE" in calls[0]["options"].system_prompt["append"]
+    assert "PRIVATE-PREFERENCE" not in calls[0]["prompt"]
+    assert "PRIVATE-PREFERENCE" not in build_options(ctx, settings).system_prompt["append"]

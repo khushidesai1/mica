@@ -10,8 +10,9 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 
-from pistachio.agents.analysis import identity
+from pistachio.agents.analysis import access, identity
 from pistachio.agents.analysis.batch import BatchBridge, digest
+from pistachio.agents.analysis.storage import GCSStorage
 from pistachio.api.auth import get_principal
 from pistachio.api.dependencies import Services
 
@@ -57,8 +58,10 @@ async def receive(services: Services, payload: dict[str, Any]) -> dict[str, obje
                 try:
                     if not await services.repository.get_connector_state(key):
                         await identity.post(
-                            services.settings.slack_bot_token, channel,
-                            event.get("thread_ts") or timestamp, identity.NOT_ENABLED,
+                            services.settings.slack_bot_token,
+                            channel,
+                            event.get("thread_ts") or timestamp,
+                            identity.NOT_ENABLED,
                             event_id=key,
                         )
                         await services.repository.set_connector_state(key, {"delivered": True})
@@ -108,6 +111,20 @@ async def credentials(event_id: str, request: Request, response: Response) -> di
         raise HTTPException(403, "Untrusted worker")
     record = await services.repository.get_connector_state(f"claude-event:{event_id}")
     if not record or record["status"] not in {"submitting", "running"}:
+        raise HTTPException(403, "This worker grant is inactive")
+    bridge = BatchBridge(services.settings, services.repository)
+    storage = GCSStorage(services.settings.gcs_bucket)
+    grant = await asyncio.to_thread(
+        access.resolve, services.settings, bridge.settings, storage, record
+    )
+    if (
+        not grant.allowed
+        or record.get("cancel_requested")
+        or record.get("principal") != grant.email
+        or record.get("access_signature") != grant.signature
+        or record.get("memory_epoch", 0)
+        != await asyncio.to_thread(access.memory_epoch, storage, grant)
+    ):
         raise HTTPException(403, "This worker grant is inactive")
     # Only the trusted worker bootstrap receives these. Never put them in GCS or Batch job metadata.
     response.headers["Cache-Control"] = "no-store"
