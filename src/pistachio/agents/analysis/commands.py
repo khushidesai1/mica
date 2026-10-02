@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .access import Grant
+from .config import Settings
 from .data_links import init_args
 from .identity import target_email
 from .registry import Registry
@@ -51,7 +52,13 @@ def parse(raw: str) -> Command | None:
 
 
 def run(
-    cmd: Command, grant: Grant, registry: Registry, app: Any, record: dict[str, Any], event_id: str
+    cmd: Command,
+    grant: Grant,
+    registry: Registry,
+    app: Any,
+    record: dict[str, Any],
+    event_id: str,
+    settings: Settings,
 ) -> str | None:
     event = record["payload"]["event"]
     team, channel = record["payload"]["team_id"], event["channel"]
@@ -95,7 +102,16 @@ def run(
             f"New threads will use {doc.projects[pid].name}. Existing threads keep their project."
         )
     if cmd.name in {"share", "unshare"}:
-        target = target_email(app, team, cmd.args[1])
+        if not doc.owns(pid, email):
+            raise ValueError("Only the project owner can change sharing.")
+        if settings.access_mode == "channel":
+            from .channel_access import target_email as channel_target
+
+            target = channel_target(
+                app, settings, registry.storage, team, cmd.args[1], removing=cmd.name == "unshare"
+            )
+        else:
+            target = target_email(app, team, cmd.args[1])
         registry.update(
             event_id,
             email,

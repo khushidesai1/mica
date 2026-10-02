@@ -3,6 +3,13 @@
 > Original implementation plan, followed with the approved corrections below. Local implementation
 > is complete; cloud build, migration, deployment, and live checks remain approval-gated.
 
+**Later approved admission model:** membership in any admin-enabled Slack channel replaces the
+manual Slack user/email allowlists. Admins onboard channels by inviting Pistachio and mentioning
+`enable this channel`; `disable this channel` removes an access channel. Identity comes from Slack,
+with the same normalized-email memory keys. Project ACLs and private memory remain independent.
+See the current setup guide for the short membership cache, required scopes, and bootstrap admins.
+The original mapped-user details below now describe only the explicit legacy mapped mode.
+
 **Approved corrections implemented:** explicit owner channel publication separate from membership;
 private DM output prefixes; init memory suggestions outside the shared draft; context invalidation
 on forgetting/access changes; access-filtered memory-editor inputs; permanent replay receipts;

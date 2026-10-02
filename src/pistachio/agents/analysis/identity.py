@@ -65,3 +65,13 @@ async def post(token: str, channel: str, thread_ts: str, text: str, *, event_id:
         unfurl_media=False,
         client_msg_id=str(uuid5(NAMESPACE_URL, f"pistachio-message:{event_id}")),
     )
+
+
+def resolve_email(app: Any, settings: Any, storage: Any, team: str, user: str) -> str | None:
+    if settings.access_mode == "channel":
+        from .channel_access import email_for as channel_email
+
+        return channel_email(app, settings, storage, team, user)
+    if settings.allowed_user_ids and user not in settings.csv("allowed_user_ids"):
+        return None
+    return email_for(app, team, user)

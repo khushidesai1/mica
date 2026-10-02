@@ -90,6 +90,24 @@ variable "slack_agent_enabled" {
   type        = bool
   default     = false
 }
+variable "slack_agent_access_mode" {
+  description = "Channel membership is the Slack admission rule; mapped retains the legacy static lists."
+  type        = string
+  default     = "channel"
+  validation {
+    condition     = contains(["channel", "mapped"], var.slack_agent_access_mode)
+    error_message = "Use channel or mapped."
+  }
+}
+variable "slack_agent_access_admin_ids" {
+  description = "One-time onboarding admins as workspace:member IDs, for example T123:U123."
+  type        = set(string)
+  default     = []
+  validation {
+    condition     = alltrue([for id in var.slack_agent_access_admin_ids : can(regex("^[A-Z0-9]+:[A-Z0-9]+$", id))])
+    error_message = "Each admin must be a workspace:member ID."
+  }
+}
 variable "slack_agent_image" {
   description = "Pinned Claude worker image; also prepares its storage permissions and retention."
   type        = string

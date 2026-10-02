@@ -72,6 +72,8 @@ def job_spec(
         "PISTACHIO_GCS_BUCKET": app.gcs_bucket,
         "PISTACHIO_CONTROL_PLANE_URL": app.control_plane_url,
         "AGENT_DATA_BUCKETS": ",".join(sorted(buckets)),
+        "AGENT_ACCESS_MODE": settings.access_mode,
+        "AGENT_ACCESS_CACHE_SECONDS": str(settings.access_cache_seconds),
         "AGENT_MODEL": settings.model,
         "AGENT_FALLBACK_MODEL": settings.fallback_model,
         "AGENT_MAX_TURNS": str(settings.max_turns),
@@ -241,7 +243,7 @@ class BatchBridge:
 
         await asyncio.to_thread(enqueue)
 
-    async def accept(self, payload: dict[str, Any]) -> str:
+    async def accept(self, payload: dict[str, Any], *, principal: str | None = None) -> str:
         event = payload["event"]
         thread = event.get("thread_ts") or event["ts"]
         thread_key = digest(f"{payload.get('team_id')}:{event['channel']}:{thread}")
@@ -267,6 +269,7 @@ class BatchBridge:
             if not receipt:
                 receipt = {
                     "payload": payload,
+                    "intake_principal": principal,
                     "thread_key": thread_key,
                     "previous": tail.get("tail"),
                     "status": "pending",

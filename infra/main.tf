@@ -362,6 +362,14 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.slack_agent_image
       }
       env {
+        name  = "AGENT_ACCESS_MODE"
+        value = var.slack_agent_access_mode
+      }
+      env {
+        name  = "AGENT_ACCESS_ADMIN_IDS"
+        value = join(",", sort(tolist(var.slack_agent_access_admin_ids)))
+      }
+      env {
         name  = "AGENT_DATA_BUCKETS"
         value = join(",", sort(tolist(var.slack_agent_data_buckets)))
       }

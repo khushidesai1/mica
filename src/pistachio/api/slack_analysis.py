@@ -10,8 +10,9 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 
-from pistachio.agents.analysis import access, identity
+from pistachio.agents.analysis import access, channel_access, identity
 from pistachio.agents.analysis.batch import BatchBridge, digest
+from pistachio.agents.analysis.data_links import message_text
 from pistachio.agents.analysis.storage import GCSStorage
 from pistachio.api.auth import get_principal
 from pistachio.api.dependencies import Services
@@ -47,9 +48,45 @@ async def receive(services: Services, payload: dict[str, Any]) -> dict[str, obje
         if not thread or not await services.repository.get_connector_state(f"claude-thread:{key}"):
             return {"ok": True}
     bridge = BatchBridge(services.settings, services.repository)
-    principal = identity.email_for(services.settings, team, user)
-    if bridge.settings.allowed_user_ids and user not in bridge.settings.csv("allowed_user_ids"):
-        principal = None
+    storage = (
+        GCSStorage(services.settings.gcs_bucket)
+        if bridge.settings.access_mode == "channel"
+        else None
+    )
+    if message_text(event.get("text", "")).lower() in {
+        "enable this channel",
+        "disable this channel",
+        "agent channels",
+    }:
+        key = "claude-onboarding:" + digest(f"{team}:{channel}:{timestamp}")
+        claim = await services.repository.begin_event(key, lease_seconds=60)
+        if claim.status != "claimed":
+            raise HTTPException(503, "Channel onboarding is busy; retry")
+        try:
+            if not await services.repository.get_connector_state(key):
+                reply = await asyncio.to_thread(
+                    channel_access.admin_command,
+                    services.settings,
+                    bridge.settings,
+                    storage,
+                    payload,
+                    key,
+                )
+                if reply:
+                    await identity.post(
+                        services.settings.slack_bot_token,
+                        channel,
+                        event.get("thread_ts") or timestamp,
+                        reply,
+                        event_id=key,
+                    )
+                    await services.repository.set_connector_state(key, {"delivered": True})
+        finally:
+            await services.repository.release_event(key, claim.token)
+        return {"ok": True}
+    principal = await asyncio.to_thread(
+        identity.resolve_email, services.settings, bridge.settings, storage, team, user
+    )
     if principal is None:
         if identity.is_private(event) or event["type"] == "app_mention":
             key = "claude-denial:" + digest(f"{team}:{channel}:{timestamp}")
@@ -70,7 +107,7 @@ async def receive(services: Services, payload: dict[str, Any]) -> dict[str, obje
         return {"ok": True}
     if not services.settings.anthropic_api_key.get_secret_value():
         raise HTTPException(503, "Claude API credential has not been configured")
-    event_id = await bridge.accept(payload)
+    event_id = await bridge.accept(payload, principal=principal)
     return {"ok": True, "event_id": event_id}
 
 

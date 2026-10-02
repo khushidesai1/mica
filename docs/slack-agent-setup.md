@@ -57,7 +57,7 @@ a fresh Claude context starts from the authorized brief. Arbitrary Slack history
 - Artifact bucket: `pistachio-staging-artifacts-5304c19c`.
 - Control identity: `pistachio-staging-control@azizilab-aml.iam.gserviceaccount.com`.
 - Worker identity: `pistachio-staging-worker@azizilab-aml.iam.gserviceaccount.com`.
-- Existing Slack bot token and signing secret; existing `PISTACHIO_SLACK_USER_MAP` remains required.
+- Existing Slack bot token and signing secret. The old `PISTACHIO_SLACK_USER_MAP` is used only by the legacy mapped mode and migration.
 - Existing Batch worker network/subnetwork: `default`; private workers have no external IPs.
 
 Deployment verification found existing `nat-router` / `nat-config` covering all subnets on
@@ -212,11 +212,65 @@ the observed SDK 1 MB JSON-buffer failure when reading a 6.5 MB spatial-map PNG.
 
 ## Identity, projects, and private memory
 
-Every accepted Slack event resolves `team:user` (or the legacy user-only mapping) to a normalized
-email in `PISTACHIO_SLACK_USER_MAP`, then checks `PISTACHIO_ALLOWED_EMAILS` when configured and
-`AGENT_ALLOWED_USER_IDS` when configured. Unmapped DMs/mentions receive one generic refusal;
-unmapped channel chatter is silent. Keep the allowlist nonempty for a restricted deployment.
-Identity is rechecked before commands, job submission, and worker credential delivery.
+The default `AGENT_ACCESS_MODE=channel` admits members of **any enabled access channel** in the
+bot's workspace, including when they use the bot in DMs. Enabled channels are stored atomically
+in `projects/_access/channels.json`. With no enabled channels, ordinary agent access is denied.
+Membership does not automatically share projects or publish their contents into a channel.
+
+The bot obtains each human member's normalized email from Slack. That retains the existing
+per-email project/memory identity, provided the previous manual mapping matched their Slack email.
+A bot, deleted user, wrong-workspace request, or missing readable email is denied. Review mismatched
+legacy mappings during migration; never automatically merge different identities. In channel mode,
+`PISTACHIO_SLACK_USER_MAP`, `PISTACHIO_ALLOWED_EMAILS`, and `AGENT_ALLOWED_USER_IDS` do not restrict
+Slack admission. The browser keeps its own existing email allowlist and authentication.
+`AGENT_ACCESS_MODE=mapped` explicitly retains the previous manual Slack mapping/allowlist behavior.
+
+Admission is checked before intake, commands, queued work, credential delivery, worker restoration,
+and result/file delivery. Slack member lists and profiles have a short process-local cache:
+`AGENT_ACCESS_CACHE_SECONDS=30` by default (0–60 seconds). Removal from the last enabled channel
+blocks access once that cache expires; removal from just one channel preserves access through
+another. Expired results are never reused after an API failure. An unavailable channel grants no
+access, but a separately verified enabled channel can still establish eligibility. Disabling an
+access channel bypasses the membership cache because the approval registry is read each time.
+Removing access does not delete personal memory or shared-project grants; returning eligible users
+retain their own data and still face the independent project ACL checks.
+
+### Onboard additional channels from Slack
+
+One-time setup, included in the next approved deployment:
+
+1. Set `AGENT_ACCESS_MODE=channel` and configure the people allowed to manage access channels in
+   `AGENT_ACCESS_ADMIN_IDS`, as comma-separated `workspace:member` Slack IDs. Terraform exposes
+   `slack_agent_access_mode` and `slack_agent_access_admin_ids`. This small admin list controls
+   onboarding only; it is not the list of people allowed to use the agent. Admin status does not
+   grant access to other people's projects or bypass channel membership for ordinary requests.
+2. Add `channels:read`, `groups:read`, and `users:read.email` alongside existing `users:read`,
+   `app_mentions:read`, and chat permissions; subscribe to `app_mention`. Apply the delta in
+   `deploy/slack-app-manifest.yaml` to the existing app and reinstall if Slack requires it.
+   The existing signed HTTP webhook is retained. No Socket Mode or new bot is needed.
+3. Invite Pistachio to a channel. A designated admin sends `@Pistachio enable this channel`.
+   The bot checks workspace identity, channel visibility, membership-read and email permissions,
+   then records approval. This works for public and private channels. Inviting the bot alone does
+   not authorize access, and an ordinary member cannot enable a new channel.
+4. Repeat the invitation and command in each additional access channel. There is no channel-ID
+   configuration or redeployment per channel. Members can then initialize their own projects
+   in DMs. Use explicit project `publish` and `use` commands when a project should reply in a
+   channel; enabling an access channel does not expose a project there.
+5. An admin can send `@Pistachio disable this channel` to remove that channel from admission,
+   or `agent channels` in a DM to list enabled channels. These admin commands work before the
+   admin has ordinary agent access, allowing the first channel to be enabled. Disable the channel
+   before removing the bot; removing the bot alone is not the command to revoke approval. Any
+   resulting membership lookup failure denies access through that channel.
+
+Use an invite-only channel when access should be granted by invitation. Anyone who joins a public
+enabled channel is intentionally eligible. Slack guest/externally shared channel members are
+eligible too if they are in the verified member list and Slack exposes their email to this bot.
+Slack cannot retroactively hide messages already posted to a channel when someone loses access.
+Channel membership is the admission source, not a synchronization job or a manually copied list.
+
+Slack API references: [channel members](https://docs.slack.dev/reference/methods/conversations.members/),
+[user identity and email scopes](https://docs.slack.dev/reference/methods/users.info/).
+
 
 Projects are private by default. Their opaque IDs are independent of display names: Alice’s
 `liver` and Bob’s `liver` are separate projects with separate `PROJECT.md` files. Repeating init
@@ -231,7 +285,7 @@ thread changed the shared brief; start a new thread to review and reconcile it.
 | `init liver gs://bucket/folder/ [--force]` | DM: create/reuse your project and draft its brief. |
 | `projects` | DM: list owned and explicitly shared projects only. |
 | `use liver` or `use p_…` | Select a project for new threads. Ambiguous shared names require an ID. |
-| `share liver @user` / `unshare liver @user` | Owner in DM: grant/revoke a mapped user; email links also work. |
+| `share liver @user` / `unshare liver @user` | Owner in DM: grant an enabled user or revoke a former member; email links also work. |
 | `publish liver #channel` / `unpublish liver #channel` | Owner in DM: authorize/withdraw replies visible to the entire channel audience. |
 | `use p_… [--force]` in a channel | Owner selects an explicitly published project; replacing a binding requires its current owner too. |
 | `brief` / `save brief` | View this draft / publish it, after an access check. |
@@ -289,7 +343,7 @@ These changes are prepared locally. The deployment history document describes th
 revision; it is not evidence that this migration has run. Ask before every cloud build, migration,
 or deployment, as required by the implementation plan.
 
-1. Confirm the mapped users/allowlist and the immutable base web image. Build the Slack API and
+1. Confirm onboarding admins, membership/email scopes, legacy identity mappings, and the immutable base web image. Build the Slack API and
    worker from the same commit using the existing layered build files. The Slack-only API copies
    `agents/analysis/` and `api/slack_analysis.py`; the independent browser fixes ship only with
    a subsequent full web release. Keep the three existing Slack integration patches unchanged.
@@ -312,7 +366,10 @@ or deployment, as required by the implementation plan.
    legacy files, and rejects ownership/data/binding drift. Reapplying with unchanged inputs is a
    no-op. The `--quiesced` flag is an operator attestation, not an automatic cloud drain.
 5. Deploy a tagged revision without traffic using the paired digest-pinned images. Run health,
-   credential, sandbox, and two-user checks from the plan. Promote it, then restore Slack ingress.
+   credential, sandbox, and two-user checks from the plan. Promote it, then restore Slack ingress
+   for admin onboarding. Enable the initial access channels using the commands above; ordinary
+   requests remain denied until then. Verify one user with overlapping memberships, removal from
+   the last enabled channel, denied non-admin onboarding, and private project/memory boundaries.
    New API code refuses unmigrated projects; new workers refuse incompatible old manifests.
 6. Roll back only to a known ACL-compatible pair after draining. If none exists, keep Slack
    ingress disabled until repaired. Never route private-project traffic to the old slug backend.

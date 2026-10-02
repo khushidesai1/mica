@@ -162,7 +162,7 @@ async def handle(
             return await finish(bridge, event_id, record, memory_reply)
     if cmd and cmd.name != "init":
         reply = await asyncio.to_thread(
-            commands.run, cmd, grant, registry, bridge.app, record, event_id
+            commands.run, cmd, grant, registry, bridge.app, record, event_id, bridge.settings
         )
         if reply is not None:
             return await finish(bridge, event_id, record, reply)
@@ -199,6 +199,7 @@ async def handle(
             doc.can_use(pid, grant.email),
             grant.channel_key,
             grant.has_context,
+            grant.identity_policy,
         )
     if not grant.allowed:
         return await finish(bridge, event_id, record, access.deny_text(grant))

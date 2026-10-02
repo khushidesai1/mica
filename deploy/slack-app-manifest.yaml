@@ -15,8 +15,12 @@ oauth_config:
       - files:write
       - reactions:write
       - users:read
-      # Optional channel mentions (the existing bot DM needs none of these):
+      - users:read.email
+      # Membership allowlist and admin onboarding, including private channels:
+      - channels:read
+      - groups:read
       - app_mentions:read
+      # Channel conversation follow-ups:
       - channels:history
       - groups:history
 settings:
@@ -25,7 +29,8 @@ settings:
     # Preserve the current /integrations/slack/events request_url in app settings.
     bot_events:
       - message.im
-      # Optional channel use:
+      # Required for channel onboarding:
       - app_mention
+      # Channel conversation follow-ups:
       - message.channels
       - message.groups

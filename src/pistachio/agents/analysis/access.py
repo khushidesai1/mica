@@ -10,7 +10,7 @@ from urllib.parse import urlsplit
 
 from . import user_memory
 from .config import Settings
-from .identity import NOT_ENABLED, email_for, is_private, user_key
+from .identity import NOT_ENABLED, is_private, resolve_email, user_key
 from .registry import ProjectEntry, Registry, RegistryDoc, read_brief
 from .storage import Storage
 
@@ -29,6 +29,7 @@ class Grant:
     allowed: bool
     channel_key: str
     has_context: bool = False
+    identity_policy: str = ""
 
     @property
     def project(self) -> ProjectEntry:
@@ -44,14 +45,16 @@ class Grant:
             self.doc.access_signature(self.email),
             self.project.data_uri if self.allowed else "",
         ]
+        if self.identity_policy:
+            raw.append(self.identity_policy)
         return hashlib.sha256(json.dumps(raw).encode()).hexdigest()
 
 
 def resolve(app: Any, settings: Settings, storage: Storage, record: dict[str, Any]) -> Grant:
     payload = record["payload"]
     event, team = payload["event"], payload.get("team_id", "")
-    email = email_for(app, team, event.get("user", "")) or ""
-    if settings.allowed_user_ids and event.get("user") not in settings.csv("allowed_user_ids"):
+    email = resolve_email(app, settings, storage, team, event.get("user", "")) or ""
+    if record.get("intake_principal") and record["intake_principal"] != email:
         email = ""
     private = is_private(event)
     channel_key = f"{team}:{event['channel']}"
@@ -78,6 +81,7 @@ def resolve(app: Any, settings: Settings, storage: Storage, record: dict[str, An
         allowed,
         channel_key,
         bool(state.get("context")),
+        f"channel:{team}" if settings.access_mode == "channel" else "",
     )
 
 
@@ -132,7 +136,15 @@ def worker_permitted(
     channel_key = f"{request['payload'].get('team_id', '')}:{event.get('channel', '')}"
     if not is_private(event) and channel_key not in doc.projects[pid].published_channels:
         return False
-    grant = Grant(email, is_private(event), state, doc, pid, True, channel_key)
+    policy = ""
+    if settings and settings.access_mode == "channel":
+        team = request["payload"].get("team_id", "")
+        if resolve_email(settings, settings, storage, team, event.get("user", "")) != email:
+            return False
+        policy = f"channel:{team}"
+    grant = Grant(
+        email, is_private(event), state, doc, pid, True, channel_key, identity_policy=policy
+    )
     if settings is not None:
         uri = urlsplit(grant.project.data_uri)
         context = state["context"]

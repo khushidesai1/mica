@@ -15,3 +15,7 @@ openai_api_key_version       = "REPLACE_SECRET_VERSION"
 slack_user_map           = "{\"U123\":\"researcher@example.org\"}"
 gmail_account            = "pistachio@example.org"
 monthly_budget_usd       = 200
+
+# Slack admission: initialize this admin list once, then enable channels from Slack.
+slack_agent_access_mode = "channel"
+slack_agent_access_admin_ids = ["T123:U123"]

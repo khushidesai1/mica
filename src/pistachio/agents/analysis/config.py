@@ -36,7 +36,11 @@ class Settings(BaseSettings):
     max_turns: int = Field(default=40, ge=1)
     max_budget_usd_per_turn: float = Field(default=5, gt=0)
     max_concurrent_runs: int = Field(default=3, ge=1)
-    allowed_user_ids: str = ""
+    # Channel mode denies admission until a designated admin enables a channel.
+    access_mode: Literal["channel", "mapped"] = "channel"
+    access_admin_ids: str = ""  # Explicit team:user IDs; onboarding authority only.
+    access_cache_seconds: int = Field(default=30, ge=0, le=60)
+    allowed_user_ids: str = ""  # Legacy mapped mode only.
     # Separate staging-only approval for Docker's proc masking exception.
     batch_proc_mount_opt_in: bool = False
     storage: Literal["gcs", "local"] = "gcs"

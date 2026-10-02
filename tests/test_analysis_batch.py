@@ -48,7 +48,11 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     settings.control_plane_url = "https://existing.run.app"
     settings.slack_user_map = {"T1:U1": "alice@example.com", "T1:U2": "bob@example.com"}
     agent_settings = Settings(
-        _env_file=None, memory_auto_edit=False, data_buckets="lab-data", storage="local"
+        _env_file=None,
+        access_mode="mapped",
+        memory_auto_edit=False,
+        data_buckets="lab-data",
+        storage="local",
     )
     monkeypatch.setattr(batch, "Settings", lambda: agent_settings)
     client = Mock()
@@ -70,6 +74,7 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     monkeypatch.setattr(batch.batch_v1, "BatchServiceClient", lambda: client)
     storage = LocalStorage(tmp_path / "storage")
     monkeypatch.setattr(batch, "GCSStorage", lambda bucket: storage)
+    monkeypatch.setattr(slack_analysis, "GCSStorage", lambda bucket: storage)
     monkeypatch.setattr(BatchBridge, "schedule", AsyncMock())
     slack = AsyncMock()
     slack.chat_postMessage.return_value = {"ts": "9.0"}
@@ -306,6 +311,7 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
     settings = Settings(
         _env_file=None,
         storage="local",
+        access_mode="mapped",
         data_buckets="lab-data",
         anthropic_api_key="fake",
         slack_bot_token="fake",
