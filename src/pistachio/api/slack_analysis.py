@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 
+from pistachio.agents.analysis import identity
 from pistachio.agents.analysis.batch import BatchBridge, digest, job_spec
 from pistachio.api.auth import get_principal
 from pistachio.api.dependencies import Services
@@ -34,16 +35,6 @@ async def receive(services: Services, payload: dict[str, Any]) -> dict[str, obje
         or not re.fullmatch(r"\d+\.\d+", timestamp)
     ):
         return {"ok": True}
-    # Keep Pistachio's existing Slack identity mapping for DMs and channel mentions.
-    mapping = services.settings.slack_user_map
-    if not (mapping.get(f"{team}:{user}") or mapping.get(user)):
-        from pistachio.connectors.slack import _reply
-
-        await _reply(services, channel, "Your Slack identity is not mapped to a Pistachio user.")
-        return {"ok": True}
-    bridge = BatchBridge(services.settings, services.repository)
-    if bridge.settings.allowed_user_ids and user not in bridge.settings.csv("allowed_user_ids"):
-        return {"ok": True}
     if event.get("channel_type") != "im" and event["type"] == "message":
         bot = next(
             (x.get("user_id") for x in payload.get("authorizations", []) if x.get("is_bot")), ""
@@ -54,6 +45,26 @@ async def receive(services: Services, payload: dict[str, Any]) -> dict[str, obje
         key = digest(f"{team}:{channel}:{thread}")
         if not thread or not await services.repository.get_connector_state(f"claude-thread:{key}"):
             return {"ok": True}
+    bridge = BatchBridge(services.settings, services.repository)
+    principal = identity.email_for(services.settings, team, user)
+    if bridge.settings.allowed_user_ids and user not in bridge.settings.csv("allowed_user_ids"):
+        principal = None
+    if principal is None:
+        if identity.is_private(event) or event["type"] == "app_mention":
+            key = "claude-denial:" + digest(f"{team}:{channel}:{timestamp}")
+            claim = await services.repository.begin_event(key, lease_seconds=30)
+            if claim.status == "claimed":
+                try:
+                    if not await services.repository.get_connector_state(key):
+                        await identity.post(
+                            services.settings.slack_bot_token, channel,
+                            event.get("thread_ts") or timestamp, identity.NOT_ENABLED,
+                            event_id=key,
+                        )
+                        await services.repository.set_connector_state(key, {"delivered": True})
+                finally:
+                    await services.repository.release_event(key, claim.token)
+        return {"ok": True}
     # Validate before accepting a paid job; unset rollout prerequisites fail closed.
     if not bridge.settings.direct_chat_enabled:
         job_spec(services.settings, bridge.settings, "validation")

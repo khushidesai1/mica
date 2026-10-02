@@ -22,8 +22,9 @@ from pistachio.agents.analysis.storage import LocalStorage
 from pistachio.api import slack_analysis
 
 
-def payload(ts="1.0", thread=None, text="plot", channel="D1"):
-    event = dict(type="message", channel_type="im", channel=channel, user="U1", ts=ts, text=text)
+def payload(ts="1.0", thread=None, text="plot", channel="D1", *, user="U1",
+            kind="message", channel_type="im"):
+    event = dict(type=kind, channel_type=channel_type, channel=channel, user=user, ts=ts, text=text)
     if thread:
         event["thread_ts"] = thread
     return dict(type="event_callback", team_id="T1", event_id=f"E{ts}", event=event)
@@ -37,7 +38,7 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     settings.batch_service_account = "worker@example.com"
     settings.cloud_tasks_service_account = "control@example.com"
     settings.control_plane_url = "https://existing.run.app"
-    settings.slack_user_map = {"T1:U1": "alice@example.com"}
+    settings.slack_user_map = {"T1:U1": "alice@example.com", "T1:U2": "bob@example.com"}
     agent_settings = Settings(_env_file=None, data_buckets="lab-data")
     monkeypatch.setattr(batch, "Settings", lambda: agent_settings)
     client = Mock()
