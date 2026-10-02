@@ -268,7 +268,10 @@ explicit memory commands still work. `AGENT_MEMORY_MODEL` defaults to `AGENT_MOD
 
 Forgetting, replacing memory, or changes to accessible project grants invalidate private context.
 The next turn starts a new workspace and SDK session, clears the recent transcript/private draft,
-and reloads the shared brief. This also blocks old queued memory snapshots. Access revisions
+and reloads the shared brief. Retired small checkpoints are kept as audit records, and run
+numbers continue so old outputs are not overwritten. The first private turn after upgrading a
+legacy checkpoint also starts fresh; an unsaved old draft is retained in the retired checkpoint
+for reviewed recovery, not injected automatically. This also blocks old queued memory snapshots. Access revisions
 ensure revoke-then-regrant does not revive an old grant. Forgotten content is removed from future
 retrieval; this is not deletion of historical Slack messages, explicitly saved shared briefs,
 old outputs, or retained audit archives. Registry/memory receipts and private outputs are under

@@ -120,6 +120,7 @@ async def test_forget_resets_transcript_draft_workspace_and_queued_worker(chat):
     pointer = access.checkpoint_key(old["thread_key"])
     state = json.loads(chat.store.get(pointer)[0])
     old_path = state["context"]["workdir"]
+    state["turn"] = 7
     state["archive"] = "old-memory.tar.gz"
     state["context"]["session_id"] = "old-session"
     state["context"]["project_md"] = "memory-derived-private-draft"
@@ -143,6 +144,8 @@ async def test_forget_resets_transcript_draft_workspace_and_queued_worker(chat):
     assert "memory-derived" not in supplied["brief"]
     fresh = json.loads(chat.store.get(pointer)[0])
     assert fresh["context"]["workdir"] != old_path
+    assert fresh["turn"] == 7  # Subsequent runs cannot overwrite old output provenance.
+    assert chat.store.keys(f"projects/_threads/{old['thread_key']}/retired/")
     assert not fresh.get("archive") and fresh["context"]["session_id"] is None
 
 

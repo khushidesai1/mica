@@ -168,6 +168,9 @@ def fresh_private_state(
     ):
         # A new workspace cannot restore an old SDK session, script, draft, or transcript.
         # Persist the reset before continuing, including when the model call subsequently fails.
+        retired = json.dumps(state, sort_keys=True).encode()
+        revision = hashlib.sha256(retired).hexdigest()
+        storage.put(f"projects/_threads/{thread_key}/retired/{revision}.json", retired)
         brief, generation = read_brief(storage, grant.project_id)
         context = dict(state["context"])
         uri = urlsplit(grant.project.data_uri)
@@ -178,6 +181,8 @@ def fresh_private_state(
             session_id=None,
             data_path=str(settings.data_mount_root / uri.netloc / uri.path.lstrip("/")),
         )
-        state = dict(context=context, turn=0, is_init=False, messages=[], direct_version=1)
+        state = dict(
+            context=context, turn=state.get("turn", 0), is_init=False, messages=[], direct_version=1
+        )
         storage.put(checkpoint_key(thread_key), json.dumps(state).encode())
     return state
