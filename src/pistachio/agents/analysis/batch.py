@@ -24,7 +24,6 @@ from pistachio.storage.base import Repository
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .data_links import init_args
-from .projects import Projects
 from .storage import GCSStorage
 
 log = logging.getLogger(__name__)
@@ -74,7 +73,6 @@ def job_spec(
         "AGENT_FALLBACK_MODEL": settings.fallback_model,
         "AGENT_MAX_TURNS": str(settings.max_turns),
         "AGENT_MAX_BUDGET_USD_PER_TURN": str(settings.max_budget_usd_per_turn),
-        "AGENT_ALLOWED_USER_IDS": settings.allowed_user_ids,
     }
     runnable = batch_v1.Runnable(
         container=batch_v1.Runnable.Container(
@@ -191,10 +189,7 @@ class BatchBridge:
                 relative = Path(path).relative_to(settings.data_mount_root)
                 uri = f"gs://{relative.parts[0]}/"
             else:
-                projects = Projects(store, settings)
-                projects.reload()
-                project = projects.channels.get(event["channel"])
-                uri = project.data_uri if project else ""
+                raise ValueError("This thread has no saved data context.")
         bucket = urlsplit(uri).netloc
         if bucket and bucket not in allowed:
             project_name = settings.data_project or "the configured data buckets"
@@ -309,8 +304,7 @@ class BatchBridge:
             from .data_links import message_text
 
             if (
-                self.settings.direct_chat_enabled
-                and message_text(record["payload"]["event"].get("text", "")).lower() == "cancel"
+                message_text(record["payload"]["event"].get("text", "")).lower() == "cancel"
             ):
                 await self.cancel(event_id, record)
             elif not previous or previous["status"] in {"complete", "failed"}:
@@ -332,8 +326,7 @@ class BatchBridge:
 
     async def advance(self, event_id: str, record: dict[str, Any]) -> None:
         if (
-            self.settings.direct_chat_enabled
-            and record["status"] == "pending"
+            record["status"] == "pending"
             and record.get("route") != "compute"
         ):
             from .direct import handle
@@ -379,22 +372,6 @@ class BatchBridge:
                 return
             record["data_buckets"] = resolved.data_buckets
             record["mount_buckets"] = sorted(mounts)
-            # Only init mutates the cross-channel slug mapping. Serialize init jobs globally.
-            text = re.sub(r"<@[A-Z0-9]+>", "", record["payload"]["event"].get("text", "")).strip()
-            if text.lower().split(maxsplit=1)[:1] == ["init"] and not record.get("config_token"):
-                config_claim = await self.repository.begin_event(
-                    "claude-config", lease_seconds=10800
-                )
-                if config_claim.status != "claimed":
-                    await self.notify(
-                        event_id,
-                        record,
-                        "waiting",
-                        "Received. Waiting for another project setup to finish.",
-                    )
-                    return
-                record["config_token"] = config_claim.token
-                await self.repository.set_connector_state(f"claude-event:{event_id}", record)
             for slot in range(self.settings.max_concurrent_runs):
                 claim = await self.repository.begin_event(
                     f"claude-slot:{slot}", lease_seconds=10800

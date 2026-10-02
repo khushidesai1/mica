@@ -20,10 +20,9 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
-from .direct import remember
+from .direct import record_exchange
 from .outputs import files_under
 from .preflight import check
-from .projects import Projects
 from .runner import Context, Runner
 from .sessions import Sessions
 from .slack_app import SlackAgent
@@ -91,7 +90,6 @@ async def main(event_id: str) -> None:
         raise ValueError("Slack credential has not been configured")
     check(settings)
     slack = AsyncWebClient(token=settings.slack_bot_token.get_secret_value())
-    auth = await slack.auth_test()
     if request.get("notice_ts"):
         try:
             await slack.chat_update(
@@ -101,7 +99,7 @@ async def main(event_id: str) -> None:
             )
         except Exception:
             logging.warning("Could not update worker startup status", exc_info=True)
-    projects, sessions = Projects(storage, settings), Sessions(settings.state_db)
+    sessions = Sessions(settings.state_db)
     payload = request["payload"]
     if saved.get("context"):
         data = saved["context"]
@@ -114,20 +112,17 @@ async def main(event_id: str) -> None:
             draft = data["workdir"] / "outputs/PROJECT.md"
             draft.parent.mkdir(parents=True, exist_ok=True)
             draft.write_text(data["project_md"])
-    await asyncio.to_thread(projects.reload)
-    agent = SlackAgent(settings, projects, sessions, Runner(settings), slack, auth["user_id"])
-    # The signed webhook already filtered new mentions, DMs and tracked thread replies.
-    payload["event"]["type"] = "app_mention"
+    agent = SlackAgent(settings, storage, sessions, Runner(settings), slack)
     payload["event"]["_notice_ts"] = request.get("notice_ts")
     payload["event"]["_conversation_context"] = saved.get("messages", [])
     try:
-        await agent.accept(payload)
-        if agent.tasks:
-            await asyncio.gather(*agent.tasks)
         event = payload["event"]
+        await agent.handle(event, (event["channel"], event.get("thread_ts") or event["ts"]))
         state = sessions.get(event["channel"], event.get("thread_ts") or event["ts"])
     finally:
         sessions.close()  # Flush SQLite WAL before archiving.
+    if not agent.completed or not state:
+        return
     snapshot(archive, home)
     archive_key = f"{PREFIX}/events/{event_id}/checkpoint.tar.gz"
     storage.upload(archive_key, archive)
@@ -135,7 +130,7 @@ async def main(event_id: str) -> None:
     if state:
         checkpoint.update(context=asdict(state[0]), turn=state[1], is_init=state[2])
     checkpoint["messages"] = saved.get("messages", [])
-    remember(checkpoint, event_id, event.get("text", ""), agent.last_reply)
+    record_exchange(checkpoint, event_id, event.get("text", ""), agent.last_reply)
     storage.put(pointer, json.dumps(checkpoint, default=str).encode())
 
 

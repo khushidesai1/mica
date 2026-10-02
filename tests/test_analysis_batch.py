@@ -22,8 +22,16 @@ from pistachio.agents.analysis.storage import LocalStorage
 from pistachio.api import slack_analysis
 
 
-def payload(ts="1.0", thread=None, text="plot", channel="D1", *, user="U1",
-            kind="message", channel_type="im"):
+def payload(
+    ts="1.0",
+    thread=None,
+    text="plot",
+    channel="D1",
+    *,
+    user="U1",
+    kind="message",
+    channel_type="im",
+):
     event = dict(type=kind, channel_type=channel_type, channel=channel, user=user, ts=ts, text=text)
     if thread:
         event["thread_ts"] = thread
@@ -39,7 +47,7 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     settings.cloud_tasks_service_account = "control@example.com"
     settings.control_plane_url = "https://existing.run.app"
     settings.slack_user_map = {"T1:U1": "alice@example.com", "T1:U2": "bob@example.com"}
-    agent_settings = Settings(_env_file=None, data_buckets="lab-data")
+    agent_settings = Settings(_env_file=None, data_buckets="lab-data", storage="local")
     monkeypatch.setattr(batch, "Settings", lambda: agent_settings)
     client = Mock()
     states = {}
@@ -64,6 +72,18 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     slack = AsyncMock()
     slack.chat_postMessage.return_value = {"ts": "9.0"}
     monkeypatch.setattr("slack_sdk.web.async_client.AsyncWebClient", lambda **kw: slack)
+    from pistachio.agents.analysis import direct
+    from pistachio.agents.analysis.projects import Projects
+
+    projects = Projects(storage, agent_settings)
+    projects.bind("D1", "liver", "gs://lab-data/liver/", "U1")
+    monkeypatch.setattr(
+        direct,
+        "decide",
+        AsyncMock(return_value=direct.Decision(route="compute", reply="Computation needed.")),
+    )
+    monkeypatch.setattr(direct, "AsyncWebClient", lambda **kw: slack)
+    slack.conversations_replies.return_value = {"messages": []}
     result = BatchBridge(settings, repository)
     result.test_client, result.test_states, result.test_slack = client, states, slack
     return result
@@ -195,16 +215,6 @@ async def test_concurrency_limit_and_failed_job_release(bridge):
     assert await bridge.process(ids[3], 2) == "running"
 
 
-async def test_init_mapping_changes_are_serialized(bridge):
-    a = await bridge.accept(payload(text="init one gs://lab-data/one/"))
-    b = await bridge.accept(payload("2.0", text="init two gs://lab-data/two/", channel="D2"))
-    assert await bridge.process(a, 0) == "running"
-    assert await bridge.process(b, 0) == "pending"
-    bridge.test_states[next(iter(bridge.test_states))] = "SUCCEEDED"
-    assert await bridge.process(a, 1) == "complete"
-    assert await bridge.process(b, 1) == "running"
-
-
 def test_checkpoint_roundtrip_and_traversal(tmp_path):
     home, restored = tmp_path / "source", tmp_path / "restored"
     for rel in (
@@ -278,12 +288,15 @@ async def test_untracked_channel_messages_are_ignored(bridge):
 async def test_worker_cold_start_resume_and_expired_checkpoint(
     tmp_path, monkeypatch, direct_revision
 ):
+    from dataclasses import asdict
+
     import httpx
     from test_analysis_slack import FakeRunner
 
     from pistachio.agents.analysis import batch_worker
     from pistachio.agents.analysis.config import CHECKPOINT_PREFIX
     from pistachio.agents.analysis.projects import Projects
+    from pistachio.agents.analysis.runner import Context
 
     home = tmp_path / "worker"
     home.mkdir()
@@ -331,6 +344,17 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
     monkeypatch.setattr(batch_worker.httpx, "AsyncClient", lambda **kw: http)
     monkeypatch.setenv("PISTACHIO_CONTROL_PLANE_URL", "https://existing.run.app")
     pointer = "projects/_threads/thread/checkpoint.json"
+    ctx = Context(
+        home / "work/liver/D1-1.0",
+        Path("/mnt/gcs/lab-data/liver"),
+        "liver",
+        "Frozen original brief",
+        thread_ts="1.0",
+    )
+    storage.put(
+        pointer,
+        json.dumps({"context": asdict(ctx), "turn": 0, "is_init": False}, default=str).encode(),
+    )
     for turn in range(1, 4):
         storage.put(
             f"{CHECKPOINT_PREFIX}/events/event-{turn}/request.json",
@@ -375,7 +399,7 @@ async def test_receipt_ack_precedes_worker_and_deduplicates(bridge):
         return create(**kwargs)
 
     bridge.test_client.create_job.side_effect = submit
-    first = await bridge.accept(payload(text="init liver gs://lab-data/liver/"))
+    first = await bridge.accept(payload(text="plot data"))
     assert await bridge.process(first, 0) == "running"
     assert await bridge.process(first, 0) == "running"
     assert bridge.test_slack.chat_postMessage.await_count == 1
@@ -402,10 +426,19 @@ async def test_dynamic_project_buckets_and_outside_project_rejection(bridge, mon
     bridge.settings.data_project = "existing-project"
     first = await bridge.accept(
         payload(
-            text="init new-project <https://console.cloud.google.com/storage/browser/new-data/folder?project=existing-project|data>"
+            text=(
+                "init new-project <https://console.cloud.google.com/storage/browser/"
+                "new-data/folder?project=existing-project|data> --force"
+            )
         )
     )
-    assert await bridge.process(first, 0) == "running"
+    from pistachio.agents.analysis import direct
+
+    direct.decide.return_value = direct.Decision(route="reply", reply="Draft.", draft="New brief")
+    assert await bridge.process(first, 0) == "complete"
+    direct.decide.return_value = direct.Decision(route="compute", reply="Plotting.")
+    compute = await bridge.accept(payload("1.1", "1.0", "plot"))
+    assert await bridge.process(compute, 0) == "running"
     catalog.assert_called_with(project="existing-project")
     job = bridge.test_client.create_job.call_args.kwargs["job"]
     container = job.task_groups[0].task_spec.runnables[0].container

@@ -11,7 +11,7 @@ from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 
 from pistachio.agents.analysis import identity
-from pistachio.agents.analysis.batch import BatchBridge, digest, job_spec
+from pistachio.agents.analysis.batch import BatchBridge, digest
 from pistachio.api.auth import get_principal
 from pistachio.api.dependencies import Services
 
@@ -65,9 +65,6 @@ async def receive(services: Services, payload: dict[str, Any]) -> dict[str, obje
                 finally:
                     await services.repository.release_event(key, claim.token)
         return {"ok": True}
-    # Validate before accepting a paid job; unset rollout prerequisites fail closed.
-    if not bridge.settings.direct_chat_enabled:
-        job_spec(services.settings, bridge.settings, "validation")
     if not services.settings.anthropic_api_key.get_secret_value():
         raise HTTPException(503, "Claude API credential has not been configured")
     event_id = await bridge.accept(payload)

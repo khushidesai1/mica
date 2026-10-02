@@ -44,7 +44,6 @@ dev = [
 ]
 
 [project.scripts]
-pistachio-slack = "pistachio.agents.analysis.main:run"
 pistachio-analyze = "pistachio.agents.analysis.cli:run"
 pistachio-api = "pistachio.api.app:run"
 pistachio-worker = "pistachio.worker.main:run"

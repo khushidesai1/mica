@@ -114,7 +114,7 @@ def read_state(storage: Storage, thread_key: str) -> dict[str, Any]:
     return state
 
 
-def remember(state: dict[str, Any], event_id: str, text: str, reply: str) -> None:
+def record_exchange(state: dict[str, Any], event_id: str, text: str, reply: str) -> None:
     messages = [m for m in state.get("messages", []) if m.get("id") != event_id]
     messages.append({"id": event_id, "user": text[:6000], "assistant": reply[:6000]})
     state["messages"] = messages[-12:]
@@ -306,7 +306,7 @@ async def handle(
     if ctx and decision.draft is not None:
         ctx.update(project_md=decision.draft, brief_generation=None)
     if decision.route == "reply":
-        remember(state, event_id, text, decision.reply)
+        record_exchange(state, event_id, text, decision.reply)
     else:
         state["direct_version"] = 1
     await asyncio.to_thread(

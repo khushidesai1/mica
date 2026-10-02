@@ -37,7 +37,6 @@ class Settings(BaseSettings):
     allowed_user_ids: str = ""
     # Separate staging-only approval for Docker's proc masking exception.
     batch_proc_mount_opt_in: bool = False
-    direct_chat_enabled: bool = False
     storage: Literal["gcs", "local"] = "gcs"
     local_storage_root: Path = Path(".local-storage")
 

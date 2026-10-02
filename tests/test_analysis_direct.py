@@ -11,7 +11,6 @@ from pistachio.agents.analysis.projects import Projects
 
 @pytest.fixture
 def chat(bridge, monkeypatch):  # noqa: F811
-    bridge.settings.direct_chat_enabled = True
     bridge.settings.storage = "local"
     store = batch.GCSStorage(bridge.app.gcs_bucket)
     projects = Projects(store, bridge.settings)
