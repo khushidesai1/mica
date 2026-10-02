@@ -13,7 +13,7 @@ token, always-on VM, or Modal account is required.
 `Slack DM → signed webhook → Cloud Tasks → Cloud Run conversation → Slack reply`
 
 Only requests that need data inspection, code execution, or plots proceed to a Batch Spot job.
-Enable this with `AGENT_DIRECT_CHAT_ENABLED=true`. Ordinary questions, planning, brief edits,
+Conversation routing is always enabled. Ordinary questions, planning, brief edits,
 `help`, `brief`, `save brief`, `cancel`, and bounded initial setup run in the control service.
 The direct Claude call has no shell, filesystem, or network tools. It can answer, revise a draft,
 or request isolated computation. API failures produce a visible retry message, never a worker
@@ -33,8 +33,7 @@ prevent work, and repeated webhook/poll deliveries reuse the stored message time
 
 Firestore receipts deduplicate Slack delivery, order accepted messages within a thread, and
 limit active Claude jobs to three. Named polling tasks use the existing queue without depending
-on its five-attempt retry limit. Separate threads can run concurrently. Initialization jobs
-serialize project binding changes. The worker saves SQLite state, Claude transcripts and the
+on its five-attempt retry limit. Separate threads can run concurrently. Registry writes use generation checks to serialize project binding changes. The worker saves SQLite state, Claude transcripts and the
 workspace to the existing artifact bucket after a turn; the next Spot job restores the same
 absolute paths. Direct chat updates the small checkpoint record with the revised brief and
 recent conversation without downloading the workspace archive. The next compute worker overlays
@@ -49,7 +48,7 @@ a checkpoint are separate operations, so a crash between them can leave a delive
 an older session checkpoint. If Cloud Tasks exhausts retries during a prolonged service outage,
 inspect the nonterminal `claude-event:*` receipt and re-enqueue its current tick; the job ID stays
 stable. Older web-created Slack threads do not import the old planner's private session state;
-a fresh Claude context can include the visible Slack thread history.
+a fresh Claude context starts from the authorized brief. Arbitrary Slack history is not imported.
 
 ## Existing staging resources verified
 
@@ -157,13 +156,13 @@ local draft revisions in subsequent turns, while other existing threads keep the
 New threads receive revisions after `save brief`. Unknowns can remain TODOs; user-provided
 information and verified findings should be distinguished from guesses. Rebinding does not
 change existing thread data/briefs. Each turn writes changed outputs,
-code, `run_log.jsonl` and `meta.json` under `projects/<slug>/runs/<thread_ts>/turn-<n>/`. Slack
+code, `run_log.jsonl` and `meta.json` under the audience-specific paths documented below. Slack
 uploads supported result files under 200 MB. `datasets_touched` reflects paths visible in tool
 inputs; it is not a syscall audit of files opened within scripts.
 
-Rollback: stop accepting new Claude events by restoring the previous backend after active
-Claude jobs drain. Existing web chat remains unchanged. Retain Claude project objects and the
-image configuration for later resumption; do not restore the blanket bucket deletion rule.
+Rollback after the private-project cutover must retain ACL enforcement: drain work and use a
+known compatible API/worker pair, or disable Slack ingress. Do not restore a pre-ACL backend.
+Retain the registry, private memory, and lifecycle rules; legacy files do not make an old writer safe.
 
 ## Local development
 
@@ -176,8 +175,8 @@ image configuration for later resumption; do not restore the blanket bucket dele
 .venv/bin/mypy src/pistachio
 ```
 
-The local CLI can use `--no-sandbox` on macOS only. `pistachio-slack` is an optional local Socket
-Mode entrypoint, not the deployed service. Live testing requires explicit
+The local CLI can use `--no-sandbox` on macOS only. Slack commands use the HTTP control plane;
+the Socket Mode entrypoint has been removed. Live testing requires explicit
 `PISTACHIO_RUN_LIVE_TESTS=1` and an API key. See the
 [Claude SDK reference](https://code.claude.com/docs/en/agent-sdk/python),
 [Batch volume reference](https://docs.cloud.google.com/batch/docs/reference/rest/v1/projects.locations.jobs#Volume),
@@ -192,13 +191,13 @@ folder, and a 15-second listing budget with each request capped at 5 seconds and
 Zarr/N5 stores are opaque entries; hidden/output folders are skipped. An unavailable/partial
 listing still produces an explicitly incomplete draft rather than starting an unbounded scan.
 
-Claude drafts from `init_inventory.json` and the template using workspace-only Read/Write/Edit.
-Bash, Glob, Grep, and data-mount reads are denied for this turn. Normal analysis tools return
-after initialization, including after checkpoint restoration. The draft marks unknown schemas,
+The control-plane model drafts from the bounded inventory without tools or a Spot worker.
+Normal data inspection is a separate computation request. The draft marks unknown schemas,
 counts and filename-based guesses; detailed file inspection is deferred until needed.
 
 Retrying the same project/folder binding preserves its identity and saved brief. A different
-binding still needs `--force`. Spot provisioning still adds its normal cold-start latency.
+DM binding at init still needs `--force`; `use` switches the default for new threads.
+Spot provisioning latency applies only to subsequent computation.
 
 
 ## Figure validation without previews
@@ -209,3 +208,114 @@ The prompt directs it to check successful script completion, nonempty output fil
 tables and concise logs. It must not encode image contents into tool output or claim visual
 inspection. Figure generation and full-resolution Slack uploads are unchanged. This avoids
 the observed SDK 1 MB JSON-buffer failure when reading a 6.5 MB spatial-map PNG.
+
+
+## Identity, projects, and private memory
+
+Every accepted Slack event resolves `team:user` (or the legacy user-only mapping) to a normalized
+email in `PISTACHIO_SLACK_USER_MAP`, then checks `PISTACHIO_ALLOWED_EMAILS` when configured and
+`AGENT_ALLOWED_USER_IDS` when configured. Unmapped DMs/mentions receive one generic refusal;
+unmapped channel chatter is silent. Keep the allowlist nonempty for a restricted deployment.
+Identity is rechecked before commands, job submission, and worker credential delivery.
+
+Projects are private by default. Their opaque IDs are independent of display names: Alice’s
+`liver` and Bob’s `liver` are separate projects with separate `PROJECT.md` files. Repeating init
+with the same owner, name, and data URI reuses that project; changing the URI requires a new name.
+Each thread retains its selected project even after `use` changes the default. Existing threads
+keep their brief snapshots. `save brief` and an optional `.md` upload are explicit publication
+actions to project members and authorized channel audiences. A stale save is rejected if another
+thread changed the shared brief; start a new thread to review and reconcile it.
+
+| Command | Where and effect |
+| --- | --- |
+| `init liver gs://bucket/folder/ [--force]` | DM: create/reuse your project and draft its brief. |
+| `projects` | DM: list owned and explicitly shared projects only. |
+| `use liver` or `use p_…` | Select a project for new threads. Ambiguous shared names require an ID. |
+| `share liver @user` / `unshare liver @user` | Owner in DM: grant/revoke a mapped user; email links also work. |
+| `publish liver #channel` / `unpublish liver #channel` | Owner in DM: authorize/withdraw replies visible to the entire channel audience. |
+| `use p_… [--force]` in a channel | Owner selects an explicitly published project; replacing a binding requires its current owner too. |
+| `brief` / `save brief` | View this draft / publish it, after an access check. |
+| `cancel` | Cancel queued/active computation after an access check. |
+| `memory` | DM: show private profile/preferences and the newest 20 numbered notes. |
+| `remember <text>` | DM: add a private note (up to 600 characters). |
+| `forget <number\|profile\|preferences\|all>` | DM: delete the selected memory and invalidate previous private context. |
+
+Sharing a project grants access to its shared brief and computation, not another user’s DM
+history or memory. Channel publication is a separate explicit decision: every current or future
+viewer of that Slack channel can read posted content, even if they cannot invoke the agent.
+Removing a member does not retract Slack messages or remove them from a published channel’s
+audience. Unpublish disables future replies there. Old queued workers recheck grants before
+restoring context and before delivering results. Previously submitted pre-ACL workers must be
+drained at cutover.
+
+Memory is stored only at `projects/_users/<hash-of-normalized-email>/memory.json`. No personal
+memory is injected into channels or group conversations. DM retrieval may use notes from another
+project belonging to, or currently shared with, that same user. Access filtering happens before
+ranking and before the memory editor receives context. Revoked notes appear as hidden placeholders
+in `memory`; their content is excluded. A block containing contributions from a revoked project
+is hidden as a whole. Notes retain their original project attribution; they are suggestions,
+not facts about the current project. Init displays them in a private reply, never automatically
+in the initial brief. Applying memory to a later draft requires the user’s request; publishing
+that draft with `save brief` deliberately shares its contents.
+
+Profile and preferences are each bounded to 1,500 characters. Up to 200 notes have stable numbers;
+retrieval selects at most five within 2,500 characters, using keyword overlap and recency. Atomic
+writes prevent lost concurrent updates. Permanent operation receipts prevent delayed deliveries
+from resurrecting forgotten content. The post-reply editor proposes at most three changes, rejects
+credential-like text, and sends a confirmation only after saving. It is best effort with a
+30-second bound and cannot fail the main reply. Set `AGENT_MEMORY_AUTO_EDIT=false` to disable it;
+explicit memory commands still work. `AGENT_MEMORY_MODEL` defaults to `AGENT_MODEL`.
+
+Forgetting, replacing memory, or changes to accessible project grants invalidate private context.
+The next turn starts a new workspace and SDK session, clears the recent transcript/private draft,
+and reloads the shared brief. This also blocks old queued memory snapshots. Access revisions
+ensure revoke-then-regrant does not revive an old grant. Forgotten content is removed from future
+retrieval; this is not deletion of historical Slack messages, explicitly saved shared briefs,
+old outputs, or retained audit archives. Registry/memory receipts and private outputs are under
+the durable `projects/` prefix; include them in retention and backup planning.
+
+DM outputs live at `projects/_users/<user-hash>/runs/<project-id>/<thread-key>/turn-<n>/`.
+Authorized channel outputs retain `projects/<project-id>/runs/<thread-ts>/turn-<n>/`.
+The agent’s filesystem sandbox cannot browse another run or the user-memory store. These are
+application isolation boundaries: the trusted service accounts still have the existing bucket
+permissions. Lab-wide data-bucket access remains intentional; this is not per-user data IAM.
+
+## Private-project migration and cutover (approval required)
+
+These changes are prepared locally. The deployment history document describes the older live
+revision; it is not evidence that this migration has run. Ask before every cloud build, migration,
+or deployment, as required by the implementation plan.
+
+1. Confirm the mapped users/allowlist and the immutable base web image. Build the Slack API and
+   worker from the same commit using the existing layered build files. The Slack-only API copies
+   `agents/analysis/` and `api/slack_analysis.py`; the independent browser fixes ship only with
+   a subsequent full web release. Keep the three existing Slack integration patches unchanged.
+2. Stop Slack ingress to old code. Drain or cancel old Cloud Tasks receipts and Batch jobs;
+   verify no old registry/brief writers can run, including delayed retries. Keep ingress stopped
+   until the new API and worker are both ready. A second migration pass while old writers are
+   live does not provide safe cutover.
+3. Run a read-only report, then review ownership mappings. The report excludes brief contents:
+
+   ```bash
+   .venv/bin/python tools/migrate_slack_registry.py --bucket ARTIFACT_BUCKET \
+     --team T_WORKSPACE --user-map /secure/user-map.json --owners /secure/owners.json
+   ```
+
+   The default report writes a draft local owners file only if one does not exist. Confirm it
+   with the project owners. Unowned projects fail closed. Legacy channel pointers are migrated
+   without publication permission; each owner must explicitly publish before channel replies.
+4. After reviewing the report and confirming the drain, apply with the same arguments plus
+   `--apply --quiesced`. This writes a registry backup, adds missing entries atomically, preserves
+   legacy files, and rejects ownership/data/binding drift. Reapplying with unchanged inputs is a
+   no-op. The `--quiesced` flag is an operator attestation, not an automatic cloud drain.
+5. Deploy a tagged revision without traffic using the paired digest-pinned images. Run health,
+   credential, sandbox, and two-user checks from the plan. Promote it, then restore Slack ingress.
+   New API code refuses unmigrated projects; new workers refuse incompatible old manifests.
+6. Roll back only to a known ACL-compatible pair after draining. If none exists, keep Slack
+   ingress disabled until repaired. Never route private-project traffic to the old slug backend.
+
+For local rehearsal, replace `--bucket` with `--local-root /tmp/pistachio-migration-fixture`.
+Keep owner maps, real configuration, Terraform state, and credentials out of Git. On another
+laptop, clone the repository, select the implementation branch, recreate the virtualenv and local
+configuration, and authenticate to the existing cloud resources. The deployed runtime and its
+memory are in GCP; the laptop does not need to remain running.

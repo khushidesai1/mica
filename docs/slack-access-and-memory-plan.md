@@ -1,6 +1,15 @@
 # Plan: Private projects, explicit sharing, and Letta‑lite user memory for Pistachio's Slack agent
 
-> Written for Codex (or a developer). Read §0 before changing code. Build one milestone at a time (§9).
+> Original implementation plan, followed with the approved corrections below. Local implementation
+> is complete; cloud build, migration, deployment, and live checks remain approval-gated.
+
+**Approved corrections implemented:** explicit owner channel publication separate from membership;
+private DM output prefixes; init memory suggestions outside the shared draft; context invalidation
+on forgetting/access changes; access-filtered memory-editor inputs; permanent replay receipts;
+generation-checked brief saves; quiesced migration and ACL-compatible rollback only; fresh string
+web event IDs (never `None`); preserve the existing Cloud Tasks `get_principal` import.
+See [the current setup and cutover guide](slack-agent-setup.md) for the executable workflow.
+The original design details below are retained as provenance; these corrections take precedence.
 
 **Summary.** Every Slack message gets resolved to a user, and that user's access to the thread's project is checked before anything is read. Projects get opaque IDs, an owner, and invited members, so a project's name is just a label and its `PROJECT.md` can't be inherited by someone else. Each user gets a small private memory modeled on Letta: two always-loaded blocks plus a searchable notes archive. The agent edits it after DM turns and announces each change. The browser gets four small isolation fixes.
 
@@ -246,7 +255,7 @@ Rename the thread-transcript helper `remember` (`direct.py:117`, also `batch_wor
             "project_id": "p_…", "created_at": "…", "event_id": "…"}],
  "applied_events": ["<event_id>", "…"]}
 ```
-- **Limits:** each block ≤1,500 characters; at most 200 notes, each ≤600 characters; keep the last 500 `applied_events`.
+- **Limits:** each block ≤1,500 characters; at most 200 notes, each ≤600 characters; retain permanent hashed operation receipts.
 - **Stable numbers.** A note's `seq` is never reused, so `forget 12` stays correct after other edits.
 
 ### 7.2 Reading (DMs only)
@@ -270,7 +279,7 @@ Rename the thread-transcript helper `remember` (`direct.py:117`, also `batch_wor
 - Notes from other projects are suggestions only. Confirm before relying on one here, and never present it as a fact about this project.
 - Don't copy memory into the brief unless the user asks.
 - Don't claim to have saved anything to memory; a confirmation is posted when memory changes. Users review it with `memory`.
-- On `init` in a DM, use memory only as attributed suggestions in the draft, marked "(from your memory, please confirm)".
+- On `init` in a DM, show memory only as attributed suggestions in the private reply, outside the draft, marked "(from your memory, please confirm)".
 
 ### 7.3 Writing: the post-turn memory editor
 After a non-command DM turn has been delivered, the control plane makes one small model call. Copy the `httpx` pattern from `direct.decide`; the model is `AGENT_MEMORY_MODEL`, defaulting to `AGENT_MODEL`. It exposes one tool, `edit_memory`:
@@ -330,7 +339,7 @@ class Edits(BaseModel):
   - Add `session_key(envelope)` = `"conv_" + sha256(project_id \0 principal_id \0 conversation_id)[:32]` in `agents/session.py`.
   - Use it at `harness.py:450`, at the compaction call (`tasks.py:1529-1531`; rename `compact_session`'s parameter to `session_id`), and in the idle sweep (`tasks.py:2226-2227`).
   - Old legacy-planner sessions are simply orphaned.
-- **B2 The server sets task identity fields.** In `create_task` (`api/routes.py:181-192`), web submissions always get `source="web"`, a fresh `conversation_id`, and `external_event_id=None`. This also blocks two attacks:
+- **B2 The server sets task identity fields.** In `create_task` (`api/routes.py:181-192`), web submissions always get `source="web"`, a fresh `conversation_id`, and a fresh server-generated `external_event_id`. This also blocks two attacks:
   - using `source="slack"` to post task updates into an arbitrary Slack DM;
   - using `external_event_id="process:<task_id>"` to block a task from being processed.
 - **B3 Auth config guard.**
@@ -478,7 +487,7 @@ B1–B4, each with a test:
    2. Run the migration dry run and review `owners.json` with the user, then run `--apply`.
    3. Deploy one tagged revision with no traffic, using the new API image and `PISTACHIO_SLACK_AGENT_IMAGE` set to the new worker digest. One revision changes both.
    4. Run the health and credential checks, then promote.
-   5. Run `--apply` again to pick up anything the old revision created in the meantime.
+   5. Old ingress, tasks, and workers must be drained before migration and remain stopped until cutover; do not use a second pass as a substitute.
 3. **Release 3 (M4, memory):** same path. It can ship together with Release 2 if preferred.
 4. **Live check:** the two-user DM check in §11.
 
@@ -488,7 +497,7 @@ B1–B4, each with a test:
 - Leftover `claude-config` leases expire on their own.
 - Legacy projects with no owner are denied; the dry run shows how many threads that affects.
 
-**Rollback:** route traffic back to the previous revision. The checkpoint format is unchanged. Keep the registry, the memory files, and the legacy `project.json` files.
+**Rollback:** drain first and use only an ACL-compatible API/worker pair, or disable Slack ingress. Never restore the pre-ACL slug backend. Keep the registry, memory, and legacy files.
 
 ---
 
@@ -497,7 +506,7 @@ B1–B4, each with a test:
 - **Every milestone:** `pytest -q`, `ruff check src tests tools`, `mypy src/pistachio`.
 - **Import boundary:** this must print nothing:
   ```
-  grep -rnE "from pistachio\.(services|api\.auth|agents\.(memory|context|harness|session))" src/pistachio/agents/analysis src/pistachio/api/slack_analysis.py
+  grep -rnE "from pistachio\.(services|agents\.(memory|context|harness|session))" src/pistachio/agents/analysis src/pistachio/api/slack_analysis.py
   ```
 - **Build gate:** `cloudbuild/build-slack-api.yaml` passes `check_slack_preservation.py` and the Dockerfile smoke test.
 - **Live, in staging, led by the user**, with two mapped users A and B in DMs:
@@ -513,6 +522,6 @@ B1–B4, each with a test:
 - Per-user data permissions. The user chose lab-wide access; `resolve_data` is where a policy would go.
 - Browser use of the new user memory or project registry.
 - Other web issues: the `retrieve()` write-back race, planner-v2 `master_hash` sensitivity to retrieval, and the global slug race in Firestore.
-- `runs/` is keyed only by `thread_ts` (`outputs.py:44`).
+- Authorized channel runs still use `thread_ts`; private runs additionally use the user hash and full thread key.
 - Memory consolidation jobs, embeddings, and memory tools used during an analysis (the "live tools" option).
 - Admin tooling beyond the migration script, such as transferring ownership when someone leaves.

@@ -366,10 +366,6 @@ resource "google_cloud_run_v2_service" "api" {
         value = join(",", sort(tolist(var.slack_agent_data_buckets)))
       }
       env {
-        name  = "AGENT_DIRECT_CHAT_ENABLED"
-        value = "true"
-      }
-      env {
         name  = "AGENT_DATA_PROJECT"
         value = var.slack_agent_data_project
       }

@@ -1,4 +1,8 @@
-# Project memory and context
+# Browser project memory and context
+
+The Claude Slack agent has a separate private user-memory layer shared across that user’s
+accessible projects. See [Slack identity, sharing, and memory](slack-agent-setup.md#identity-projects-and-private-memory).
+The browser model described below remains project-scoped; it does not read Slack memory.
 
 Projects are the only cross-task and cross-channel memory boundary. There is no global scientific
 memory. Raw session history remains in the audit store while only the two latest other-task
