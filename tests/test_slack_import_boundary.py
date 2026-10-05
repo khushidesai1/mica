@@ -1,4 +1,4 @@
-"""Keep the layered Slack image independent of the local browser hardening changes."""
+"""Keep the Claude Slack runtime independent of the shared task-service agent stack."""
 
 import ast
 from pathlib import Path

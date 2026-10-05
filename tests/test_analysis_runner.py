@@ -1,12 +1,26 @@
 from unittest.mock import AsyncMock
 
 import pytest
-from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock, ToolUseBlock
+from claude_agent_sdk import (
+    AssistantMessage,
+    ResultMessage,
+    TextBlock,
+    ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
+)
 
 from pistachio.agents.analysis import runner
 from pistachio.agents.analysis.config import Settings
 from pistachio.agents.analysis.outputs import changed_files, snapshot_outputs
-from pistachio.agents.analysis.runner import Context, Runner, build_options
+from pistachio.agents.analysis.runner import Context, Runner, build_options, describe_tool
+
+
+def test_bash_status_hides_commands_and_limits_descriptions():
+    block = ToolUseBlock(id="1", name="Bash", input={"command": "cat private.txt"})
+    assert describe_tool(block) == "Running code"
+    block.input["description"] = "x" * 120
+    assert describe_tool(block) == "x" * 80
 
 
 def result(**kwargs):
@@ -215,3 +229,39 @@ async def test_private_memory_is_in_system_only(setup, monkeypatch):
     assert "PRIVATE-PREFERENCE" in calls[0]["options"].system_prompt["append"]
     assert "PRIVATE-PREFERENCE" not in calls[0]["prompt"]
     assert "PRIVATE-PREFERENCE" not in build_options(ctx, settings).system_prompt["append"]
+
+
+async def test_tool_lifecycle_tracks_parallel_checks_without_exposing_results(setup, monkeypatch):
+    ctx, settings = setup
+
+    async def query(**kwargs):
+        yield AssistantMessage(
+            content=[
+                ToolUseBlock(
+                    id="one",
+                    name="Bash",
+                    input={"description": "Check cell counts", "command": "SECRET"},
+                ),
+                ToolUseBlock(id="two", name="Read", input={"file_path": "/data/samples.csv"}),
+            ],
+            model="test",
+        )
+        yield UserMessage(content=[ToolResultBlock(tool_use_id="two", content="PRIVATE DATA")])
+        yield UserMessage(
+            content=[ToolResultBlock(tool_use_id="one", content="PRIVATE ERROR", is_error=True)]
+        )
+        yield result(result="Here is the answer.")
+
+    monkeypatch.setattr(runner, "query", query)
+    callback = AsyncMock()
+    await Runner(settings).run_turn(ctx, "check", callback)
+    updates = [call.args[0] for call in callback.call_args_list]
+    assert [(t.task_id, t.status) for t in updates] == [
+        ("one", "in_progress"),
+        ("two", "in_progress"),
+        ("two", "complete"),
+        ("one", "error"),
+    ]
+    assert updates[0].title == "Check cell counts"
+    assert updates[1].title == "Reading samples.csv"
+    assert "SECRET" not in repr(updates) and "PRIVATE" not in repr(updates)

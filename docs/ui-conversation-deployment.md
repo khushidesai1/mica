@@ -1,5 +1,9 @@
 # UI and shared conversation deployment — 29 September 2026
 
+> Historical record: the web UI and browser login have since been removed from source.
+> Web rollout/preservation instructions below are superseded by the current
+> [headless deployment guide](deployment.md#headless-api-rollout).
+
 Deployed to [Pistachio staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app).
 Revision `pistachio-staging-00050-xay` serves 100% of traffic.
 

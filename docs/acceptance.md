@@ -1,5 +1,9 @@
 # Slack agent acceptance record
 
+> Historical record: the web UI and browser login have since been removed from source.
+> Web rollout/preservation instructions below are superseded by the current
+> [headless deployment guide](deployment.md#headless-api-rollout).
+
 Scope: rewrite the agent layer inside Pistachio, **Slack first**, retaining the existing bot,
 HTTP webhook, Cloud Run control plane and Batch Spot resources. Web chat stays unchanged.
 The user subsequently authorized staging deployment and the separately gated sandbox and

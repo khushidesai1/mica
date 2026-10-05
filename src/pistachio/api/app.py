@@ -11,12 +11,10 @@ from fastapi import FastAPI
 from pistachio.agents.context import ContextBuilder
 from pistachio.agents.harness import AgentHarness
 from pistachio.agents.memory import MemoryManager, ProjectCompactor
-from pistachio.api.auth import router as auth_router
 from pistachio.api.dependencies import Services
 from pistachio.api.errors import install_error_handlers
 from pistachio.api.routes import router as api_router
 from pistachio.api.slack_analysis import router as slack_analysis_router
-from pistachio.api.web import router as web_router
 from pistachio.config import Settings, get_settings
 from pistachio.connectors.gmail import router as gmail_router
 from pistachio.connectors.notifications import ChannelNotifier
@@ -80,14 +78,14 @@ def create_app(
         title="Pistachio Bioinformatics Agent",
         version="0.1.0",
         lifespan=lifespan,
+        docs_url=None,
+        redoc_url=None,
     )
     app.state.services = services
     app.include_router(api_router)
-    app.include_router(auth_router)
     app.include_router(slack_router)
     app.include_router(slack_analysis_router)
     app.include_router(gmail_router)
-    app.include_router(web_router)
     install_error_handlers(app)
     return app
 

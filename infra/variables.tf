@@ -38,20 +38,6 @@ variable "allowed_emails" {
   type      = string
   sensitive = true
 }
-variable "oauth_client_id" { type = string }
-variable "web_session_days" {
-  type    = number
-  default = 14
-  validation {
-    condition     = var.web_session_days >= 1 && var.web_session_days <= 30
-    error_message = "web_session_days must be between 1 and 30."
-  }
-}
-variable "oauth_client_secret_version" {
-  type    = string
-  default = "latest"
-}
-
 variable "openai_api_key_version" {
   type    = string
   default = "latest"

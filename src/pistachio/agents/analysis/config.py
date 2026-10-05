@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     )
     slack_app_token: SecretStr = Field(default=SecretStr(""), alias="SLACK_APP_TOKEN")
     model: str = "claude-opus-5-5"
+    loading_emoji: str = ":hourglass_flowing_sand:"  # AGENT_LOADING_EMOJI; custom emoji supported.
     memory_auto_edit: bool = True
     memory_model: str = ""
     fallback_model: str = "claude-opus-5"

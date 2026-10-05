@@ -763,3 +763,193 @@ def test_slack_reply_continues_web_originated_task(tmp_path, monkeypatch) -> Non
         assert FakeWebClient.messages[-1]["text"] == saved["conversation"][-1]["text"]
         assert FakeWebClient.messages[-1]["thread_ts"] == route.thread_id
         assert len(asyncio.run(services.repository.list_tasks(project["id"]))) == 1
+
+
+def _open_pending_approval(client, approval):
+    project = client.post(
+        "/api/v1/projects", json={"name": "Review", "slug": "review"}
+    ).json()
+    task = TaskRecord(
+        envelope=TaskEnvelope(
+            project_id=project["id"], source=TaskSource.SLACK,
+            conversation_id="slack:T123:D123", thread_id="review-thread",
+            principal_id="alice@example.org", prompt="Analyze the data",
+        ),
+        status=TaskStatus.NEEDS_APPROVAL, planner_version=1,
+        contract=TaskContract(objective="Analyze the data", requires_execution=True),
+        approvals=[approval],
+    )
+    approval.task_id = task.id
+    asyncio.run(client.app.state.services.repository.create_task(task))
+    client.app.state.services.dispatcher = FakeDispatcher()
+    payload = {
+        "type": "block_actions", "trigger_id": "trigger-review",
+        "team": {"id": "T123"}, "user": {"id": "U123"}, "channel": {"id": "D123"},
+        "actions": [{
+            "action_id": "review_task_approval",
+            "value": json.dumps({"task_id": task.id, "approval_id": approval.id}),
+        }],
+    }
+    body = urlencode({"payload": json.dumps(payload)}).encode()
+    response = client.post(
+        "/integrations/slack/actions", content=body, headers=_headers(body, "test-secret")
+    )
+    assert response.status_code == 200
+    return task, FakeWebClient.views[-1]["view"]
+
+
+def _submit_review(client, view, values, *, user="U123"):
+    payload = {
+        "type": "view_submission", "team": {"id": "T123"}, "user": {"id": user},
+        "view": {**view, "state": {"values": values}},
+    }
+    body = urlencode({"payload": json.dumps(payload)}).encode()
+    return client.post(
+        "/integrations/slack/actions", content=body, headers=_headers(body, "test-secret")
+    )
+
+
+def _large_approval(count=81):
+    return ApprovalRequest(
+        task_id="pending", kind=ApprovalKind.HYPERPARAMETER,
+        title="Confirm all settings", detail="Review each setting before execution.",
+        payload={"fields": [
+            {"id": f"setting_{i}", "label": f"Setting {i}", "proposed_value": str(i)}
+            for i in range(count)
+        ]},
+    )
+
+
+def test_large_slack_approval_collects_all_pages_before_execution(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        task, view = _open_pending_approval(client, _large_approval())
+        services = client.app.state.services
+        for offset, stop in ((0, 40), (40, 80), (80, 81)):
+            assert len(view["blocks"]) <= 100
+            assert json.loads(view["private_metadata"])["offset"] == offset
+            values = {f"field_{i}": {"value": {"value": str(i + 100)}}
+                      for i in range(offset, stop)}
+            response = _submit_review(client, view, values)
+            assert response.status_code == 200
+            if stop < 81:
+                assert response.json()["response_action"] == "update"
+                view = response.json()["view"]
+                # A duplicate page delivery returns the same next page without approving.
+                assert _submit_review(client, {
+                    **view, "private_metadata": json.dumps({
+                        **json.loads(view["private_metadata"]), "offset": offset,
+                    }),
+                }, values).json()["view"] == view
+                saved = asyncio.run(services.repository.get_task(task.id))
+                assert saved.approvals[0].status == "pending"
+                assert services.dispatcher.task_ids == []
+        assert response.json() == {"response_action": "clear"}
+        saved = asyncio.run(services.repository.get_task(task.id))
+        assert saved.approvals[0].status == "approved"
+        for i in range(81):
+            assert f"Setting {i}: {i + 100}" in saved.approvals[0].payload["decision"]
+        assert services.dispatcher.task_ids == [task.id]
+
+
+def test_large_slack_approval_rejects_stale_or_incomplete_review(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        task, view = _open_pending_approval(client, _large_approval(41))
+        services = client.app.state.services
+        metadata = json.loads(view["private_metadata"])
+        second_page = {**view, "private_metadata": json.dumps({**metadata, "offset": 40})}
+        values = {"field_40": {"value": {"value": "140"}}}
+        skipped = _submit_review(client, second_page, values)
+        assert skipped.json()["response_action"] == "errors"
+        first_values = {f"field_{i}": {"value": {"value": str(i)}} for i in range(40)}
+        second_page = _submit_review(client, view, first_values).json()["view"]
+        # A changed approval must not reuse decisions collected for the older version.
+        saved = asyncio.run(services.repository.get_task(task.id))
+        saved.approvals[0].payload["fields"][0]["proposed_value"] = "new value"
+        asyncio.run(services.repository.update_task(saved))
+        stale = _submit_review(client, second_page, values)
+        assert stale.json()["response_action"] == "errors"
+        assert services.dispatcher.task_ids == []
+        assert asyncio.run(services.repository.get_task(task.id)).approvals[0].status == "pending"
+
+
+def test_slack_review_without_fields_can_approve_exact_tool(tmp_path, monkeypatch):
+    from pistachio.models import ToolProposal
+
+    with _client(tmp_path, monkeypatch) as client:
+        services = client.app.state.services
+        tool = ToolProposal(
+            name="ExampleTool", source_url="https://example.org/tool.git", version="1.2.3",
+            commit_sha="a" * 40, install_recipe="pip install tool==1.2.3",
+            why_needed="Required analysis format",
+        )
+        asyncio.run(services.repository.put_tool(tool))
+        approval = ApprovalRequest(
+            task_id="pending", kind=ApprovalKind.TOOL_ADD,
+            title="Approve ExampleTool 1.2.3",
+            detail="Source: https://example.org/tool.git, v1.2.3",
+            payload={"tool_ids": [tool.id]},
+        )
+        task, view = _open_pending_approval(client, approval)
+        assert view["title"]["text"] == "Review approval"
+        response = _submit_review(client, view, {
+            "decision": {"value": {"selected_option": {"value": "approve"}}},
+        })
+        assert response.json() == {"response_action": "clear"}
+        saved = asyncio.run(services.repository.get_task(task.id))
+        assert saved.approvals[0].status == "approved"
+        assert saved.status == TaskStatus.NEEDS_INPUT  # Wait for the exact tool build.
+        assert services.dispatcher.task_ids == []
+        approved_tool = asyncio.run(services.repository.get_tool(tool.id))
+        assert approved_tool.status == "approved"
+        assert approved_tool.commit_sha == "a" * 40
+
+
+def test_slack_review_without_fields_preserves_explicit_scientific_consent(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        task, view = _open_pending_approval(client, ApprovalRequest(
+            task_id="pending", kind=ApprovalKind.SCIENTIFIC_STEP,
+            title="Choose the population", detail="Confirm which samples should be included.",
+        ))
+        values = {"decision": {"value": {"selected_option": {"value": "approve"}}}}
+        response = _submit_review(client, view, values)
+        assert response.json()["response_action"] == "errors"
+        values["response"] = {"value": {"value": "Use treatment-naive samples only."}}
+        assert _submit_review(client, view, values).json() == {"response_action": "clear"}
+        saved = asyncio.run(client.app.state.services.repository.get_task(task.id))
+        assert "Use treatment-naive samples only." in saved.contract.authorized_scientific_actions
+
+
+def test_slack_review_without_fields_can_decline(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch) as client:
+        task, view = _open_pending_approval(client, ApprovalRequest(
+            task_id="pending", kind=ApprovalKind.TOOL_ADD,
+            title="Review proposed tool", detail="This tool requires your approval.",
+        ))
+        response = _submit_review(client, view, {
+            "decision": {"value": {"selected_option": {"value": "decline"}}},
+        })
+        assert response.json() == {"response_action": "clear"}
+        services = client.app.state.services
+        saved = asyncio.run(services.repository.get_task(task.id))
+        assert saved.approvals[0].status == "rejected"
+        assert saved.status == TaskStatus.CANCELLED
+        assert services.dispatcher.task_ids == []
+
+
+def test_all_approval_notifications_have_native_actions_and_no_website_links(tmp_path):
+    notifier = ChannelNotifier(Settings(env="test", artifact_root=tmp_path,
+                                        control_plane_url="https://pistachio.example"))
+    for approval in [_large_approval(), *[
+        ApprovalRequest(task_id="pending", kind=kind, title="Review", detail="Decision needed")
+        for kind in ApprovalKind
+    ]]:
+        task = TaskRecord(
+            envelope=TaskEnvelope(project_id="project", conversation_id="slack:T123:D123",
+                                  principal_id="alice@example.org", prompt="Analyze"),
+            approvals=[approval],
+        )
+        elements = [element for block in notifier._approval_blocks(task, "Review this")
+                    for element in block.get("elements", [])]
+        assert elements
+        assert all("url" not in element for element in elements)
+        assert elements[0]["action_id"] in {"review_task_approval", "approve_task_approval"}

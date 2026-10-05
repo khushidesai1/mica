@@ -98,6 +98,7 @@ def bridge(monkeypatch, settings, repository, tmp_path):
 
 def test_job_reuses_spot_resources_and_has_no_credentials(bridge):
     bridge.app.batch_nested_sandbox_opt_in = True
+    bridge.settings.loading_emoji = ":pistachio-loading:"
     job = job_spec(bridge.app, bridge.settings, "a" * 32)
     task = job.task_groups[0].task_spec
     assert task.max_retry_count == 0
@@ -111,6 +112,7 @@ def test_job_reuses_spot_resources_and_has_no_credentials(bridge):
     assert "ro,allow_other" in task.volumes[0].mount_options
     assert "seccomp=unconfined" in task.runnables[0].container.options
     assert not any("KEY" in x or "TOKEN" in x for x in task.runnables[0].environment.variables)
+    assert task.runnables[0].environment.variables["AGENT_LOADING_EMOJI"] == ":pistachio-loading:"
     bridge.app.env = "production"
     assert (
         not job_spec(bridge.app, bridge.settings, "a" * 32)
@@ -438,7 +440,24 @@ async def test_receipt_ack_precedes_worker_and_deduplicates(bridge):
     record["created"] -= 130
     await bridge.repository.set_connector_state(f"claude-event:{first}", record)
     await bridge.process(first, 1)
-    assert "2 min since receipt" in bridge.test_slack.chat_update.call_args.kwargs["text"]
+    assert "2 min so far" in bridge.test_slack.chat_update.call_args.kwargs["text"]
+
+
+async def test_notify_status_blocks_are_removed_for_final_reply(bridge):
+    from pistachio.agents.analysis.slack_format import status_blocks
+
+    record = {"payload": payload()}
+    await bridge.notify("status-test", record, "starting", "Spinning up…")
+    posted = bridge.test_slack.chat_postMessage.call_args.kwargs
+    assert posted["blocks"] == status_blocks(bridge.settings.loading_emoji, "Spinning up…")
+    await bridge.notify("status-test", record, "starting", "Getting set up…")
+    assert "blocks" in bridge.test_slack.chat_update.call_args.kwargs
+    await bridge.notify("status-test", record, "complete", "Here's the answer.")
+    assert bridge.test_slack.chat_update.call_args.kwargs == {
+        "channel": "D1",
+        "ts": "9.0",
+        "text": "Here's the answer.",
+    }
 
 
 async def test_dynamic_project_buckets_and_outside_project_rejection(bridge, monkeypatch):

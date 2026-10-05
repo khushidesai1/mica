@@ -8,22 +8,25 @@ import logging
 import time
 from collections.abc import Callable
 from contextlib import suppress
+from html import escape
 from typing import Any
 
+from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.web.async_slack_response import AsyncSlackResponse
 
 from .config import Settings
 from .data_links import message_text
 from .outputs import files_under, publish
+from .progress import ProgressUpdate, TaskProgress
 from .runner import Context, Runner
 from .sessions import Sessions
-from .slack_format import chunks, to_mrkdwn
+from .slack_format import activity_blocks, chunks, done_blocks, status_blocks, to_mrkdwn
 from .storage import Storage
 
 log = logging.getLogger(__name__)
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf", ".svg", ".csv", ".tsv", ".md", ".txt"}
-HEARTBEAT_SECONDS = 30
+HEARTBEAT_SECONDS = 10
 
 
 class SlackAgent:
@@ -44,9 +47,16 @@ class SlackAgent:
         self.completed = False
         self.run_prefix, self.authorized = run_prefix, authorized
 
-    async def say(self, key: tuple[str, str], text: str) -> AsyncSlackResponse:
+    async def say(
+        self, key: tuple[str, str], text: str, blocks: list[dict[str, Any]] | None = None
+    ) -> AsyncSlackResponse:
         return await self.client.chat_postMessage(
-            channel=key[0], thread_ts=key[1], text=text, unfurl_links=False, unfurl_media=False
+            channel=key[0],
+            thread_ts=key[1],
+            text=text,
+            unfurl_links=False,
+            unfurl_media=False,
+            blocks=blocks,
         )
 
     async def handle(self, event: dict[str, Any], key: tuple[str, str]) -> None:
@@ -73,7 +83,7 @@ class SlackAgent:
             self.completed = True
         except Exception:
             log.exception("Slack computation failed: %s", key)
-            await self.say(key, "I hit an error while running this. Please retry.")
+            await self.say(key, "Sorry, something broke on my end. Mind trying again?")
             raise
 
     async def run(
@@ -89,50 +99,134 @@ class SlackAgent:
         self.sessions.save(
             key[0], ctx, turn, is_init
         )  # Reserve the provenance sequence before running.
+        emoji = self.settings.loading_emoji
         if notice_ts:
             status: Any = {"ts": notice_ts}
             try:
                 await self.client.chat_update(
-                    channel=key[0], ts=notice_ts, text="Worker ready. Working on your request…"
+                    channel=key[0],
+                    ts=notice_ts,
+                    text="Working on it…",
+                    blocks=status_blocks(emoji, "Working on it…"),
                 )
             except Exception:
                 log.warning("Initial status update failed", exc_info=True)
         else:
-            status = await self.say(key, "Working on it…")
+            status = await self.say(key, "Working on it…", status_blocks(emoji, "Working on it…"))
         last = time.monotonic()
-        started = last
-        latest = "Working on your request"
+        steps: list[str] = []
+        tasks: dict[str, TaskProgress] = {}
+        version = 0
+        shown = 0
+        native_progress = True
+        status_lock = asyncio.Lock()
 
-        async def update(text: str) -> None:
-            nonlocal last, latest
-            if self.authorized and not await asyncio.to_thread(self.authorized):
-                raise PermissionError("Project access changed during computation")
-            latest = text
-            if time.monotonic() - last >= 5:
+        async def render(
+            text: str,
+            pending: list[str],
+            task_snapshot: list[TaskProgress],
+            *,
+            finished: bool = False,
+            error: str | None = None,
+        ) -> None:
+            nonlocal native_progress
+            fallback = (
+                done_blocks(pending, error)
+                if finished
+                else status_blocks(emoji, "Working on it…", pending)
+            )
+            blocks = (
+                activity_blocks(task_snapshot, finished=finished, error=error)
+                if native_progress and task_snapshot
+                else fallback
+            )
+            try:
+                await self.client.chat_update(
+                    channel=key[0],
+                    ts=status["ts"],
+                    text=text,
+                    blocks=blocks,
+                )
+            except SlackApiError as exc:
+                if not (
+                    native_progress
+                    and task_snapshot
+                    and exc.response.get("error") == "invalid_blocks"
+                ):
+                    raise
+                # Older Slack surfaces may reject plan blocks. Keep the answer usable.
+                native_progress = False
+                log.warning("Slack rejected native progress; using compact status")
+                await self.client.chat_update(
+                    channel=key[0],
+                    ts=status["ts"],
+                    text=text,
+                    blocks=fallback,
+                )
+
+        async def flush() -> None:
+            nonlocal last, shown
+            async with status_lock:
+                if version == shown or time.monotonic() - last < 5:
+                    return
+                pending = steps.copy()
+                task_snapshot, snapshot_version = list(tasks.values()), version
                 last = time.monotonic()
                 try:
-                    await self.client.chat_update(channel=key[0], ts=status["ts"], text=text)
+                    await render(
+                        escape(pending[-1], quote=False),
+                        pending,
+                        task_snapshot,
+                    )
                 except Exception:
                     log.warning("Status update failed", exc_info=True)
+                else:
+                    shown = snapshot_version
+
+        async def update(update: ProgressUpdate) -> None:
+            nonlocal version
+            if self.authorized and not await asyncio.to_thread(self.authorized):
+                raise PermissionError("Project access changed during computation")
+            if isinstance(update, TaskProgress):
+                if tasks.get(update.task_id) == update:
+                    return
+                tasks[update.task_id] = update
+                version += 1
+                if update.status != "in_progress":
+                    await flush()
+                    return
+                text = update.title
+            else:
+                text = update
+            if not steps or steps[-1] != text:
+                steps.append(text)
+                version += 1
+            await flush()
 
         async def heartbeat() -> None:
             while True:
                 await asyncio.sleep(HEARTBEAT_SECONDS)
                 if self.authorized and not await asyncio.to_thread(self.authorized):
                     return
-                elapsed = int(time.monotonic() - started)
-                try:
-                    await self.client.chat_update(
-                        channel=key[0],
-                        ts=status["ts"],
-                        text=f"{latest} — working ({elapsed // 60}m {elapsed % 60}s)…",
-                    )
-                except Exception:
-                    log.warning("Heartbeat update failed", exc_info=True)
+                await flush()
 
         pulse = asyncio.create_task(heartbeat())
         try:
             result = await self.runner.run_turn(ctx, prompt, update)
+        except Exception:
+            if not self.authorized or await asyncio.to_thread(self.authorized):
+                try:
+                    async with status_lock:
+                        await render(
+                            "Stopped",
+                            steps.copy(),
+                            list(tasks.values()),
+                            finished=True,
+                            error="The run was interrupted",
+                        )
+                except Exception:
+                    log.warning("Interrupted status update failed", exc_info=True)
+            raise
         finally:
             pulse.cancel()
             with suppress(asyncio.CancelledError):
@@ -176,20 +270,18 @@ class SlackAgent:
                     self.sessions.save(key[0], ctx, turn, is_init)
                     await self.say(
                         key,
-                        "Reply with more details or corrections and I'll revise this draft. "
-                        "Reply `save brief` when you want new threads to use it. "
-                        "No Markdown upload needed.",
+                        "Updated this thread's draft brief. Send more tweaks anytime, "
+                        "or say `save brief` to share it.",
                     )
             else:
                 await self.say(key, "The draft is too large to apply; briefs must be under 100 KB.")
-        seconds = int(result.duration)
         try:
-            await self.client.chat_update(
-                channel=key[0],
-                ts=status["ts"],
-                text=f"Stopped: {result.error}"
-                if result.error
-                else f"Done in {seconds // 60}m {seconds % 60}s",
+            await render(
+                "Stopped" if result.error else "Finished",
+                steps,
+                list(tasks.values()),
+                finished=True,
+                error=result.error,
             )
         except Exception:
             log.warning("Final status update failed: %s", key, exc_info=True)
@@ -198,7 +290,7 @@ class SlackAgent:
         for chunk in chunks(to_mrkdwn(result.text)):
             await self.say(key, chunk)
         if result.error:
-            await self.say(key, f"I hit an error while running this: {result.error}.")
+            await self.say(key, f"That run stopped early (`{result.error}`). Want me to try again?")
         uploads = []
         for path in result.files:
             if path.suffix.lower() not in EXTENSIONS:

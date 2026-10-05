@@ -38,6 +38,28 @@ protocol-2 Batch conformance check, then update `PISTACHIO_BATCH_IMAGE` to the c
 Keep worker sandbox settings unchanged. Existing tasks pin their runtime and need a deliberate,
 audited recovery; changing the service variable only affects newly initialized sessions.
 
+## Headless API rollout
+
+The web application, Google browser OAuth flow, and interactive API documentation pages have been
+removed. `/`, `/auth/*`, `/assets/pista_logo.svg`, `/docs`, and `/redoc` return 404.
+Use `/api/v1/healthz` for health checks. The JSON API, `/openapi.json`, signed Slack ingress,
+service-account OIDC callbacks, Gmail, and GitHub connections remain in the same service.
+
+`cloudbuild/build-slack-api.yaml` now builds the complete headless API from source using
+`docker/Dockerfile.api`. Supply `_API_IMAGE` and the existing compatible shared task worker as
+`_WORKER_IMAGE`; `_PYTHON_IMAGE` is a pinned Python base image. The build verifies the absence of
+the UI and checks the API/worker execution contract before publishing. The old `_BASE_API_IMAGE`
+overlay and web-file preservation scripts are retired. If the execution contract differs, use
+the coordinated API/worker pipeline above; do not bypass the compatibility check. Build the
+Claude worker separately with `cloudbuild/build-slack-agent.yaml` when its source changes.
+
+Preserve deployed Slack tokens, signing secrets, channel access settings, project registry, memory,
+queues, worker images, and bucket connections. Browser OAuth variables are no longer consumed or
+mounted; remove them from local tfvars/environment files when convenient. The old OAuth Secret
+Manager resource remains tracked to avoid deleting existing credentials as part of UI removal.
+Keep the separate signed-link secret: uploads and Gmail project selection still use it.
+No Terraform apply or cloud deployment is implied by these source changes.
+
 ## Provision
 
 ```bash
@@ -59,16 +81,16 @@ only the failed stage is retried. Their bounded worst-case path remains below th
 Tasks dispatch deadline.
 
 Use separate GCP projects or at minimum separate Terraform state and resource names for staging and
-production. First target the Secret Manager resources, add the OpenAI, OAuth, Slack, GitHub, and
+production. First target the Secret Manager resources, add the OpenAI, Slack, GitHub, and
 link-signing secret versions with `gcloud secrets versions add`, then run the full apply (Cloud Run
 references `latest`). Never put secret values in committed tfvars.
 
-Configure the OAuth callback, Slack event URL, Gmail delegated credentials/watch, and GitHub App
+Configure the Slack event and interactivity URLs, Gmail delegated credentials/watch, and GitHub App
 after the first apply. Create a read-only Cloud Build trigger for this repository using
 `cloudbuild/tool-builder.yaml`, place its trigger ID in `tool_build_trigger`, and grant its build
 service account only source-read, Artifact Registry write, scanner, and Cloud Build log access.
 An exact tool approval starts that trigger; only a successful scan/smoke-test completion marks the
-tool available and requeues waiting tasks. Run staging smoke tests for all three channels, unknown-tool approval,
+tool available and requeues waiting tasks. Run staging smoke tests for Slack, Gmail, the API, unknown-tool approval,
 GPU/high-cost approval, duplicate delivery, Spot retry, and missing-completion reconciliation before
 promoting the same image digests to production.
 

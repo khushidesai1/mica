@@ -8,8 +8,7 @@
 !cloudbuild/**
 !scripts/
 !scripts/check_worker_compatibility.py
-!scripts/patch_slack_api.py
-!scripts/check_slack_preservation.py
+!scripts/check_headless_api.py
 !src/
 !src/**
 !tools/

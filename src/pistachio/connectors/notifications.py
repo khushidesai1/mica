@@ -173,11 +173,13 @@ class ChannelNotifier:
                 }
             )
             elements: list[dict[str, Any]] = []
-            if 0 < len(fields) <= 40:
+            if fields or approval.kind != ApprovalKind.COMPUTE:
                 elements.append(
                     {
                         "type": "button",
-                        "text": {"type": "plain_text", "text": "Review settings"},
+                        "text": {"type": "plain_text", "text": (
+                            "Review settings" if fields else "Review approval"
+                        )},
                         "style": "primary",
                         "action_id": "review_task_approval",
                         "value": json.dumps(
@@ -206,15 +208,6 @@ class ChannelNotifier:
                             "confirm": {"type": "plain_text", "text": "Approve"},
                             "deny": {"type": "plain_text", "text": "Cancel"},
                         },
-                    }
-                )
-            if self.settings.control_plane_url:
-                elements.append(
-                    {
-                        "type": "button",
-                        "text": {"type": "plain_text", "text": "Open in Pistachio"},
-                        "url": (f"{self.settings.control_plane_url.rstrip('/')}/?task={task.id}"),
-                        "action_id": f"open_approval_{approval.id}"[:255],
                     }
                 )
             if elements:

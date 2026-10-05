@@ -1,7 +1,8 @@
 # Slack-first agent rollout inside Pistachio
 
-The Claude agent replaces Slack's agent layer inside the existing Pistachio app. The browser
-continues to use its current agent. Nothing is moved into `legacy/`.
+The Claude agent runs inside the existing Pistachio app. Slack is the conversational interface;
+the web application has been removed. The shared task service and all connection, memory, and
+execution capabilities remain behind the headless HTTP service. Nothing is moved into `legacy/`.
 
 The original plan describes a dedicated VM and Socket Mode. The user's subsequent direction
 supersedes that deployment choice: retain the existing Slack bot, HTTP webhook, Cloud Run
@@ -19,7 +20,7 @@ The direct Claude call has no shell, filesystem, or network tools. It can answer
 or request isolated computation. API failures produce a visible retry message, never a worker
 fallback. Cancellation bypasses queued work and stops the active job without starting a new one.
 
-The new worker calls the Claude Agent SDK directly. It does not invoke Pistachio's web planners,
+The new worker calls the Claude Agent SDK directly. It does not invoke Pistachio's shared task planners,
 TaskContract generation, approval stages, or multi-stage execution pipeline. Each Slack thread
 has one resumed Claude compute session, a workspace, and its own PROJECT.md brief snapshot.
 Chat corrections and verified discoveries can revise that thread’s draft as work proceeds. The worker uses
@@ -69,7 +70,7 @@ access to Slack, Claude and Google APIs.
 
 - `src/pistachio/agents/analysis/`: single-session agent, briefs, provenance and Spot adapter.
 - `docker/Dockerfile.slack-agent`: extends the existing pinned science image with the SDK,
-  `socat`, and metadata inspection tools. The web worker keeps its image.
+  `socat`, and metadata inspection tools. The shared task worker keeps its compatible image.
 - `cloudbuild/build-slack-agent.yaml`: builds the new image only.
 - `infra/slack_agent.tf` and optional variables: project-prefix write access, selected data bucket
   readers and optional NAT. No runtime Secret Manager permission is added to the worker.
@@ -222,7 +223,7 @@ per-email project/memory identity, provided the previous manual mapping matched 
 A bot, deleted user, wrong-workspace request, or missing readable email is denied. Review mismatched
 legacy mappings during migration; never automatically merge different identities. In channel mode,
 `PISTACHIO_SLACK_USER_MAP`, `PISTACHIO_ALLOWED_EMAILS`, and `AGENT_ALLOWED_USER_IDS` do not restrict
-Slack admission. The browser keeps its own existing email allowlist and authentication.
+Slack admission. The task API keeps its existing email allowlist and OIDC authentication.
 `AGENT_ACCESS_MODE=mapped` explicitly retains the previous manual Slack mapping/allowlist behavior.
 
 Admission is checked before intake, commands, queued work, credential delivery, worker restoration,
@@ -343,10 +344,12 @@ These changes are prepared locally. The deployment history document describes th
 revision; it is not evidence that this migration has run. Ask before every cloud build, migration,
 or deployment, as required by the implementation plan.
 
-1. Confirm onboarding admins, membership/email scopes, legacy identity mappings, and the immutable base web image. Build the Slack API and
-   worker from the same commit using the existing layered build files. The Slack-only API copies
-   `agents/analysis/` and `api/slack_analysis.py`; the independent browser fixes ship only with
-   a subsequent full web release. Keep the three existing Slack integration patches unchanged.
+1. Confirm onboarding admins, membership/email scopes, and legacy identity mappings. Build the
+   headless API and Claude worker from the same source snapshot. `cloudbuild/build-slack-api.yaml`
+   uses `docker/Dockerfile.api` and requires `_API_IMAGE` plus the compatible shared task worker
+   `_WORKER_IMAGE`. It checks that UI routes/assets are absent and that the worker execution
+   contract matches. The old frozen web-image overlay is retired. See [deployment](deployment.md)
+   for paired-worker updates if that compatibility check fails.
 2. Stop Slack ingress to old code. Drain or cancel old Cloud Tasks receipts and Batch jobs;
    verify no old registry/brief writers can run, including delayed retries. Keep ingress stopped
    until the new API and worker are both ready. A second migration pass while old writers are

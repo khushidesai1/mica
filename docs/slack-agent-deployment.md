@@ -1,6 +1,6 @@
 # Slack agent deployment — 1 October 2026
 
-Current staging revision: `pistachio-staging-00083-car` (image previews disabled; direct conversation and living briefs;
+Current staging revision: `pistachio-staging-00087-xey` (casual replies and expandable progress;
 Spot only for computation/data inspection; see follow-ups below). The initial Slack-first rollout used revision
 `pistachio-staging-00073-ruj`.
 The existing app, bot, HTTP webhook, Cloud Tasks queue and Batch Spot resources are reused.
@@ -219,3 +219,69 @@ The no-preview compute worker and routing configuration are unchanged. The 10 di
 tests and Ruff passed; this wording-only change adds no tests or permissions.
 
 Revision `pistachio-staging-00083-car` serves 100% of live traffic; live health passed after promotion.
+
+
+## Follow-up: casual voice and compact progress — 3 October 2026
+
+Revision `pistachio-staging-00085-bac` serves 100% of staging traffic. Replies use concise,
+conversational prompts. Status messages use grey context blocks with the current action and
+recent steps, then collapse to a completion or error line. Run timers are removed; the slow
+Spot startup minute count remains. The default loading emoji is `:hourglass_flowing_sand:`;
+`AGENT_LOADING_EMOJI` also accepts a workspace custom emoji and is forwarded to workers.
+
+The live service was still on baseline `87c4312`. This release applies only the eight voice
+and progress source-file changes to that exact deployed source, rather than deploying later
+local access-control, registry, command-routing, or memory work. The reproducible source,
+backport script, diff, image references, and checks are saved under
+`.pistachio/deployments/slack-voice-progress-20261004-002043/` (UTC release timestamp).
+
+- API build `47baa119-7add-4053-86ef-ba190ae6d948`: SUCCESS, including web preservation checks.
+- API image: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/api@sha256:2314dcdf817e5320e1147530df0fb99f8563a3b2e9fdfa3b74f2d830c96b6296`.
+- Worker build `1f2c980a-2015-4623-aad3-b0b787ca763d`: SUCCESS.
+- Worker image: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/slack-agent@sha256:af14efeeea754733405e3c4ff96271ef305990e7502672c6b2db9781651f4c91`.
+- The scoped release passed 287 tests, with 4 skipped; Ruff, strict mypy (78 source files),
+  and compileall passed. The main working-tree implementation passed 321 tests, with 4 skipped.
+- Preview and live checks: health HTTP 200, existing sign-in redirect HTTP 307, unauthenticated
+  worker credentials HTTP 401, and unsigned Slack events HTTP 401. No ERROR-level logs were
+  returned for the new revision during preview checks.
+- A runtime configuration fingerprint confirmed settings were preserved apart from the API
+  image and pinned Slack worker image. No scopes, permissions, migrations, or data writes were
+  added to the rollout. No Slack messages or compute jobs were submitted as deployment tests.
+
+Desktop/mobile appearance, actual reply tone, and custom animated emoji remain user-led
+Slack acceptance checks. Roll back by routing traffic to `pistachio-staging-00083-car`.
+
+
+## Follow-up: expandable activity and loading circle — 5 October 2026
+
+Revision `pistachio-staging-00087-xey` serves 100% of staging traffic. Analysis runs
+now display Slack's native expandable `plan` block: a short activity heading and
+the two most recent tool tasks. Tool-result events drive complete/error indicators,
+including parallel calls; an interrupted or unconfirmed task is never labeled successful.
+The completed task list remains expandable after the answer is delivered. Tasks use
+short public tool descriptions, not raw commands, tool output, or model reasoning.
+
+Startup and compact fallback statuses use the installed workspace emoji
+`:pistachio-loading:`. Native plan cards supply their own circular progress indicator.
+If Slack rejects plan blocks, the run falls back to the existing compact status.
+Updates remain throttled and failed updates are retried by the heartbeat.
+
+- Worker build `40480d1f-21f3-4713-b4d0-347b9e40e545`: SUCCESS.
+- Worker image: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/slack-agent@sha256:38cae548e37393bde5931dc2b33708418d952a05876d55698a3b6f93b6166c9b`.
+- API image remains the exact image used by revision 85. Only the pinned Slack worker
+  image and `AGENT_LOADING_EMOJI` environment setting changed. Runtime fingerprint
+  checks passed before and after promotion.
+- The release backports five analysis-module files onto revision 85's source. It does
+  not include concurrent local web removal, access, memory, or routing changes.
+- Release tests: 292 passed, 4 skipped. Ruff, strict mypy (79 source files), and
+  compileall passed. The local focused Slack/runner suite also passed (25 tests).
+- Slack Block Kit Builder verified the collapsed summary and clickable two-task
+  dropdown in desktop/mobile previews. No Slack messages were posted for testing.
+- Preview and live: health HTTP 200, existing sign-in redirect HTTP 307, credentials
+  without identity HTTP 401, unsigned Slack event HTTP 401. Preview error-log check
+  returned no ERROR-level entries.
+
+Release source, hashes, build details, and preview/live checks are saved under
+`.pistachio/deployments/slack-expandable-progress-20261005/`. User-led acceptance:
+start a new analysis in Slack and tap its activity heading. Already-running workers
+keep their previous image. Roll back by routing traffic to `pistachio-staging-00085-bac`.

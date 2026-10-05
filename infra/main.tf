@@ -208,6 +208,8 @@ resource "google_service_account_iam_member" "service_agent_token_creators" {
 }
 
 resource "google_secret_manager_secret" "secrets" {
+  # Retain the legacy OAuth secret in state; the headless service no longer mounts it.
+  # Removing the UI must not schedule deletion of existing credentials.
   for_each  = toset(["openai-api-key", "oauth-client-secret", "slack-bot-token", "slack-signing-secret", "github-app-token", "signed-link-secret"])
   secret_id = "${local.name}-${each.value}"
   replication {
@@ -342,14 +344,6 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.control_plane_url
       }
       env {
-        name  = "PISTACHIO_OAUTH_CLIENT_ID"
-        value = var.oauth_client_id
-      }
-      env {
-        name  = "PISTACHIO_WEB_SESSION_DAYS"
-        value = tostring(var.web_session_days)
-      }
-      env {
         name  = "PISTACHIO_SLACK_USER_MAP"
         value = var.slack_user_map
       }
@@ -419,15 +413,6 @@ resource "google_cloud_run_v2_service" "api" {
           secret_key_ref {
             secret  = google_secret_manager_secret.secrets["openai-api-key"].secret_id
             version = var.openai_api_key_version
-          }
-        }
-      }
-      env {
-        name = "PISTACHIO_OAUTH_CLIENT_SECRET"
-        value_source {
-          secret_key_ref {
-            secret  = google_secret_manager_secret.secrets["oauth-client-secret"].secret_id
-            version = var.oauth_client_secret_version
           }
         }
       }

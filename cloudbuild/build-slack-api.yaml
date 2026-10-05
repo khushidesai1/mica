@@ -1,17 +1,22 @@
 steps:
   - id: build-slack-api
     name: gcr.io/cloud-builders/docker
-    args: [build, --build-arg, 'API_IMAGE=${_BASE_API_IMAGE}', -f, docker/Dockerfile.api-slack, -t, '${_API_IMAGE}', .]
-  - id: fingerprint-deployed-web
+    args: [build, --build-arg, 'PYTHON_IMAGE=${_PYTHON_IMAGE}', -f, docker/Dockerfile.api, -t, '${_API_IMAGE}', .]
+  - id: verify-headless-api
+    name: gcr.io/cloud-builders/docker
+    args: [run, --rm, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_headless_api.py]
+  - id: export-api-contract
     name: gcr.io/cloud-builders/docker
     entrypoint: bash
     args:
       - -ceu
-      - docker run --rm -v /workspace:/workspace:ro --entrypoint python '${_BASE_API_IMAGE}' /workspace/scripts/check_slack_preservation.py export > /workspace/deployed-web-hashes.json
-  - id: verify-preserved-web
+      - docker run --rm -v /workspace:/workspace:ro --entrypoint python '${_API_IMAGE}' /workspace/scripts/check_worker_compatibility.py export - > /workspace/api-execution-contract.json
+  - id: check-worker-contract
     name: gcr.io/cloud-builders/docker
-    args: [run, --rm, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_slack_preservation.py, check, /workspace/deployed-web-hashes.json]
+    args: [run, --rm, -v, /workspace:/workspace:ro, --entrypoint, python, '${_WORKER_IMAGE}', /workspace/scripts/check_worker_compatibility.py, check, /workspace/api-execution-contract.json]
 images: ['${_API_IMAGE}']
 options:
   logging: CLOUD_LOGGING_ONLY
 timeout: 1800s
+substitutions:
+  _PYTHON_IMAGE: python:3.12.12-slim@sha256:f3fa41d74a768c2fce8016b98c191ae8c1bacd8f1152870a3f9f87d350920b7c

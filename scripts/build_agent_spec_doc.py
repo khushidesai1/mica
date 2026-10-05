@@ -310,7 +310,7 @@ def build() -> None:
             ["Events", "Direct service calls", "Pub Sub for completion Gmail and tool build events"],
             ["Scheduled maintenance", "None", "Cloud Scheduler for compaction reconciliation Gmail watch and catalog work"],
             ["Secrets", "Environment file or shell environment", "Secret Manager references"],
-            ["Authentication", "Development identity", "OIDC OAuth and application access controls"],
+            ["Authentication", "Development identity", "OIDC bearer tokens and application access controls"],
         ],
         [1.4, 2.6, 2.9],
     )
@@ -332,7 +332,7 @@ def build() -> None:
     add_number(doc, 1, "Install and start Docker Desktop. On macOS its Linux VM supplies the container runtime Pistachio needs.")
     add_number(doc, 2, "Build the science image named pistachio-science:local and start the API with Docker Compose.")
     add_number(doc, 3, "Create a local .env from .env.example and add only the development OpenAI key and nonproduction settings.")
-    add_number(doc, 4, "Use the browser interface and local fixture for the normal edit test loop.")
+    add_number(doc, 4, "Use the headless API and local fixture for the normal edit test loop; interact with the agent in Slack.")
     add_number(doc, 5, "Use cloud staging for channel callbacks managed identity Batch networking and recovery tests.")
 
     add_heading(doc, "Local limitations to accept or fix", 2)
@@ -525,7 +525,7 @@ def build() -> None:
     add_bullet(doc, "Should tool parameter manifests be curated during tool approval or derived again for every task")
     add_bullet(doc, "Should the master plan produce any user prose or only typed state for the public writer")
     add_bullet(doc, "Is local persistence needed immediately or is restart loss acceptable during the current development phase")
-    add_bullet(doc, "Which workflows must work locally beyond the browser such as Slack Gmail cloud dataset access or tool builds")
+    add_bullet(doc, "Which workflows must work locally such as Slack Gmail cloud dataset access or tool builds")
 
     add_heading(doc, "Source map", 2)
     add_source(doc, "Runtime and cloud  README.md  docker-compose.yml  .env.example  docs/architecture.md  docs/deployment.md  infra/main.tf  infra/variables.tf")

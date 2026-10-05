@@ -27,9 +27,11 @@ from .config import Settings
 from .data_links import init_args
 from .identity import user_key
 from .registry import Registry
+from .slack_format import status_blocks
 from .storage import GCSStorage
 
 log = logging.getLogger(__name__)
+STATUS_PHASES = {"received", "waiting", "starting", "replying", "cancelling"}
 
 
 def digest(value: str) -> str:
@@ -75,6 +77,7 @@ def job_spec(
         "AGENT_ACCESS_MODE": settings.access_mode,
         "AGENT_ACCESS_CACHE_SECONDS": str(settings.access_cache_seconds),
         "AGENT_MODEL": settings.model,
+        "AGENT_LOADING_EMOJI": settings.loading_emoji,
         "AGENT_FALLBACK_MODEL": settings.fallback_model,
         "AGENT_MAX_TURNS": str(settings.max_turns),
         "AGENT_MAX_BUDGET_USD_PER_TURN": str(settings.max_budget_usd_per_turn),
@@ -146,10 +149,15 @@ class BatchBridge:
             return
         event = record["payload"]["event"]
         client = AsyncWebClient(token=self.app.slack_bot_token, timeout=5)
+        status: dict[str, Any] = (
+            {"blocks": status_blocks(self.settings.loading_emoji, text)}
+            if phase in STATUS_PHASES
+            else {}
+        )
         try:
             if record.get("notice_ts"):
                 await client.chat_update(
-                    channel=event["channel"], ts=record["notice_ts"], text=text
+                    channel=event["channel"], ts=record["notice_ts"], text=text, **status
                 )
             else:
                 response = await client.chat_postMessage(
@@ -159,6 +167,7 @@ class BatchBridge:
                     unfurl_links=False,
                     unfurl_media=False,
                     client_msg_id=str(uuid5(NAMESPACE_URL, f"pistachio-receipt:{event_id}")),
+                    **status,
                 )
                 record["notice_ts"] = response["ts"]
             record.update(notice_phase=phase, notice_text=text)
@@ -299,9 +308,7 @@ class BatchBridge:
             if record["status"] in {"complete", "failed"} or tick < record["tick"]:
                 return str(record["status"])
             if not record.get("notice_ts"):
-                await self.notify(
-                    event_id, record, "received", "Received your message. Queued for processing."
-                )
+                await self.notify(event_id, record, "received", "On it…")
             previous = (
                 await self.repository.get_connector_state(f"claude-event:{record['previous']}")
                 if record.get("previous")
@@ -330,7 +337,7 @@ class BatchBridge:
                     event_id,
                     record,
                     "waiting",
-                    "Received. Waiting for the earlier request in this thread to finish.",
+                    "Got it, I'll start once the earlier request here finishes…",
                 )
             if record["status"] not in {"complete", "failed"}:
                 await self.schedule(event_id, tick + 1)
@@ -442,7 +449,7 @@ class BatchBridge:
                     event_id,
                     record,
                     "waiting",
-                    "Received. All workers are busy; your request is queued.",
+                    "All workers are busy right now. You're in the queue…",
                 )
                 return
         if record["status"] == "submitting":
@@ -450,7 +457,7 @@ class BatchBridge:
                 event_id,
                 record,
                 "starting",
-                "Starting a Spot worker. This usually takes a few minutes; I’ll update you here.",
+                "Spinning up a compute worker (usually a few minutes)…",
             )
             storage = GCSStorage(self.app.gcs_bucket)
             manifest = {
@@ -518,8 +525,7 @@ class BatchBridge:
                     event_id,
                     record,
                     "starting",
-                    f"Still starting the Spot worker ({minutes} min since receipt). "
-                    "Your request is queued; no need to resend it.",
+                    f"Still waiting on a worker ({minutes} min so far). No need to resend…",
                 )
         if (
             state not in {"SUCCEEDED", "FAILED", "DELETION_IN_PROGRESS"}
@@ -540,8 +546,8 @@ class BatchBridge:
                     event_id,
                     record,
                     "failed",
-                    "The Spot worker stopped before completing your request. "
-                    "The previous saved session is retained. Send a new message to retry.",
+                    "The worker stopped before finishing. Your earlier progress is safe, "
+                    "so send another message to retry.",
                 )
             if record["status"] == "complete":
                 storage = GCSStorage(self.app.gcs_bucket)

@@ -3,10 +3,13 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import hmac
 import json
+import time
 import zipfile
 from io import BytesIO
 
+import pytest
 from fastapi.testclient import TestClient
 
 from pistachio.api.app import create_app
@@ -47,47 +50,107 @@ def test_project_api_enforces_iap_identity(tmp_path) -> None:
         assert client.get(f"/api/v1/projects/{project_id}", headers=bob).status_code == 403
 
 
-def test_site_exposes_project_creation_form(tmp_path) -> None:
+@pytest.mark.parametrize("auth_mode", ["dev", "iap", "oidc"])
+def test_headless_service_has_no_browser_routes(tmp_path, auth_mode) -> None:
     settings = Settings(
         env="test",
-        auth_mode="iap",
-        store_backend="memory",
-        execution_backend="local",
+        auth_mode=auth_mode,
         artifact_root=tmp_path,
+        oidc_audience="https://pistachio.example",
     )
     app = create_app(settings=settings, repository=InMemoryRepository())
-    headers = {"x-goog-authenticated-user-email": "accounts.google.com:alice@example.org"}
     with TestClient(app) as client:
-        response = client.get("/", headers=headers)
+        for path in (
+            "/",
+            "/?task=old-task",
+            "/assets/pista_logo.svg",
+            "/auth/login",
+            "/auth/callback",
+            "/docs",
+            "/docs/oauth2-redirect",
+            "/redoc",
+        ):
+            response = client.get(path, follow_redirects=False)
+            assert response.status_code == 404, path
+            assert "location" not in response.headers
+            assert "set-cookie" not in response.headers
+        assert client.post("/auth/logout").status_code == 404
+        assert client.get("/api/v1/healthz").json() == {"status": "ok"}
+        # The machine-readable schema remains available to API clients.
+        assert "/api/v1/tasks" in client.get("/openapi.json").json()["paths"]
 
-    assert response.status_code == 200
-    assert 'id="project-form"' in response.text
-    assert 'id="approval-feedback"' in response.text
-    assert "max-height: 28rem; overflow: auto" in response.text
-    assert "Other…" in response.text
-    assert "Settings received. Continuing from the approved plan…" in response.text
-    assert "approval-status" in response.text
-    assert "scrollIntoView" in response.text
-    assert "button.type = 'button'" in response.text
-    assert 'id="recent-tasks"' in response.text
-    assert 'id="recent-task-panel"' in response.text
-    assert "max-height: 26rem" in response.text
-    assert "overflow-y: auto" in response.text
-    assert "Saved task outputs available to this project." in response.text
-    assert "memory-action" in response.text
-    assert "artifact-chip" in response.text
-    assert "memory.source_task_name" in response.text
-    assert "pin.style.width" not in response.text
-    assert 'id="task-artifacts"' in response.text
-    assert 'id="task-controls"' in response.text
-    assert 'id="additional-context"' in response.text
-    assert 'id="cancel-task"' in response.text
-    assert "/context`" in response.text
-    assert "figureCount > 4" in response.text
-    assert "Download ZIP" in response.text
-    assert "task-artifact-preview" in response.text
-    assert "Connection interrupted. The task continues in Google Cloud" in response.text
-    assert "Create project" in response.text
+
+def test_oidc_api_auth_and_service_callbacks_survive_ui_removal(tmp_path, monkeypatch) -> None:
+    settings = Settings(
+        env="test",
+        auth_mode="oidc",
+        artifact_root=tmp_path,
+        oidc_audience="https://pistachio.example",
+        allowed_emails=("alice@example.org",),
+        cloud_tasks_service_account="worker@example.iam.gserviceaccount.com",
+        signed_link_secret="test-signing-secret",
+        slack_agent_backend="claude_batch",
+    )
+
+    def verify(token, request, audience):
+        assert audience == settings.oidc_audience
+        if token == "invalid":
+            raise ValueError("invalid token")
+        return {"email": token}
+
+    async def process(bridge, event_id, tick):
+        assert event_id == "a" * 32 and tick == 0
+        return "completed"
+
+    monkeypatch.setattr("pistachio.api.auth.id_token.verify_oauth2_token", verify)
+    monkeypatch.setattr("pistachio.api.slack_analysis.BatchBridge.process", process)
+    app = create_app(settings=settings, repository=InMemoryRepository())
+    with TestClient(app) as client:
+        # Previously signed browser cookies no longer grant API access.
+        encoded = (
+            base64.urlsafe_b64encode(
+                json.dumps(
+                    {
+                        "email": "alice@example.org",
+                        "exp": int(time.time()) + 3600,
+                    }
+                ).encode()
+            )
+            .decode()
+            .rstrip("=")
+        )
+        signature = hmac.new(
+            settings.signed_link_secret.encode(),
+            encoded.encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        client.cookies.set("pistachio_session", f"{encoded}.{signature}")
+        assert client.get("/api/v1/projects").status_code == 401
+        assert (
+            client.get("/api/v1/projects", headers={"Authorization": "Bearer invalid"}).status_code
+            == 401
+        )
+        assert (
+            client.get(
+                "/api/v1/projects", headers={"Authorization": "Bearer bob@example.org"}
+            ).status_code
+            == 403
+        )
+        assert (
+            client.get(
+                "/api/v1/projects", headers={"Authorization": "Bearer alice@example.org"}
+            ).status_code
+            == 200
+        )
+        # Internal service identity remains independent of the human email allowlist.
+        response = client.post(
+            f"/api/v1/internal/slack-analysis/process/{'a' * 32}/0",
+            headers={
+                "Authorization": f"Bearer {settings.cloud_tasks_service_account}",
+            },
+        )
+        assert response.status_code == 200
+        assert response.json() == {"status": "completed"}
 
 
 def test_task_context_and_cancel_controls_are_durable(tmp_path) -> None:

@@ -28,6 +28,7 @@ from .preflight import check
 from .runner import Context, Runner
 from .sessions import Sessions
 from .slack_app import SlackAgent
+from .slack_format import status_blocks
 from .storage import GCSStorage
 
 
@@ -107,7 +108,8 @@ async def main(event_id: str) -> None:
             await slack.chat_update(
                 channel=request["payload"]["event"]["channel"],
                 ts=request["notice_ts"],
-                text="Worker started. Checking your request and restoring context…",
+                text="Getting set up…",
+                blocks=status_blocks(settings.loading_emoji, "Getting set up…"),
             )
         except Exception:
             logging.warning("Could not update worker startup status", exc_info=True)

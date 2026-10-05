@@ -16,7 +16,9 @@ from claude_agent_sdk import (
     HookMatcher,
     ResultMessage,
     TextBlock,
+    ToolResultBlock,
     ToolUseBlock,
+    UserMessage,
     query,
 )
 from claude_agent_sdk.types import HookContext, HookInput, HookJSONOutput, SandboxSettings
@@ -24,6 +26,7 @@ from claude_agent_sdk.types import HookContext, HookInput, HookJSONOutput, Sandb
 from . import prompts
 from .config import Settings
 from .outputs import changed_files, snapshot_outputs
+from .progress import ProgressUpdate, TaskProgress
 
 log = logging.getLogger(__name__)
 TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
@@ -187,7 +190,7 @@ def build_options(
 def describe_tool(block: ToolUseBlock) -> str:
     args = block.input
     if block.name == "Bash":
-        return str(args.get("description") or args.get("command", "Running code"))[:120]
+        return str(args.get("description") or "Running code")[:80]
     if block.name in {"Read", "Write", "Edit"}:
         verb = {"Read": "Reading", "Write": "Writing", "Edit": "Editing"}[block.name]
         return f"{verb} {Path(args.get('file_path', '')).name}"
@@ -204,6 +207,18 @@ def truncate(value: Any) -> Any:
     return value
 
 
+def tool_progress(block: ToolUseBlock) -> TaskProgress:
+    phase = {
+        "Read": "Inspecting the data and context…",
+        "Glob": "Finding relevant files…",
+        "Grep": "Finding relevant information…",
+        "Write": "Preparing the analysis and outputs…",
+        "Edit": "Updating the analysis…",
+        "Bash": "Running analysis and checks…",
+    }.get(block.name, "Working on the request…")
+    return TaskProgress(block.id, describe_tool(block), phase)
+
+
 class Runner:
     def __init__(
         self,
@@ -217,12 +232,13 @@ class Runner:
         self.user_memory, self.project_name = user_memory, project_name
 
     async def run_turn(
-        self, ctx: Context, prompt: str, on_status: Callable[[str], Awaitable[None]]
+        self, ctx: Context, prompt: str, on_status: Callable[[ProgressUpdate], Awaitable[None]]
     ) -> TurnResult:
         for name in ("code", "outputs", ".tmp", ".mpl"):
             (ctx.workdir / name).mkdir(parents=True, exist_ok=True)
         before, start = snapshot_outputs(ctx.workdir / "outputs"), time.monotonic()
         result = TurnResult(session_id=ctx.session_id)
+        tasks: dict[str, TaskProgress] = {}
         for attempt in range(2):
             details, got_result = "", False
             try:
@@ -246,9 +262,23 @@ class Runner:
                                         "timestamp": datetime.now(UTC).isoformat(),
                                     }
                                 )
-                                await on_status(describe_tool(block))
+                                task = tool_progress(block)
+                                tasks[block.id] = task
+                                await on_status(task)
                             elif isinstance(block, TextBlock):
                                 result.text = block.text
+                    elif isinstance(msg, UserMessage) and isinstance(msg.content, list):
+                        for completed in msg.content:
+                            if (
+                                isinstance(completed, ToolResultBlock)
+                                and completed.tool_use_id in tasks
+                            ):
+                                task = dataclasses.replace(
+                                    tasks[completed.tool_use_id],
+                                    status="error" if completed.is_error else "complete",
+                                )
+                                tasks[completed.tool_use_id] = task
+                                await on_status(task)
                     elif isinstance(msg, ResultMessage):
                         got_result = True
                         result.session_id = msg.session_id

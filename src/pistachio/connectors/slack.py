@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import json
 import re
+import secrets
 import time
 from datetime import timedelta
 from io import BytesIO
@@ -40,6 +41,7 @@ from pistachio.services.tasks import TaskInteractionConflict
 
 router = APIRouter(prefix="/integrations/slack", tags=["integrations"])
 PROJECT_COMMAND = re.compile(r"^(?:/project|project:|switch project)\s*([a-z0-9-]+)$", re.I)
+APPROVAL_PAGE_SIZE = 40
 CANCEL_COMMAND = re.compile(r"^(?:cancel|stop)(?:\s+(?:task|this))?[.!]?$", re.I)
 
 
@@ -278,6 +280,9 @@ def _approval_modal(
     approval: ApprovalRequest,
     channel: str,
     thread_ts: str,
+    *,
+    offset: int = 0,
+    draft_id: str = "",
 ) -> dict[str, Any]:
     fields = _approval_fields(approval)
     blocks: list[dict[str, Any]] = [
@@ -288,7 +293,7 @@ def _approval_modal(
     ]
     # Slack modals allow at most 100 blocks. Option fields need a second custom-value
     # input, so keep enough space for the description and all generated controls.
-    for index, field in enumerate(fields[:40]):
+    for index, field in enumerate(fields[offset:offset + APPROVAL_PAGE_SIZE], start=offset):
         label = str(field.get("label") or field.get("name") or field.get("id") or "Setting")
         proposed = field.get("proposed_value", field.get("value", ""))
         if isinstance(proposed, list):
@@ -363,12 +368,39 @@ def _approval_modal(
                     "element": element,
                 }
             )
+    if not fields:
+        blocks.extend([
+            {
+                "type": "input",
+                "block_id": "decision",
+                "label": {"type": "plain_text", "text": "Your decision"},
+                "element": {
+                    "type": "static_select", "action_id": "value",
+                    "options": [
+                        {"text": {"type": "plain_text", "text": label}, "value": value}
+                        for label, value in (("Approve", "approve"), ("Decline", "decline"))
+                    ],
+                },
+            },
+            {
+                "type": "input", "block_id": "response", "optional": True,
+                "label": {"type": "plain_text", "text": "Decision details (if needed)"},
+                "element": {"type": "plain_text_input", "action_id": "value", "multiline": True},
+            },
+        ])
+    more = offset + APPROVAL_PAGE_SIZE < len(fields)
+    title = "Review settings" if fields else "Review approval"
+    if len(fields) > APPROVAL_PAGE_SIZE:
+        pages = (len(fields) - 1) // APPROVAL_PAGE_SIZE + 1
+        title = f"Settings {offset // APPROVAL_PAGE_SIZE + 1}/{pages}"
     metadata = json.dumps(
         {
             "task_id": task_id,
             "approval_id": approval.id,
             "channel": channel,
             "thread_ts": thread_ts,
+            "offset": offset,
+            "draft_id": draft_id,
         },
         separators=(",", ":"),
     )
@@ -376,19 +408,22 @@ def _approval_modal(
         "type": "modal",
         "callback_id": "task_approval_submit",
         "private_metadata": metadata,
-        "title": {"type": "plain_text", "text": "Review settings"},
-        "submit": {"type": "plain_text", "text": "Confirm settings"},
+        "title": {"type": "plain_text", "text": title[:24]},
+        "submit": {"type": "plain_text", "text": (
+            "Next" if more else "Confirm settings" if fields else "Submit decision"
+        )},
         "close": {"type": "plain_text", "text": "Cancel"},
         "blocks": blocks,
     }
 
 
 def _submitted_approval_values(
-    payload: dict[str, Any], approval: ApprovalRequest
+    payload: dict[str, Any], approval: ApprovalRequest, *, offset: int = 0
 ) -> tuple[dict[str, str], dict[str, str]]:
     values: dict[str, str] = {}
     errors: dict[str, str] = {}
-    for index, field in enumerate(_approval_fields(approval)[:40]):
+    fields = _approval_fields(approval)
+    for index, field in enumerate(fields[offset:offset + APPROVAL_PAGE_SIZE], start=offset):
         field_id = str(field.get("id") or field.get("name") or f"field_{index}")
         selected = _view_value(payload, f"field_{index}", "value")
         selected_option = selected.get("selected_option")
@@ -508,13 +543,18 @@ async def slack_actions(request: Request) -> dict[str, object]:
             approval = next((item for item in task.approvals if item.id == approval_id), None)
             if approval is None or approval.status != ApprovalStatus.PENDING:
                 raise HTTPException(status_code=400, detail="approval is no longer pending")
-            fields = _approval_fields(approval)
-            if not fields:
-                raise HTTPException(status_code=400, detail="approval has no editable settings")
-            if len(fields) > 40:
-                raise HTTPException(
-                    status_code=400,
-                    detail="approval is too large for a Slack modal; open it in Pistachio",
+            draft_id = ""
+            if len(_approval_fields(approval)) > APPROVAL_PAGE_SIZE:
+                draft_id = secrets.token_hex(16)
+                await services.repository.set_connector_state(
+                    f"slack-approval:{principal}:{draft_id}",
+                    {
+                        "fingerprint": hashlib.sha256(
+                            approval.model_dump_json().encode()
+                        ).hexdigest(),
+                        "pages": {},
+                        "expires_at": time.time() + 3600,
+                    },
                 )
             await _open_modal(
                 services,
@@ -524,6 +564,7 @@ async def slack_actions(request: Request) -> dict[str, object]:
                     approval,
                     channel,
                     route.thread_id or _interaction_thread(payload),
+                    draft_id=draft_id,
                 ),
             )
         return {"ok": True}
@@ -544,19 +585,24 @@ async def slack_actions(request: Request) -> dict[str, object]:
         team_id = ""
 
     if callback_id == "task_approval_submit":
+        submitted_fields = view.get("state", {}).get("values", {})
+        error_block = next(
+            (key for key in submitted_fields if key.startswith("field_") or key == "decision"),
+            "field_0",
+        )
         task_id = str(parsed_metadata.get("task_id", ""))
         approval_id = str(parsed_metadata.get("approval_id", ""))
         if not channel or not task_id or not approval_id:
             return {
                 "response_action": "errors",
-                "errors": {"field_0": "This approval context is incomplete. Reopen it."},
+                "errors": {error_block: "This approval context is incomplete. Reopen it."},
             }
         try:
             task = await services.tasks.require_access(task_id, principal)
         except LookupError:
             return {
                 "response_action": "errors",
-                "errors": {"field_0": "This task is no longer available."},
+                "errors": {error_block: "This task is no longer available."},
             }
         route = await _task_slack_route(services, task)
         expected_channel = (
@@ -565,32 +611,79 @@ async def slack_actions(request: Request) -> dict[str, object]:
         if route is None or expected_channel != channel:
             return {
                 "response_action": "errors",
-                "errors": {"field_0": "This approval does not belong to this Slack thread."},
+                "errors": {error_block: "This approval does not belong to this Slack thread."},
             }
         approval = next((item for item in task.approvals if item.id == approval_id), None)
         if approval is None or approval.status != ApprovalStatus.PENDING:
             return {
                 "response_action": "errors",
-                "errors": {"field_0": "This approval is no longer pending."},
+                "errors": {error_block: "This approval is no longer pending."},
             }
-        values, errors = _submitted_approval_values(payload, approval)
+        fields = _approval_fields(approval)
+        try:
+            offset = int(parsed_metadata.get("offset", 0))
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="invalid approval page") from None
+        if offset < 0 or offset % APPROVAL_PAGE_SIZE or offset >= max(1, len(fields)):
+            raise HTTPException(status_code=400, detail="invalid approval page")
+        error_block = f"field_{offset}" if fields else "decision"
+        if route.thread_id and parsed_metadata.get("thread_ts") != route.thread_id:
+            return {
+                "response_action": "errors",
+                "errors": {error_block: "This approval does not belong to this Slack thread."},
+            }
+        values, errors = _submitted_approval_values(payload, approval, offset=offset)
         if errors:
             return {"response_action": "errors", "errors": errors}
+        approved = True
+        response = json.dumps({"values": values}, separators=(",", ":"))
+        if not fields:
+            selection = _view_value(payload, "decision", "value").get("selected_option") or {}
+            decision = selection.get("value")
+            if decision not in {"approve", "decline"}:
+                return {"response_action": "errors", "errors": {"decision": "Choose a decision."}}
+            approved = decision == "approve"
+            response = str(_view_value(payload, "response", "value").get("value") or "").strip()
+        if len(fields) > APPROVAL_PAGE_SIZE:
+            draft_id = str(parsed_metadata.get("draft_id", ""))
+            key = f"slack-approval:{principal}:{draft_id}"
+            draft = await services.repository.get_connector_state(key) or {}
+            fingerprint = hashlib.sha256(approval.model_dump_json().encode()).hexdigest()
+            pages = draft.get("pages", {})
+            if (
+                draft.get("fingerprint") != fingerprint
+                or draft.get("expires_at", 0) < time.time()
+                or any(str(page) not in pages for page in range(0, offset, APPROVAL_PAGE_SIZE))
+            ):
+                return {
+                    "response_action": "errors",
+                    "errors": {error_block: "This review expired or changed. Reopen the approval."},
+                }
+            pages[str(offset)] = values
+            await services.repository.set_connector_state(key, {**draft, "pages": pages})
+            if offset + APPROVAL_PAGE_SIZE < len(fields):
+                return {
+                    "response_action": "update",
+                    "view": _approval_modal(
+                        task.id, approval, channel, route.thread_id or "",
+                        offset=offset + APPROVAL_PAGE_SIZE, draft_id=draft_id,
+                    ),
+                }
+            values = {name: value for page in range(0, len(fields), APPROVAL_PAGE_SIZE)
+                      for name, value in pages[str(page)].items()}
+            response = json.dumps({"values": values}, separators=(",", ":"))
         try:
             updated = await services.tasks.decide_approval(
                 task.id,
                 approval.id,
                 principal,
-                ApprovalDecision(
-                    approved=True,
-                    response=json.dumps({"values": values}, separators=(",", ":")),
-                ),
+                ApprovalDecision(approved=approved, response=response),
                 defer_replan=True,
             )
         except (LookupError, ValueError) as exc:
             return {
                 "response_action": "errors",
-                "errors": {"field_0": str(exc)[:150]},
+                "errors": {error_block: str(exc)[:150]},
             }
         if updated.status == TaskStatus.RECEIVED:
             await services.dispatcher.enqueue(updated.id)
@@ -725,7 +818,7 @@ async def slack_events(request: Request) -> dict[str, object]:
             None,
         )
         if parent is None:
-            # A task started in the browser can be continued in its mirrored Slack thread.
+            # API and historical web tasks can continue in their mirrored Slack thread.
             for candidate in tasks:
                 route = await task_delivery_route(
                     services.repository, candidate.id, TaskSource.SLACK

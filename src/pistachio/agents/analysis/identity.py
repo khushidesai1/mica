@@ -1,4 +1,4 @@
-"""Resolve Slack identities without importing the browser's account services."""
+"""Resolve Slack identities independently of the shared task API account services."""
 
 from __future__ import annotations
 

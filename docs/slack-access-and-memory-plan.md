@@ -1,5 +1,9 @@
 # Plan: Private projects, explicit sharing, and Letta‑lite user memory for Pistachio's Slack agent
 
+> Historical record: the web UI and browser login have since been removed from source.
+> Web rollout/preservation instructions below are superseded by the current
+> [headless deployment guide](deployment.md#headless-api-rollout).
+
 > Original implementation plan, followed with the approved corrections below. Local implementation
 > is complete; cloud build, migration, deployment, and live checks remain approval-gated.
 

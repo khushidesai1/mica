@@ -1,5 +1,9 @@
 # UI regression fixes — 29 September 2026
 
+> Historical record: the web UI and browser login have since been removed from source.
+> Web rollout/preservation instructions below are superseded by the current
+> [headless deployment guide](deployment.md#headless-api-rollout).
+
 Reproduced and corrected in the workspace template:
 
 - The recent-analysis list extended outside a native details element and was clipped.

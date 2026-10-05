@@ -1,5 +1,9 @@
 # Workspace interaction refinements
 
+> Historical record: the web UI and browser login have since been removed from source.
+> Web rollout/preservation instructions below are superseded by the current
+> [headless deployment guide](deployment.md#headless-api-rollout).
+
 The message history scrolls independently above a bottom composer. Both the new-analysis
 form and follow-up form use this dock; long inputs can scroll within its bounded height.
 The sidebar can collapse and resize with a pointer or arrow keys, scrolls on short screens,

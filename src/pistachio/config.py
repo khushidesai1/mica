@@ -26,9 +26,6 @@ class Settings(BaseSettings):
     auth_mode: Literal["dev", "iap", "oidc"] = "dev"
     allowed_emails: tuple[str, ...] = ()
     oidc_audience: str = ""
-    oauth_client_id: str = ""
-    oauth_client_secret: str = ""
-    web_session_days: int = Field(default=14, ge=1, le=30)
 
     openai_model: str = "gpt-5.6-sol"
     openai_reasoning_effort: Literal["none", "low", "medium", "high", "xhigh", "max"] = "medium"
@@ -95,7 +92,7 @@ class Settings(BaseSettings):
     completion_topic: str = ""
 
     slack_bot_token: str = ""
-    # Slack-only rollout; the web task/agent stack is unchanged.
+    # Both Slack backends share the headless control plane.
     slack_agent_backend: Literal["existing", "claude_batch"] = "existing"
     slack_agent_image: str = ""
     anthropic_api_key: SecretStr = Field(

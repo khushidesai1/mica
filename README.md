@@ -1,14 +1,16 @@
 # Pistachio
 
-The new **Slack agent** follows the [single-session Claude design](docs/slack-agent-plan.md).
-It lives inside Pistachio and reuses the existing Slack HTTP webhook and GCP Batch Spot jobs. See
-[Slack setup and rollout](docs/slack-agent-setup.md) for reusing the existing Slack app,
-Google Cloud project, and artifact bucket. The web chat continues to use the backend described below.
+Pistachio is a **Slack agent with a headless backend**. The Slack agent follows the
+[single-session Claude design](docs/slack-agent-plan.md) and reuses the existing Slack app,
+HTTP webhook, Cloud Run service, connections, and GCP Batch Spot jobs. See
+[Slack setup and rollout](docs/slack-agent-setup.md) for configuration.
 
-Pistachio is an approval-gated bioinformatics agent service built on the OpenAI Agents SDK. A
-channel-independent task service handles work behind Slack, Gmail, and the browser, with durable
-project-scoped memory and isolated Google Cloud Batch jobs. Tasks can be started in one surface and
-followed or approved in another.
+There is no web application or browser login. The HTTP service remains necessary for Slack
+webhooks, Cloud Tasks, worker callbacks, health checks, and authenticated task APIs. Project and
+private memory, data access, analysis, code execution, approvals, progress, and artifact delivery
+remain available. The shared OpenAI Agents SDK task service, Gmail integration, read-only GitHub
+catalog, and existing task records are retained. Historical `web` task provenance stays compatible
+with stored records and worker schemas.
 
 ## Safety invariants
 
@@ -33,8 +35,10 @@ cp .env.example .env
 .venv/bin/uvicorn pistachio.api.app:app --reload --port 8080
 ```
 
-Open <http://localhost:8080>. With no `OPENAI_API_KEY`, the deterministic offline planner keeps
-local tests and interface development usable. It is not a scientific model substitute.
+Check service health with `curl http://localhost:8080/api/v1/healthz`. Use Slack for conversations;
+there is no page at `/`. API clients can use `/api/v1` and the schema at `/openapi.json`.
+With no `OPENAI_API_KEY`, the shared task service uses its deterministic offline planner for local
+tests. It is not a scientific model substitute. See the Slack setup guide for Claude configuration.
 
 For the Docker isolation fixture, build the science image, start Compose, and run the smoke client:
 
@@ -53,7 +57,7 @@ docker compose up --build -d
 ## Repository map
 
 - `src/pistachio/agents`: Agents SDK harness, session adapter, context builder, and memory manager.
-- `src/pistachio/api`: OAuth/OIDC site and versioned API.
+- `src/pistachio/api`: headless versioned API, OIDC authentication, and Slack worker callbacks.
 - `src/pistachio/connectors`: Slack, Gmail, notifications, and read-only GitHub catalog.
 - `src/pistachio/execution`: validation plus local, Docker, and Batch backends.
 - `src/pistachio/worker`: credential-separated Batch bootstrap/collector entry point.
@@ -64,6 +68,9 @@ See [architecture](docs/architecture.md), [deployment](docs/deployment.md), [cha
 [memory](docs/memory.md), and [security/operations](docs/security.md).
 
 ## Working from another laptop
+
+Use the [Mac setup and Codex handoff note](docs/new-mac-setup.md) for the exact branch,
+authentication steps, private local backup, and verified deployment inventory.
 
 Clone this repository, install Python 3.12, and recreate the development environment:
 

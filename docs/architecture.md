@@ -35,15 +35,18 @@ never runs generated code.
 
 ## Channel-independent agent
 
-The task service is the durable agent boundary. Slack, Gmail, and the browser are adapters around
-the same project, task, approval, and memory records; no adapter runs its own agent loop. A user's
-project/channel binding also creates a delivery route. Lifecycle updates can therefore be sent to
-Slack even when the task was submitted in the browser, while the browser project feed shows work
-submitted through Slack. Per-task delivery correlation records the exact Slack conversation and
-thread so subsequent updates and approvals stay attached to the same task.
+The shared task service is the durable boundary for the existing Slack backend, Gmail, and API
+clients. A user's project/channel binding creates a delivery route, allowing API-created tasks
+and historical web tasks to continue in Slack. Per-task delivery correlation records the exact
+Slack conversation and thread so updates and approvals stay attached to the same task.
+
+The Claude Slack backend has its own conversation and isolated computation loop, described in
+[Slack setup](slack-agent-setup.md). Both backends use the headless HTTP control plane. There is
+no browser application; removing its pages and login does not remove the task service, agent
+loops, memory, connectors, execution backends, or worker callbacks.
 
 Delivery is best-effort and never changes analysis state. Task state remains authoritative, so a
-missed notification can be recovered by reopening the task in any authorized surface.
+missed notification can be recovered through Slack or the authenticated task API.
 Progress delivery is keyed by the immutable progress-event ID, preventing stage transitions from
 reposting the same milestone.
 

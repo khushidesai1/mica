@@ -1,14 +1,27 @@
 import asyncio
+import json
+import re
+from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from slack_sdk.errors import SlackApiError
 
+from pistachio.agents.analysis import slack_app
 from pistachio.agents.analysis.config import Settings
+from pistachio.agents.analysis.progress import TaskProgress
 from pistachio.agents.analysis.runner import Context, TurnResult
 from pistachio.agents.analysis.sessions import Sessions
 from pistachio.agents.analysis.slack_app import SlackAgent
-from pistachio.agents.analysis.slack_format import chunks, to_mrkdwn
+from pistachio.agents.analysis.slack_format import (
+    activity_blocks,
+    chunks,
+    done_blocks,
+    status_blocks,
+    to_mrkdwn,
+)
 from pistachio.agents.analysis.storage import LocalStorage
 
 
@@ -80,6 +93,20 @@ def test_formatting():
     assert all(len(part) <= 3500 for part in chunks("x" * 8000))
 
 
+def test_status_labels_are_plain_text_and_bounded():
+    blocks = status_blocks(":x:", "h", ["a", "<!channel> b"])
+    elements = [element for block in blocks for element in block["elements"]]
+    assert elements[0] == {"type": "mrkdwn", "text": ":x:"}
+    assert all(element["type"] == "plain_text" for element in elements[1:])
+    assert [element["text"] for element in elements[1:]] == ["<!channel> b", "a"]
+    assert status_blocks(":x:", "h")[0]["elements"][1]["text"] == "h"
+    assert done_blocks([])[0]["elements"][0]["text"] == "✓ Finished"
+    assert done_blocks([], "error_max_turns")[0]["elements"][0]["text"].startswith("⚠️ Stopped")
+    assert done_blocks(["old", "a", "b", "c"])[0]["elements"][0]["text"] == "✓ a · b · c"
+    assert len(status_blocks(":x:", "x" * 500)[0]["elements"][1]["text"]) == 150
+    assert len(done_blocks([], "x" * 500)[0]["elements"][0]["text"]) == 300
+
+
 def test_cleanup_preserves_fresh_work_and_resets_old_session(bot):
     from pistachio.agents.analysis.runner import Context
     from tools.cleanup_workspaces import cleanup
@@ -104,14 +131,63 @@ async def test_receipt_status_reused_and_heartbeat_stops(bot, monkeypatch):
     await send(bot, event("plot", _notice_ts="9.0"))
     updates = bot.client.chat_update.call_args_list
     assert all(c.kwargs["ts"] == "9.0" for c in updates)
-    assert any("— working" in c.kwargs["text"] for c in updates)
-    assert updates[-1].kwargs["text"].startswith("Done")
+    assert updates[-1].kwargs["blocks"][0]["elements"][0]["text"].startswith("✓")
+    assert not re.search(
+        r"\d+m \d+s|Done in|— working", json.dumps([c.kwargs for c in updates], ensure_ascii=False)
+    )
+    assert len(updates) == 2  # No unchanged heartbeat messages.
     count = len(updates)
     await asyncio.sleep(0.02)
     assert bot.client.chat_update.call_count == count
     assert not any(
         c.kwargs["text"] == "Working on it…" for c in bot.client.chat_postMessage.call_args_list
     )
+
+
+@pytest.mark.parametrize("fail_once", [False, True])
+async def test_heartbeat_flushes_throttled_step_and_retries_failure(bot, monkeypatch, fail_once):
+    from pistachio.agents.analysis import slack_app
+
+    clock = SimpleNamespace(now=0)
+    monkeypatch.setattr(slack_app, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(slack_app, "HEARTBEAT_SECONDS", 0.005)
+    delivered = asyncio.Event()
+    attempts = 0
+
+    async def deliver(**kwargs):
+        nonlocal attempts
+        if kwargs["text"] == "&lt;!channel&gt; b &amp; c":
+            attempts += 1
+            if fail_once and attempts == 1:
+                clock.now += 6
+                raise RuntimeError("temporary Slack failure")
+            delivered.set()
+
+    async def slow(ctx, prompt, status):
+        clock.now = 6
+        await status("Reading PROJECT.md")
+        await status("<!channel> b & c")
+        await status("<!channel> b & c")  # Consecutive duplicates don't add history.
+        await asyncio.sleep(0.02)
+        assert not delivered.is_set()  # Heartbeat also respects the five-second throttle.
+        clock.now = 12
+        await asyncio.wait_for(delivered.wait(), timeout=1)
+        count = bot.client.chat_update.call_count
+        clock.now = 30
+        await asyncio.sleep(0.02)
+        assert bot.client.chat_update.call_count == count
+        return TurnResult("session", "Finished plotting.", [])
+
+    bot.client.chat_update.side_effect = deliver
+    bot.runner.run_turn = slow
+    await send(bot, event("plot", _notice_ts="9.0"))
+    assert attempts == (2 if fail_once else 1)
+    final = bot.client.chat_update.call_args.kwargs["blocks"][0]["elements"][0]
+    assert final == {
+        "type": "plain_text",
+        "text": "✓ Reading PROJECT.md · <!channel> b & c",
+        "emoji": True,
+    }
 
 
 async def test_failed_turn_does_not_apply_partial_brief(bot):
@@ -125,11 +201,14 @@ async def test_failed_turn_does_not_apply_partial_brief(bot):
     bot.runner.run_turn = fail
     await send(bot, event("update the brief"))
     assert bot.sessions.get("C123", "1.0")[0].project_md == "# Original"
+    assert bot.client.chat_update.call_args.kwargs["blocks"] == done_blocks([], "interrupted")
 
 
 async def test_help_me_plot_is_computed(bot):
     await send(bot, event("help me plot these samples"))
     assert "help me plot" in bot.runner.calls[0][2]
+    first = bot.client.chat_postMessage.call_args_list[0].kwargs
+    assert first["blocks"] == status_blocks(bot.settings.loading_emoji, "Working on it…")
 
 
 async def test_missing_context_never_runs(bot):
@@ -154,3 +233,72 @@ async def test_draft_revision_preserves_brief_base_generation(bot):
     saved = bot.sessions.get("C123", "1.0")[0]
     assert saved.project_md == "Revised draft"
     assert saved.brief_generation == "original-generation"
+
+
+def test_plan_is_bounded_and_does_not_invent_success():
+    tasks = [TaskProgress(str(i), "<!channel> check " + str(i), "Checking data…") for i in range(4)]
+    tasks[2] = replace(tasks[2], status="complete")
+    plan = activity_blocks(tasks)[0]
+    assert plan["type"] == "plan" and plan["title"] == "Checking data…"
+    assert [t["task_id"] for t in plan["tasks"]] == ["2", "3"]
+    assert plan["tasks"][0]["title"] == "<!channel> check 2"  # Slack defines title as plain text.
+    final = activity_blocks(tasks, finished=True, error="interrupted")[0]
+    assert final["title"] == "Stopped: interrupted"
+    assert [t["status"] for t in final["tasks"]] == ["complete", "error"]
+    assert "not confirmed" in repr(final)
+
+
+@pytest.mark.parametrize("reject_plan", [False, True])
+async def test_plan_updates_completion_and_falls_back_only_on_invalid_blocks(
+    bot, monkeypatch, reject_plan
+):
+    now = [0]
+    monkeypatch.setattr(slack_app, "time", type("Clock", (), {"monotonic": lambda: now[0]}))
+    monkeypatch.setattr(slack_app, "HEARTBEAT_SECONDS", 0.005)
+    seen = []
+    delivered = asyncio.Event()
+
+    async def deliver(**kwargs):
+        blocks = kwargs["blocks"]
+        seen.append(blocks)
+        if blocks[0]["type"] == "plan":
+            if reject_plan:
+                raise SlackApiError("Unsupported", {"error": "invalid_blocks"})
+            if blocks[0]["tasks"][0]["status"] == "complete":
+                delivered.set()
+        elif reject_plan and len(seen) >= 4:
+            delivered.set()
+
+    async def compute(ctx, prompt, status):
+        task = TaskProgress("one", "Check counts", "Checking data…")
+        now[0] = 6
+        await status(task)
+        await status(replace(task, status="complete"))
+        now[0] = 12
+        await asyncio.wait_for(delivered.wait(), 1)
+        return TurnResult("session", "Done.")
+
+    bot.runner.run_turn = compute
+    bot.client.chat_update.side_effect = deliver
+    await send(bot, event("check", _notice_ts="9.0"))
+    plans = [b[0] for b in seen if b[0]["type"] == "plan"]
+    if reject_plan:
+        assert len(plans) == 1
+        assert seen[-1][0]["type"] == "context"
+    else:
+        assert plans[-1]["title"] == "Finished"
+        assert plans[-1]["tasks"][0]["status"] == "complete"
+    assert bot.client.chat_postMessage.call_args.kwargs["text"] == "Done."
+
+
+async def test_unexpected_run_failure_stops_progress(bot):
+    async def fail(ctx: Context, prompt, status):
+        await status(TaskProgress("one", "Check counts", "Checking data…"))
+        raise RuntimeError("Worker interrupted")
+
+    bot.runner.run_turn = fail
+    with pytest.raises(RuntimeError):
+        await send(bot, event("check", _notice_ts="9.0"))
+    plan = bot.client.chat_update.call_args.kwargs["blocks"][0]
+    assert plan["title"].startswith("Stopped:")
+    assert plan["tasks"][0]["status"] == "error"
