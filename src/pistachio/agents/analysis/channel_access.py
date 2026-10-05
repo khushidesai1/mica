@@ -157,7 +157,7 @@ def target_email(
         result = (
             (
                 profile(app, settings, team, user)
-                if removing
+                if removing or settings.access_mode == "workspace"
                 else email_for(app, settings, storage, team, user)
             )
             if user
@@ -166,7 +166,7 @@ def target_email(
     except Exception:
         result = None
     if not result:
-        raise ValueError("That account is not an enabled Slack channel member.")
+        raise ValueError("That account is not enabled for Pistachio.")
     return result
 
 

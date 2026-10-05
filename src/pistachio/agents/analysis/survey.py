@@ -1,4 +1,4 @@
-"""Small metadata-only inventory for init; no recursive filesystem traversal."""
+"""Bounded metadata-only inventories for setup and chat; no data-file reads."""
 
 from __future__ import annotations
 
@@ -10,11 +10,32 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from .config import Settings
+from .data_links import data_uri
 
 MAX_ENTRIES = 200
 MAX_LISTINGS = 4
 MAX_DEPTH = 2
 BUDGET_SECONDS = 15
+
+
+def inventory_uri(project_uri: str, relative_path: str, settings: Settings) -> str:
+    """Constrain a model-selected folder to the authorized project's data prefix."""
+    root = data_uri(project_uri).rstrip("/") + "/"
+    if relative_path.startswith("/") or ":" in relative_path:
+        raise ValueError("Choose a folder relative to this project's data location.")
+    uri = data_uri(root + relative_path)
+    parts = urlsplit(uri).path.strip("/").split("/")
+    if any(
+        p.startswith(".") or p == "outputs" or p.lower().endswith((".zarr", ".n5")) for p in parts
+    ):
+        raise ValueError("Choose a visible data folder outside Zarr/N5 stores.")
+    if settings.storage == "local":
+        parsed_root, parsed_uri = urlsplit(root), urlsplit(uri)
+        base = settings.data_mount_root / parsed_root.netloc / parsed_root.path.lstrip("/")
+        path = settings.data_mount_root / parsed_uri.netloc / parsed_uri.path.lstrip("/")
+        if not path.resolve().is_relative_to(base.resolve()):
+            raise ValueError("Choose a folder inside this project's data location.")
+    return uri
 
 
 def inventory(uri: str, settings: Settings) -> dict[str, Any]:
@@ -73,13 +94,21 @@ def inventory(uri: str, settings: Settings) -> dict[str, Any]:
                 entries = []
                 path = settings.data_mount_root / parsed.netloc / prefix
                 with os.scandir(path) as scan:
-                    for item in scan:
-                        if len(entries) >= 80:
+                    for index, item in enumerate(scan):
+                        if index >= 80:
                             break
+                        if item.is_symlink():
+                            continue
+                        is_dir = item.is_dir(follow_symlinks=False)
                         entries.append(
                             {
-                                "path": prefix + item.name + ("/" if item.is_dir() else ""),
-                                "kind": "folder" if item.is_dir() else "file",
+                                "path": prefix + item.name + ("/" if is_dir else ""),
+                                "kind": "folder" if is_dir else "file",
+                                **(
+                                    {}
+                                    if is_dir
+                                    else {"size_bytes": item.stat(follow_symlinks=False).st_size}
+                                ),
                             }
                         )
             for entry in entries:

@@ -5,6 +5,11 @@ Pistachio is a **Slack agent with a headless backend**. The Slack agent follows 
 HTTP webhook, Cloud Run service, connections, and GCP Batch Spot jobs. See
 [Slack setup and rollout](docs/slack-agent-setup.md) for configuration.
 
+In the agent DM: `init <name> gs://bucket/folder/` creates and selects a project, with a command
+to switch back to the previous one; `switch` lists your
+projects; `switch <name or ID>` selects one for new threads. Existing threads keep their project.
+Send `help` for this quick guide or `help all` for every command.
+
 There is no web application or browser login. The HTTP service remains necessary for Slack
 webhooks, Cloud Tasks, worker callbacks, health checks, and authenticated task APIs. Project and
 private memory, data access, analysis, code execution, approvals, progress, and artifact delivery

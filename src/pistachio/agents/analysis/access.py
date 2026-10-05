@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from . import user_memory
 from .config import Settings
+from .help_text import PROJECT_HELP
 from .identity import NOT_ENABLED, is_private, resolve_email, user_key
 from .registry import ProjectEntry, Registry, RegistryDoc, read_brief
 from .storage import Storage
@@ -81,7 +82,7 @@ def resolve(app: Any, settings: Settings, storage: Storage, record: dict[str, An
         allowed,
         channel_key,
         bool(state.get("context")),
-        f"channel:{team}" if settings.access_mode == "channel" else "",
+        f"{settings.access_mode}:{team}" if settings.access_mode != "mapped" else "",
     )
 
 
@@ -89,7 +90,7 @@ def deny_text(grant: Grant) -> str:
     if not grant.email:
         return NOT_ENABLED
     if not grant.project_id:
-        return "This chat isn't linked to a project. In a DM, send init <name> gs://bucket/prefix/."
+        return "This chat isn't linked to a project. In your DM with Pistachio:\n" + PROJECT_HELP
     if grant.project_id not in grant.doc.projects:
         return "This thread's project is unavailable."
     return (
@@ -137,11 +138,11 @@ def worker_permitted(
     if not is_private(event) and channel_key not in doc.projects[pid].published_channels:
         return False
     policy = ""
-    if settings and settings.access_mode == "channel":
+    if settings and settings.access_mode != "mapped":
         team = request["payload"].get("team_id", "")
         if resolve_email(settings, settings, storage, team, event.get("user", "")) != email:
             return False
-        policy = f"channel:{team}"
+        policy = f"{settings.access_mode}:{team}"
     grant = Grant(
         email, is_private(event), state, doc, pid, True, channel_key, identity_policy=policy
     )

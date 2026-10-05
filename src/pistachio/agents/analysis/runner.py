@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import platform
+import tempfile
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -77,6 +78,7 @@ def build_options(
     sandbox: bool = True,
     user_memory: str = "",
     project_name: str = "",
+    runtime_tmp: Path = Path("/tmp"),
 ) -> ClaudeAgentOptions:
     if not sandbox and platform.system() != "Darwin":
         raise ValueError("--no-sandbox is available only for local macOS development")
@@ -152,9 +154,12 @@ def build_options(
             "PISTACHIO_SLACK_BOT_TOKEN": "",
             "PISTACHIO_SLACK_SIGNING_SECRET": "",
             "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+            # A persisted `cd` into the read-only data mount makes the next sandbox
+            # fail while creating .claude metadata, before any recovery command runs.
+            "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "1",
             "MPLBACKEND": "Agg",
             "MPLCONFIGDIR": str(ctx.workdir / ".mpl"),
-            "TMPDIR": str(ctx.workdir / ".tmp"),
+            "TMPDIR": str(runtime_tmp),
         },
         hooks={"PreToolUse": [HookMatcher(hooks=[guard])]},
         sandbox=cast(
@@ -172,6 +177,7 @@ def build_options(
                     "allowAllUnixSockets": False,
                 },
                 "filesystem": {
+                    "allowWrite": [str(runtime_tmp)],
                     "denyWrite": [str(ctx.data_path)],
                     "denyRead": [
                         "/etc/pistachio",
@@ -234,6 +240,19 @@ class Runner:
     async def run_turn(
         self, ctx: Context, prompt: str, on_status: Callable[[ProgressUpdate], Awaitable[None]]
     ) -> TurnResult:
+        # The SDK puts Unix bridge sockets beneath TMPDIR. Private workspace paths can
+        # already exceed the socket path limit before a socket filename is appended.
+        # Each invocation gets short, private scratch storage, cleaned on every exit.
+        with tempfile.TemporaryDirectory(prefix="pista-", dir="/tmp") as scratch:
+            return await self._run_turn(ctx, prompt, on_status, Path(scratch))
+
+    async def _run_turn(
+        self,
+        ctx: Context,
+        prompt: str,
+        on_status: Callable[[ProgressUpdate], Awaitable[None]],
+        runtime_tmp: Path,
+    ) -> TurnResult:
         for name in ("code", "outputs", ".tmp", ".mpl"):
             (ctx.workdir / name).mkdir(parents=True, exist_ok=True)
         before, start = snapshot_outputs(ctx.workdir / "outputs"), time.monotonic()
@@ -250,6 +269,7 @@ class Runner:
                         sandbox=self.sandbox,
                         user_memory=self.user_memory,
                         project_name=self.project_name,
+                        runtime_tmp=runtime_tmp,
                     ),
                 ):
                     if isinstance(msg, AssistantMessage):

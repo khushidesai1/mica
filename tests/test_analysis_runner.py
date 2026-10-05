@@ -1,3 +1,6 @@
+import asyncio
+import socket
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -64,7 +67,63 @@ async def test_runner_resume_and_files(setup, monkeypatch):
     await Runner(settings).run_turn(ctx, "bigger", AsyncMock())
     assert first.text.startswith("Data:") and first.files[0].name == "figure.png"
     assert calls[1].resume == "session-1" and calls[0].cwd == calls[1].cwd
+    assert all(o.cwd == str(ctx.workdir) for o in calls)
+    assert all(o.env["CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"] == "1" for o in calls)
     assert first.run_log[0]["timestamp"] and first.cost == 0.1
+
+
+async def test_long_private_workspace_uses_short_isolated_socket_paths(setup, monkeypatch):
+    ctx, settings = setup
+    ctx.workdir = ctx.workdir / ("u" * 32) / ("p" * 18) / ("t" * 32) / ("a" * 24)
+    assert len(str(ctx.workdir / ".tmp").encode()) > 108
+    scratch_paths = []
+
+    async def query(**kwargs):
+        options = kwargs["options"]
+        scratch = Path(options.env["TMPDIR"])
+        scratch_paths.append(scratch)
+        assert scratch.stat().st_mode & 0o777 == 0o700
+        assert options.cwd == str(ctx.workdir)
+        assert options.sandbox["filesystem"]["allowWrite"] == [str(scratch)]
+        assert options.sandbox["failIfUnavailable"]
+        assert not options.sandbox["allowUnsandboxedCommands"]
+        path = scratch / ("claude-http-" + "a" * 36 + ".sock")
+        assert len(str(path).encode()) < 104  # Also fits macOS's shorter sockaddr_un.
+        with socket.socket(socket.AF_UNIX) as listener:
+            listener.bind(str(path))
+        yield result()
+
+    monkeypatch.setattr(runner, "query", query)
+    agent = Runner(settings)
+    first = await agent.run_turn(ctx, "run", AsyncMock())
+    ctx.session_id = first.session_id
+    second = await agent.run_turn(ctx, "resume", AsyncMock())
+    assert first.error is second.error is None
+    assert len(set(scratch_paths)) == 2
+    assert all(not path.exists() for path in scratch_paths)
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_runtime_scratch_is_removed_after_failure_or_cancellation(
+    setup, monkeypatch, cancelled
+):
+    ctx, settings = setup
+    paths = []
+
+    async def query(**kwargs):
+        paths.append(Path(kwargs["options"].env["TMPDIR"]))
+        if cancelled:
+            raise asyncio.CancelledError()
+        raise RuntimeError("Stream failed")
+        yield  # Make this an async generator, like the SDK stream.
+
+    monkeypatch.setattr(runner, "query", query)
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+            await Runner(settings).run_turn(ctx, "run", AsyncMock())
+    else:
+        assert (await Runner(settings).run_turn(ctx, "run", AsyncMock())).error == "RuntimeError"
+    assert paths and all(not path.exists() for path in paths)
 
 
 async def test_missing_session_retries_only_once(setup, monkeypatch):

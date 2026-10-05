@@ -26,6 +26,7 @@ from .storage import Storage
 
 log = logging.getLogger(__name__)
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf", ".svg", ".csv", ".tsv", ".md", ".txt"}
+MAX_UPLOAD_BYTES = 200_000_000
 HEARTBEAT_SECONDS = 10
 
 
@@ -234,7 +235,6 @@ class SlackAgent:
         if self.authorized and not await asyncio.to_thread(self.authorized):
             raise PermissionError("Project access changed during computation")
         ctx.session_id = result.session_id
-        self.last_reply = result.text
         self.sessions.save(key[0], ctx, turn, is_init)
         try:
             await asyncio.to_thread(
@@ -275,35 +275,50 @@ class SlackAgent:
                     )
             else:
                 await self.say(key, "The draft is too large to apply; briefs must be under 100 KB.")
-        try:
-            await render(
-                "Stopped" if result.error else "Finished",
-                steps,
-                list(tasks.values()),
-                finished=True,
-                error=result.error,
-            )
-        except Exception:
-            log.warning("Final status update failed: %s", key, exc_info=True)
         if self.authorized and not await asyncio.to_thread(self.authorized):
             raise PermissionError("Project access changed before delivery")
-        for chunk in chunks(to_mrkdwn(result.text)):
-            await self.say(key, chunk)
-        if result.error:
-            await self.say(key, f"That run stopped early (`{result.error}`). Want me to try again?")
         uploads = []
+        delivery_issues = []
         for path in result.files:
             if path.suffix.lower() not in EXTENSIONS:
                 continue
-            if path.stat().st_size > 200_000_000:
-                await self.say(
-                    key, f"Skipped {path.name}: larger than 200 MB. Saved in the agent bucket."
+            if path.stat().st_size > MAX_UPLOAD_BYTES:
+                delivery_issues.append(
+                    f"I couldn't attach `{path.name}` here because it's larger than 200 MB. "
+                    "It needs to be compressed or split into smaller files before I can send it."
                 )
             else:
                 uploads.append({"file": str(path), "filename": path.name})
         if uploads and self.authorized and not await asyncio.to_thread(self.authorized):
             raise PermissionError("Project access changed before file delivery")
         if uploads:
-            await self.client.files_upload_v2(
-                channel=key[0], thread_ts=key[1], file_uploads=uploads
+            try:
+                await self.client.files_upload_v2(
+                    channel=key[0], thread_ts=key[1], file_uploads=uploads
+                )
+            except Exception:
+                log.exception("Slack attachment delivery failed: %s", key)
+                delivery_issues.append(
+                    "The files were generated, but I couldn't confirm their delivery to Slack. "
+                    "They're kept with this thread so I can resend them."
+                )
+        # Preserve the workspace checkpoint after an upload failure so a resend can reuse
+        # the reports. Record what the user actually received, not the model's success claim.
+        reply = "\n\n".join(delivery_issues) if delivery_issues else result.text
+        if result.error:
+            reply += f"\n\nThat run stopped early (`{result.error}`). Want me to try again?"
+        self.last_reply = reply
+        try:
+            await render(
+                "Stopped" if result.error or delivery_issues else "Finished",
+                steps,
+                list(tasks.values()),
+                finished=True,
+                error=result.error or ("File delivery incomplete" if delivery_issues else None),
             )
+        except Exception:
+            log.warning("Final status update failed: %s", key, exc_info=True)
+        if self.authorized and not await asyncio.to_thread(self.authorized):
+            raise PermissionError("Project access changed before reply delivery")
+        for chunk in chunks(to_mrkdwn(reply)):
+            await self.say(key, chunk)

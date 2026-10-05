@@ -283,3 +283,54 @@ async def test_onboarding_verifies_bot_invitation_email_permissions_and_admin_li
     assert "<#CACCESS1>" in channels.test_slack.chat_postMessage.call_args.kwargs["text"]
     await receive(channels, payload("5.0", text="agent channels", user="U2", channel="D2"))
     assert "<#CACCESS1>" not in channels.test_slack.chat_postMessage.call_args.kwargs["text"]
+
+
+async def test_workspace_mode_keeps_private_dms_without_enabled_channels(channels):
+    channels.settings.access_mode = "workspace"
+    channels.app.slack_user_map = {}
+    channels.app.allowed_emails = ("unrelated@example.com",)
+    assert not ca.load(channels.store).channels
+    assert identity.resolve_email(
+        channels.app, channels.settings, channels.store, "T1", "U1"
+    ) == "alice@example.com"
+    assert identity.resolve_email(
+        channels.app, channels.settings, channels.store, "T1", "U2"
+    ) == "bob@example.com"
+    intake = await receive(channels, payload(text="Describe my project"))
+    assert await channels.process(intake["event_id"], 0) == "complete"
+    channels.decision.assert_awaited_once()
+    other = await receive(channels, payload("2.0", channel="D2", user="U2", text="switch"))
+    assert await channels.process(other["event_id"], 0) == "complete"
+    record = await channels.repository.get_connector_state("claude-event:" + other["event_id"])
+    assert "liver" not in record["notice_text"]
+    channels.member_api.conversations_members.assert_not_called()
+    assert ca.target_email(
+        channels.app, channels.settings, channels.store, "T1", "<@U2>"
+    ) == "bob@example.com"
+
+
+async def test_workspace_mode_rechecks_identity_and_requires_channel_publication(channels):
+    channels.settings.access_mode = "workspace"
+    body = payload(channel="C1", kind="app_mention", channel_type="channel")
+    grant = access.resolve(
+        channels.app, channels.settings, channels.store, {"payload": body, "thread_key": "empty"}
+    )
+    assert grant.email == "alice@example.com" and not grant.allowed
+    channels.decision.return_value = direct.Decision(route="compute", reply="Computing")
+    event = await receive(channels, payload())
+    assert await channels.process(event["event_id"], 0) == "running"
+    record = await channels.repository.get_connector_state("claude-event:" + event["event_id"])
+    grant = access.resolve(channels.app, channels.settings, channels.store, record)
+    import json
+
+    request = json.loads(channels.store.get(
+        f"tasks/slack-analysis/events/{event['event_id']}/request.json"
+    )[0])
+    assert access.worker_permitted(channels.store, request, grant.state, settings=channels.settings)
+    channels.member_api.users_info.side_effect = RuntimeError("Slack unavailable")
+    assert not access.worker_permitted(
+        channels.store, request, grant.state, settings=channels.settings
+    )
+    assert identity.resolve_email(
+        channels.app, channels.settings, channels.store, "T1", "U1"
+    ) is None

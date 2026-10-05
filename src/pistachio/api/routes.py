@@ -494,7 +494,10 @@ async def tool_build_completion(
     terminal = {"SUCCESS", "FAILURE", "INTERNAL_ERROR", "TIMEOUT", "CANCELLED"}
     if status not in terminal:
         return {"status": "ignored"}
-    tool_id = str(build.get("substitutions", {}).get("_TOOL_ID", ""))
+    tool_id = build.get("substitutions", {}).get("_TOOL_ID")
+    # The project-wide subscription also delivers ordinary deployment builds.
+    if not isinstance(tool_id, str) or not tool_id.strip():
+        return {"status": "ignored"}
     tool = await services.repository.get_tool(tool_id)
     if tool is None:
         raise HTTPException(status_code=404, detail="tool build record not found")

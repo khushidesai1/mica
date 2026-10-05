@@ -11,6 +11,7 @@ import re
 import time
 from email.message import EmailMessage
 from email.utils import parseaddr
+from html import escape
 from io import BytesIO
 from typing import Annotated, Any, cast
 from urllib.parse import urlencode
@@ -19,7 +20,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from google.auth import default
 from googleapiclient.discovery import build
-from markupsafe import escape
 from starlette.datastructures import Headers
 
 from pistachio.api.auth import Principal, get_principal

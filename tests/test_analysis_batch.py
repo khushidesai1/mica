@@ -12,6 +12,7 @@ import pytest
 from fastapi import HTTPException, Response
 from google.api_core.exceptions import AlreadyExists, NotFound
 from google.cloud import batch_v1
+from slack_sdk.errors import SlackApiError
 from starlette.requests import Request
 
 from pistachio.agents.analysis import batch
@@ -294,9 +295,11 @@ async def test_untracked_channel_messages_are_ignored(bridge):
     assert not bridge.repository.connector_state
 
 
-@pytest.mark.parametrize("direct_revision", [False, True])
+@pytest.mark.parametrize(
+    "direct_revision,upload_failure", [(False, False), (True, False), (False, True)]
+)
 async def test_worker_cold_start_resume_and_expired_checkpoint(
-    tmp_path, monkeypatch, direct_revision
+    tmp_path, monkeypatch, direct_revision, upload_failure
 ):
     from dataclasses import asdict
 
@@ -376,6 +379,11 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
         json.dumps({"context": asdict(ctx), "turn": 0, "is_init": False}, default=str).encode(),
     )
     for turn in range(1, 4):
+        slack.files_upload_v2.side_effect = (
+            SlackApiError("Upload failed", {"error": "error"})
+            if upload_failure and turn == 1
+            else None
+        )
         storage.put(
             f"{CHECKPOINT_PREFIX}/events/event-{turn}/request.json",
             json.dumps(
@@ -393,6 +401,12 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
         await batch_worker.main(f"event-{turn}")
         saved = json.loads(storage.get(pointer)[0])
         assert saved["turn"] == turn
+        if upload_failure and turn == 1:
+            assert "couldn't confirm their delivery to Slack" in saved["messages"][-1]["assistant"]
+            with tarfile.open(fileobj=io.BytesIO(storage.get(saved["archive"])[0])) as archive:
+                assert any(name.endswith("/outputs/plot.png") for name in archive.getnames())
+        if upload_failure and turn == 2:
+            assert "couldn't confirm their delivery to Slack" in runner.calls[-1][2]
         expected = "Revised in chat" if direct_revision and turn > 1 else "Frozen original brief"
         assert saved["context"]["project_md"] == expected
         if direct_revision and turn == 1:

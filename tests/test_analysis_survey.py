@@ -43,6 +43,51 @@ def test_inventory_stops_on_timeout_without_retry(monkeypatch):
     assert listing.call_count == 1
 
 
+@pytest.mark.parametrize("path", ["", "raw_outputs/raw/TMA1/", "raw data"])
+def test_inventory_uri_is_scoped_to_project(path):
+    uri = survey.inventory_uri("gs://lab-data/liver", path, Settings(_env_file=None))
+    assert uri == "gs://lab-data/liver/" + path
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "../other/",
+        "/other/",
+        "gs://other-bucket/",
+        "raw/../../other",
+        "raw\\..\\other",
+        "%2e%2e/other",
+        "raw?query=1",
+        "raw#fragment",
+        "raw/huge.zarr/",
+        "sample.n5/",
+        ".hidden/",
+        "outputs/",
+    ],
+)
+def test_inventory_uri_rejects_unscoped_or_opaque_paths(path):
+    with pytest.raises(ValueError):
+        survey.inventory_uri("gs://lab-data/liver/", path, Settings(_env_file=None))
+
+
+def test_local_inventory_does_not_follow_symlinks_or_read_file_contents(tmp_path, monkeypatch):
+    root = tmp_path / "lab-data" / "liver"
+    root.mkdir(parents=True)
+    outside = tmp_path / "other-project"
+    outside.mkdir()
+    (outside / "private.csv").write_text("private")
+    (root / "link").symlink_to(outside, target_is_directory=True)
+    (root / "sample.csv").write_bytes(b"cells\n42\n")
+    settings = Settings(_env_file=None, storage="local", data_mount_root=tmp_path)
+    with pytest.raises(ValueError, match="inside this project"):
+        survey.inventory_uri("gs://lab-data/liver/", "link", settings)
+    monkeypatch.setattr("builtins.open", lambda *a, **kw: pytest.fail("No data-file reads"))
+    result = survey.inventory("gs://lab-data/liver/", settings)
+    assert result["entries"] == [{"path": "liver/sample.csv", "kind": "file", "size_bytes": 9}]
+    assert not result["content_inspected"]
+
+
 async def test_init_tool_policy_blocks_all_data_scans(tmp_path):
     ctx = Context(tmp_path / "work", tmp_path / "mount", survey_only=True)
     opts = build_options(ctx, Settings(_env_file=None))

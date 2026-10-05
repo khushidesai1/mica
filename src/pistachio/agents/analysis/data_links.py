@@ -49,7 +49,7 @@ def init_args(text: str) -> tuple[str, str, bool] | None:
     force = "--force" in args
     args = [x for x in args if x != "--force"]
     if len(args) != 3:
-        raise ValueError("Usage: init <project-slug> gs://bucket/prefix/ [--force]")
+        raise ValueError("Usage: init <project-slug> gs://bucket/prefix/")
     if not re.fullmatch(r"[a-z0-9-]{3,40}", args[1]):
         raise ValueError("Use a project name of 3–40 lowercase letters, numbers or hyphens.")
     return args[1], data_uri(args[2]), force

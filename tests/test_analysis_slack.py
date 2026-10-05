@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import re
 from dataclasses import replace
 from pathlib import Path
@@ -209,6 +210,112 @@ async def test_help_me_plot_is_computed(bot):
     assert "help me plot" in bot.runner.calls[0][2]
     first = bot.client.chat_postMessage.call_args_list[0].kwargs
     assert first["blocks"] == status_blocks(bot.settings.loading_emoji, "Working on it…")
+
+
+async def test_pdf_and_png_reports_are_attached_to_thread_before_answer(bot, monkeypatch):
+    from claude_agent_sdk import ResultMessage
+
+    from pistachio.agents.analysis import runner
+
+    ctx = bot.sessions.get("C123", "1.0")[0]
+    paths = []
+
+    async def query(**kwargs):
+        for name in [
+            "gap_report/cellpose_gap_report.pdf",
+            "figures/overview.png",
+            "figures/detail.png",
+        ]:
+            path = ctx.workdir / "outputs" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"report or figure")
+            paths.append(path)
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="session",
+            result="Here's the report and both figures.",
+        )
+
+    monkeypatch.setattr(runner, "query", query)
+    bot.runner = runner.Runner(bot.settings)
+    await send(bot, event("Send the PDF report and PNGs", ts="2.0", thread="1.0"))
+    bot.client.files_upload_v2.assert_awaited_once_with(
+        channel="C123",
+        thread_ts="1.0",
+        file_uploads=[{"file": str(p), "filename": p.name} for p in sorted(paths)],
+    )
+    calls = bot.client.mock_calls
+    upload_index = next(i for i, call in enumerate(calls) if call[0] == "files_upload_v2")
+    answer_index = next(
+        i
+        for i, call in enumerate(calls)
+        if call[0] == "chat_postMessage" and call.kwargs["text"].startswith("Here's the report")
+    )
+    assert upload_index < answer_index
+    assert bot.completed
+
+
+async def test_upload_failure_is_visible_and_preserves_reports_for_resending(bot):
+    bot.client.files_upload_v2.side_effect = SlackApiError("Upload failed", {"error": "error"})
+    await send(bot, event("Send the plot"))
+    reply = bot.client.chat_postMessage.call_args.kwargs["text"]
+    assert "couldn't confirm their delivery to Slack" in reply
+    assert bot.last_reply == reply
+    assert "Data: fixture.h5ad" not in reply
+    assert bot.client.chat_update.call_args.kwargs["text"] == "Stopped"
+    assert bot.completed  # The Batch worker can now checkpoint the workspace after the failure.
+    ctx, turn, _ = bot.sessions.get("C123", "1.0")
+    assert turn == 1
+    assert (ctx.workdir / "outputs/plot.png").read_text() == "figure"
+
+
+async def test_oversized_report_is_reported_as_undelivered(bot, monkeypatch):
+    monkeypatch.setattr(slack_app, "MAX_UPLOAD_BYTES", 5)
+    await send(bot, event("Send the plot"))
+    bot.client.files_upload_v2.assert_not_awaited()
+    reply = bot.client.chat_postMessage.call_args.kwargs["text"]
+    assert "couldn't attach `plot.png` here" in reply
+    assert "compressed or split" in reply
+    assert "bucket" not in reply and "outputs/" not in reply
+    assert bot.client.chat_update.call_args.kwargs["text"] == "Stopped"
+    assert bot.completed
+
+
+async def test_existing_reports_can_be_resent_without_regenerating(bot, monkeypatch):
+    from claude_agent_sdk import ResultMessage
+
+    from pistachio.agents.analysis import runner
+
+    ctx = bot.sessions.get("C123", "1.0")[0]
+    paths = [ctx.workdir / "outputs/gap_report" / name for name in ["report.pdf", "overview.png"]]
+    for path in paths:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"existing report")
+        os.utime(path, ns=(1, 1))
+
+    async def query(**kwargs):
+        for path in paths:
+            path.touch()
+        yield ResultMessage(
+            subtype="success",
+            duration_ms=1,
+            duration_api_ms=1,
+            is_error=False,
+            num_turns=1,
+            session_id="session",
+            result="Sending the existing report and figure.",
+        )
+
+    monkeypatch.setattr(runner, "query", query)
+    bot.runner = runner.Runner(bot.settings)
+    await send(bot, event("Please resend the report and PNG"))
+    uploads = bot.client.files_upload_v2.call_args.kwargs["file_uploads"]
+    assert {upload["filename"] for upload in uploads} == {"report.pdf", "overview.png"}
+    assert all(path.read_bytes() == b"existing report" for path in paths)
 
 
 async def test_missing_context_never_runs(bot):

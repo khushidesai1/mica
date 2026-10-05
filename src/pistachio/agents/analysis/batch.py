@@ -175,7 +175,10 @@ class BatchBridge:
         except Exception:
             log.warning("Slack status delivery failed for %s", event_id, exc_info=True)
 
-    def resolve_data(self, record: dict[str, Any]) -> tuple[Settings, set[str]]:
+    def resolve_data(
+        self, record: dict[str, Any], *, uri: str | None = None
+    ) -> tuple[Settings, set[str]]:
+        """Verify bucket admission, optionally for a trusted, project-scoped metadata URI."""
         from google.cloud import storage
 
         settings = self.settings.model_copy()
@@ -186,9 +189,9 @@ class BatchBridge:
         allowed = settings.csv("data_buckets")
         event = record["payload"]["event"]
         args = init_args(event.get("text", ""))
-        if args:
+        if uri is None and args:
             uri = args[1]
-        else:
+        if uri is None:
             store = GCSStorage(self.app.gcs_bucket)
             try:
                 saved = json.loads(

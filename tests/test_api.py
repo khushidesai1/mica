@@ -567,3 +567,70 @@ def test_deployed_dev_auth_is_rejected_and_allowlist_normalized():
         assert Settings(_env_file=None, allowed_emails=values).allowed_emails == (
             "alice@example.org",
         )
+
+
+@pytest.mark.parametrize("substitutions", [{}, {"_TOOL_ID": ""}, {"_TOOL_ID": None}])
+def test_deployment_build_notifications_are_ignored(tmp_path, monkeypatch, substitutions):
+    from unittest.mock import AsyncMock
+
+    repo = InMemoryRepository()
+    lookup = AsyncMock(side_effect=AssertionError("Deployment is not a tool build"))
+    monkeypatch.setattr(repo, "get_tool", lookup)
+    app = create_app(
+        settings=Settings(env="test", auth_mode="dev", artifact_root=tmp_path),
+        repository=repo,
+    )
+    payload = {
+        "message": {
+            "messageId": "deployment-build",
+            "data": base64.b64encode(
+                json.dumps({"status": "SUCCESS", "substitutions": substitutions}).encode()
+            ).decode(),
+        }
+    }
+    with TestClient(app) as client:
+        response = client.post("/api/v1/internal/tools/build-completion", json=payload)
+        assert response.status_code == 200
+        assert response.json() == {"status": "ignored"}
+        assert client.post("/api/v1/internal/tools/build-completion", json=payload).json() == {
+            "status": "duplicate"
+        }
+    lookup.assert_not_awaited()
+
+
+def test_tool_build_notification_still_updates_tool(tmp_path):
+    from pistachio.models import ToolRecord, ToolStatus
+
+    repo = InMemoryRepository()
+    tool = ToolRecord(
+        name="fixture",
+        source_url="https://example.org/tool",
+        version="1",
+        install_recipe="fixture",
+        status=ToolStatus.BUILDING,
+    )
+    asyncio.run(repo.put_tool(tool))
+    app = create_app(
+        settings=Settings(env="test", auth_mode="dev", artifact_root=tmp_path),
+        repository=repo,
+    )
+    payload = {
+        "message": {
+            "messageId": "tool-build",
+            "data": base64.b64encode(
+                json.dumps(
+                    {
+                        "status": "SUCCESS",
+                        "substitutions": {"_TOOL_ID": tool.id},
+                        "results": {"images": [{"digest": "sha256:fixture"}]},
+                    }
+                ).encode()
+            ).decode(),
+        }
+    }
+    with TestClient(app) as client:
+        response = client.post("/api/v1/internal/tools/build-completion", json=payload)
+    assert response.status_code == 200
+    saved = asyncio.run(repo.get_tool(tool.id))
+    assert saved.status == ToolStatus.AVAILABLE
+    assert saved.image_digest == "sha256:fixture"

@@ -4,7 +4,7 @@ steps:
     args: [build, --build-arg, 'PYTHON_IMAGE=${_PYTHON_IMAGE}', -f, docker/Dockerfile.api, -t, '${_API_IMAGE}', .]
   - id: verify-headless-api
     name: gcr.io/cloud-builders/docker
-    args: [run, --rm, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_headless_api.py]
+    args: [run, --rm, -e, PISTACHIO_ARTIFACT_ROOT=/tmp/pistachio-smoke, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_headless_api.py]
   - id: export-api-contract
     name: gcr.io/cloud-builders/docker
     entrypoint: bash

@@ -68,6 +68,13 @@ async def post(token: str, channel: str, thread_ts: str, text: str, *, event_id:
 
 
 def resolve_email(app: Any, settings: Any, storage: Any, team: str, user: str) -> str | None:
+    if settings.access_mode == "workspace":
+        from .channel_access import profile
+
+        try:
+            return profile(app, settings, team, user)
+        except Exception:
+            return None
     if settings.access_mode == "channel":
         from .channel_access import email_for as channel_email
 

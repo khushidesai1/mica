@@ -1,11 +1,171 @@
-# Slack agent deployment — 1 October 2026
+# Slack agent deployment — current release 5 October 2026
 
-Current staging revision: `pistachio-staging-00087-xey` (casual replies and expandable progress;
-Spot only for computation/data inspection; see follow-ups below). The initial Slack-first rollout used revision
-`pistachio-staging-00073-ruj`.
-The existing app, bot, HTTP webhook, Cloud Tasks queue and Batch Spot resources are reused.
-The web agent code and science worker image are preserved. Real-data binding and a user-led
-Slack conversation remain first-use steps; the deployment canary used synthetic data only.
+Current live revision: `pistachio-staging-00097-log`, serving 100% of traffic. This release
+synchronizes the complete current application source across the headless API, Claude Slack
+worker, and shared science worker. Earlier releases below were selective overlays; their
+historical rollback instructions do not apply after this private-project cutover.
+
+## Metadata routing, conversational replies, and Slack reports — 5 October 2026
+
+Ordinary chat can now request a bounded inventory of object names, folders, and sizes on
+Cloud Run without starting a Spot worker. Reading file contents, calculating results, and
+generating or resending reports continue to use the worker. Replies default to conversational
+prose, with lists reserved for useful lists of files, results, changes, or condensed steps.
+
+The agent is explicitly told that users cannot access its workspace or `outputs/`. Reports
+must be attached to Slack. Nested files were already supported by the recursive collector;
+the reported "top-level only" explanation did not match the deployed code. Instructions and
+regression checks now cover `outputs/gap_report/cellpose_gap_report.pdf` directly. Existing
+files can be resent by refreshing their modification times without moving or regenerating them.
+Uploads precede the final answer. Failed uploads produce a delivery warning and allow the
+workspace to be checkpointed so the next request can resend the same reports.
+
+- Build `f800de8c-442b-41ee-89b1-52f7eec1feed` succeeded. Five application files changed from
+  the prior release; all 83 application files were verified in the API, Slack worker, and
+  shared worker images. Existing dependency images and unrelated runtime settings were preserved.
+- Local suite: 394 passed, 4 skipped; Ruff and strict mypy passed. After adding the exact
+  nested-file case, all 18 Slack tests passed. In-image checks covered nested PDF/PNG uploads,
+  resends, upload failures, source synchronization, worker contracts, and private socket paths.
+- Synthetic live canary `pistachio-delivery-canary-20261005` succeeded in 43.93 seconds of
+  worker runtime. The live model chose inventory/reply for a metadata listing and compute for
+  resending files; its casual response was prose. It generated a nested PDF and PNG, resent
+  the unchanged files, reported a simulated upload failure, and preserved both through a GCS
+  checkpoint round trip. Slack auth and required file scopes passed. All Slack writes were
+  mocked; no synthetic messages or files were sent to users. Its temporary grant was deactivated.
+- Preview and live health returned 200; removed UI/docs returned 404; unsigned Slack events
+  and unauthenticated worker credential requests returned 401. Runtime fingerprints matched.
+  The verified revision now receives all traffic, and the temporary preview tag was removed.
+
+Evidence and immutable image digests: `.pistachio/deployments/slack-delivery-20261005/`.
+Canary report:
+`gs://pistachio-staging-artifacts-5304c19c/tasks/slack-analysis/acceptance/slack-delivery-20261005.json`.
+
+## Working-directory recovery and build callbacks — 5 October 2026
+
+A follow-up analysis entered the read-only data directory and persisted that cwd across
+commands. Its next sandbox failed trying to create `.claude`, preventing even a recovery
+`cd`. The runner now sets `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1` for every SDK
+invocation, including resumed sessions. Commands return to the writable workspace; the
+prompt explains that directory changes apply only within a command.
+
+The live log review also found ordinary deployment build notifications reaching the
+project-wide tool-build callback without `_TOOL_ID`. These are now acknowledged as ignored
+instead of attempting an invalid empty Firestore document lookup. Actual tool-build updates
+and duplicate notification handling are covered by regression tests.
+
+- Revision `pistachio-staging-00095-ted` uses build `d62a90d4-3c13-4b98-b139-9ea3d8d6149b`.
+  All three images were checked against the same 83-file application source snapshot; their
+  immutable digests and preserved runtime fingerprint are in the release manifest.
+- Local verification: 362 tests passed, 4 skipped; Ruff, strict mypy, and diff checks passed.
+  In-image checks covered source synchronization, worker contracts, headless endpoints,
+  project controls, socket paths, cwd settings, and deployment-build callback handling.
+- Real worker `pistachio-cwd-canary-20261005-v4` reproduced the persisted data-directory cwd
+  with the old setting, resumed that same SDK session with the fix, and verified Python
+  started in the writable workspace after a separate compound directory-change command.
+  The synthetic fixture did not reproduce the exact metadata-creation error; the test
+  directly verifies prevention of the directory drift observed in the failed user thread.
+- Synthetic plotting, editing and rerunning the script after a GCS checkpoint round trip,
+  SDK session identity, and all eight isolation probes passed. Both turns used a 129-byte
+  private workspace. No sandbox permission was relaxed.
+- Earlier diagnostic canaries and the final canary had their temporary grants deactivated.
+  No user analysis or Slack message was replayed. The existing thread checkpoint was
+  confirmed intact; the next message can continue with the corrected worker.
+
+Evidence: `.pistachio/deployments/workspace-cwd-20261005/`. The final harness is saved as
+`acceptance-tested.py` and embedded in the Batch job's commands. The report is at
+`gs://pistachio-staging-artifacts-5304c19c/tasks/slack-analysis/acceptance/workspace-cwd-20261005-v4.json`.
+The three earlier reports preserve the diagnostic differences between root-folder,
+standalone-cd, and real-Python probes.
+
+## Sandbox socket fix — 5 October 2026
+
+A real private-DM worker started successfully but its Bash sandbox could not initialize bridge
+sockets. The workspace path was 129 bytes; its previous `TMPDIR` was 134 bytes before the SDK
+added a socket filename, exceeding Linux's Unix socket path limit. The earlier synthetic canary
+used a shorter workspace and missed this regression. Restarting with the same path was insufficient.
+
+Each SDK invocation now uses a unique mode-0700 `/tmp/pista-*` scratch directory, cleaned on
+success, failure, or cancellation. Durable workspace paths, project bindings, and resumed SDK
+sessions remain unchanged. Sandboxing, network denial, read-only data, and credential isolation
+remain enforced; no additional container privileges or IAM grants were added.
+
+- Build `ee3f6c58-a4a3-4feb-bfce-c64d16e4272c` succeeded using the exact prior image dependencies.
+  All three images contain the same 83-file application snapshot; only `runner.py` changed.
+- API: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/api@sha256:6f54dc3009090b5e5b17788286e328182de542b0e9d48b89d109e5c8c1921dbd`.
+- Slack worker: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/slack-agent@sha256:2a26cb4076d3631dc43cd2475dce57f5b4160a08b86169b47e060d937ee37a6f`.
+- Shared science worker: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/science@sha256:a0196cae8d00d9ba722794ed68431c8b3fac4ab03cc5e2394f7993bb3cac1287`.
+- 358 tests passed, 4 skipped; Ruff and strict mypy passed. Real Unix socket creation and scratch
+  cleanup are covered by regression tests and by the Linux worker-image build gate.
+- Live canary `pistachio-socket-canary-20261005` succeeded before promotion, with a 129-byte
+  private workspace path, synthetic plotting, GCS session restoration, and a successful resumed
+  turn. All eight isolation probes passed. Worker runtime was 71.19 seconds; model cost was
+  $0.236102 excluding cloud resources. The temporary credential grant was deactivated.
+- No Slack test message or user analysis was replayed. The next request in the existing thread
+  starts a fresh worker with the fixed image. No project reinitialization is required.
+
+The acceptance harness now always uses a production-length private path. Evidence is in
+`.pistachio/deployments/sandbox-sockets-20261005/`; the live report is at
+`gs://pistachio-staging-artifacts-5304c19c/tasks/slack-analysis/acceptance/sandbox-sockets-20261005.json`.
+
+## Full source sync and private-project cutover
+
+The user authorized deployment of all recent changes, retaining personal agent DMs and optional
+explicitly published channel conversations. The approved Slack permission update and reinstall
+were completed in the Codex in-app browser. The existing secret-backed bot token reports all
+12 expected scopes, including member email lookup, channel information, mentions, and channel
+history. Events are `message.im`, `app_mention`, `message.channels`, and `message.groups`.
+Existing webhook and interactivity URLs are unchanged.
+
+- Build: `37a86b0f-a83a-4475-8e4f-a4deecd3a122` (SUCCESS).
+- API: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/api@sha256:8d9cb9dd46677524e92d97d68103f153b08c5ac609b4786c4f581dc59177b9ae`.
+- Slack worker: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/slack-agent@sha256:058887a3f2d2f579c20f073478a7cac94748955dc0a57c6a709d01ebf2d77314`.
+- Shared science worker: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/science@sha256:c5ab805aab2314d69d1ce172a0badb4a5be59276f8e1e88a0bb50222dd255630`.
+- `AGENT_ACCESS_MODE=workspace`: personal DMs require no access-channel membership. Projects
+  and personal memory remain private. Project sharing and channel publication are explicit.
+- `init` creates and selects a DM project and offers a switch-back command. `switch` lists
+  accessible projects; `switch <name or ID>` selects the default for new threads. Existing
+  threads retain their project. `help` displays the compact guide; `help all` is complete help.
+- Validation: 355 tests passed, 4 skipped; Ruff and strict mypy passed. All 83 application source
+  files match the same build snapshot in all three images. Headless startup, project controls,
+  Slack imports/binaries, and the API/shared-worker contract passed.
+- Preview and live health returned 200; removed UI/docs returned 404; unsigned Slack events and
+  unauthenticated worker credential requests returned 401. Unrelated runtime configuration
+  was fingerprinted and preserved. All old preview tags were removed at cutover.
+
+The queue was paused and public ingress blocked across all 15 URLs before migration. No active
+Batch jobs, queued tasks, or active Slack receipts remained. The existing project's owner was
+verified against Slack, its registry entry and DM binding were migrated, and 13 metadata files
+were backed up beneath `projects/_migration/full-sync-20261005/original/`. Original metadata,
+checkpoints, and outputs remain intact; project retention is unchanged. Intake and queue dispatch
+were restored after promotion.
+
+Legacy private threads start a fresh SDK context on their next turn under the new private
+workspace paths. Previous drafts/checkpoints remain available for reviewed recovery; unsaved
+old drafts are not automatically published as shared project briefs.
+
+Release evidence is in `.pistachio/deployments/full-sync-20261005/`, including source hashes,
+digest pins, endpoint checks, migration checks, and backup object generations. No test Slack
+message or upload is sent by the deployment checks.
+
+Live synthetic acceptance job `pistachio-full-sync-canary-20261005` succeeded in 62.72 seconds
+of worker runtime. It authenticated to the new ACL-enforced credential endpoint, verified Slack
+scopes, generated a synthetic-data plot, round-tripped the session archive through GCS, and
+resumed the same session to edit and rerun its script. All eight isolation probes passed:
+readable data, no Slack credentials in generated code, blocked outside writes, blocked data
+writes, blocked direct/proxied network and metadata access, and hidden parent credentials.
+The model was `claude-opus-5-5`; the two turns cost $0.203556, excluding cloud resources.
+The temporary credential receipt was marked complete/inactive. The report is at
+`gs://pistachio-staging-artifacts-5304c19c/tasks/slack-analysis/acceptance/full-sync-20261005.json`.
+The canary serialized the newer structured progress events as text in its test logger.
+Actual Slack message/upload delivery remains a user-led check; no synthetic message was posted.
+
+Rollback must retain private-project ACL enforcement. Use a verified compatible image pair or
+pause ingress while repairing; never restore the historical slug-only API or worker.
+
+## Historical rollout — 1 October 2026
+
+The original rollout used `pistachio-staging-00073-ruj`; subsequent selective overlays reached
+`pistachio-staging-00087-xey`. The following sections describe those historical releases.
 
 ## Prepared and verified
 

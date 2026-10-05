@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     max_budget_usd_per_turn: float = Field(default=5, gt=0)
     max_concurrent_runs: int = Field(default=3, ge=1)
     # Channel mode denies admission until a designated admin enables a channel.
-    access_mode: Literal["channel", "mapped"] = "channel"
+    access_mode: Literal["channel", "mapped", "workspace"] = "channel"
     access_admin_ids: str = ""  # Explicit team:user IDs; onboarding authority only.
     access_cache_seconds: int = Field(default=30, ge=0, le=60)
     allowed_user_ids: str = ""  # Legacy mapped mode only.

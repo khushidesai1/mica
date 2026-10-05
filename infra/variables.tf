@@ -77,12 +77,12 @@ variable "slack_agent_enabled" {
   default     = false
 }
 variable "slack_agent_access_mode" {
-  description = "Channel membership is the Slack admission rule; mapped retains the legacy static lists."
+  description = "Slack admission: workspace permits private DMs for verified members; channel requires enabled-channel membership; mapped uses legacy lists."
   type        = string
   default     = "channel"
   validation {
-    condition     = contains(["channel", "mapped"], var.slack_agent_access_mode)
-    error_message = "Use channel or mapped."
+    condition     = contains(["channel", "mapped", "workspace"], var.slack_agent_access_mode)
+    error_message = "Use channel, mapped, or workspace."
   }
 }
 variable "slack_agent_access_admin_ids" {

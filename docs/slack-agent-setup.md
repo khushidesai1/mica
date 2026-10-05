@@ -13,12 +13,15 @@ token, always-on VM, or Modal account is required.
 
 `Slack DM → signed webhook → Cloud Tasks → Cloud Run conversation → Slack reply`
 
-Only requests that need data inspection, code execution, or plots proceed to a Batch Spot job.
+Only requests that need file contents, code execution, or plots proceed to a Batch Spot job.
+Listing object names, folders, and sizes uses bounded metadata calls on Cloud Run, including
+in ordinary chat. Reading CSV headers or counting cells still requires the worker.
 Conversation routing is always enabled. Ordinary questions, planning, brief edits,
 `help`, `brief`, `save brief`, `cancel`, and bounded initial setup run in the control service.
 The direct Claude call has no shell, filesystem, or network tools. It can answer, revise a draft,
-or request isolated computation. API failures produce a visible retry message, never a worker
-fallback. Cancellation bypasses queued work and stops the active job without starting a new one.
+request a project-scoped metadata listing, or request isolated computation. API failures produce
+a visible retry message, never a worker fallback. Cancellation bypasses queued work and stops
+the active job without starting a new one.
 
 The new worker calls the Claude Agent SDK directly. It does not invoke Pistachio's shared task planners,
 TaskContract generation, approval stages, or multi-stage execution pipeline. Each Slack thread
@@ -40,7 +43,7 @@ absolute paths. Direct chat updates the small checkpoint record with the revised
 recent conversation without downloading the workspace archive. The next compute worker overlays
 that record on its restored workspace; compute replies update the same conversation record.
 A small durable record preserves the current thread brief and turn number after the
-workspace expires. Cold starts add Batch provisioning latency to each message.
+workspace expires. Cold starts add Batch provisioning latency to computation requests.
 
 A preempted turn is not automatically replayed: it may already have spent money or posted a
 reply. The previous completed checkpoint remains available, and Slack receives a failure notice
@@ -84,6 +87,18 @@ to the current project's data path. The current staging deployment has already o
 outer container profile exception for nested sandboxing; the new worker honors that existing
 staging/test-only flag. The inner Claude sandbox must pass its live gate and is never disabled
 for Slack.
+
+The SDK's `TMPDIR` uses a short, private `/tmp/pista-*` directory for each invocation, removed
+when the invocation finishes, fails, or is cancelled. Do not place it under the durable private
+workspace: those paths exceed the Unix socket limit and prevent the sandbox's bridge sockets
+from starting. Durable workspace and session paths remain unchanged. The live acceptance test
+must exercise a production-length private workspace, including session restoration.
+
+The runner sets `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1` so every Bash command
+returns to the thread's writable workspace. A `cd` into project data applies within that
+command only. Persisting a data-directory cwd can make the next sandbox fail while creating
+its `.claude` metadata, before even a recovery `cd` can execute. Keep this setting on resumed
+sessions too, and test a real Python command after entering a nested read-only data folder.
 
 Staging also requires the separately approved `AGENT_BATCH_PROC_MOUNT_OPT_IN=true`
 (`slack_agent_proc_mount_opt_in` in Terraform). This adds Docker's
@@ -151,7 +166,14 @@ and no task retry. The controller cancels jobs still unresolved after two hours.
 uses at most 400,000 MiB across mounted buckets, with range-read caching enabled. Validate the
 Batch image's gcsfuse flags and available disk space during the canary.
 
-Commands: `help`, `init <slug> gs://bucket/prefix/ [--force]`, `brief`, and `save brief` in a draft
+Project controls: `init <slug> gs://bucket/prefix/` creates and selects a project, `switch` lists
+your projects in a DM with copyable commands, and `switch <name or ID>` selects one for new
+threads. The compact `init`/`switch` guide appears in unlinked chats, after initialization, and
+on `help`; `help all` lists every command. Init automatically changes the DM's selection and
+includes a command to switch back to the previous project. `use <project>` and `projects` remain
+aliases.
+
+Other commands include `brief` and `save brief` in a draft
 thread, including an analysis thread where the agent has revised the brief. The agent uses
 local draft revisions in subsequent turns, while other existing threads keep their snapshots.
 New threads receive revisions after `save brief`. Unknowns can remain TODOs; user-provided
@@ -184,7 +206,7 @@ the Socket Mode entrypoint has been removed. Live testing requires explicit
 and [gcsfuse flags](https://docs.cloud.google.com/storage/docs/cloud-storage-fuse/cli-options).
 
 
-## Bounded initialization
+## Bounded initialization and file listings
 
 `init` prepares a metadata-only sample through the trusted Google Cloud Storage API: at most
 4 one-page listings, 80 entries per page, 200 retained entries, 2 levels below the requested
@@ -192,16 +214,32 @@ folder, and a 15-second listing budget with each request capped at 5 seconds and
 Zarr/N5 stores are opaque entries; hidden/output folders are skipped. An unavailable/partial
 listing still produces an explicitly incomplete draft rather than starting an unbounded scan.
 
+Ordinary chat can request the same inventory for the project's root or a narrower relative
+folder. The service verifies project access and bucket admission before listing, supplies the
+metadata to a second conversation call, and requires a direct reply. Unavailable or partial
+listings never fall back to a worker; an unlisted file is not evidence that it is absent.
+Absolute paths, traversal, other buckets, and array-store internals cannot be requested.
+
 The control-plane model drafts from the bounded inventory without tools or a Spot worker.
-Normal data inspection is a separate computation request. The draft marks unknown schemas,
+Reading file contents is a separate computation request. The draft marks unknown schemas,
 counts and filename-based guesses; detailed file inspection is deferred until needed.
 
-Retrying the same project/folder binding preserves its identity and saved brief. A different
-DM binding at init still needs `--force`; `use` switches the default for new threads.
+Retrying the same project/folder binding preserves its identity and saved brief. Init automatically
+selects the project in your DM; no `--force` is needed. The flag remains accepted for compatibility.
+Both init and `switch` change the default for new threads and preserve existing thread contexts.
 Spot provisioning latency applies only to subsequent computation.
 
 
 ## Figure validation without previews
+
+Reports and figures are delivered as Slack attachments. The user cannot access the worker's
+`outputs/` directory or the agent bucket. New or modified PDFs, PNGs, and other supported
+files in `outputs/` are uploaded to the requesting thread before the final answer.
+Subfolders such as `outputs/gap_report/` are included recursively. No top-level copy is required.
+To resend existing files, the agent refreshes their modification times so delivery includes them again.
+Files must fit the 200 MB per-file limit; larger reports need compression or splitting.
+Upload failures produce an explicit delivery warning instead of a success claim, and the
+workspace remains eligible for checkpointing so a later resend can reuse the files.
 
 Per the user's current preference, the compute agent does not preview generated images or PDFs.
 Its Read hook denies visual files before the SDK can embed image bytes in its JSON stream.
@@ -213,7 +251,14 @@ the observed SDK 1 MB JSON-buffer failure when reading a 6.5 MB spatial-map PNG.
 
 ## Identity, projects, and private memory
 
-The default `AGENT_ACCESS_MODE=channel` admits members of **any enabled access channel** in the
+The live bot uses `AGENT_ACCESS_MODE=workspace`: active human members of its Slack workspace
+can use their own private agent DM without joining an access channel. Slack must expose a valid
+email for the member. Projects and personal memory stay private; adding Pistachio to a channel
+does not publish any DM content. Invite the bot, explicitly `publish <project> #channel` from
+the owner's DM, then mention it with `switch <project>` in that channel. Other people need
+explicit project sharing to invoke it; channel viewers can read replies posted there.
+
+The optional default `AGENT_ACCESS_MODE=channel` admits members of **any enabled access channel** in the
 bot's workspace, including when they use the bot in DMs. Enabled channels are stored atomically
 in `projects/_access/channels.json`. With no enabled channels, ordinary agent access is denied.
 Membership does not automatically share projects or publish their contents into a channel.
@@ -221,7 +266,7 @@ Membership does not automatically share projects or publish their contents into 
 The bot obtains each human member's normalized email from Slack. That retains the existing
 per-email project/memory identity, provided the previous manual mapping matched their Slack email.
 A bot, deleted user, wrong-workspace request, or missing readable email is denied. Review mismatched
-legacy mappings during migration; never automatically merge different identities. In channel mode,
+legacy mappings during migration; never automatically merge different identities. In workspace or channel mode,
 `PISTACHIO_SLACK_USER_MAP`, `PISTACHIO_ALLOWED_EMAILS`, and `AGENT_ALLOWED_USER_IDS` do not restrict
 Slack admission. The task API keeps its existing email allowlist and OIDC authentication.
 `AGENT_ACCESS_MODE=mapped` explicitly retains the previous manual Slack mapping/allowlist behavior.
@@ -236,9 +281,10 @@ access channel bypasses the membership cache because the approval registry is re
 Removing access does not delete personal memory or shared-project grants; returning eligible users
 retain their own data and still face the independent project ACL checks.
 
-### Onboard additional channels from Slack
+### Optional channel-based admission
 
-One-time setup, included in the next approved deployment:
+Use this mode only when membership in selected channels should determine who can use the bot.
+The live workspace mode does not need this onboarding:
 
 1. Set `AGENT_ACCESS_MODE=channel` and configure the people allowed to manage access channels in
    `AGENT_ACCESS_ADMIN_IDS`, as comma-separated `workspace:member` Slack IDs. Terraform exposes
@@ -276,19 +322,21 @@ Slack API references: [channel members](https://docs.slack.dev/reference/methods
 Projects are private by default. Their opaque IDs are independent of display names: Alice’s
 `liver` and Bob’s `liver` are separate projects with separate `PROJECT.md` files. Repeating init
 with the same owner, name, and data URI reuses that project; changing the URI requires a new name.
-Each thread retains its selected project even after `use` changes the default. Existing threads
+Each thread retains its selected project even after `switch` changes the default. Send a new
+message outside the existing thread to start with the selected project. Existing threads
 keep their brief snapshots. `save brief` and an optional `.md` upload are explicit publication
 actions to project members and authorized channel audiences. A stale save is rejected if another
 thread changed the shared brief; start a new thread to review and reconcile it.
 
 | Command | Where and effect |
 | --- | --- |
-| `init liver gs://bucket/folder/ [--force]` | DM: create/reuse your project and draft its brief. |
-| `projects` | DM: list owned and explicitly shared projects only. |
-| `use liver` or `use p_…` | Select a project for new threads. Ambiguous shared names require an ID. |
+| `init liver gs://bucket/folder/` | DM: create/reuse and select your project, draft its brief, and offer a command to switch back. |
+| `help` / `help all` | Show the compact project guide / every command. |
+| `switch` (alias: `projects`) | DM: list owned and explicitly shared projects with copyable switch commands; mark the default for new threads. |
+| `switch liver` or `switch p_…` (alias: `use`) | Select a project for new threads. Ambiguous shared names require an ID. |
 | `share liver @user` / `unshare liver @user` | Owner in DM: grant an enabled user or revoke a former member; email links also work. |
 | `publish liver #channel` / `unpublish liver #channel` | Owner in DM: authorize/withdraw replies visible to the entire channel audience. |
-| `use p_… [--force]` in a channel | Owner selects an explicitly published project; replacing a binding requires its current owner too. |
+| `switch p_… [--force]` in a channel | Owner selects an explicitly published project; replacing a binding requires its current owner too. |
 | `brief` / `save brief` | View this draft / publish it, after an access check. |
 | `cancel` | Cancel queued/active computation after an access check. |
 | `memory` | DM: show private profile/preferences and the newest 20 numbered notes. |
@@ -338,11 +386,11 @@ The agent’s filesystem sandbox cannot browse another run or the user-memory st
 application isolation boundaries: the trusted service accounts still have the existing bucket
 permissions. Lab-wide data-bucket access remains intentional; this is not per-user data IAM.
 
-## Private-project migration and cutover (approval required)
+## Private-project migration and cutover
 
-These changes are prepared locally. The deployment history document describes the older live
-revision; it is not evidence that this migration has run. Ask before every cloud build, migration,
-or deployment, as required by the implementation plan.
+Deploy only within the user's authorized scope. The current user authorized the complete source
+sync, storage migration, and Slack permission reinstall. Record the actual deployed revision,
+paired image digests, and migration verification in `slack-agent-deployment.md`.
 
 1. Confirm onboarding admins, membership/email scopes, and legacy identity mappings. Build the
    headless API and Claude worker from the same source snapshot. `cloudbuild/build-slack-api.yaml`
@@ -370,8 +418,9 @@ or deployment, as required by the implementation plan.
    no-op. The `--quiesced` flag is an operator attestation, not an automatic cloud drain.
 5. Deploy a tagged revision without traffic using the paired digest-pinned images. Run health,
    credential, sandbox, and two-user checks from the plan. Promote it, then restore Slack ingress
-   for admin onboarding. Enable the initial access channels using the commands above; ordinary
-   requests remain denied until then. Verify one user with overlapping memberships, removal from
+   for the selected admission mode. Workspace mode admits verified workspace members directly;
+   channel mode needs initial access channels enabled using the commands above. For channel mode,
+   verify one user with overlapping memberships, removal from
    the last enabled channel, denied non-admin onboarding, and private project/memory boundaries.
    New API code refuses unmigrated projects; new workers refuse incompatible old manifests.
 6. Roll back only to a known ACL-compatible pair after draining. If none exists, keep Slack

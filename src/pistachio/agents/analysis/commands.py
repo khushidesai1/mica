@@ -9,6 +9,7 @@ from typing import Any
 from .access import Grant
 from .config import Settings
 from .data_links import init_args
+from .help_text import PROJECT_HELP
 from .identity import target_email
 from .registry import Registry
 
@@ -23,8 +24,10 @@ class Command:
 def parse(raw: str) -> Command | None:
     text = re.sub(r"^(?:\s*<@[A-Z0-9]+>\s*)+", "", raw).strip()
     lower = text.lower()
-    if lower in {"help", "projects", "brief", "save brief", "cancel", "memory"}:
+    if lower in {"help", "help all", "projects", "brief", "save brief", "cancel", "memory"}:
         return Command(lower)
+    if lower == "switch":
+        return Command("projects")
     if lower.split(maxsplit=1)[:1] == ["init"]:
         args = init_args(text)
         assert args is not None
@@ -33,8 +36,12 @@ def parse(raw: str) -> Command | None:
     if not words:
         return None
     action = words[0].lower()
-    if action == "use" and len(words) in {2, 3} and (len(words) == 2 or words[2] == "--force"):
-        return Command(action, (words[1],), len(words) == 3)
+    if (
+        action in {"use", "switch"}
+        and len(words) in {2, 3}
+        and (len(words) == 2 or words[2] == "--force")
+    ):
+        return Command("use", (words[1],), len(words) == 3)
     if action in {"share", "unshare", "publish", "unpublish"} and len(words) == 3:
         return Command(action, tuple(words[1:]))
     if action == "remember" and len(words) > 1:
@@ -64,12 +71,15 @@ def run(
     team, channel = record["payload"]["team_id"], event["channel"]
     email, doc = grant.email, grant.doc
     if cmd.name == "help":
+        return PROJECT_HELP + "\n`help all` for all commands."
+    if cmd.name == "help all":
         detail = ""
         if grant.allowed:
             role = "owner" if doc.owns(grant.project_id, email) else "member"
             detail = f" Project: {grant.project.name}; owner: {grant.project.owner}; role: {role}."
         return (
-            "Commands: init <name> gs://bucket/prefix/, use <project>, brief, save brief, cancel. "
+            PROJECT_HELP + "\n"
+            "Aliases: use <project>, projects. Other commands: brief, save brief, cancel. "
             "In DMs: projects, share/unshare <project> @user, "
             "publish/unpublish <project> #channel, "
             "memory, remember <text>, forget <number|profile|preferences|all>." + detail
@@ -79,11 +89,22 @@ def run(
     if cmd.name != "use" and not grant.private:
         raise ValueError("Use that command in your DM with Pistachio.")
     if cmd.name == "projects":
-        rows = [
-            f"{'* ' if pid == grant.project_id else ''}{p.name} ({pid}; owner {p.owner})"
-            for pid, p in doc.visible(email).items()
-        ]
-        return "Your projects:\n" + ("\n".join(rows) or "No projects yet. Use init to create one.")
+        active = doc.bound(team, channel)
+        rows = []
+        for pid, project in sorted(doc.visible(email).items(), key=lambda item: item[1].name):
+            selector = doc.selector(pid, email)
+            label = " (new threads)" if pid == active else ""
+            owner = f" · shared by {project.owner}" if project.owner != email else ""
+            rows.append(f"• {project.name}{label}{owner} — `switch {selector}`")
+        thread = (
+            f"\nThis thread uses {grant.project.name}."
+            if grant.allowed and grant.has_context and grant.project_id != active
+            else ""
+        )
+        return (
+            "Your projects:\n" + ("\n".join(rows) or "No projects yet.")
+            + thread + "\n\n" + PROJECT_HELP
+        )
     try:
         pid = doc.find(cmd.args[0], email)
     except ValueError:
@@ -99,12 +120,13 @@ def run(
 
         registry.update(event_id, email, operation, bind)
         return (
-            f"New threads will use {doc.projects[pid].name}. Existing threads keep their project."
+            f"New threads will use {doc.projects[pid].name}. "
+            "Send a new message outside this thread to start. Existing threads keep their project."
         )
     if cmd.name in {"share", "unshare"}:
         if not doc.owns(pid, email):
             raise ValueError("Only the project owner can change sharing.")
-        if settings.access_mode == "channel":
+        if settings.access_mode in {"channel", "workspace"}:
             from .channel_access import target_email as channel_target
 
             target = channel_target(
@@ -139,5 +161,5 @@ def run(
     return (
         "Project publication authorized for everyone who can view that channel, including future "
         "channel members. Private DM histories, outputs, and user memory remain private. "
-        f"In the channel, use {pid} to select the project."
+        f"In the channel, send `switch {pid}` to select the project."
     )

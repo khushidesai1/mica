@@ -88,6 +88,14 @@ class RegistryDoc(BaseModel):
         binding = self.bindings.get(f"{team}:{channel}")
         return binding.project_id if binding else None
 
+    def selector(self, project_id: str, email: str) -> str:
+        """Prefer a readable name only when it resolves to this exact project."""
+        name = self.projects[project_id].name
+        try:
+            return name if self.find(name, email) == project_id else project_id
+        except ValueError:
+            return project_id
+
     def create(self, email: str, name: str, uri: str) -> str:
         email, uri = normalize(email), data_uri(uri)
         entry = ProjectEntry(name=name, owner=email, data_uri=uri)
@@ -144,10 +152,7 @@ class RegistryDoc(BaseModel):
     ) -> str:
         if not private:
             raise ValueError("Initialize in a DM, then publish the project to this channel.")
-        old = self.bound(team, channel)
         pid = self.create(email, name, uri)
-        if old and old != pid and not force:
-            raise ValueError("This DM has an active project. Use --force or use <project>.")
         self.bind(team, channel, email, pid, private=private, force=force)
         return pid
 

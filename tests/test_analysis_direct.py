@@ -1,5 +1,5 @@
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -81,6 +81,136 @@ async def test_direct_failure_does_not_fall_back_to_compute(chat):
     assert await chat.process(event, 0) == "failed"
     chat.test_client.create_job.assert_not_called()
     assert "TODO" in read_brief(chat.store, chat.pid)[0]
+
+
+async def test_file_listing_uses_project_metadata_without_worker_and_caches_reply(
+    chat, monkeypatch
+):
+    metadata = {
+        "entries": [{"path": "liver/raw/sample.csv.gz", "kind": "file", "size_bytes": 4096}],
+        "coverage": "bounded metadata sample, not a complete inventory",
+        "content_inspected": False,
+    }
+    listing = Mock(return_value=metadata)
+    monkeypatch.setattr(direct, "inventory", listing)
+    chat.decision.side_effect = [
+        direct.Decision(route="inventory", reply="Checking.", inventory_path="raw/"),
+        direct.Decision(route="reply", reply="I found sample.csv.gz (4 KB) in the sampled list."),
+    ]
+    event = await chat.accept(payload(text="What files are in raw, and how big are they?"))
+    assert await chat.process(event, 0) == "complete"
+    assert await chat.process(event, 0) == "complete"
+    listing.assert_called_once()
+    assert listing.call_args.args[0] == "gs://lab-data/liver/raw/"
+    assert chat.decision.await_count == 2
+    supplied = chat.decision.call_args.args[2]
+    assert supplied["data_inventory"] == metadata
+    assert supplied["data_uri"] == "gs://lab-data/liver/"
+    record = await chat.repository.get_connector_state("claude-event:" + event)
+    assert record["direct_decision"]["route"] == "reply"
+    assert "4 KB" in record["notice_text"]
+    chat.test_client.create_job.assert_not_called()
+    assert not any(k.startswith("claude-slot") for k in chat.repository.event_claims)
+
+
+@pytest.mark.parametrize("route", ["reply", "compute", "inventory"])
+async def test_unavailable_listing_never_falls_back_to_worker(chat, monkeypatch, route):
+    monkeypatch.setattr(
+        direct, "inventory", Mock(return_value={"entries": [], "stopped": "time budget"})
+    )
+    chat.decision.side_effect = [
+        direct.Decision(route="inventory", reply="Checking."),
+        direct.Decision(route=route, reply="The file listing timed out. Please try again."),
+    ]
+    event = await chat.accept(payload(text="What files are in the bucket?"))
+    expected = "complete" if route == "reply" else "failed"
+    assert await chat.process(event, 0) == expected
+    chat.test_client.create_job.assert_not_called()
+
+
+async def test_inventory_reply_failure_never_falls_back_to_worker(chat, monkeypatch):
+    monkeypatch.setattr(direct, "inventory", Mock(return_value={"entries": []}))
+    chat.decision.side_effect = [
+        direct.Decision(route="inventory", reply="Checking."),
+        httpx.ReadTimeout("timeout"),
+    ]
+    event = await chat.accept(payload(text="What files are in the bucket?"))
+    assert await chat.process(event, 0) == "failed"
+    chat.test_client.create_job.assert_not_called()
+
+
+@pytest.mark.parametrize("path", ["../other/", "gs://other-bucket/", "/liver/"])
+async def test_inventory_cannot_escape_project(chat, monkeypatch, path):
+    listing = Mock()
+    monkeypatch.setattr(direct, "inventory", listing)
+    chat.decision.return_value = direct.Decision(
+        route="inventory", reply="Checking.", inventory_path=path
+    )
+    event = await chat.accept(payload(text="List files"))
+    assert await chat.process(event, 0) == "failed"
+    listing.assert_not_called()
+    chat.test_client.create_job.assert_not_called()
+
+
+async def test_inventory_checks_bucket_admission_before_listing(chat, monkeypatch):
+    listing = Mock()
+    monkeypatch.setattr(direct, "inventory", listing)
+    chat.settings.data_buckets = "another-bucket"
+    chat.decision.return_value = direct.Decision(route="inventory", reply="Checking.")
+    event = await chat.accept(payload(text="List files"))
+    assert await chat.process(event, 0) == "failed"
+    listing.assert_not_called()
+    chat.test_client.create_job.assert_not_called()
+
+
+async def test_inventory_rechecks_project_access_before_listing(chat, monkeypatch):
+    from pistachio.agents.analysis.registry import Registry
+
+    listing = Mock()
+    monkeypatch.setattr(direct, "inventory", listing)
+
+    async def switch_project(*args):
+        def switch(doc):
+            doc.bind("T1", "D1", "alice@example.com", other, private=True, force=True)
+            return other
+
+        Registry(chat.store).update("switch-project", "alice@example.com", "switch", switch)
+        return direct.Decision(route="inventory", reply="Checking.")
+
+    other = seed_project(chat.store, name="other", channel="D2", uri="gs://lab-data/other/")
+    chat.decision.side_effect = switch_project
+    event = await chat.accept(payload(text="List files"))
+    assert await chat.process(event, 0) == "complete"
+    record = await chat.repository.get_connector_state("claude-event:" + event)
+    assert "Project access changed" in record["notice_text"]
+    listing.assert_not_called()
+    chat.test_client.create_job.assert_not_called()
+
+
+async def test_inventory_delivery_retry_reuses_saved_result(chat, monkeypatch):
+    listing = Mock(return_value={"entries": []})
+    monkeypatch.setattr(direct, "inventory", listing)
+    chat.decision.side_effect = [
+        direct.Decision(route="inventory", reply="Checking.", draft="Revised draft"),
+        direct.Decision(route="reply", reply="The sampled folder is empty."),
+    ]
+
+    async def unavailable(**kwargs):
+        if kwargs["text"] == "The sampled folder is empty.":
+            raise RuntimeError("Slack unavailable")
+        return {"ts": kwargs["ts"]}
+
+    chat.test_slack.chat_update.side_effect = unavailable
+    event = await chat.accept(payload(text="List files"))
+    with pytest.raises(RuntimeError, match="delivery failed"):
+        await chat.process(event, 0)
+    chat.test_slack.chat_update.side_effect = None
+    assert await chat.process(event, 0) == "complete"
+    listing.assert_called_once()
+    assert chat.decision.await_count == 2
+    record = await chat.repository.get_connector_state("claude-event:" + event)
+    assert record["direct_decision"]["draft"] == "Revised draft"
+    chat.test_client.create_job.assert_not_called()
 
 
 async def test_retry_after_state_write_reuses_decision(chat, monkeypatch):
