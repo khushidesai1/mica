@@ -44,6 +44,10 @@ def parse(raw: str) -> Command | None:
         return Command("use", (words[1],), len(words) == 3)
     if action in {"share", "unshare", "publish", "unpublish"} and len(words) == 3:
         return Command(action, tuple(words[1:]))
+    if action == "rename":
+        if len(words) != 3:
+            raise ValueError("In your DM, use rename <name or ID> <new-name>.")
+        return Command(action, tuple(words[1:]))
     if action == "remember" and len(words) > 1:
         content = text.split(maxsplit=1)[1]
         if len(content) > 600:
@@ -84,7 +88,7 @@ def run(
             "publish/unpublish <project> #channel, "
             "memory, remember <text>, forget <number|profile|preferences|all>." + detail
         )
-    if cmd.name not in {"projects", "use", "share", "unshare", "publish", "unpublish"}:
+    if cmd.name not in {"projects", "use", "rename", "share", "unshare", "publish", "unpublish"}:
         return None
     if cmd.name != "use" and not grant.private:
         raise ValueError("Use that command in your DM with Pistachio.")
@@ -105,13 +109,26 @@ def run(
             "Your projects:\n" + ("\n".join(rows) or "No projects yet.")
             + thread + "\n\n" + PROJECT_HELP
         )
+    operation = f"{cmd.name}:{cmd.args}:{cmd.force}:{team}:{channel}"
+    if cmd.name == "rename":
+        # Resolve inside the atomic update: retries must survive the old name disappearing,
+        # and a replay must not rename another project that later reuses that name.
+        registry.update(
+            event_id,
+            email,
+            operation,
+            lambda d: d.rename(d.find(cmd.args[0], email), email, cmd.args[1]),
+        )
+        return (
+            f"Project renamed to {cmd.args[1]}. "
+            "Its data, sharing, channel links, and existing threads are unchanged."
+        )
     try:
         pid = doc.find(cmd.args[0], email)
     except ValueError:
         if not grant.private:
             raise ValueError("Choose an authorized project in your DM first.") from None
         raise
-    operation = f"{cmd.name}:{cmd.args}:{cmd.force}:{team}:{channel}"
     if cmd.name == "use":
 
         def bind(current: Any) -> str:

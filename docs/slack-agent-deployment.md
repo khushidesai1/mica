@@ -1,9 +1,121 @@
 # Slack agent deployment — current release 5 October 2026
 
-Current live revision: `pistachio-staging-00097-log`, serving 100% of traffic. This release
-synchronizes the complete current application source across the headless API, Claude Slack
-worker, and shared science worker. Earlier releases below were selective overlays; their
-historical rollback instructions do not apply after this private-project cutover.
+Current live revision: `pistachio-staging-brief-20261005`, serving 100% of traffic. This release
+makes brief updates conditional on an explicit request or a concrete missing project detail
+relevant to the task. Historical pre-cutover rollback instructions below do not apply to the
+current private-project runtime.
+
+## Prepared attachment and vision rollout — not deployed
+
+This source change adds streamed Slack uploads, bounded sandbox previews, router media and
+`view` requests, and a persistent thread file registry. User uploads use 30-day `tasks/` retention;
+output provenance remains under `projects/`. No API dependency or infrastructure change is needed.
+The worker adds pinned `pypdfium2==5.14.0`; Pillow is already in the science image.
+
+Obtain human approval before **each** cloud build, configuration change, deploy, and paid live test.
+Do not infer permission from completion of local tests. The rollout sequence is:
+
+1. Run `.venv/bin/pytest -q`, `.venv/bin/ruff check src tests tools`, and
+   `.venv/bin/mypy src/pistachio`. The opt-in `test_agent_looks_at_its_figure` remains skipped
+   unless `PISTACHIO_RUN_LIVE_TESTS=1` is explicitly approved.
+2. Build API and worker images **from one commit**. For a deployment onto the existing pinned
+   runtime, use `cloudbuild/build-slack-release.yaml`: it preserves the API dependencies, adds the
+   pinned PDF renderer to the worker, and verifies installed source, attachment transport, real
+   PNG/PDF previews, headless routes, and compatibility with the existing shared worker. Fresh
+   builds may use `build-slack-api.yaml` and `build-slack-agent.yaml`. The checkpoint and manifest
+   fields must agree.
+3. Drain queued/running work before promotion. Old workers write checkpoints without
+   `thread_files` and would discard references for an active thread during a mixed rollout.
+4. Deploy a tagged API revision with no traffic, pairing the API image with the new worker
+   digest in `PISTACHIO_SLACK_AGENT_IMAGE`. Preserve all existing environment and secret mappings.
+   Upload caps default to 10 / 100 MB / 250 MB; merge overrides only if requested.
+5. Check health and authenticated worker callbacks. With approval, test in a staging DM:
+   screenshot question without compute; CSV → plot → larger points; a follow-up asking about
+   the delivered figure without compute; a 6.5 MB PNG through a worker preview; unchanged
+   `brief` + Markdown behavior; oversized-upload rejection; and a non-member denied before download.
+   Run the opt-in large-figure live check and verify no SDK buffer overflow.
+6. Promote only after reviewing staging results and obtaining approval. To roll back, restore the
+   preceding compatible API/worker pair together. Old code ignores file registry fields and once
+   again rejects ordinary file messages. Stored uploads still expire after 30 days.
+
+An optional preview-only early release requires a separate M1-only source revision: build the
+worker, update only the configured worker digest, and run the approved live preview check. Do not
+mix the full attachment worker change with the old API as an early-release shortcut.
+
+## Update briefs only when needed — 5 October 2026
+
+Both direct chat and compute instructions now leave the project brief unchanged by default.
+The agent updates it only when asked or when user-provided or verified information fills a
+concrete missing detail needed for the current task. Routine results, file listings, inspected
+schemas, and plot changes alone do not trigger edits. Unrelated TODOs do not trigger extra
+inspection or questions. Replies omit brief commentary and save reminders when no edit occurred.
+Initial setup still creates a draft, and only `save brief` publishes it. Existing threads receive
+the revised instructions on their next request.
+
+- Only `direct.py` and `prompts.py` changed from the preceding live application source.
+  The direct routing tool also describes `draft` as null by default.
+- Local verification: 404 passed, 3 skipped, 1 live test deselected. The Unix-socket test passed
+  separately outside the local sandbox; Ruff, strict mypy, compileall, headless API checks,
+  and diff checks passed.
+- Build `56ab1f14-4fb0-4adb-a8cd-c299a3d3f2c4`: SUCCESS. All 83 installed application files
+  were verified in the API, Slack worker, and shared science images. Build gates also checked
+  worker compatibility, headless routes, socket paths, nested report delivery, and project renaming.
+- Preview and live checks returned health 200, removed UI/docs 404, and unauthenticated worker
+  credentials 401. Runtime settings were preserved apart from the three pinned image references.
+  The new revision receives 100% of traffic. No error-level logs appeared during release checks.
+- No paid model calls, user analyses, or Slack messages were used for verification. The existing
+  test suite and image checks passed; actual model adherence to the new wording was not live-tested.
+
+Deployed image digests (repository prefix
+`us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/`):
+
+| Image | Digest |
+| --- | --- |
+| `api` | `sha256:6fda54ea6df55c05a3b9c5368a32dc7f81fb9836a04a9f2ebe1fa2bdfe05a081` |
+| `slack-agent` | `sha256:afcc8d5f33af94c9dc4b8cb01c1a0b803ee48ae1c0fc31d377e1e2b7d9c80c29` |
+| `science` | `sha256:0972b8ae1e37a272b0ed54dae18b3412f034c47e83520b5805437bfb8f0a8041` |
+
+Evidence and the source bundle: `.pistachio/deployments/brief-updates-20261005/`.
+The prior compatible revision is `pistachio-staging-rename-20261005`; no storage schema changed.
+
+## Rename existing projects — 5 October 2026
+
+In the owner's DM, `rename <name or ID> <new-name>` changes only the project name. Names
+must contain 3–40 lowercase letters, digits, or hyphens and be unique among that owner's
+projects. IDs, data locations, briefs, outputs, access grants, channel bindings, and thread
+contexts remain intact. The command is included in `help`; invalid requests receive usage
+or permission errors without invoking a model or compute worker. Atomic registry writes and
+durable operation receipts prevent duplicate names and unsafe Slack retry effects.
+
+- Local verification: 404 passed, 3 skipped, 1 live test deselected; Ruff, strict mypy,
+  compileall, and headless API checks passed.
+- Build `0b2b4937-5532-4b06-9db6-b0efcd071c26`: SUCCESS. Only `commands.py`, `registry.py`,
+  and `help_text.py` differ from revision 97's application source. Existing dependency
+  images were retained; all 83 installed application files were verified in all three images.
+- Build checks verified rename commands in the API and Slack images, worker contracts,
+  headless routes, long workspace socket paths, and nested report delivery. The shared
+  science image was checked for source and contract compatibility; it does not execute
+  Slack commands and intentionally lacks their dependencies. An initial build attempt
+  incorrectly ran the Slack-only smoke check there; this check placement was corrected
+  before the successful build. No application changes were needed for that correction.
+- Preview and live checks returned health 200, removed UI/docs 404, and unauthenticated
+  worker credentials 401. Runtime configuration matched the preceding service except for
+  the three pinned image references. The preview was checked before moving 100% of traffic.
+- No data migration, actual project rename, paid model call, or Slack message was performed
+  as part of release verification.
+
+Deployed image digests (repository prefix
+`us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/`):
+
+| Image | Digest |
+| --- | --- |
+| `api` | `sha256:0cfdcf890474d96da5262cbdeb1a233069c9a0eee0209b061bda4ccdc6aaecee` |
+| `slack-agent` | `sha256:aae1d2a862be5cfc004f659555e778e8479b8325c6796f328bf50e65817b6711` |
+| `science` | `sha256:2963e57f7fb1a8f7b2c89e660bee016be6535988fce119f1aa0dd6280128a3b3` |
+
+Evidence, source bundle, build results, and pre-release runtime configuration:
+`.pistachio/deployments/project-rename-20261005/`. The prior compatible revision is
+`pistachio-staging-00097-log`; this rename-only release did not change the storage schema.
 
 ## Metadata routing, conversational replies, and Slack reports — 5 October 2026
 

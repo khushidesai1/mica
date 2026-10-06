@@ -62,6 +62,45 @@ def test_binding_requires_explicit_audience_publication_and_owner():
     assert "T1:C1" not in doc.projects[a].published_channels
 
 
+def test_concurrent_renames_cannot_create_duplicate_owned_names(tmp_path):
+    registry = Registry(LocalStorage(tmp_path))
+    projects = [
+        registry.update(name, A, "create", lambda d, name=name: d.create(A, name, "gs://data/"))
+        for name in ("liver", "brain")
+    ]
+
+    def rename(pid):
+        try:
+            registry.update(f"rename-{pid}", A, "rename", lambda d: d.rename(pid, A, "atlas"))
+            return True
+        except ValueError as exc:
+            assert "already have" in str(exc)
+            return False
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert sorted(pool.map(rename, projects)) == [False, True]
+    assert sum(p.name == "atlas" for p in registry.load().projects.values()) == 1
+
+
+def test_rename_preserves_legacy_id_and_allows_other_owners_names(tmp_path):
+    registry = Registry(LocalStorage(tmp_path))
+
+    def seed(doc):
+        pid = doc.create(A, "liver", "gs://data/")
+        doc.projects["liver"] = doc.projects.pop(pid)
+        doc.create(B, "atlas", "gs://data/b/")
+        return "liver"
+
+    registry.update("seed", A, "seed", seed)
+    registry.update("rename", A, "rename", lambda d: d.rename("liver", A, "atlas"))
+    doc = registry.load()
+    assert doc.find("atlas", A) == doc.find("liver", A) == "liver"
+    assert doc.find("atlas", B) != "liver"
+    registry.update("rename-again", A, "rename", lambda d: d.rename("liver", A, "atlas-final"))
+    registry.update("rename", A, "rename", lambda d: d.rename("liver", A, "atlas"))
+    assert registry.load().projects["liver"].name == "atlas-final"
+
+
 def test_brief_conflict_and_lost_response_are_safe(tmp_path):
     store = LocalStorage(tmp_path)
     initial = write_brief(store, "legacy", b"original", None)

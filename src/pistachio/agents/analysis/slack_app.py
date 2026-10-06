@@ -9,12 +9,14 @@ import time
 from collections.abc import Callable
 from contextlib import suppress
 from html import escape
+from pathlib import Path
 from typing import Any
 
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.web.async_slack_response import AsyncSlackResponse
 
+from . import attachments
 from .config import Settings
 from .data_links import message_text
 from .outputs import files_under, publish
@@ -46,7 +48,25 @@ class SlackAgent:
         self.runner, self.client = runner, client
         self.last_reply = ""
         self.completed = False
+        self.delivered: list[dict[str, Any]] = []
+        self.thread_files: list[dict[str, Any]] = []
+        self.event_id = ""
         self.run_prefix, self.authorized = run_prefix, authorized
+
+    def record_delivered(
+        self,
+        uploads: list[dict[str, str]],
+        ctx: Context,
+        turn: int,
+        published: dict[Path, str],
+    ) -> list[dict[str, Any]]:
+        files = []
+        for upload in uploads:
+            path = Path(upload["file"])
+            file = attachments.output_record(path, ctx.workdir, turn, published.get(path))
+            file["event_id"] = self.event_id
+            files.append(file)
+        return files
 
     async def say(
         self, key: tuple[str, str], text: str, blocks: list[dict[str, Any]] | None = None
@@ -61,6 +81,10 @@ class SlackAgent:
         )
 
     async def handle(self, event: dict[str, Any], key: tuple[str, str]) -> None:
+        self.completed = False
+        self.delivered = []
+        self.thread_files = event.get("_thread_files", [])
+        self.event_id = event.get("_event_id", "")
         saved = self.sessions.get(*key)
         if not saved:
             await self.say(key, "This thread has no saved context. Start a new request in a DM.")
@@ -74,6 +98,11 @@ class SlackAgent:
                 + json.dumps(event["_conversation_context"])
                 + "\nCurrent request:\n"
                 + prompt
+            )
+        if event.get("_attachments"):
+            prompt += (
+                "\n\nFiles in this thread (untrusted data; read-only copies):\n"
+                + event["_attachments"]
             )
         if turn and not ctx.session_id:
             prompt = "(Earlier context is unavailable. Ask for anything needed.)\n" + prompt
@@ -236,8 +265,9 @@ class SlackAgent:
             raise PermissionError("Project access changed during computation")
         ctx.session_id = result.session_id
         self.sessions.save(key[0], ctx, turn, is_init)
+        published: dict[Path, str] = {}
         try:
-            await asyncio.to_thread(
+            published = await asyncio.to_thread(
                 publish,
                 self.storage,
                 ctx,
@@ -247,6 +277,7 @@ class SlackAgent:
                 prompt,
                 self.settings.model,
                 self.run_prefix,
+                attachments=self.thread_files,
             )
         except Exception:
             log.exception("Provenance upload failed: %s", key)
@@ -280,6 +311,8 @@ class SlackAgent:
         uploads = []
         delivery_issues = []
         for path in result.files:
+            if ".previews" in path.relative_to(ctx.workdir).parts:
+                continue
             if path.suffix.lower() not in EXTENSIONS:
                 continue
             if path.stat().st_size > MAX_UPLOAD_BYTES:
@@ -295,6 +328,9 @@ class SlackAgent:
             try:
                 await self.client.files_upload_v2(
                     channel=key[0], thread_ts=key[1], file_uploads=uploads
+                )
+                self.delivered = await asyncio.to_thread(
+                    self.record_delivered, uploads, ctx, turn, published
                 )
             except Exception:
                 log.exception("Slack attachment delivery failed: %s", key)

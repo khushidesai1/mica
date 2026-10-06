@@ -10,6 +10,14 @@ to switch back to the previous one; `switch` lists your
 projects; `switch <name or ID>` selects one for new threads. Existing threads keep their project.
 Send `help` for this quick guide or `help all` for every command.
 
+Attach images, PDFs, tables, or text directly in a project thread. Pistachio can answer visual
+questions about supported images/PDFs in chat and use a compute worker for analysis or editing.
+It can also inspect the figures it creates and answer follow-ups about files it delivered.
+The defaults are 10 files per message, 100 MB per file, and 250 MB total. Uploaded originals
+expire after 30 days; derived outputs keep their existing project retention. Figure previews
+are downscaled, while Slack receives full-resolution originals. See
+[attachments and visual checks](docs/slack-agent-setup.md#attachments-in-slack) for details.
+
 There is no web application or browser login. The HTTP service remains necessary for Slack
 webhooks, Cloud Tasks, worker callbacks, health checks, and authenticated task APIs. Project and
 private memory, data access, analysis, code execution, approvals, progress, and artifact delivery

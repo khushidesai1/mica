@@ -110,6 +110,19 @@ class RegistryDoc(BaseModel):
         self.projects[pid] = entry
         return pid
 
+    def rename(self, project_id: str, owner: str, name: str) -> str:
+        if not self.owns(project_id, owner):
+            raise ValueError("Only the project owner can rename it.")
+        if not re.fullmatch(r"[a-z0-9-]{3,40}", name):
+            raise ValueError("Use 3–40 lowercase letters, numbers, or hyphens for the new name.")
+        if any(
+            pid != project_id and entry.owner == owner and entry.name == name
+            for pid, entry in self.projects.items()
+        ):
+            raise ValueError("You already have a project with that name. Choose another name.")
+        self.projects[project_id].name = name
+        return project_id
+
     def bind(
         self,
         team: str,

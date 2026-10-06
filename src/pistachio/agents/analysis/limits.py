@@ -1,0 +1,9 @@
+"""Shared byte budgets; no media decoding in the control plane or worker host."""
+
+PREVIEW_MAX_EDGE = 1568
+PREVIEW_MAX_BYTES = 1_500_000
+MAX_VISUAL_READS = 12
+SDK_MAX_BUFFER_BYTES = 16 * 1024 * 1024
+ROUTER_IMAGE_MAX_BYTES = 3_750_000
+ROUTER_PDF_MAX_BYTES = 5_000_000
+THREAD_FILES_MAX = 50

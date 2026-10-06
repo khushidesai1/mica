@@ -533,3 +533,22 @@ async def test_status_api_failure_does_not_block_worker(bridge):
     event_id = await bridge.accept(payload())
     assert await bridge.process(event_id, 0) == "running"
     assert bridge.test_client.create_job.call_count == 1
+
+
+def test_checkpoint_excludes_previews_and_expiring_inputs(tmp_path):
+    home = tmp_path / "home"
+    for rel in (
+        "work/thread/.previews/p.png",
+        "work/thread/inputs/file.csv",
+        "work/thread/outputs/p.png",
+        "work/thread/code/p.py",
+    ):
+        path = home / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"content")
+    archive = tmp_path / "checkpoint.tar.gz"
+    snapshot(archive, home)
+    with tarfile.open(archive) as tar:
+        names = tar.getnames()
+    assert not any(".previews" in n or "/inputs/" in n for n in names)
+    assert len(names) == 2

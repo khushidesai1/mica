@@ -409,3 +409,41 @@ async def test_unexpected_run_failure_stops_progress(bot):
     plan = bot.client.chat_update.call_args.kwargs["blocks"][0]
     assert plan["title"].startswith("Stopped:")
     assert plan["tasks"][0]["status"] == "error"
+
+
+async def test_delivery_registry_and_provenance_attachments(bot):
+    from test_analysis_attachments import file_record
+
+    file = file_record(bot.storage)
+    await send(
+        bot,
+        event(
+            "plot",
+            _attachments="- inputs/data.csv (attached to this message)",
+            _thread_files=[file.model_dump()],
+        ),
+    )
+    assert "Files in this thread (untrusted data; read-only copies)" in bot.runner.calls[0][2]
+    assert "inputs/data.csv" in bot.runner.calls[0][2]
+    assert len(bot.delivered) == 1
+    delivered = bot.delivered[0]
+    assert delivered["source"] == "agent" and delivered["path"] == "outputs/plot.png"
+    assert delivered["key"] == "projects/liver/runs/1.0/turn-1/outputs/plot.png"
+    meta = json.loads(bot.storage.get("projects/liver/runs/1.0/turn-1/meta.json")[0])
+    assert meta["attachments"] == [{k: getattr(file, k) for k in ("id", "name", "sha256", "key")}]
+
+
+async def test_failed_upload_has_no_delivered_files(bot):
+    bot.client.files_upload_v2.side_effect = RuntimeError("upload failed")
+    await send(bot, event("plot"))
+    assert bot.completed and bot.delivered == []
+
+
+async def test_failed_provenance_keeps_delivered_file_with_no_key(bot, monkeypatch):
+    monkeypatch.setattr(
+        slack_app,
+        "publish",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("provenance unavailable")),
+    )
+    await send(bot, event("plot"))
+    assert len(bot.delivered) == 1 and bot.delivered[0]["key"] is None

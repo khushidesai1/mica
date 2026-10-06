@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import platform
+import shutil
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
@@ -25,7 +26,9 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import HookContext, HookInput, HookJSONOutput, SandboxSettings
 
 from . import prompts
+from .attachments import classify
 from .config import Settings
+from .limits import MAX_VISUAL_READS, PREVIEW_MAX_BYTES, SDK_MAX_BUFFER_BYTES
 from .outputs import changed_files, snapshot_outputs
 from .progress import ProgressUpdate, TaskProgress
 
@@ -46,6 +49,15 @@ VISUAL_EXTENSIONS = {
     ".ico",
     ".pdf",
 }
+
+
+def is_visual(path: Path) -> bool:
+    if path.suffix.lower() in VISUAL_EXTENSIONS:
+        return True
+    if path.is_file():
+        with path.open("rb") as stream:
+            return classify("", stream.read(12))[0] in {"image", "pdf"}
+    return False
 
 
 @dataclass
@@ -85,13 +97,17 @@ def build_options(
 
     tools = ["Read", "Write", "Edit"] if ctx.survey_only else TOOLS
 
+    visual_reads = 0
+
     async def guard(
         event: HookInput, _tool_id: str | None, _context: HookContext
     ) -> HookJSONOutput:
+        nonlocal visual_reads
         if event["hook_event_name"] != "PreToolUse":
             return {}
         name, args = event["tool_name"], event["tool_input"]
         reason = ""
+        visual_read = False
         if name not in tools or args.get("dangerouslyDisableSandbox"):
             reason = "This tool or sandbox bypass is unavailable."
         elif name != "Bash":
@@ -108,12 +124,37 @@ def build_options(
             )
             if not any(path.is_relative_to(p.resolve()) for p in roots):
                 reason = "Access is restricted to this workspace and its project data."
-            elif name == "Read" and path.suffix.lower() in VISUAL_EXTENSIONS:
+            elif name in {"Write", "Edit"} and path.is_relative_to(
+                (ctx.workdir / "inputs").resolve()
+            ):
+                reason = "Attached inputs are read-only. Write derived files to code/ or outputs/."
+            elif name == "Read" and is_visual(path):
                 reason = (
-                    "Image previews are disabled. Check the script's exit status and output "
-                    "file sizes using Bash. Leave figures in outputs/ for Slack delivery; "
-                    "do not read or encode image contents into the conversation."
+                    f"Look at images through a bounded preview: run {settings.sci_python} "
+                    f"{settings.tools_dir}/preview.py <file> [--page N], then Read the preview "
+                    "path it prints. Leave originals in place for Slack delivery."
                 )
+                preview_root = ctx.workdir / ".previews"
+                if (
+                    not preview_root.is_symlink()
+                    and path.is_relative_to(preview_root.resolve())
+                    and path.suffix.lower() in {".png", ".jpg", ".jpeg"}
+                    and path.is_file()
+                    and path.stat().st_size <= PREVIEW_MAX_BYTES
+                ):
+                    with path.open("rb") as stream:
+                        head = stream.read(8)
+                    signature = (
+                        head == b"\x89PNG\r\n\x1a\n"
+                        if path.suffix.lower() == ".png"
+                        else head.startswith(b"\xff\xd8\xff")
+                    )
+                    if signature:
+                        if visual_reads >= MAX_VISUAL_READS:
+                            reason = "This turn's image views are used up; rely on computed checks."
+                        else:
+                            visual_read = True
+                            reason = ""
             pattern = args.get("pattern", "") if name == "Glob" else args.get("glob", "")
             if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
                 reason = "Use a relative search pattern inside the allowed path."
@@ -125,6 +166,8 @@ def build_options(
                     "permissionDecisionReason": reason,
                 }
             }
+        if visual_read:
+            visual_reads += 1
         return {}
 
     return ClaudeAgentOptions(
@@ -144,6 +187,7 @@ def build_options(
         disallowed_tools=["WebFetch", "WebSearch", "Agent", "AskUserQuestion", "NotebookEdit"]
         + (["Bash", "Glob", "Grep"] if ctx.survey_only else []),
         permission_mode="dontAsk",
+        max_buffer_size=SDK_MAX_BUFFER_BYTES,
         max_turns=settings.max_turns,
         max_budget_usd=settings.max_budget_usd_per_turn,
         env={
@@ -178,7 +222,7 @@ def build_options(
                 },
                 "filesystem": {
                     "allowWrite": [str(runtime_tmp)],
-                    "denyWrite": [str(ctx.data_path)],
+                    "denyWrite": [str(ctx.data_path), str(ctx.workdir / "inputs")],
                     "denyRead": [
                         "/etc/pistachio",
                         str(Path.home() / ".claude"),
@@ -195,6 +239,8 @@ def build_options(
 
 def describe_tool(block: ToolUseBlock) -> str:
     args = block.input
+    if block.name == "Read" and ".previews" in Path(args.get("file_path", "")).parts:
+        return "Looking at a figure preview"
     if block.name == "Bash":
         return str(args.get("description") or "Running code")[:80]
     if block.name in {"Read", "Write", "Edit"}:
@@ -222,7 +268,16 @@ def tool_progress(block: ToolUseBlock) -> TaskProgress:
         "Edit": "Updating the analysis…",
         "Bash": "Running analysis and checks…",
     }.get(block.name, "Working on the request…")
+    if describe_tool(block) == "Looking at a figure preview":
+        phase = "Checking the figure…"
     return TaskProgress(block.id, describe_tool(block), phase)
+
+
+def clear_previews(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
 
 
 class Runner:
@@ -258,79 +313,85 @@ class Runner:
         before, start = snapshot_outputs(ctx.workdir / "outputs"), time.monotonic()
         result = TurnResult(session_id=ctx.session_id)
         tasks: dict[str, TaskProgress] = {}
-        for attempt in range(2):
-            details, got_result = "", False
-            try:
-                async for msg in query(
-                    prompt=prompt,
-                    options=build_options(
-                        ctx,
-                        self.settings,
-                        sandbox=self.sandbox,
-                        user_memory=self.user_memory,
-                        project_name=self.project_name,
-                        runtime_tmp=runtime_tmp,
-                    ),
-                ):
-                    if isinstance(msg, AssistantMessage):
-                        for block in msg.content:
-                            if isinstance(block, ToolUseBlock):
-                                result.run_log.append(
-                                    {
-                                        "tool": block.name,
-                                        "input": truncate(block.input),
-                                        "timestamp": datetime.now(UTC).isoformat(),
-                                    }
-                                )
-                                task = tool_progress(block)
-                                tasks[block.id] = task
-                                await on_status(task)
-                            elif isinstance(block, TextBlock):
-                                result.text = block.text
-                    elif isinstance(msg, UserMessage) and isinstance(msg.content, list):
-                        for completed in msg.content:
-                            if (
-                                isinstance(completed, ToolResultBlock)
-                                and completed.tool_use_id in tasks
-                            ):
-                                task = dataclasses.replace(
-                                    tasks[completed.tool_use_id],
-                                    status="error" if completed.is_error else "complete",
-                                )
-                                tasks[completed.tool_use_id] = task
-                                await on_status(task)
-                    elif isinstance(msg, ResultMessage):
-                        got_result = True
-                        result.session_id = msg.session_id
-                        result.cost = (result.cost or 0) + (msg.total_cost_usd or 0)
-                        details = " ".join(msg.errors or [])
-                        result.error = None if msg.subtype == "success" else msg.subtype
-                        result.text = msg.result or result.text
-                        if getattr(msg, "stop_reason", None) == "refusal":
-                            log.warning("Model refusal in thread %s", ctx.thread_ts)
-                if not got_result:
-                    result.error = "Agent stream ended without a result"
-            except Exception as exc:
-                details += str(exc)
-                result.error = result.error or type(exc).__name__
-                log.exception("Agent turn failed in %s", ctx.thread_ts)
-            missing = any(
-                s in details.lower()
-                for s in (
-                    "no conversation found",
-                    "session not found",
-                    "could not load session",
+        previews = ctx.workdir / ".previews"
+        clear_previews(previews)
+        previews.mkdir()
+        try:
+            for attempt in range(2):
+                details, got_result = "", False
+                try:
+                    async for msg in query(
+                        prompt=prompt,
+                        options=build_options(
+                            ctx,
+                            self.settings,
+                            sandbox=self.sandbox,
+                            user_memory=self.user_memory,
+                            project_name=self.project_name,
+                            runtime_tmp=runtime_tmp,
+                        ),
+                    ):
+                        if isinstance(msg, AssistantMessage):
+                            for block in msg.content:
+                                if isinstance(block, ToolUseBlock):
+                                    result.run_log.append(
+                                        {
+                                            "tool": block.name,
+                                            "input": truncate(block.input),
+                                            "timestamp": datetime.now(UTC).isoformat(),
+                                        }
+                                    )
+                                    task = tool_progress(block)
+                                    tasks[block.id] = task
+                                    await on_status(task)
+                                elif isinstance(block, TextBlock):
+                                    result.text = block.text
+                        elif isinstance(msg, UserMessage) and isinstance(msg.content, list):
+                            for completed in msg.content:
+                                if (
+                                    isinstance(completed, ToolResultBlock)
+                                    and completed.tool_use_id in tasks
+                                ):
+                                    task = dataclasses.replace(
+                                        tasks[completed.tool_use_id],
+                                        status="error" if completed.is_error else "complete",
+                                    )
+                                    tasks[completed.tool_use_id] = task
+                                    await on_status(task)
+                        elif isinstance(msg, ResultMessage):
+                            got_result = True
+                            result.session_id = msg.session_id
+                            result.cost = (result.cost or 0) + (msg.total_cost_usd or 0)
+                            details = " ".join(msg.errors or [])
+                            result.error = None if msg.subtype == "success" else msg.subtype
+                            result.text = msg.result or result.text
+                            if getattr(msg, "stop_reason", None) == "refusal":
+                                log.warning("Model refusal in thread %s", ctx.thread_ts)
+                    if not got_result:
+                        result.error = "Agent stream ended without a result"
+                except Exception as exc:
+                    details += str(exc)
+                    result.error = result.error or type(exc).__name__
+                    log.exception("Agent turn failed in %s", ctx.thread_ts)
+                missing = any(
+                    s in details.lower()
+                    for s in (
+                        "no conversation found",
+                        "session not found",
+                        "could not load session",
+                    )
                 )
-            )
-            if not (attempt == 0 and ctx.session_id and missing and not result.run_log):
-                break
-            ctx = dataclasses.replace(ctx, session_id=None)
-            result.session_id = None
-            result.error, result.text = None, ""
-            prompt = (
-                "(Earlier context is unavailable. Ask the user to restate anything needed.)\n"
-                + prompt
-            )
+                if not (attempt == 0 and ctx.session_id and missing and not result.run_log):
+                    break
+                ctx = dataclasses.replace(ctx, session_id=None)
+                result.session_id = None
+                result.error, result.text = None, ""
+                prompt = (
+                    "(Earlier context is unavailable. Ask the user to restate anything needed.)\n"
+                    + prompt
+                )
+        finally:
+            clear_previews(previews)
         result.files = changed_files(ctx.workdir / "outputs", before)
         result.duration = time.monotonic() - start
         return result

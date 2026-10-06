@@ -236,7 +236,7 @@ def test_existing_pistachio_configuration_is_reused(monkeypatch):
     assert settings.slack_bot_token.get_secret_value() == "existing-test-token"
 
 
-async def test_image_preview_denied_before_large_content_enters_stream(tmp_path):
+async def test_visual_reads_only_from_bounded_previews(tmp_path):
     ctx = Context(tmp_path / "work", tmp_path / "data")
     outputs = ctx.workdir / "outputs"
     outputs.mkdir(parents=True)
@@ -256,7 +256,7 @@ async def test_image_preview_denied_before_large_content_enters_stream(tmp_path)
         )
         hook = decision["hookSpecificOutput"]
         assert hook["permissionDecision"] == "deny"
-        assert "Image previews are disabled" in hook["permissionDecisionReason"]
+        assert "preview.py" in hook["permissionDecisionReason"]
     for name, args in [
         ("Read", {"file_path": str(outputs / "summary.csv")}),
         ("Read", {"file_path": str(ctx.workdir / "code/analysis.py")}),
@@ -324,3 +324,88 @@ async def test_tool_lifecycle_tracks_parallel_checks_without_exposing_results(se
     assert updates[0].title == "Check cell counts"
     assert updates[1].title == "Reading samples.csv"
     assert "SECRET" not in repr(updates) and "PRIVATE" not in repr(updates)
+
+
+async def test_preview_limits_and_read_only_inputs(setup):
+    from PIL import Image
+
+    ctx, settings = setup
+    previews = ctx.workdir / ".previews"
+    previews.mkdir(parents=True)
+    Image.new("RGB", (200, 200), "red").save(previews / "ok.png")
+    (previews / "big.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 2_000_000)
+    (previews / "fake.png").write_bytes(b"not png")
+    (previews / "link.png").symlink_to(ctx.workdir / "outputs/a.png")
+    opts = build_options(ctx, settings)
+    guard = opts.hooks["PreToolUse"][0].hooks[0]
+
+    async def read(path, tool="Read"):
+        return await guard(
+            {
+                "hook_event_name": "PreToolUse",
+                "tool_name": tool,
+                "tool_input": {"file_path": str(path)},
+            },
+            None,
+            None,
+        )
+
+    for name in ("big.png", "fake.png", "link.png", "missing.png", "page.pdf"):
+        assert (
+            "preview.py"
+            in (await read(previews / name))["hookSpecificOutput"]["permissionDecisionReason"]
+        )
+    for _ in range(12):
+        assert not await read(previews / "ok.png")
+    assert (
+        "used up"
+        in (await read(previews / "ok.png"))["hookSpecificOutput"]["permissionDecisionReason"]
+    )
+    for tool in ("Write", "Edit"):
+        assert await read(ctx.workdir / "inputs/x.csv", tool)
+    assert str(ctx.workdir / "inputs") in opts.sandbox["filesystem"]["denyWrite"]
+
+
+def test_sdk_buffer_is_raised(setup):
+    assert build_options(*setup).max_buffer_size == 16 * 1024 * 1024
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_previews_cleared_each_turn(setup, monkeypatch, cancelled):
+    ctx, settings = setup
+    previews = ctx.workdir / ".previews"
+    previews.mkdir(parents=True)
+    (previews / "stale.png").write_bytes(b"old")
+
+    async def query(**kwargs):
+        assert previews.is_dir() and not list(previews.iterdir())
+        (previews / "fresh.png").write_bytes(b"new")
+        if cancelled:
+            raise asyncio.CancelledError()
+        yield result()
+
+    monkeypatch.setattr(runner, "query", query)
+    if cancelled:
+        with pytest.raises(asyncio.CancelledError):
+            await Runner(settings).run_turn(ctx, "plot", AsyncMock())
+    else:
+        await Runner(settings).run_turn(ctx, "plot", AsyncMock())
+    assert not previews.exists()
+
+
+async def test_mislabeled_visual_read_cannot_bypass_preview_guard(setup):
+    ctx, settings = setup
+    ctx.workdir.mkdir()
+    path = ctx.workdir / "renamed.txt"
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"image")
+    guard = build_options(ctx, settings).hooks["PreToolUse"][0].hooks[0]
+    decision = await guard(
+        {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "Read",
+            "tool_input": {"file_path": str(path)},
+        },
+        None,
+        None,
+    )
+    assert "preview.py" in decision["hookSpecificOutput"]["permissionDecisionReason"]

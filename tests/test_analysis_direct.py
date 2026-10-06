@@ -305,3 +305,270 @@ async def test_cancel_during_interrupted_submission_never_submits_later(chat):
     assert await chat.process(first, 0) == "failed"
     assert await chat.process(cancel, 1) == "complete"
     chat.test_client.create_job.assert_called_once()
+
+
+@pytest.fixture
+def upload_http(monkeypatch):
+    from test_analysis_attachments import PNG, mock_download
+
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(200, content=PNG if request.url.path.endswith("png") else b"a,b\n1,2")
+
+    mock_download(monkeypatch, respond)
+    return calls
+
+
+def attached(name="plot.png", **kwargs):
+    return {
+        "id": "F1",
+        "name": name,
+        "size": 10,
+        "url_private_download": "https://files.slack.com/" + name,
+        **kwargs,
+    }
+
+
+async def attachment_message(
+    chat, files, text="what's wrong with this plot?", ts="1.0", thread=None
+):
+    body = payload(ts, thread, text)
+    body["event"]["files"] = files
+    return await chat.accept(body)
+
+
+async def thread_state(chat, event):
+    record = await chat.repository.get_connector_state("claude-event:" + event)
+    return record, json.loads(
+        chat.store.get(f"projects/_threads/{record['thread_key']}/checkpoint.json")[0]
+    )
+
+
+async def test_image_question_answered_without_worker(chat, upload_http):
+    event = await attachment_message(chat, [attached()])
+    assert await chat.process(event, 0) == "complete"
+    record, state = await thread_state(chat, event)
+    media = chat.decision.call_args.kwargs["media"]
+    assert media[1]["type"] == "image"
+    file = state["thread_files"][0]
+    assert media[0]["text"] == f"Attachment {file['id']}: plot.png"
+    assert file["key"].startswith("tasks/slack-analysis/uploads/_users/")
+    assert file["user"] == "U1"
+    assert state["messages"][-1]["files"] == ["plot.png"]
+    assert record["attachments"][0]["id"] == file["id"]
+    assert chat.decision.call_args.args[2]["attachments"][0]["shown"]
+    chat.test_client.create_job.assert_not_called()
+    assert len(upload_http) == 1
+
+
+async def test_csv_compute_reaches_manifest(chat, upload_http):
+    chat.decision.return_value = direct.Decision(route="compute", reply="Plotting the data.")
+    event = await attachment_message(chat, [attached("data.csv")], "plot B against A")
+    assert await chat.process(event, 0) == "running"
+    record, state = await thread_state(chat, event)
+    manifest = json.loads(chat.store.get(f"tasks/slack-analysis/events/{event}/request.json")[0])
+    assert manifest["attachments"] == [state["thread_files"][0]["id"]]
+    listing = chat.decision.call_args.args[2]["attachments"][0]
+    assert listing["head"] == "a,b\n1,2"
+    assert "slack_bot_token" not in json.dumps(manifest).lower()
+
+
+async def test_denied_user_files_never_downloaded(chat, upload_http):
+    from pistachio.agents.analysis.registry import Registry
+
+    def revoke(doc):
+        doc.projects[chat.pid].members = set()
+        doc.projects[chat.pid].owner = "other@example.com"
+        return "revoked"
+
+    Registry(chat.store).update("revoke", "alice@example.com", "revoke", revoke)
+    event = await attachment_message(chat, [attached()])
+    assert await chat.process(event, 0) == "complete"
+    assert not upload_http
+    chat.decision.assert_not_called()
+
+
+@pytest.mark.parametrize("command", ["init new gs://lab-data/new/", "save brief", "brief"])
+async def test_attachment_command_rejections(chat, upload_http, command):
+    event = await attachment_message(chat, [attached()], command)
+    assert await chat.process(event, 0) == "failed"
+    assert not upload_http
+    chat.test_client.create_job.assert_not_called()
+
+
+async def test_brief_md_still_replaces_brief(chat, monkeypatch):
+    original = b"# Project\r\nuser supplied\n"
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=original))
+    )
+    monkeypatch.setattr(direct.httpx, "AsyncClient", lambda **kwargs: client)
+    event = await attachment_message(chat, [attached("PROJECT.md")], "brief")
+    assert await chat.process(event, 0) == "complete"
+    assert read_brief(chat.store, chat.pid)[0].encode() == original
+    chat.decision.assert_not_called()
+
+
+async def test_retry_after_router_failure_does_not_redownload(chat, upload_http):
+    chat.decision.side_effect = RuntimeError("interrupted router")
+    event = await attachment_message(chat, [attached()])
+    with pytest.raises(RuntimeError, match="interrupted router"):
+        await chat.process(event, 0)
+    chat.decision.side_effect = None
+    assert await chat.process(event, 0) == "complete"
+    record, state = await thread_state(chat, event)
+    assert len(upload_http) == len(state["thread_files"]) == 1
+
+
+async def test_oversized_upload_rejected_with_cap_message(chat, upload_http):
+    event = await attachment_message(chat, [attached(size=150_000_000)])
+    assert await chat.process(event, 0) == "failed"
+    record = await chat.repository.get_connector_state("claude-event:" + event)
+    assert "100 MB" in record["notice_text"] and "GCS" in record["notice_text"]
+    assert not upload_http
+
+
+async def test_router_400_retries_without_media(monkeypatch):
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        if len(requests) == 1:
+            return httpx.Response(400, json={"error": "invalid image"})
+        return httpx.Response(
+            200,
+            json={
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "route_request",
+                        "input": {"route": "reply", "reply": "Please re-upload the image."},
+                    }
+                ]
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(direct.httpx, "AsyncClient", lambda **kw: client)
+    result = await direct.decide(
+        "fake",
+        "model",
+        {"attachments": [{"id": "f1", "shown": True}]},
+        media=[{"type": "image", "source": {}}],
+    )
+    assert result.route == "reply" and len(requests) == 2
+    content = requests[1]["messages"][0]["content"]
+    context = json.loads(content[0]["text"])
+    assert len(content) == 1 and "only metadata" in context["attachments_note"]
+    assert not context["attachments"][0]["shown"]
+
+
+async def seed_earlier_output(chat):
+    from test_analysis_attachments import file_record
+
+    first = await chat.accept(payload(text="hello"))
+    await chat.process(first, 0)
+    record, state = await thread_state(chat, first)
+    output = file_record(chat.store, id="o12345678", source="agent")
+    state["thread_files"] = [output.model_dump()]
+    chat.store.put(
+        f"projects/_threads/{record['thread_key']}/checkpoint.json", json.dumps(state).encode()
+    )
+    return output
+
+
+async def test_view_earlier_output_then_reply_without_worker(chat):
+    output = await seed_earlier_output(chat)
+    chat.decision.reset_mock()
+    chat.decision.side_effect = [
+        direct.Decision(route="view", view_ids=[output.id], reply="Looking", draft="Kept draft"),
+        direct.Decision(route="reply", reply="The plot shows a red square."),
+    ]
+    event = await chat.accept(payload("2.0", "1.0", "What does the figure you sent show?"))
+    assert await chat.process(event, 0) == "complete"
+    first, second = chat.decision.call_args_list
+    assert not first.kwargs.get("media")
+    assert second.kwargs["media"][0]["text"].startswith("Attachment o12345678:")
+    assert second.kwargs["media"][1]["type"] == "image"
+    record, state = await thread_state(chat, event)
+    assert state["context"]["project_md"] == "Kept draft"
+    chat.test_client.create_job.assert_not_called()
+
+
+async def test_view_ignores_foreign_and_already_shown_ids(chat, upload_http, monkeypatch):
+    from pistachio.agents.analysis import attachments
+
+    actual = attachments.router_media
+    calls = []
+
+    def media(storage, files):
+        calls.append([f.id for f in files])
+        return actual(storage, files)
+
+    monkeypatch.setattr(attachments, "router_media", media)
+
+    async def decide(*args, **kwargs):
+        if len(calls) == 1:
+            id = args[2]["attachments"][0]["id"]
+            return direct.Decision(route="view", view_ids=[id, "foreign-file"], reply="Looking")
+        return direct.Decision(route="reply", reply="That's the image you sent.")
+
+    chat.decision.side_effect = decide
+    event = await attachment_message(chat, [attached()])
+    assert await chat.process(event, 0) == "complete"
+    assert calls[1] == []  # No new reads; current media can be reused from the first pass.
+
+
+@pytest.mark.parametrize("change", ["access", "epoch"])
+async def test_view_rechecks_access_and_epoch(chat, monkeypatch, change):
+    output = await seed_earlier_output(chat)
+    from pistachio.agents.analysis import attachments, user_memory
+
+    media = Mock(wraps=attachments.router_media)
+    monkeypatch.setattr(attachments, "router_media", media)
+
+    async def forget(*args, **kwargs):
+        if change == "epoch":
+            memory = user_memory.load(chat.store, "alice@example.com")
+            memory.epoch += 1
+            chat.store.put(user_memory.key("alice@example.com"), memory.model_dump_json().encode())
+        else:
+            from pistachio.agents.analysis.registry import Registry
+
+            def alter(doc):
+                doc.projects[chat.pid].access_revision += 1
+                return "changed"
+
+            Registry(chat.store).update("changed", "alice@example.com", "changed", alter)
+        return direct.Decision(route="view", view_ids=[output.id], reply="Looking")
+
+    chat.decision.side_effect = forget
+    event = await chat.accept(payload("2.0", "1.0", "What did you send?"))
+    assert await chat.process(event, 0) == "complete"
+    record = await chat.repository.get_connector_state("claude-event:" + event)
+    assert "Project access changed" in record["notice_text"]
+    assert media.call_count == 1 and media.call_args.args[1] == []
+
+
+async def test_second_view_rejected(chat):
+    output = await seed_earlier_output(chat)
+    chat.decision.return_value = direct.Decision(route="view", view_ids=[output.id], reply="Look")
+    event = await chat.accept(payload("2.0", "1.0", "What did you send?"))
+    assert await chat.process(event, 0) == "failed"
+    chat.test_client.create_job.assert_not_called()
+
+
+async def test_upload_rejection_lists_each_problem(chat, upload_http):
+    event = await attachment_message(
+        chat,
+        [
+            attached("external.csv", mode="external"),
+            attached("large.csv", size=150_000_000),
+        ],
+    )
+    assert await chat.process(event, 0) == "failed"
+    record = await chat.repository.get_connector_state("claude-event:" + event)
+    assert "external.csv" in record["notice_text"]
+    assert "large.csv" in record["notice_text"] and "GCS" in record["notice_text"]
+    assert not upload_http

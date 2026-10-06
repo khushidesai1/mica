@@ -21,6 +21,8 @@ from pistachio.agents.analysis.registry import Registry, read_brief
         ("<@BOT> SWITCH liver", Command("use", ("liver",))),
         ("switch p_0123456789abcdef --force", Command("use", ("p_0123456789abcdef",), True)),
         ("use liver", Command("use", ("liver",))),
+        ("<@BOT> rename liver liver-atlas", Command("rename", ("liver", "liver-atlas"))),
+        ("rename p_0123456789abcdef brain", Command("rename", ("p_0123456789abcdef", "brain"))),
         ("help all", Command("help all")),
         ("switch to log scale", None),
         ("help me switch projects", None),
@@ -30,12 +32,97 @@ def test_project_command_grammar(text, expected):
     assert parse(text) == expected
 
 
+@pytest.mark.parametrize("text", ["rename", "rename liver", "rename liver to brain"])
+def test_incomplete_rename_has_usage_error(text):
+    with pytest.raises(ValueError, match="rename <name or ID> <new-name>"):
+        parse(text)
+
+
+async def test_rename_preserves_channel_threads_and_project_content(chat):  # noqa: F811
+    await message(chat, "share liver <@U2>", "10.0")
+    await message(chat, "publish liver <#C1>", "11.0")
+    await message(chat, "switch liver", "12.0", channel="C1")
+    first = await message(chat, "Describe this project", "13.0", channel="C1")
+    pointer = checkpoint_key(first["thread_key"])
+    checkpoint = chat.store.get(pointer)[0]
+    before = Registry(chat.store).load()
+    brief = read_brief(chat.store, chat.pid)
+    chat.store.put(f"projects/{chat.pid}/runs/saved/outputs/result.txt", b"saved result")
+    chat.decision.reset_mock()
+
+    reply = await message(chat, "rename liver liver-atlas", "14.0")
+    assert "Project renamed to liver-atlas" in reply["notice_text"]
+    after = Registry(chat.store).load()
+    assert after.projects[chat.pid].model_dump() == {
+        **before.projects[chat.pid].model_dump(), "name": "liver-atlas"
+    }
+    assert after.bindings == before.bindings
+    assert chat.store.get(pointer)[0] == checkpoint
+    assert read_brief(chat.store, chat.pid) == brief
+    saved_output = f"projects/{chat.pid}/runs/saved/outputs/result.txt"
+    assert chat.store.get(saved_output)[0] == b"saved result"
+    chat.decision.assert_not_called()
+    chat.test_client.create_job.assert_not_called()
+
+    projects = await message(chat, "switch", "15.0", user="U2", channel="D2")
+    assert "switch liver-atlas" in projects["notice_text"]
+    await message(chat, "Continue this project", "16.0", channel="C1", thread="13.0")
+    assert chat.decision.call_args.args[2]["project_name"] == "liver-atlas"
+    assert json.loads(chat.store.get(pointer)[0])["context"]["project_slug"] == chat.pid
+    renamed = await message(chat, f"rename {chat.pid} liver-final", "17.0")
+    assert "Project renamed to liver-final" in renamed["notice_text"]
+
+
+async def test_rename_requires_owner_dm_and_unique_valid_name(chat):  # noqa: F811
+    await message(chat, "share liver <@U2>", "10.0")
+    seed_project(chat.store, name="brain", channel="D3")
+    before = Registry(chat.store).load()
+    attempts = [
+        ("rename liver renamed", {"user": "U2", "channel": "D2"}, "owner"),
+        ("rename liver renamed", {"channel": "C1"}, "DM"),
+        ("rename liver brain", {}, "already have"),
+        ("rename liver ../bad", {}, "lowercase"),
+        ("rename liver MixedCase", {}, "lowercase"),
+        ("rename liver ab", {}, "3–40"),
+        ("rename liver " + "x" * 41, {}, "3–40"),
+        ("rename liver", {}, "rename <name or ID>"),
+    ]
+    for i, (text, kwargs, reason) in enumerate(attempts, start=11):
+        reply = await message(chat, text, f"{i}.0", **kwargs)
+        assert reason in reply["notice_text"]
+        assert Registry(chat.store).load() == before
+    chat.decision.assert_not_called()
+    chat.test_client.create_job.assert_not_called()
+
+
+async def test_rename_retry_after_registry_write_survives_old_name_reuse(chat, monkeypatch):  # noqa: F811
+    original = direct.finish
+
+    async def fail(*args, **kwargs):
+        raise RuntimeError("lost response after rename")
+
+    monkeypatch.setattr(direct, "finish", fail)
+    with pytest.raises(RuntimeError, match="lost response"):
+        await message(chat, "rename liver liver-atlas", "10.0")
+    assert Registry(chat.store).load().projects[chat.pid].name == "liver-atlas"
+    replacement = seed_project(chat.store, name="liver", channel="D3")
+    monkeypatch.setattr(direct, "finish", original)
+    reply = await message(chat, "rename liver liver-atlas", "10.0")
+    assert reply["status"] == "complete"
+    after = Registry(chat.store).load()
+    assert after.projects[replacement].name == "liver"
+    assert after.projects[chat.pid].name == "liver-atlas"
+    chat.decision.assert_not_called()
+    chat.test_client.create_job.assert_not_called()
+
+
 async def test_unbound_dm_and_help_show_concise_project_controls(chat):  # noqa: F811
     for ts, text in [("10.0", "hello"), ("11.0", "help"), ("12.0", "switch")]:
         reply = await message(chat, text, ts, user="U2", channel="D2")
         assert "`init <name> gs://bucket/folder/`" in reply["notice_text"]
         assert "`switch`" in reply["notice_text"]
         assert "`switch <name or ID>`" in reply["notice_text"]
+        assert "`rename <name or ID> <new-name>`" in reply["notice_text"]
         assert len(reply["notice_text"]) < 320
         assert "liver" not in reply["notice_text"]
     full = await message(chat, "help all", "13.0")

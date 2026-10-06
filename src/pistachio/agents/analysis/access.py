@@ -20,6 +20,12 @@ def checkpoint_key(thread_key: str) -> str:
     return f"projects/_threads/{thread_key}/checkpoint.json"
 
 
+def run_root(private: bool, email: str, project_id: str, thread_key: str, thread_ts: str) -> str:
+    if private:
+        return f"projects/_users/{user_key(email)}/runs/{project_id}/{thread_key}"
+    return f"projects/{project_id}/runs/{thread_ts}"
+
+
 @dataclass
 class Grant:
     email: str
@@ -195,7 +201,12 @@ def fresh_private_state(
             data_path=str(settings.data_mount_root / uri.netloc / uri.path.lstrip("/")),
         )
         state = dict(
-            context=context, turn=state.get("turn", 0), is_init=False, messages=[], direct_version=1
+            context=context,
+            turn=state.get("turn", 0),
+            is_init=False,
+            messages=[],
+            thread_files=[],
+            direct_version=1,
         )
         storage.put(checkpoint_key(thread_key), json.dumps(state).encode())
     return state

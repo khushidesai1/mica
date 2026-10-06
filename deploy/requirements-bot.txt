@@ -7,3 +7,4 @@ pydantic-settings==2.15.0
 httpx==0.28.1
 google-auth==2.41.1
 pyarrow==25.0.1
+pypdfium2==5.14.0

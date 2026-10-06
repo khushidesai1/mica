@@ -10,6 +10,7 @@ import re
 import time
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
+from html import escape
 from typing import Any
 from urllib.parse import urlsplit
 from uuid import NAMESPACE_URL, uuid5
@@ -22,10 +23,10 @@ from pistachio.config import Settings as AppSettings
 from pistachio.storage.base import Repository
 
 from . import access, user_memory
+from .attachments import AttachmentError
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .data_links import init_args
-from .identity import user_key
 from .registry import Registry
 from .slack_format import status_blocks
 from .storage import GCSStorage
@@ -365,6 +366,8 @@ class BatchBridge:
                     if isinstance(exc, ValueError)
                     else "Conversation service unavailable. Please retry."
                 )
+                if isinstance(exc, AttachmentError):
+                    detail = escape(str(exc), quote=False)[:12_000]
                 await self.notify(event_id, record, "failed", f"Couldn’t complete: {detail}")
                 return
         client = batch_v1.BatchServiceClient()
@@ -468,6 +471,7 @@ class BatchBridge:
                 "thread_key": record["thread_key"],
                 "notice_ts": record.get("notice_ts"),
                 "protocol": 2,
+                "attachments": [f["id"] for f in record.get("attachments", [])],
                 "principal": record["principal"],
                 "project_id": record["project_id"],
                 "project_name": record["project_name"],
@@ -484,12 +488,15 @@ class BatchBridge:
                     if record["private"]
                     else ""
                 ),
-                "run_prefix": (
-                    f"projects/_users/{user_key(record['principal'])}/runs/"
-                    f"{record['project_id']}/{record['thread_key']}"
-                    if record["private"]
-                    else ""
-                ),
+                "run_prefix": access.run_root(
+                    record["private"],
+                    record["principal"],
+                    record["project_id"],
+                    record["thread_key"],
+                    record["payload"]["event"].get("thread_ts") or record["payload"]["event"]["ts"],
+                )
+                if record["private"]
+                else "",
             }
             await asyncio.to_thread(
                 storage.put,

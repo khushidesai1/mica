@@ -26,7 +26,10 @@ the active job without starting a new one.
 The new worker calls the Claude Agent SDK directly. It does not invoke Pistachio's shared task planners,
 TaskContract generation, approval stages, or multi-stage execution pipeline. Each Slack thread
 has one resumed Claude compute session, a workspace, and its own PROJECT.md brief snapshot.
-Chat corrections and verified discoveries can revise that thread’s draft as work proceeds. The worker uses
+The brief stays unchanged by default. It is revised only when requested or when user-provided
+or verified information fills a concrete missing project detail relevant to the task. Routine
+results, file listings, and plot adjustments do not trigger brief maintenance or save reminders.
+Initial setup still creates a draft, and `save brief` explicitly publishes it. The worker uses
 built-in Read/Write/Edit/Glob/Grep/Bash tools and the pinned science environment.
 
 A control-service reply acknowledges each accepted input. Direct replies update it in place;
@@ -230,7 +233,39 @@ Both init and `switch` change the default for new threads and preserve existing 
 Spot provisioning latency applies only to subsequent computation.
 
 
-## Figure validation without previews
+## Attachments in Slack
+
+Attach images, PDFs, tables (`.csv`, `.tsv`, `.xlsx`, `.parquet`, `.json`, `.h5ad`), or text
+in a project thread and say what you want to do. File-only messages get a short clarification.
+Questions about a supported image or PDF can be answered directly; data analysis, re-plotting,
+large images and full-table inspection use a compute worker. The worker sees read-only copies
+under `inputs/`. Follow-ups can refer to uploads or files Pistachio delivered earlier.
+
+Default upload caps are **10 files per message, 100 MB per file, and 250 MB per message**,
+configurable with `AGENT_ATTACHMENT_MAX_FILES`, `AGENT_ATTACHMENT_MAX_MB`, and
+`AGENT_ATTACHMENT_MAX_MESSAGE_MB` on the API. The limits apply to actual downloaded bytes.
+Larger datasets belong in the project's mounted GCS bucket. Each thread tracks up to 50 files;
+older delivered-output references are dropped before user-upload references.
+
+After admission and project access checks, uploads stream from private Slack URLs into the
+artifact bucket under `tasks/slack-analysis/uploads/<thread-run-scope>/attachments/`.
+**Uploaded originals expire under the existing 30-day lifecycle**, as chosen for this feature.
+They are excluded from workspace archives, so later checkpoints do not renew their retention.
+Private uploads use the same user/project/thread scope as private provenance. The durable
+thread registry keeps metadata and output references; conversation excerpts and derived outputs
+follow existing provenance retention. Deleting the Slack original does not delete the stored copy.
+Missing or expired originals require a new upload. There are no separate file permissions.
+
+The router receives only current-message content or images/PDFs explicitly requested through its
+`view` route after another access check. Each call can show up to 4 PNG/JPEG/GIF/WebP images
+at 3.75 MB each and 2 PDFs at 5 MB each, plus at most 8 KiB of each current text/table file.
+Larger or unsupported visuals need a sandbox preview. No OCR, HEIC, SVG rendering, audio, or video
+is provided. For SVG, create a PNG twin. Full-size output files retain their existing retention.
+
+`brief` with one UTF-8 `.md` still replaces the shared brief byte for byte. `brief` with another
+file type is rejected. Send attachments separately from `init` and `save brief`.
+
+## Figures and visual checks
 
 Reports and figures are delivered as Slack attachments. The user cannot access the worker's
 `outputs/` directory or the agent bucket. New or modified PDFs, PNGs, and other supported
@@ -241,12 +276,13 @@ Files must fit the 200 MB per-file limit; larger reports need compression or spl
 Upload failures produce an explicit delivery warning instead of a success claim, and the
 workspace remains eligible for checkpointing so a later resend can reuse the files.
 
-Per the user's current preference, the compute agent does not preview generated images or PDFs.
-Its Read hook denies visual files before the SDK can embed image bytes in its JSON stream.
-The prompt directs it to check successful script completion, nonempty output files, computed
-tables and concise logs. It must not encode image contents into tool output or claim visual
-inspection. Figure generation and full-resolution Slack uploads are unchanged. This avoids
-the observed SDK 1 MB JSON-buffer failure when reading a 6.5 MB spatial-map PNG.
+The compute agent inspects figures through sandbox-rendered previews in `.previews/`.
+Only PNG/JPEG previews up to 1568 px on the long edge and 1.5 MB can enter visual Read,
+with at most 12 views per turn. The SDK JSON buffer is 16 MiB. Images and PDF pages are
+rendered by `tools/preview.py`; no media decoder runs in the control plane or worker host.
+Previews are cleared before and after a turn and excluded from delivery and checkpoints.
+Full-resolution originals are delivered unchanged. Visual checks supplement computed checks;
+they do not establish scientific correctness. SVG and HEIC require a PNG alternative.
 
 
 ## Identity, projects, and private memory
@@ -334,6 +370,7 @@ thread changed the shared brief; start a new thread to review and reconcile it.
 | `help` / `help all` | Show the compact project guide / every command. |
 | `switch` (alias: `projects`) | DM: list owned and explicitly shared projects with copyable switch commands; mark the default for new threads. |
 | `switch liver` or `switch p_…` (alias: `use`) | Select a project for new threads. Ambiguous shared names require an ID. |
+| `rename liver liver-atlas` | Owner in DM: change the project name. An ID can replace the old name. Use 3–40 lowercase letters, digits, or hyphens; the new name must not belong to another project you own. |
 | `share liver @user` / `unshare liver @user` | Owner in DM: grant an enabled user or revoke a former member; email links also work. |
 | `publish liver #channel` / `unpublish liver #channel` | Owner in DM: authorize/withdraw replies visible to the entire channel audience. |
 | `switch p_… [--force]` in a channel | Owner selects an explicitly published project; replacing a binding requires its current owner too. |
@@ -342,6 +379,11 @@ thread changed the shared brief; start a new thread to review and reconcile it.
 | `memory` | DM: show private profile/preferences and the newest 20 numbered notes. |
 | `remember <text>` | DM: add a private note (up to 600 characters). |
 | `forget <number\|profile\|preferences\|all>` | DM: delete the selected memory and invalidate previous private context. |
+
+Renaming preserves the project ID, data location, briefs, saved outputs, sharing, channel
+bindings, and existing threads. Use the new name or unchanged ID in later commands; a legacy
+project whose ID is its original name still accepts that original ID. Renaming does not edit
+old Slack messages or rewrite project names in saved brief text.
 
 Sharing a project grants access to its shared brief and computation, not another user’s DM
 history or memory. Channel publication is a separate explicit decision: every current or future

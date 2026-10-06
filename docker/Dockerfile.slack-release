@@ -1,0 +1,16 @@
+# Refresh a pinned deployed image without changing its established runtime dependencies.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+USER root
+ARG INSTALL_BOT_DEPENDENCIES=0
+COPY deploy/requirements-bot.txt /tmp/pistachio-requirements-bot.txt
+RUN if [ "$INSTALL_BOT_DEPENDENCIES" = "1" ]; then \
+      pip install --no-cache-dir --no-deps -r /tmp/pistachio-requirements-bot.txt; \
+    fi
+COPY src/pistachio /usr/local/lib/python3.12/site-packages/pistachio
+COPY src /app/src
+COPY src /opt/pistachio/src
+COPY tools /opt/pistachio/tools
+ARG SOURCE_COMMIT
+LABEL org.opencontainers.image.revision=$SOURCE_COMMIT
+USER 65532:65532

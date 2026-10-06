@@ -40,3 +40,33 @@ async def test_real_plot_and_resume(tmp_path):
     assert not second.error and second.session_id == first.session_id
     assert any(p.exists() and p.read_bytes() != contents[p] for p in scripts)
     assert any(p.suffix == ".png" for p in second.files)
+
+
+@pytest.mark.live
+async def test_agent_looks_at_its_figure(tmp_path):
+    if os.environ.get("PISTACHIO_RUN_LIVE_TESTS") != "1" or not os.environ.get("ANTHROPIC_API_KEY"):
+        pytest.skip("Requires explicit approval and live API credits")
+    settings = Settings(
+        _env_file=None,
+        sci_python=Path(sys.executable),
+        tools_dir=Path(__file__).resolve().parents[1] / "tools",
+        work_root=tmp_path / "work",
+    )
+    ctx = Context(tmp_path / "work/t1", tmp_path / "data")
+    ctx.data_path.mkdir()
+    result = await Runner(settings).run_turn(
+        ctx,
+        "Create one large red square with matplotlib at 200 dpi, then a 6000x4000 PNG "
+        "of the same square. Save both in outputs. Preview and Read both, then name the "
+        "color you saw in each preview.",
+        AsyncMock(),
+    )
+    assert result.error is None
+    assert "red" in result.text.lower()
+    reads = [
+        x
+        for x in result.run_log
+        if x["tool"] == "Read" and ".previews/" in x["input"].get("file_path", "")
+    ]
+    assert len(reads) >= 2
+    assert "JSON message exceeded maximum buffer size" not in result.text

@@ -18,11 +18,11 @@ from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 from slack_sdk.web.async_client import AsyncWebClient
 
-from .access import worker_permitted
+from . import attachments
+from .access import run_root, worker_permitted
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .direct import record_exchange
-from .identity import user_key
 from .outputs import files_under
 from .preflight import check
 from .runner import Context, Runner
@@ -54,6 +54,9 @@ def snapshot(archive: Path, home: Path) -> None:
         if (home / "state.db").is_file():
             paths.append(home / "state.db")
         for path in paths:
+            # Sources expire independently; rehydrate inputs from their original objects.
+            if any(part in {".previews", "inputs"} for part in path.relative_to(home).parts):
+                continue
             tar.add(path, arcname=str(path.relative_to(home)), recursive=False)
 
 
@@ -115,6 +118,7 @@ async def main(event_id: str) -> None:
             logging.warning("Could not update worker startup status", exc_info=True)
     sessions = Sessions(settings.state_db)
     payload = request["payload"]
+    files: list[attachments.ThreadFile] = []
     if saved.get("context"):
         data = saved["context"]
         data["workdir"], data["data_path"] = Path(data["workdir"]), Path(data["data_path"])
@@ -126,6 +130,9 @@ async def main(event_id: str) -> None:
             draft = data["workdir"] / "outputs/PROJECT.md"
             draft.parent.mkdir(parents=True, exist_ok=True)
             draft.write_text(data["project_md"])
+        files = await asyncio.to_thread(
+            attachments.materialize, storage, data["workdir"], saved.get("thread_files", [])
+        )
     agent = SlackAgent(
         settings,
         storage,
@@ -136,15 +143,28 @@ async def main(event_id: str) -> None:
             project_name=request.get("project_name", ""),
         ),
         slack,
-        run_prefix=(
-            f"projects/_users/{user_key(request['principal'])}/runs/{request['project_id']}/{thread_key}"
-            if request["private"]
-            else ""
+        run_prefix=run_root(
+            request["private"],
+            request["principal"],
+            request["project_id"],
+            thread_key,
+            payload["event"].get("thread_ts") or payload["event"]["ts"],
         ),
         authorized=lambda: worker_permitted(storage, request, saved, settings=settings),
     )
     payload["event"]["_notice_ts"] = request.get("notice_ts")
     payload["event"]["_conversation_context"] = saved.get("messages", [])
+    current_ids = set(request.get("attachments", []))
+    payload["event"]["_event_id"] = event_id
+    payload["event"]["_attachments"] = attachments.worker_listing(files, current_ids)
+    present_ids = {f.id for f in files}
+    unavailable = [f for f in saved.get("thread_files", []) if f["id"] not in present_ids]
+    if unavailable:
+        payload["event"]["_attachments"] += (
+            "\nUnavailable files (expired, replaced, or unrestorable; ask for a replacement):\n"
+            + "\n".join(f"- {json.dumps(f['name'])}" for f in unavailable)
+        )
+    payload["event"]["_thread_files"] = [f.model_dump() for f in files]
     try:
         event = payload["event"]
         await agent.handle(event, (event["channel"], event.get("thread_ts") or event["ts"]))
@@ -164,7 +184,15 @@ async def main(event_id: str) -> None:
     if state:
         checkpoint.update(context=asdict(state[0]), turn=state[1], is_init=state[2])
     checkpoint["messages"] = saved.get("messages", [])
-    record_exchange(checkpoint, event_id, event.get("text", ""), agent.last_reply)
+    checkpoint["thread_files"] = attachments.merge(saved.get("thread_files", []), agent.delivered)
+    record_exchange(
+        checkpoint,
+        event_id,
+        event.get("text", ""),
+        agent.last_reply,
+        files=[f["name"] for f in saved.get("thread_files", []) if f["id"] in current_ids],
+        outputs=[f["name"] for f in agent.delivered],
+    )
     storage.put(pointer, json.dumps(checkpoint, default=str).encode())
 
 

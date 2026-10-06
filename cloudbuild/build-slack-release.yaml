@@ -1,0 +1,38 @@
+# Build a coordinated pair from one source snapshot; deployment remains a separate step.
+steps:
+  - id: build-api
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args: [build, --build-arg, 'BASE_IMAGE=${_API_BASE}', --build-arg, 'SOURCE_COMMIT=${_SOURCE_COMMIT}', -f, docker/Dockerfile.slack-release, -t, '${_API_IMAGE}', .]
+  - id: build-slack-worker
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    args: [build, --build-arg, 'BASE_IMAGE=${_SLACK_BASE}', --build-arg, 'INSTALL_BOT_DEPENDENCIES=1', --build-arg, 'SOURCE_COMMIT=${_SOURCE_COMMIT}', -f, docker/Dockerfile.slack-release, -t, '${_SLACK_IMAGE}', .]
+  - id: verify-headless-api
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-api]
+    args: [run, --rm, --network=none, -e, PISTACHIO_ARTIFACT_ROOT=/tmp/pistachio-smoke, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_headless_api.py]
+  - id: verify-api-source-and-attachments
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-api]
+    args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_slack_release.py, api]
+  - id: verify-worker-source-and-previews
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-slack-worker]
+    args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_SLACK_IMAGE}', /workspace/scripts/check_slack_release.py, worker]
+  - id: export-api-contract
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-api]
+    entrypoint: bash
+    args:
+      - -ceu
+      - docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_API_IMAGE}' /workspace/scripts/check_worker_compatibility.py export - > /workspace/api-execution-contract.json
+  - id: verify-existing-shared-worker
+    name: gcr.io/cloud-builders/docker
+    waitFor: [export-api-contract]
+    args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_SHARED_IMAGE}', /workspace/scripts/check_worker_compatibility.py, check, /workspace/api-execution-contract.json]
+images: ['${_API_IMAGE}', '${_SLACK_IMAGE}']
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+timeout: 1800s

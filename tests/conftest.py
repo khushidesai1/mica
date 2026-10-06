@@ -12,6 +12,15 @@ from pistachio.services.tasks import TaskService
 from pistachio.storage.memory import InMemoryRepository
 
 
+@pytest.fixture(autouse=True)
+def isolate_local_dotenv(monkeypatch):
+    """Keep workstation .env settings out of test-created configurations."""
+    from pistachio.agents.analysis.config import Settings as AnalysisSettings
+
+    for settings_type in (Settings, AnalysisSettings):
+        monkeypatch.setitem(settings_type.model_config, "env_file", None)
+
+
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
     return Settings(

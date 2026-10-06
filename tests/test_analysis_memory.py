@@ -122,6 +122,7 @@ async def test_forget_resets_transcript_draft_workspace_and_queued_worker(chat):
     old_path = state["context"]["workdir"]
     state["turn"] = 7
     state["archive"] = "old-memory.tar.gz"
+    state["thread_files"] = [{"id": "private-file"}]
     state["context"]["session_id"] = "old-session"
     state["context"]["project_md"] = "memory-derived-private-draft"
     chat.store.put(pointer, json.dumps(state).encode())
@@ -144,6 +145,9 @@ async def test_forget_resets_transcript_draft_workspace_and_queued_worker(chat):
     assert "memory-derived" not in supplied["brief"]
     fresh = json.loads(chat.store.get(pointer)[0])
     assert fresh["context"]["workdir"] != old_path
+    assert fresh["thread_files"] == []
+    retired_key = chat.store.keys(f"projects/_threads/{old['thread_key']}/retired/")[0]
+    assert json.loads(chat.store.get(retired_key)[0])["thread_files"] == [{"id": "private-file"}]
     assert fresh["turn"] == 7  # Subsequent runs cannot overwrite old output provenance.
     assert chat.store.keys(f"projects/_threads/{old['thread_key']}/retired/")
     assert not fresh.get("archive") and fresh["context"]["session_id"] is None

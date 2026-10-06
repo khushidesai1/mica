@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any
 
+from .access import run_root
 from .storage import Storage
 
 if TYPE_CHECKING:
@@ -41,11 +43,18 @@ def publish(
     prompt: str,
     model: str,
     run_prefix: str = "",
-) -> None:
-    root = run_prefix or f"projects/{ctx.project_slug}/runs/{ctx.thread_ts}"
+    *,
+    attachments: Sequence[dict[str, Any]] = (),
+) -> dict[Path, str]:
+    root = run_prefix or run_root(False, "", ctx.project_slug, "", ctx.thread_ts)
     prefix = f"{root}/turn-{turn}"
+    published = {}
     for path in [*result.files, *files_under(ctx.workdir / "code")]:
-        storage.upload(f"{prefix}/{path.relative_to(ctx.workdir)}", path)
+        if ".previews" in path.relative_to(ctx.workdir).parts:
+            continue
+        key = f"{prefix}/{path.relative_to(ctx.workdir)}"
+        storage.upload(key, path)
+        published[path] = key
     storage.put(
         f"{prefix}/run_log.jsonl", "\n".join(json.dumps(x) for x in result.run_log).encode()
     )
@@ -71,5 +80,7 @@ def publish(
         error=result.error,
         brief_generation=ctx.brief_generation,
         datasets_touched=touched,
+        attachments=[{k: f[k] for k in ("id", "name", "sha256", "key")} for f in attachments],
     )
     storage.put(f"{prefix}/meta.json", json.dumps(meta, indent=2).encode())
+    return published

@@ -4,6 +4,41 @@ Prepared 5 October 2026. This is the setup guide for the existing Pistachio Slac
 The developer laptop edits and operates the project; the deployed agent runs in Google Cloud
 and does not require this laptop to stay on.
 
+## Receiving Mac verification — 5 October 2026
+
+The checkout at `/Users/khushidesai/Documents/pistachio` was fast-forwarded to
+`486dad1` on `codex/private-project-memory`. The existing virtual environment runs
+Python 3.12.14 natively on arm64, and all core, `dev`, `slack`, and `analysis-test`
+dependencies match the repository's pins; `pip check` passes.
+
+- Ruff, strict mypy (83 source files), compileall, and `HEADLESS_API_VERIFIED` passed.
+- All 394 offline tests passed across two runs: 393 in the Codex sandbox and the
+  Unix-socket test separately with permission to bind a local socket. Three tests
+  were skipped and the paid live test was deselected. The shared test fixture now
+  excludes workstation `.env` files: copying the example file had otherwise
+  injected its sample email allowlist into tests and caused access failures.
+- A temporary local Uvicorn server returned HTTP 200 and `{"status":"ok"}` at
+  `/api/v1/healthz`, then was stopped.
+- Git remote access, Google Cloud CLI access, and Python Application Default
+  Credentials were verified. Both the default project and ADC quota project are
+  `azizilab-aml`; Python successfully read the existing artifact bucket's metadata.
+- Cloud Run reports `pistachio-staging-00097-log` ready with 100% traffic, and the
+  live health endpoint returns `{"status":"ok"}`. See the updated
+  [deployment record](slack-agent-deployment.md) for this release. The revision 87
+  inventory and source/deployment comparison in section 4 below are the earlier
+  handoff snapshot, not the current deployment.
+- Docker Desktop was started; Docker client/server 23.0.5 and Compose 2.17.3 respond.
+  The optional science-image build and Docker analysis fixture were not run.
+- The private Terraform state (serial 80), backup (serial 78), tfvars, benchmarks,
+  and deployment history are present and ignored by Git. The local artifacts
+  directory is empty; its completeness against the old Mac was not verified.
+
+Use `.venv/bin/python` and the other `.venv/bin/` commands on this Mac. Standalone
+`python3.12`, `gh`, and Terraform are not on the shell PATH; none is required for
+the verified development workflow or the existing cloud runtime. Install Terraform
+only when preparing separately reviewed infrastructure work. No cloud deployment,
+Terraform apply, paid model call, or Slack message was made during these checks.
+
 ## Start here
 
 - Private GitHub repository: <https://github.com/khushidesai1/pistachio>.
