@@ -1,29 +1,57 @@
-# Slack agent deployment — current release 5 October 2026
+# Slack agent deployment — current release 6 October 2026 UTC
 
-Current live revision: `pistachio-staging-attachments-20261005`, serving 100% of traffic. This
-release adds Slack attachments and image inspection, including previews of generated outputs.
-Historical pre-cutover rollback instructions below do not apply to the current private-project
-runtime.
+Current live revision: `pistachio-staging-memory-20261006`, serving 100% of traffic. This
+release separates hidden conversation summaries from the project/file guide. Historical
+pre-cutover rollback instructions below do not apply to the current private-project runtime.
 
-## Prepared conversation-memory release
+## Separate conversation memory from project documentation — 6 October 2026 UTC
 
-The next coordinated API/Slack-worker release separates a bounded hidden conversation summary
-from the project/file guide. DMs use person + project scope; channels use thread scope. Normal
-updates share the existing background editor call, do not notify Slack, and do not reset SDK
-sessions. Clear commands invalidate queued/running context through reset epochs. Legacy guide
-cleanup remains a reviewable thread draft with the original preserved until `save brief`.
+DM conversation summaries are scoped to person + project; channel summaries stay in their own
+thread. Each is capped at 6,000 characters, injected separately into chat and compute requests,
+and retained until cleared. Normal updates share the existing background editor call, remain
+silent, and preserve SDK sessions. Clear commands invalidate queued/running context using reset
+epochs. The project guide retains concise, necessary auto-updates but excludes observations,
+hypotheses, results, and research TODOs. Legacy cleanup remains a reviewable thread draft with
+its original preserved; only `save brief` publishes it. `memory context`, `forget context`, and
+`clean brief` are documented in the setup guide.
 
-Local validation: 488 passed, 6 skipped; Ruff and strict mypy passed. Tests cover private and
-channel scope, cross-thread continuity, concurrent writes/retries, stale workers after clearing,
-failed-run exclusion, restored workspace overlays, full guide review, and cleanup preservation.
-The opt-in paid observation-versus-guide evaluation was added but has not been run.
+- Deployed source: `5bcc3fd87d5d802c81802ee322dbe94701aa0067`, pushed to
+  `codex/private-project-memory`.
+- Full local suite: 488 passed, 6 skipped; subsequent focused checks passed (including one
+  additional compute-cleanup regression). Ruff and strict mypy passed for all 87 source files.
+  Coverage includes cross-thread continuity, scope isolation, concurrent updates, stale workers
+  after clearing, failed-run exclusion, restored workspace overlays, full guide review, and
+  preservation of cleanup originals.
+- Build `4f785829-ba82-4ccd-b887-412432432831`: SUCCESS, all seven steps passed. Both images
+  contain the same 87-file application snapshot. Gates verified conversation memory and guide
+  policy, template freshness, attachment transport, PNG/PDF previews, headless routes, and
+  compatibility with the unchanged shared science worker.
+- The preview and live service passed health (200), removed UI/docs (404), unsigned Slack event
+  (401), and unauthenticated worker credential (401) checks. Runtime configuration was preserved
+  apart from the API and Slack worker images. No new dependencies or infrastructure were added.
+- The existing analysis was allowed to finish successfully. After its completion poll drained,
+  dispatch was paused; the final check found no queued tasks or active workers. The new revision
+  now receives 100% of traffic, dispatch is RUNNING, and the preview tag was removed. No
+  error-level revision logs appeared during release checks.
+- No paid model calls, user analyses, or Slack messages were initiated for release verification.
+  The opt-in observation-versus-guide model evaluation was added but has not been run. Existing
+  briefs are reviewed on subsequent requests or `clean brief`; they were not bulk rewritten.
+  Upload retention remains 30 days.
 
-Build with `cloudbuild/build-slack-release.yaml` from one committed source snapshot. Its gates
-also verify the conversation cache, prompt separation, and refreshed project template. No new
-dependencies or infrastructure settings are required. Drain work and promote the API/worker pair
-together. Rollback before dispatch resumes may restore the previous pair; after accepting new
-memory operations, do not run an old writer that drops reset markers. Preserve/reset new caches
-before any later re-enable following a rollback. Upload retention stays at 30 days.
+Deployed image digests (repository prefix
+`us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/`):
+
+| Image | Digest |
+| --- | --- |
+| `api` | `sha256:3e078e02fcd563d6413a66d86fc342d01377e1fc102cc588af3b360975c682c1` |
+| `slack-agent` | `sha256:104d3292c674ba035c43e6ea1472cfee483a8bc6244523a3889087b1d480f5f5` |
+| `science` (unchanged) | `sha256:0972b8ae1e37a272b0ed54dae18b3412f034c47e83520b5805437bfb8f0a8041` |
+
+Evidence, immutable source, runtime snapshots, and drain checks:
+`.pistachio/deployments/conversation-memory-20261006/`. The preceding API/worker pair is revision
+`pistachio-staging-attachments-20261005`, recorded below. Always drain and deploy the pair
+together. After accepting new memory operations, do not run an old writer that drops reset
+markers; preserve/reset the new caches before any re-enable following a rollback.
 
 ## Attachments and image vision — 5 October 2026
 
