@@ -1,8 +1,72 @@
 # Slack agent deployment — current release 6 October 2026 UTC
 
-Current live revision: `pistachio-staging-memory-20261006`, serving 100% of traffic. This
-release separates hidden conversation summaries from the project/file guide. Historical
+Current live revision: `pistachio-staging-writes-20261006`, serving 100% of traffic. This
+release adds scoped GCS output grants and one structured Slack command summary. Historical
 pre-cutover rollback instructions below do not apply to the current private-project runtime.
+
+## Project-linked GCS write grants and structured help — 6 October 2026 UTC
+
+`help` now shows one grouped bullet list with a concise description for each command.
+`help all` remains an alias; `help write` provides optional examples. In a DM, designated
+write admins can grant, inspect, or revoke create-only output access. Omitting duration means
+no expiry, until revoked. The issuer must belong to the selected project, and the destination
+must be in that project's linked data bucket. Those associations are checked again during
+publishing. Existing objects cannot be overwritten or deleted.
+
+- Deployed source: `b9abc9f2132eb76bc99000cad1041446fc8b0389` (local branch
+  `codex/private-project-memory`). API and Slack worker were built from the same 90-file source
+  snapshot; the shared science image is unchanged.
+- Local verification: 553 passed, 6 skipped before the final help reformat; all 91 affected
+  project/write tests passed afterward. Ruff, strict mypy, and Terraform validation passed.
+- Build `4b6b7a17-6dce-4606-b801-162b2a9cd137`: SUCCESS, all seven steps passed, including installed-source
+  consistency, structured help and write commands, worker previews, headless API routes, and
+  compatibility with the existing science worker.
+- The dedicated `pistachio-staging-writer` account has only `storage.objects.create` and
+  `storage.objects.get`, bound to `alchemy-breast-cancer` and `khushi-crc-xenium`, the two
+  currently linked project buckets. The existing onboarding admin is also the designated
+  write admin. New buckets require administrator provisioning before grants can target them.
+  No project write grant was created as part of deployment.
+- Only the control account can impersonate the writer. Each upload receives an object-scoped
+  short-lived credential inside the trusted publisher. The existing project-wide
+  `roles/storage.objectAdmin` bindings were removed from both control and worker identities;
+  project-wide reads and required artifact-prefix writes were preserved. The existing legacy
+  ACL setting on `khushi-crc-xenium` was preserved.
+- A temporary Cloud Run job using the real control identity passed 15 live checks: publishing
+  and retry reconciliation in both buckets, denied sibling-object writes, denied overwrites,
+  denied deletes using scoped and unscoped writer credentials, revoked/expired grants blocked,
+  and an unapproved bucket denied. These used disposable objects and synthetic local grants;
+  the live project registry was not changed.
+- Preview and live checks passed: health 200, removed UI/docs 404, unsigned Slack events 401,
+  unauthenticated worker credentials 401, and unauthenticated output-publishing requests 401.
+  Runtime configuration was preserved apart from the image pair and three write settings.
+- Cutover found zero queued tasks and zero active Batch jobs. The revision serves 100% of
+  traffic, dispatch is RUNNING, and the temporary preview tag has been removed. Artifact
+  lifecycle remains 30 days for temporary prefixes; `write-access/` and `projects/` are retained.
+- After IAM restriction, both runtime identities passed 18 further live checks. Required
+  artifact writes and data reads still work; direct writes into either data bucket are denied.
+  Workers cannot write grant records or impersonate the writer. All three verification jobs
+  and their disposable objects were cleaned up.
+- No paid model calls or Slack messages were initiated for deployment verification.
+
+Deployed image digests (repository prefix
+`us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/`):
+
+| Image | Digest |
+| --- | --- |
+| `api` | `sha256:eb35dad83008de2ebbff1b3152c45368f1ac0ad91f357855e1de5184a54fdcfa` |
+| `slack-agent` | `sha256:2348e9a1ee304b9b69df9a84ca71c2f94d03c81d09a31a0a8e8edbef69b593f7` |
+| `science` (unchanged) | `sha256:0972b8ae1e37a272b0ed54dae18b3412f034c47e83520b5805437bfb8f0a8041` |
+
+Evidence, immutable source, runtime snapshots, live IAM policies, and canary results:
+`.pistachio/deployments/slack-write-access-20261006/`. The preceding compatible API/worker pair
+is `pistachio-staging-memory-20261006`, recorded below. Roll back the pair together after draining
+work; keep the narrowed IAM grants. The old pair does not publish new GCS outputs.
+
+This rollout used targeted cloud changes rather than a full Terraform apply. Before a future
+Terraform rollout, reconcile the existing stale variables/state with the live release and import
+the manually provisioned writer account/custom role and IAM members. Set the write-admin and
+write-prefix variables to the live values above. Do not apply old default-empty write settings
+or old image variables to this service.
 
 ## Separate conversation memory from project documentation — 6 October 2026 UTC
 

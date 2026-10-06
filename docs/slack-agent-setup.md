@@ -176,7 +176,9 @@ See [Slack write access](slack-write-access.md) for examples, limits, and the cl
 
 Project controls: `init <slug> gs://bucket/prefix/` creates and selects a project, `switch` lists
 your projects in a DM with copyable commands, and `switch <name or ID>` selects one for new
-threads. The compact `init`/`switch` guide appears in unlinked chats and after initialization. `help` shows every command in a grouped bullet list (`help all` is an alias). Init automatically changes the DM's selection and
+threads. The compact `init`/`switch` guide appears in unlinked chats and after initialization.
+`help` shows every command in a grouped bullet list (`help all` is an alias). Init automatically
+changes the DM's selection and
 includes a command to switch back to the previous project. `use <project>` and `projects` remain
 aliases.
 
