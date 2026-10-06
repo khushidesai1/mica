@@ -3,14 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
+from pydantic import BaseModel, Field
 
-from pistachio.agents.analysis import access, channel_access, identity
+from pistachio.agents.analysis import (
+    access,
+    channel_access,
+    conversation_memory,
+    identity,
+    write_access,
+    write_broker,
+)
 from pistachio.agents.analysis.batch import BatchBridge, digest
 from pistachio.agents.analysis.data_links import message_text
 from pistachio.agents.analysis.storage import GCSStorage
@@ -127,6 +136,19 @@ async def process(event_id: str, tick: int, request: Request) -> dict[str, str]:
 
 @router.get("/credentials/{event_id}", include_in_schema=False)
 async def credentials(event_id: str, request: Request, response: Response) -> dict[str, str]:
+    await worker_context(event_id, request)
+    services: Services = request.app.state.services
+    # Only the trusted worker bootstrap receives these. Never put them in GCS or job metadata.
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "ANTHROPIC_API_KEY": services.settings.anthropic_api_key.get_secret_value(),
+        "SLACK_BOT_TOKEN": services.settings.slack_bot_token,
+    }
+
+
+async def worker_context(
+    event_id: str, request: Request
+) -> tuple[BatchBridge, GCSStorage, dict[str, Any]]:
     services: Services = request.app.state.services
     if services.settings.slack_agent_backend != "claude_batch":
         raise HTTPException(503, "Claude Slack rollout is disabled")
@@ -163,9 +185,62 @@ async def credentials(event_id: str, request: Request, response: Response) -> di
         != await asyncio.to_thread(access.memory_epoch, storage, grant)
     ):
         raise HTTPException(403, "This worker grant is inactive")
-    # Only the trusted worker bootstrap receives these. Never put them in GCS or Batch job metadata.
+    return bridge, storage, record
+
+
+class WriteUpload(BaseModel):
+    relative_path: str = Field(min_length=1, max_length=512)
+    grant_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
+@router.post("/write/{event_id}", include_in_schema=False)
+async def write_output(
+    event_id: str, body: WriteUpload, request: Request, response: Response
+) -> dict[str, str]:
+    bridge, storage, record = await worker_context(event_id, request)
     response.headers["Cache-Control"] = "no-store"
-    return {
-        "ANTHROPIC_API_KEY": services.settings.anthropic_api_key.get_secret_value(),
-        "SLACK_BOT_TOKEN": services.settings.slack_bot_token,
-    }
+    frozen = record.get("write_grant")
+    if not frozen or frozen.get("id") != body.grant_id:
+        raise HTTPException(403, "This run has no matching write grant.")
+    try:
+        relative = write_broker.relative_path(body.relative_path)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+    def authorize() -> None:
+        grant = access.resolve(bridge.app, bridge.settings, storage, record)
+        if (
+            not grant.allowed
+            or grant.project_id != record.get("project_id")
+            or grant.email != record.get("principal")
+            or grant.signature != record.get("access_signature")
+            or access.memory_epoch(storage, grant) != record.get("memory_epoch", 0)
+            or not conversation_memory.is_current(storage, grant, record["thread_key"], record)
+        ):
+            raise PermissionError("Project access changed. GCS publishing is blocked.")
+        write_access.require_active(storage, grant.project_id, body.grant_id, bridge.settings)
+
+    # A retry cannot race another upload of the same event/path. Revokes never wait on this lock.
+    mutex = "claude-write:" + event_id + ":" + hashlib.sha256(relative.encode()).hexdigest()
+    claim = await bridge.repository.begin_event(mutex, lease_seconds=600)
+    if claim.status != "claimed":
+        raise HTTPException(409, "This output is already being uploaded. Retry shortly.")
+    try:
+        return await asyncio.to_thread(
+            write_broker.upload,
+            storage,
+            bridge.settings,
+            record["project_id"],
+            event_id,
+            relative,
+            body.grant_id,
+            authorize,
+        )
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except FileExistsError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    finally:
+        await bridge.repository.release_event(mutex, claim.token)

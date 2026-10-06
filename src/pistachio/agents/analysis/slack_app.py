@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from html import escape
 from pathlib import Path
@@ -21,10 +21,11 @@ from .config import Settings
 from .data_links import message_text
 from .outputs import files_under, publish
 from .progress import ProgressUpdate, TaskProgress
-from .runner import Context, Runner
+from .runner import Context, Runner, TurnResult
 from .sessions import Sessions
 from .slack_format import activity_blocks, chunks, done_blocks, status_blocks, to_mrkdwn
 from .storage import Storage
+from .write_worker import Publication
 
 log = logging.getLogger(__name__)
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf", ".svg", ".csv", ".tsv", ".md", ".txt"}
@@ -43,6 +44,7 @@ class SlackAgent:
         *,
         run_prefix: str = "",
         authorized: Callable[[], bool] | None = None,
+        publish_gcs: Callable[[Context, TurnResult], Awaitable[Publication]] | None = None,
     ) -> None:
         self.settings, self.storage, self.sessions = settings, storage, sessions
         self.runner, self.client = runner, client
@@ -53,6 +55,7 @@ class SlackAgent:
         self.thread_files: list[dict[str, Any]] = []
         self.event_id = ""
         self.run_prefix, self.authorized = run_prefix, authorized
+        self.publish_gcs = publish_gcs
 
     def record_delivered(
         self,
@@ -321,6 +324,14 @@ class SlackAgent:
             raise PermissionError("Project access changed before delivery")
         uploads = []
         delivery_issues = []
+        gcs = Publication()
+        if self.publish_gcs:
+            try:
+                gcs = await self.publish_gcs(ctx, result)
+            except Exception:
+                log.exception("GCS publishing failed: %s", key)
+                gcs.errors.append("GCS delivery could not be confirmed. Generated files are saved.")
+            delivery_issues.extend(gcs.errors)
         for path in result.files:
             if ".previews" in path.relative_to(ctx.workdir).parts:
                 continue
@@ -352,6 +363,8 @@ class SlackAgent:
         # Preserve the workspace checkpoint after an upload failure so a resend can reuse
         # the reports. Record what the user actually received, not the model's success claim.
         reply = "\n\n".join(delivery_issues) if delivery_issues else result.text
+        if gcs.uploaded:
+            reply += "\n\nSaved to GCS:\n" + "\n".join(f"- {uri}" for uri in gcs.uploaded)
         if result.error:
             reply += f"\n\nThat run stopped early (`{result.error}`). Want me to try again?"
         self.last_reply = reply

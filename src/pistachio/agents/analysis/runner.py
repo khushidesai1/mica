@@ -91,6 +91,7 @@ def build_options(
     user_memory: str = "",
     conversation_summary: str = "",
     project_name: str = "",
+    write_access: str = "No GCS write grant for this run.",
     runtime_tmp: Path = Path("/tmp"),
 ) -> ClaudeAgentOptions:
     if not sandbox and platform.system() != "Darwin":
@@ -182,7 +183,7 @@ def build_options(
             "preset": "claude_code",
             "append": prompts.build_system_append(
                 ctx, settings, user_memory, project_name, conversation_summary
-            ),
+            ) + "\nCurrent GCS write access (application-authorized):\n" + write_access,
         },
         setting_sources=[],
         tools=tools,
@@ -292,10 +293,12 @@ class Runner:
         user_memory: str = "",
         conversation_summary: str = "",
         project_name: str = "",
+        write_access: str = "No GCS write grant for this run.",
     ) -> None:
         self.settings, self.sandbox = settings, sandbox
         self.user_memory, self.project_name = user_memory, project_name
         self.conversation_summary = conversation_summary
+        self.write_access = write_access
 
     async def run_turn(
         self, ctx: Context, prompt: str, on_status: Callable[[ProgressUpdate], Awaitable[None]]
@@ -334,6 +337,7 @@ class Runner:
                             user_memory=self.user_memory,
                             conversation_summary=self.conversation_summary,
                             project_name=self.project_name,
+                            write_access=self.write_access,
                             runtime_tmp=runtime_tmp,
                         ),
                     ):

@@ -18,14 +18,14 @@ from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import attachments
+from . import attachments, write_access, write_worker
 from .access import run_root, worker_permitted
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .direct import record_exchange
 from .outputs import files_under
 from .preflight import check
-from .runner import Context, Runner
+from .runner import Context, Runner, TurnResult
 from .sessions import Sessions
 from .slack_app import SlackAgent
 from .slack_format import status_blocks
@@ -133,6 +133,9 @@ async def main(event_id: str) -> None:
         files = await asyncio.to_thread(
             attachments.materialize, storage, data["workdir"], saved.get("thread_files", [])
         )
+    async def publish_gcs(ctx: Context, result: TurnResult) -> write_worker.Publication:
+        return await write_worker.publish(storage, request, event_id, url, ctx, result)
+
     agent = SlackAgent(
         settings,
         storage,
@@ -142,6 +145,11 @@ async def main(event_id: str) -> None:
             user_memory=request.get("user_memory", "") if request.get("private") else "",
             project_name=request.get("project_name", ""),
             conversation_summary=request.get("conversation_memory", ""),
+            write_access=write_access.instructions(
+                write_access.WriteGrant.model_validate(request["write_grant"])
+                if request.get("write_grant")
+                else None
+            ),
         ),
         slack,
         run_prefix=run_root(
@@ -152,6 +160,7 @@ async def main(event_id: str) -> None:
             payload["event"].get("thread_ts") or payload["event"]["ts"],
         ),
         authorized=lambda: worker_permitted(storage, request, saved, settings=settings),
+        publish_gcs=publish_gcs,
     )
     payload["event"]["_notice_ts"] = request.get("notice_ts")
     payload["event"]["_conversation_context"] = saved.get("messages", [])

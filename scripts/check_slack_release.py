@@ -14,7 +14,15 @@ from unittest.mock import patch
 import httpx
 
 import pistachio
-from pistachio.agents.analysis import access, attachments, briefs, conversation_memory, direct
+from pistachio.agents.analysis import (
+    access,
+    attachments,
+    briefs,
+    commands,
+    conversation_memory,
+    direct,
+    write_access,
+)
 from pistachio.agents.analysis.commands import Command
 from pistachio.agents.analysis.config import Settings
 from pistachio.agents.analysis.registry import Registry
@@ -75,6 +83,46 @@ def check(source: Path, mode: str) -> None:
             == (source / "templates/PROJECT.template.md").read_bytes()
         )
         print("CONVERSATION_MEMORY_AND_GUIDE_POLICY_VERIFIED")
+        for text in ("help", "help all", "help write", "write help"):
+            cmd = commands.parse(text)
+            assert cmd is not None
+            reply = commands.run(
+                cmd,
+                grant,
+                Registry(store),
+                None,
+                {"payload": {"team_id": "T", "event": {"channel": "D"}}},
+                "help",
+                settings,
+            )
+            if text == "help":
+                assert "help write" in reply
+                continue
+            assert all(
+                word in reply
+                for word in (
+                    "write grant",
+                    "write status",
+                    "write revoke",
+                    "until revoked",
+                    "new files only",
+                    "project's linked bucket",
+                )
+            )
+        assert commands.parse("write grant test gs://test/exports/").args == (
+            "test",
+            "gs://test/exports/",
+        )
+        assert "no expiry" in write_access.description(
+            write_access.WriteGrant(
+                id="a" * 32,
+                uri="gs://test/exports/",
+                actor="test@example.com",
+                admin_id="T:U",
+                created_at=write_access.now(),
+            )
+        )
+        print("WRITE_COMMANDS_AND_HELP_VERIFIED")
         if mode == "worker":
             check_worker(work, source, settings)
 

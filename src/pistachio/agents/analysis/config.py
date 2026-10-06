@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     # Channel mode denies admission until a designated admin enables a channel.
     access_mode: Literal["channel", "mapped", "workspace"] = "channel"
     access_admin_ids: str = ""  # Explicit team:user IDs; onboarding authority only.
+    write_admin_ids: str = ""  # Separate team:user IDs authorized to manage output grants.
+    write_allowed_prefixes: str = ""  # Comma-separated gs://bucket/folder/ ceilings.
+    write_service_account: str = ""  # Dedicated create/get-only identity; control plane only.
+    write_max_mb: int = Field(default=512, ge=1, le=10000)
     access_cache_seconds: int = Field(default=30, ge=0, le=60)
     allowed_user_ids: str = ""  # Legacy mapped mode only.
     # Separate staging-only approval for Docker's proc masking exception.

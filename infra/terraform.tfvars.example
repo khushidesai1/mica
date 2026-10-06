@@ -16,3 +16,9 @@ monthly_budget_usd       = 200
 # Slack admission: initialize this admin list once, then enable channels from Slack.
 slack_agent_access_mode = "channel"
 slack_agent_access_admin_ids = ["T123:U123"]
+
+# Optional GCS output writes. Leave both empty to keep the feature disabled.
+# Write admins also need access to the selected Pistachio project.
+slack_agent_write_admin_ids = []
+slack_agent_write_prefixes  = []
+# Example: ["gs://my-lab-outputs/liver/", "gs://my-lab-outputs/brain/"]

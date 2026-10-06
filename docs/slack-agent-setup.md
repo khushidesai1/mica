@@ -170,6 +170,10 @@ and no task retry. The controller cancels jobs still unresolved after two hours.
 uses at most 400,000 MiB across mounted buckets, with range-read caching enabled. Validate the
 Batch image's gcsfuse flags and available disk space during the canary.
 
+Scoped GCS output writes are available through `write grant`, `write status`, and `write revoke`
+in DMs after administrator configuration. Omit the grant duration for no expiry (until revoked).
+See [Slack write access](slack-write-access.md) for examples, limits, and the cloud configuration.
+
 Project controls: `init <slug> gs://bucket/prefix/` creates and selects a project, `switch` lists
 your projects in a DM with copyable commands, and `switch <name or ID>` selects one for new
 threads. The compact `init`/`switch` guide appears in unlinked chats, after initialization, and

@@ -22,7 +22,7 @@ from google.cloud import batch_v1
 from pistachio.config import Settings as AppSettings
 from pistachio.storage.base import Repository
 
-from . import access, conversation_memory, user_memory
+from . import access, conversation_memory, user_memory, write_access
 from .attachments import AttachmentError
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
@@ -141,6 +141,7 @@ class BatchBridge:
     def __init__(self, app: AppSettings, repository: Repository) -> None:
         self.app, self.repository = app, repository
         self.settings = Settings()
+        self.settings.bucket = app.gcs_bucket
 
     async def notify(self, event_id: str, record: dict[str, Any], phase: str, text: str) -> None:
         """One durable status message per input, independent of slow Spot startup."""
@@ -288,10 +289,14 @@ class BatchBridge:
                     "status": "pending",
                     "tick": 0,
                     "created": time.time(),
+                    "write_control": write_access.is_command(event.get("text", "")),
                 }
-                await self.repository.set_connector_state(
-                    tail_key, {"tail": event_id, "receipt": receipt}
-                )
+                # Write controls bypass running work without replacing its queue tail.
+                # A subsequent analysis must still wait for that active computation.
+                if not receipt["write_control"]:
+                    await self.repository.set_connector_state(
+                        tail_key, {"tail": event_id, "receipt": receipt}
+                    )
                 await self.repository.set_connector_state(receipt_key, receipt)
             if receipt["status"] not in {"complete", "failed"}:
                 await self.schedule(event_id, receipt["tick"])
@@ -339,6 +344,7 @@ class BatchBridge:
                 or previous["status"] in {"complete", "failed"}
                 or message_text(record["payload"]["event"].get("text", "")).lower()
                 in {"forget context", "forget all"}
+                or record.get("write_control")
             ):
                 await self.advance(event_id, record)
             else:
@@ -478,11 +484,19 @@ class BatchBridge:
                 "Spinning up a compute worker (usually a few minutes)…",
             )
             storage = GCSStorage(self.app.gcs_bucket)
+            if "write_grant" not in record:
+                writable = await asyncio.to_thread(
+                    write_access.active, storage, record["project_id"], self.settings
+                )
+                record["write_grant"] = writable.model_dump(mode="json") if writable else None
+                await self.repository.set_connector_state(f"claude-event:{event_id}", record)
             manifest = {
                 "payload": record["payload"],
                 "thread_key": record["thread_key"],
                 "notice_ts": record.get("notice_ts"),
                 "protocol": 2,
+                "write_grant": record["write_grant"],
+                "write_max_mb": self.settings.write_max_mb,
                 "attachments": [f["id"] for f in record.get("attachments", [])],
                 "principal": record["principal"],
                 "project_id": record["project_id"],

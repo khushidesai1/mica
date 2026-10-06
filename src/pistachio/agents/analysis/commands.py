@@ -8,8 +8,8 @@ from typing import Any
 
 from .access import Grant
 from .config import Settings
-from .data_links import init_args
-from .help_text import PROJECT_HELP
+from .data_links import init_args, message_text
+from .help_text import PROJECT_HELP, WRITE_DETAILS, WRITE_HELP
 from .identity import target_email
 from .registry import Registry
 
@@ -27,6 +27,7 @@ def parse(raw: str) -> Command | None:
     if lower in {
         "help",
         "help all",
+        "help write",
         "projects",
         "brief",
         "save brief",
@@ -47,6 +48,23 @@ def parse(raw: str) -> Command | None:
     if not words:
         return None
     action = words[0].lower()
+    if action == "write":
+        from .write_access import USAGE, duration, scope
+
+        words = message_text(text).split()
+        subcommand = words[1].lower() if len(words) > 1 else ""
+        if subcommand == "help" and len(words) == 2:
+            return Command("help write")
+        if subcommand and subcommand not in {"grant", "status", "revoke", "help"}:
+            return None  # Preserve ordinary requests such as "write a script".
+        if subcommand in {"status", "revoke"} and len(words) == 3:
+            return Command(f"write {subcommand}", (words[2],))
+        if subcommand == "grant" and len(words) in {4, 5}:
+            uri = scope(words[3])
+            if len(words) == 5:
+                duration(words[4])  # Invalid durations never become indefinite grants.
+            return Command("write grant", (words[2], uri, *words[4:]))
+        raise ValueError(USAGE)
     if (
         action in {"use", "switch"}
         and len(words) in {2, 3}
@@ -86,7 +104,9 @@ def run(
     team, channel = record["payload"]["team_id"], event["channel"]
     email, doc = grant.email, grant.doc
     if cmd.name == "help":
-        return PROJECT_HELP + "\n`help all` for all commands."
+        return PROJECT_HELP + "\n`help write` for GCS write access; `help all` for all commands."
+    if cmd.name == "help write":
+        return WRITE_HELP + "\n\n" + WRITE_DETAILS
     if cmd.name == "help all":
         detail = ""
         if grant.allowed:
@@ -100,7 +120,12 @@ def run(
             "In DMs: projects, share/unshare <project> @user, "
             "publish/unpublish <project> #channel, "
             "memory, remember <text>, forget <number|profile|preferences|all>." + detail
+            + "\n\n" + WRITE_HELP + "\n`help write` for examples and how saving works."
         )
+    if cmd.name.startswith("write "):
+        from .write_access import command
+
+        return command(cmd, grant, registry.storage, record, event_id, settings)
     if cmd.name not in {"projects", "use", "rename", "share", "unshare", "publish", "unpublish"}:
         return None
     if cmd.name != "use" and not grant.private:

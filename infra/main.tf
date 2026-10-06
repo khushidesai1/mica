@@ -372,6 +372,18 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.slack_agent_data_project
       }
       env {
+        name  = "AGENT_WRITE_ADMIN_IDS"
+        value = join(",", sort(tolist(var.slack_agent_write_admin_ids)))
+      }
+      env {
+        name  = "AGENT_WRITE_ALLOWED_PREFIXES"
+        value = join(",", sort(tolist(var.slack_agent_write_prefixes)))
+      }
+      env {
+        name  = "AGENT_WRITE_SERVICE_ACCOUNT"
+        value = length(var.slack_agent_write_prefixes) == 0 ? "" : google_service_account.slack_writer[0].email
+      }
+      env {
         name  = "AGENT_BATCH_PROC_MOUNT_OPT_IN"
         value = tostring(var.slack_agent_proc_mount_opt_in)
       }
