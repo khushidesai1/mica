@@ -1,16 +1,49 @@
 # Slack agent deployment — current release 5 October 2026
 
-Current live revision: `pistachio-staging-brief-20261005`, serving 100% of traffic. This release
-makes brief updates conditional on an explicit request or a concrete missing project detail
-relevant to the task. Historical pre-cutover rollback instructions below do not apply to the
-current private-project runtime.
+Current live revision: `pistachio-staging-attachments-20261005`, serving 100% of traffic. This
+release adds Slack attachments and image inspection, including previews of generated outputs.
+Historical pre-cutover rollback instructions below do not apply to the current private-project
+runtime.
 
-## Prepared attachment and vision rollout — not deployed
+## Attachments and image vision — 5 October 2026
 
 This source change adds streamed Slack uploads, bounded sandbox previews, router media and
 `view` requests, and a persistent thread file registry. User uploads use 30-day `tasks/` retention;
 output provenance remains under `projects/`. No API dependency or infrastructure change is needed.
 The worker adds pinned `pypdfium2==5.14.0`; Pillow is already in the science image.
+
+- Deployed source: `dba922971d41df4174a8827a7adafa3886344544`, pushed to
+  `codex/private-project-memory`. Local verification: 467 passed, 5 skipped; Ruff and strict
+  mypy passed.
+- Build `957e1a5f-f2c6-4ed0-b424-3464150e16c8`: SUCCESS, all seven steps passed. Both images
+  were checked against the same 85-file application snapshot. Offline image gates covered
+  attachment transport, real PNG/PDF previews and buffer bounds, headless routes, and
+  compatibility with the unchanged shared science worker.
+- The tagged preview and live service passed health (200), removed UI/docs (404), unsigned
+  Slack event (401), and unauthenticated worker credential (401) checks. Runtime configuration
+  was preserved apart from the API and Slack worker images.
+- Dispatch was paused for promotion; the drain check found no queued tasks, in-flight
+  dispatches, or active Batch jobs. The new revision receives 100% of traffic, dispatch is
+  running again, and the temporary preview tag was removed. No error-level revision logs
+  appeared during release checks.
+- Existing bucket lifecycle rules were verified to expire uploads under `tasks/` after 30 days.
+  No paid model calls, user analyses, or Slack messages were used for verification; end-to-end
+  model vision behavior has not been live-tested.
+
+Deployed image digests (repository prefix
+`us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/`):
+
+| Image | Digest |
+| --- | --- |
+| `api` | `sha256:9c12591914d8cdb43c80802baab87c2f1419a501c7f2ec8b032aab4d63d16f44` |
+| `slack-agent` | `sha256:4efd1144189b5288e6bff3907a7acca4fa00a2852ca26aa84397ed309cf6d6e7` |
+| `science` (unchanged) | `sha256:0972b8ae1e37a272b0ed54dae18b3412f034c47e83520b5805437bfb8f0a8041` |
+
+Evidence and the immutable source bundle: `.pistachio/deployments/attachments-20261005/`.
+The prior compatible revision is `pistachio-staging-brief-20261005`; its API/worker pair is
+recorded below and in the private release manifest.
+
+### Rollout procedure
 
 Obtain human approval before **each** cloud build, configuration change, deploy, and paid live test.
 Do not infer permission from completion of local tests. The rollout sequence is:
