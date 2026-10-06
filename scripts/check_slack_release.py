@@ -1,4 +1,4 @@
-"""Offline image gate for the coordinated Slack attachment release; no cloud/model calls."""
+"""Offline image gate for the coordinated Slack release; no cloud/model calls."""
 
 import asyncio
 import hashlib
@@ -14,8 +14,10 @@ from unittest.mock import patch
 import httpx
 
 import pistachio
-from pistachio.agents.analysis import attachments, direct
+from pistachio.agents.analysis import access, attachments, briefs, conversation_memory, direct
+from pistachio.agents.analysis.commands import Command
 from pistachio.agents.analysis.config import Settings
+from pistachio.agents.analysis.registry import Registry
 from pistachio.agents.analysis.storage import LocalStorage
 
 
@@ -54,6 +56,25 @@ def check(source: Path, mode: str) -> None:
             direct.Decision(route="view", reply="Look", view_ids=[uploaded[0].id]).route == "view"
         )
         print("ATTACHMENT_TRANSPORT_VERIFIED")
+        doc = Registry(store).load()
+        pid = doc.create("test@example.com", "test", "gs://test/data/")
+        grant = access.Grant("test@example.com", True, {}, doc, pid, True, "T:D")
+        summary, generation = conversation_memory.load(store, grant, "a")
+        conversation_memory.save(
+            store, grant, "a", summary, generation, "one", "User hypothesis: unverified"
+        )
+        assert (
+            conversation_memory.load(store, grant, "b")[0].summary == "User hypothesis: unverified"
+        )
+        conversation_memory.command(Command("forget context"), grant, store, "b", "clear")
+        assert not conversation_memory.load(store, grant, "a")[0].summary
+        assert not conversation_memory.is_current(store, grant, "a", {})
+        assert briefs.POLICY in direct.SYSTEM
+        assert (
+            Path("/opt/pistachio/templates/PROJECT.template.md").read_bytes()
+            == (source / "templates/PROJECT.template.md").read_bytes()
+        )
+        print("CONVERSATION_MEMORY_AND_GUIDE_POLICY_VERIFIED")
         if mode == "worker":
             check_worker(work, source, settings)
 
@@ -82,7 +103,15 @@ def check_worker(work: Path, source: Path, settings: Settings) -> None:
         [sys.executable, str(tool), str(pdf), "--page", "2", "--text"], cwd=work, text=True
     )
     assert json.loads(output)["pages"] == 2
-    opts = build_options(Context(work, work / "data"), settings)
+    opts = build_options(
+        Context(work, work / "data"),
+        settings,
+        conversation_summary="User hypothesis: unverified",
+        user_memory="Prefer PNG",
+    )
+    assert "# Conversation memory" in opts.system_prompt["append"]
+    assert "User hypothesis: unverified" in opts.system_prompt["append"]
+    assert "# Personal preferences" in opts.system_prompt["append"]
     assert opts.max_buffer_size == 16 * 1024 * 1024
     guard = opts.hooks["PreToolUse"][0].hooks[0]
 

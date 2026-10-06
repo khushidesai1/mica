@@ -48,6 +48,7 @@ class SlackAgent:
         self.runner, self.client = runner, client
         self.last_reply = ""
         self.completed = False
+        self.last_error: str | None = None
         self.delivered: list[dict[str, Any]] = []
         self.thread_files: list[dict[str, Any]] = []
         self.event_id = ""
@@ -82,6 +83,7 @@ class SlackAgent:
 
     async def handle(self, event: dict[str, Any], key: tuple[str, str]) -> None:
         self.completed = False
+        self.last_error = None
         self.delivered = []
         self.thread_files = event.get("_thread_files", [])
         self.event_id = event.get("_event_id", "")
@@ -265,6 +267,15 @@ class SlackAgent:
             raise PermissionError("Project access changed during computation")
         ctx.session_id = result.session_id
         self.sessions.save(key[0], ctx, turn, is_init)
+        draft = ctx.workdir / "outputs/PROJECT.md"
+        if (
+            draft in result.files
+            and draft in files_under(ctx.workdir / "outputs")
+            and draft.stat().st_size < 100_000
+        ):
+            with suppress(UnicodeDecodeError):
+                if draft.read_text(encoding="utf-8") == ctx.project_md:
+                    result.files.remove(draft)  # A rewritten identical guide is not an edit.
         published: dict[Path, str] = {}
         try:
             published = await asyncio.to_thread(
@@ -344,6 +355,7 @@ class SlackAgent:
         if result.error:
             reply += f"\n\nThat run stopped early (`{result.error}`). Want me to try again?"
         self.last_reply = reply
+        self.last_error = result.error or ("File delivery incomplete" if delivery_issues else None)
         try:
             await render(
                 "Stopped" if result.error or delivery_issues else "Finished",

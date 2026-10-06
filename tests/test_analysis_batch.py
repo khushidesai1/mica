@@ -350,7 +350,13 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
     monkeypatch.setattr(batch_worker, "Settings", lambda **kw: settings)
     monkeypatch.setattr(batch_worker, "GCSStorage", lambda bucket: storage)
     monkeypatch.setattr(batch_worker, "check", lambda settings: None)
-    monkeypatch.setattr(batch_worker, "Runner", lambda settings, **kwargs: runner)
+    runner_contexts = []
+
+    def create_runner(settings, **kwargs):
+        runner_contexts.append(kwargs)
+        return runner
+
+    monkeypatch.setattr(batch_worker, "Runner", create_runner)
     monkeypatch.setattr(batch_worker, "AsyncWebClient", lambda **kw: slack)
     monkeypatch.setattr(batch_worker.id_token, "fetch_id_token", lambda *args: "identity")
     monkeypatch.setattr(batch_worker.httpx, "AsyncClient", lambda **kw: http)
@@ -395,14 +401,24 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
                     "project_id": pid,
                     "private": True,
                     "access_signature": grant.signature,
+                    "conversation_memory": "User hypothesis: cold-start memory",
+                    "conversation_epoch": {"epoch": 0, "owner_epoch": 0},
                 }
             ).encode(),
         )
         await batch_worker.main(f"event-{turn}")
         saved = json.loads(storage.get(pointer)[0])
         assert saved["turn"] == turn
+        assert runner_contexts[-1]["conversation_summary"] == "User hypothesis: cold-start memory"
+        if turn > 1:
+            assert saved["brief_policy_version"] == 1
+            assert saved["conversation_epoch"] == {"epoch": 0, "owner_epoch": 0}
+        saved["brief_policy_version"] = 1
+        saved["conversation_epoch"] = {"epoch": 0, "owner_epoch": 0}
+        storage.put(pointer, json.dumps(saved).encode())
         if upload_failure and turn == 1:
             assert "couldn't confirm their delivery to Slack" in saved["messages"][-1]["assistant"]
+            assert saved["messages"][-1]["success"] is False
             with tarfile.open(fileobj=io.BytesIO(storage.get(saved["archive"])[0])) as archive:
                 assert any(name.endswith("/outputs/plot.png") for name in archive.getnames())
         if upload_failure and turn == 2:

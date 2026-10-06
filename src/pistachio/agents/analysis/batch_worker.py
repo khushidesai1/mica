@@ -141,6 +141,7 @@ async def main(event_id: str) -> None:
             settings,
             user_memory=request.get("user_memory", "") if request.get("private") else "",
             project_name=request.get("project_name", ""),
+            conversation_summary=request.get("conversation_memory", ""),
         ),
         slack,
         run_prefix=run_root(
@@ -184,6 +185,9 @@ async def main(event_id: str) -> None:
     if state:
         checkpoint.update(context=asdict(state[0]), turn=state[1], is_init=state[2])
     checkpoint["messages"] = saved.get("messages", [])
+    for field in ("conversation_epoch", "brief_policy_version", "brief_cleanup"):
+        if field in saved:
+            checkpoint[field] = saved[field]
     checkpoint["thread_files"] = attachments.merge(saved.get("thread_files", []), agent.delivered)
     record_exchange(
         checkpoint,
@@ -192,6 +196,7 @@ async def main(event_id: str) -> None:
         agent.last_reply,
         files=[f["name"] for f in saved.get("thread_files", []) if f["id"] in current_ids],
         outputs=[f["name"] for f in agent.delivered],
+        success=agent.last_error is None,
     )
     storage.put(pointer, json.dumps(checkpoint, default=str).encode())
 

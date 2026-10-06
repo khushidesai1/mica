@@ -22,7 +22,7 @@ from google.cloud import batch_v1
 from pistachio.config import Settings as AppSettings
 from pistachio.storage.base import Repository
 
-from . import access, user_memory
+from . import access, conversation_memory, user_memory
 from .attachments import AttachmentError
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
@@ -334,7 +334,12 @@ class BatchBridge:
                     from .direct import finish
 
                     await finish(self, event_id, record, access.deny_text(grant))
-            elif not previous or previous["status"] in {"complete", "failed"}:
+            elif (
+                not previous
+                or previous["status"] in {"complete", "failed"}
+                or message_text(record["payload"]["event"].get("text", "")).lower()
+                in {"forget context", "forget all"}
+            ):
                 await self.advance(event_id, record)
             else:
                 await self.notify(
@@ -386,6 +391,13 @@ class BatchBridge:
                 or record.get("memory_epoch", 0)
                 != await asyncio.to_thread(
                     access.memory_epoch, GCSStorage(self.app.gcs_bucket), grant
+                )
+                or not await asyncio.to_thread(
+                    conversation_memory.is_current,
+                    GCSStorage(self.app.gcs_bucket),
+                    grant,
+                    record["thread_key"],
+                    record,
                 )
                 or not grant.has_context
                 or (record.get("decision_access") and record["decision_access"] != grant.signature)
@@ -478,6 +490,15 @@ class BatchBridge:
                 "private": record["private"],
                 "access_signature": record["access_signature"],
                 "memory_epoch": record.get("memory_epoch", 0),
+                "created": record["created"],
+                "conversation_epoch": record.get(
+                    "conversation_epoch", {"epoch": 0, "owner_epoch": 0}
+                ),
+                "conversation_memory": (
+                    await asyncio.to_thread(
+                        conversation_memory.load, storage, grant, record["thread_key"]
+                    )
+                )[0].summary,
                 "user_memory": (
                     user_memory.render(
                         await asyncio.to_thread(user_memory.load, storage, record["principal"]),
@@ -567,7 +588,7 @@ class BatchBridge:
                 exchange = next(
                     (m for m in grant.state.get("messages", []) if m.get("id") == event_id), None
                 )
-                if exchange:
+                if exchange and exchange.get("success", True):
                     await user_memory.after_turn(
                         self, event_id, record, storage, exchange["assistant"]
                     )

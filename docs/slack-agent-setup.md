@@ -27,7 +27,8 @@ The new worker calls the Claude Agent SDK directly. It does not invoke Pistachio
 TaskContract generation, approval stages, or multi-stage execution pipeline. Each Slack thread
 has one resumed Claude compute session, a workspace, and its own PROJECT.md brief snapshot.
 The brief stays unchanged by default. It is revised only when requested or when user-provided
-or verified information fills a concrete missing project detail relevant to the task. Routine
+or verified information fills a necessary gap in the project/file guide. Scientific observations,
+hypotheses, results, conversation notes, and research TODOs belong in the hidden conversation cache. Routine
 results, file listings, and plot adjustments do not trigger brief maintenance or save reminders.
 Initial setup still creates a draft, and `save brief` explicitly publishes it. The worker uses
 built-in Read/Write/Edit/Glob/Grep/Bash tools and the pinned science environment.
@@ -179,8 +180,8 @@ aliases.
 Other commands include `brief` and `save brief` in a draft
 thread, including an analysis thread where the agent has revised the brief. The agent uses
 local draft revisions in subsequent turns, while other existing threads keep their snapshots.
-New threads receive revisions after `save brief`. Unknowns can remain TODOs; user-provided
-information and verified findings should be distinguished from guesses. Rebinding does not
+New threads receive revisions after `save brief`. Omit unknown guide details rather than adding
+guesses or TODO lists. Rebinding does not
 change existing thread data/briefs. Each turn writes changed outputs,
 code, `run_log.jsonl` and `meta.json` under the audience-specific paths documented below. Slack
 uploads supported result files under 200 MB. `datasets_touched` reflects paths visible in tool
@@ -473,3 +474,41 @@ Keep owner maps, real configuration, Terraform state, and credentials out of Git
 laptop, clone the repository, select the implementation branch, recreate the virtualenv and local
 configuration, and authenticate to the existing cloud resources. The deployed runtime and its
 memory are in GCP; the laptop does not need to remain running.
+
+
+## Conversation cache and project guide
+
+`PROJECT.md` documents project purpose, data location, file/folder uses, and known metadata needed
+to select or interpret data. The existing concise, necessary auto-update flow still creates thread
+drafts; only `save brief` publishes them. Observations, hypotheses, results, and research TODOs
+are excluded. On the first ordinary turn with a legacy brief, the router prepares any needed
+cleanup as a draft and lists the removed categories. `clean brief` explicitly requests that review.
+Originals are retained under the authorized thread's `brief-originals/` prefix. Use `brief` to
+review and `save brief` to publish. Existing thread snapshots are reviewed independently; an old
+worker archive cannot overwrite the current thread draft. No legacy notes are bulk-imported into
+personal memory or another person's cache.
+
+A hidden Markdown summary (at most 6,000 characters) is stored inside a versioned JSON record:
+
+- DMs: `projects/_users/<user-key>/context/<project-id>.json`, shared only across that person's
+  DM threads for the same project.
+- Channels: `projects/_threads/<thread-key>/context/<project-id>.json`, limited to that thread.
+
+Every chat and compute request receives the authorized summary separately from the guide,
+personal preferences, and recent messages. It is advisory context, not scientific evidence,
+permission to compute, or proof that an old file is available in the current workspace. Updates
+reuse the existing background editor (`AGENT_MEMORY_AUTO_EDIT`, `AGENT_MEMORY_MODEL`), are silent,
+and run only after completed conversational/compute turns. Private preference edits retain their
+existing notices. Whole-summary replacements compact obsolete details instead of accumulating
+notes. Conditional-write conflicts trigger up to two fresh summarization attempts; failures leave
+the latest cache intact without failing the user's completed request. The record holds at most
+256 crash-recovery event IDs; normal permanent deduplication uses the existing event receipts.
+
+`memory context` shows the applicable cache; `forget context` clears it. It remains available
+until cleared. Manual personal-memory forgetting also invalidates conversation caches that could
+repeat the forgotten information, including every project on `forget all`. Reset epochs block
+stale background writes, resumed SDK sessions, queued requests, and worker delivery. Clearing
+bypasses an earlier running request in the same thread. Stored outputs, old Slack messages, and
+audit records remain; clearing controls future active context rather than deleting historical
+artifacts. Routine summary updates do not reset working sessions. Uploads retain their existing
+30-day lifecycle. No new database, embeddings, or infrastructure permissions are required.

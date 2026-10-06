@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import user_memory
+from . import conversation_memory, user_memory
 from .config import Settings
 from .help_text import PROJECT_HELP
 from .identity import NOT_ENABLED, is_private, resolve_email, user_key
@@ -152,6 +152,9 @@ def worker_permitted(
     grant = Grant(
         email, is_private(event), state, doc, pid, True, channel_key, identity_policy=policy
     )
+    thread_key = request.get("thread_key", "")
+    if not conversation_memory.is_current(storage, grant, thread_key, request):
+        return False
     if settings is not None:
         uri = urlsplit(grant.project.data_uri)
         context = state["context"]
@@ -159,7 +162,11 @@ def worker_permitted(
         if str(context.get("data_path")) != str(expected_data):
             return False
         if grant.private and str(context.get("workdir")) != private_workdir(
-            settings, grant, request["thread_key"], memory_epoch(storage, grant)
+            settings,
+            grant,
+            request["thread_key"],
+            memory_epoch(storage, grant),
+            conversation_memory.current_token(storage, grant, thread_key),
         ):
             return False
     if request.get("access_signature") != grant.signature:
@@ -171,8 +178,17 @@ def memory_epoch(storage: Storage, grant: Grant) -> int:
     return user_memory.load(storage, grant.email).epoch if grant.private else 0
 
 
-def private_workdir(settings: Settings, grant: Grant, thread_key: str, epoch: int) -> str:
-    stamp = hashlib.sha256(f"{grant.signature}:{epoch}".encode()).hexdigest()[:24]
+def private_workdir(
+    settings: Settings,
+    grant: Grant,
+    thread_key: str,
+    epoch: int,
+    conversation_epoch: dict[str, int] | None = None,
+) -> str:
+    stamp_input = f"{grant.signature}:{epoch}"
+    if conversation_epoch and any(conversation_epoch.values()):
+        stamp_input += ":" + json.dumps(conversation_epoch, sort_keys=True)
+    stamp = hashlib.sha256(stamp_input.encode()).hexdigest()[:24]
     return str(settings.work_root / user_key(grant.email) / grant.project_id / thread_key / stamp)
 
 
@@ -180,11 +196,14 @@ def fresh_private_state(
     storage: Storage, grant: Grant, settings: Settings, thread_key: str, epoch: int
 ) -> dict[str, Any]:
     state = read_state(storage, grant)
+    conversation_epoch = conversation_memory.current_token(storage, grant, thread_key)
+    reset = state.get("conversation_epoch", {"epoch": 0, "owner_epoch": 0}) != conversation_epoch
     if (
         grant.private
         and state.get("context")
-        and state["context"]["workdir"] != private_workdir(settings, grant, thread_key, epoch)
-    ):
+        and state["context"]["workdir"]
+        != private_workdir(settings, grant, thread_key, epoch, conversation_epoch)
+    ) or (reset and state.get("context")):
         # A new workspace cannot restore an old SDK session, script, draft, or transcript.
         # Persist the reset before continuing, including when the model call subsequently fails.
         retired = json.dumps(state, sort_keys=True).encode()
@@ -194,7 +213,16 @@ def fresh_private_state(
         context = dict(state["context"])
         uri = urlsplit(grant.project.data_uri)
         context.update(
-            workdir=private_workdir(settings, grant, thread_key, epoch),
+            workdir=(
+                private_workdir(settings, grant, thread_key, epoch, conversation_epoch)
+                if grant.private
+                else str(
+                    settings.work_root
+                    / grant.project_id
+                    / thread_key
+                    / f"context-{conversation_epoch['epoch']}"
+                )
+            ),
             project_md=brief,
             brief_generation=generation,
             session_id=None,
@@ -207,6 +235,8 @@ def fresh_private_state(
             messages=[],
             thread_files=[],
             direct_version=1,
+            conversation_epoch=conversation_epoch,
         )
         storage.put(checkpoint_key(thread_key), json.dumps(state).encode())
+    state["conversation_epoch"] = conversation_epoch
     return state

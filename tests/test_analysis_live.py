@@ -70,3 +70,58 @@ async def test_agent_looks_at_its_figure(tmp_path):
     ]
     assert len(reads) >= 2
     assert "JSON message exceeded maximum buffer size" not in result.text
+
+
+@pytest.mark.live
+async def test_observations_stay_out_of_project_guide():
+    from pistachio.agents.analysis import direct, user_memory
+
+    if os.environ.get("PISTACHIO_RUN_LIVE_TESTS") != "1" or not os.environ.get("ANTHROPIC_API_KEY"):
+        pytest.skip("Requires explicit approval and live API credits")
+    settings = Settings(_env_file=None)
+    key = os.environ["ANTHROPIC_API_KEY"]
+    guide = "# Liver\nData: gs://example/liver/\n- processed/: QC-filtered files."
+    observation = "I think the cells near the edge look different; staining might explain it."
+    context = {
+        "request": observation,
+        "brief": guide,
+        "legacy_brief": False,
+        "conversation_memory": "",
+        "recent_messages": [],
+        "data_uri": "gs://example/liver/",
+        "project_name": "Liver",
+    }
+    decision = await direct.decide(key, settings.model, context)
+    assert decision.route == "reply" and decision.draft is None
+    assert "save brief" not in decision.reply.lower()
+    memory = await user_memory.edit(
+        key,
+        settings.memory_model or settings.model,
+        {
+            "private": True,
+            "blocks": {},
+            "notes": [],
+            "conversation_summary": "",
+            "user": observation,
+            "reply": decision.reply,
+            "project": "Liver",
+            "thread": "test",
+        },
+    )
+    assert not memory.edits
+    assert memory.conversation_summary and len(memory.conversation_summary) <= 6000
+    assert any(
+        label in memory.conversation_summary.lower()
+        for label in ("hypothes", "unverified", "unconfirmed", "user")
+    )
+    corrected = await direct.decide(
+        key,
+        settings.model,
+        {
+            **context,
+            "request": (
+                "Correct the file guide: use processed/qc_v2.h5ad, the validated QC-filtered file."
+            ),
+        },
+    )
+    assert corrected.draft and "processed/qc_v2.h5ad" in corrected.draft

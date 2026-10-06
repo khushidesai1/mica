@@ -202,6 +202,7 @@ async def test_failed_turn_does_not_apply_partial_brief(bot):
     bot.runner.run_turn = fail
     await send(bot, event("update the brief"))
     assert bot.sessions.get("C123", "1.0")[0].project_md == "# Original"
+    assert bot.last_error == "interrupted"
     assert bot.client.chat_update.call_args.kwargs["blocks"] == done_blocks([], "interrupted")
 
 
@@ -447,3 +448,17 @@ async def test_failed_provenance_keeps_delivered_file_with_no_key(bot, monkeypat
     )
     await send(bot, event("plot"))
     assert len(bot.delivered) == 1 and bot.delivered[0]["key"] is None
+
+
+async def test_identical_guide_rewrite_does_not_announce_or_attach_an_edit(bot):
+    async def rewrite(ctx, prompt, status):
+        draft = ctx.workdir / "outputs/PROJECT.md"
+        draft.parent.mkdir(parents=True, exist_ok=True)
+        draft.write_text(ctx.project_md)
+        return TurnResult("session", "Here is the answer.", [draft])
+
+    bot.runner.run_turn = rewrite
+    await send(bot, event("Explain this result"))
+    replies = str(bot.client.chat_postMessage.call_args_list)
+    assert "save brief" not in replies and "draft brief" not in replies
+    bot.client.files_upload_v2.assert_not_awaited()

@@ -1,26 +1,21 @@
 # <Project name>
 
-One or two sentences on what this project studies.
+One or two sentences describing the project purpose, if known.
 
-Data location: gs://<bucket>/<prefix>/   (read-only)
+## Data location
 
-## Datasets
-| File | Samples | Assay / platform | Cells or rows | Notes |
-|---|---|---|---|---|
-| raw/example_all.h5ad | A–D | Xenium | 2.4M | All samples combined, unfiltered |
-| processed/example_B_qc.h5ad | B | Xenium | 612k | QC-filtered. Use this for sample B. |
+gs://<bucket>/<prefix>/ (read-only)
 
-## Column meanings
-- Sample ID: `obs["sample_id"]`
-- Cell type: `obs["annotated_cell_type"]`
-- Spatial coordinates: `obsm["spatial"]` (microns)
+## Files and folders
 
-## Defaults
-- Prefer processed/ files over raw/ when both exist.
-- Figure style: <colors, fonts, sizes, if the team has conventions>
+| Path | Purpose / when to use |
+|---|---|
+| <known relative path> | <user-provided or verified purpose> |
 
-## Caveats
-- <for example: "Sample D has a staining artifact in the upper-left region; exclude it unless asked.">
+## Interpreting the data
 
-## Glossary
-- <lab shorthand the agent should understand, for example "PP zone = periportal">
+Include only known details needed to select or interpret files: column meanings, units,
+sample identifiers, or format relationships. Omit unknown fields and empty sections.
+
+Keep this guide concise. Observations, hypotheses, results, analysis decisions, and research
+TODOs belong in conversation memory or analysis outputs, not this document.

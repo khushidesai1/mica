@@ -24,7 +24,18 @@ class Command:
 def parse(raw: str) -> Command | None:
     text = re.sub(r"^(?:\s*<@[A-Z0-9]+>\s*)+", "", raw).strip()
     lower = text.lower()
-    if lower in {"help", "help all", "projects", "brief", "save brief", "cancel", "memory"}:
+    if lower in {
+        "help",
+        "help all",
+        "projects",
+        "brief",
+        "save brief",
+        "cancel",
+        "memory",
+        "memory context",
+        "forget context",
+        "clean brief",
+    }:
         return Command(lower)
     if lower == "switch":
         return Command("projects")
@@ -83,7 +94,9 @@ def run(
             detail = f" Project: {grant.project.name}; owner: {grant.project.owner}; role: {role}."
         return (
             PROJECT_HELP + "\n"
-            "Aliases: use <project>, projects. Other commands: brief, save brief, cancel. "
+            "Aliases: use <project>, projects. "
+            "Other commands: brief, save brief, clean brief, cancel. "
+            "Conversation cache: memory context, forget context. "
             "In DMs: projects, share/unshare <project> @user, "
             "publish/unpublish <project> #channel, "
             "memory, remember <text>, forget <number|profile|preferences|all>." + detail
@@ -106,8 +119,11 @@ def run(
             else ""
         )
         return (
-            "Your projects:\n" + ("\n".join(rows) or "No projects yet.")
-            + thread + "\n\n" + PROJECT_HELP
+            "Your projects:\n"
+            + ("\n".join(rows) or "No projects yet.")
+            + thread
+            + "\n\n"
+            + PROJECT_HELP
         )
     operation = f"{cmd.name}:{cmd.args}:{cmd.force}:{team}:{channel}"
     if cmd.name == "rename":

@@ -11,6 +11,7 @@ COPY src/pistachio /usr/local/lib/python3.12/site-packages/pistachio
 COPY src /app/src
 COPY src /opt/pistachio/src
 COPY tools /opt/pistachio/tools
+COPY templates /opt/pistachio/templates
 ARG SOURCE_COMMIT
 LABEL org.opencontainers.image.revision=$SOURCE_COMMIT
 USER 65532:65532

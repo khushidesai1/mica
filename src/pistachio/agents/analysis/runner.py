@@ -89,6 +89,7 @@ def build_options(
     *,
     sandbox: bool = True,
     user_memory: str = "",
+    conversation_summary: str = "",
     project_name: str = "",
     runtime_tmp: Path = Path("/tmp"),
 ) -> ClaudeAgentOptions:
@@ -179,7 +180,9 @@ def build_options(
         system_prompt={
             "type": "preset",
             "preset": "claude_code",
-            "append": prompts.build_system_append(ctx, settings, user_memory, project_name),
+            "append": prompts.build_system_append(
+                ctx, settings, user_memory, project_name, conversation_summary
+            ),
         },
         setting_sources=[],
         tools=tools,
@@ -287,10 +290,12 @@ class Runner:
         *,
         sandbox: bool = True,
         user_memory: str = "",
+        conversation_summary: str = "",
         project_name: str = "",
     ) -> None:
         self.settings, self.sandbox = settings, sandbox
         self.user_memory, self.project_name = user_memory, project_name
+        self.conversation_summary = conversation_summary
 
     async def run_turn(
         self, ctx: Context, prompt: str, on_status: Callable[[ProgressUpdate], Awaitable[None]]
@@ -327,6 +332,7 @@ class Runner:
                             self.settings,
                             sandbox=self.sandbox,
                             user_memory=self.user_memory,
+                            conversation_summary=self.conversation_summary,
                             project_name=self.project_name,
                             runtime_tmp=runtime_tmp,
                         ),

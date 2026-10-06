@@ -5,6 +5,26 @@ release adds Slack attachments and image inspection, including previews of gener
 Historical pre-cutover rollback instructions below do not apply to the current private-project
 runtime.
 
+## Prepared conversation-memory release
+
+The next coordinated API/Slack-worker release separates a bounded hidden conversation summary
+from the project/file guide. DMs use person + project scope; channels use thread scope. Normal
+updates share the existing background editor call, do not notify Slack, and do not reset SDK
+sessions. Clear commands invalidate queued/running context through reset epochs. Legacy guide
+cleanup remains a reviewable thread draft with the original preserved until `save brief`.
+
+Local validation: 488 passed, 6 skipped; Ruff and strict mypy passed. Tests cover private and
+channel scope, cross-thread continuity, concurrent writes/retries, stale workers after clearing,
+failed-run exclusion, restored workspace overlays, full guide review, and cleanup preservation.
+The opt-in paid observation-versus-guide evaluation was added but has not been run.
+
+Build with `cloudbuild/build-slack-release.yaml` from one committed source snapshot. Its gates
+also verify the conversation cache, prompt separation, and refreshed project template. No new
+dependencies or infrastructure settings are required. Drain work and promote the API/worker pair
+together. Rollback before dispatch resumes may restore the previous pair; after accepting new
+memory operations, do not run an old writer that drops reset markers. Preserve/reset new caches
+before any later re-enable following a rollback. Upload retention stays at 30 days.
+
 ## Attachments and image vision — 5 October 2026
 
 This source change adds streamed Slack uploads, bounded sandbox previews, router media and
