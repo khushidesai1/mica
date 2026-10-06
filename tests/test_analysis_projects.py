@@ -116,17 +116,23 @@ async def test_rename_retry_after_registry_write_survives_old_name_reuse(chat, m
     chat.test_client.create_job.assert_not_called()
 
 
-async def test_unbound_dm_and_help_show_concise_project_controls(chat):  # noqa: F811
+async def test_unbound_dm_controls_and_structured_help(chat):  # noqa: F811
     for ts, text in [("10.0", "hello"), ("11.0", "help"), ("12.0", "switch")]:
         reply = await message(chat, text, ts, user="U2", channel="D2")
         assert "`init <name> gs://bucket/folder/`" in reply["notice_text"]
         assert "`switch`" in reply["notice_text"]
         assert "`switch <name or ID>`" in reply["notice_text"]
         assert "`rename <name or ID> <new-name>`" in reply["notice_text"]
-        assert len(reply["notice_text"]) < 320
+        if text != "help":
+            assert len(reply["notice_text"]) < 320
+        else:
+            assert "• `share <project> @user`" in reply["notice_text"]
+            assert "• `write grant" in reply["notice_text"]
+            assert "help all" not in reply["notice_text"]
         assert "liver" not in reply["notice_text"]
     full = await message(chat, "help all", "13.0")
-    assert "share/unshare" in full["notice_text"] and "remember" in full["notice_text"]
+    assert "• `share <project> @user`" in full["notice_text"]
+    assert "• `remember <text>`" in full["notice_text"]
     chat.decision.assert_not_called()
     chat.test_client.create_job.assert_not_called()
 

@@ -85,7 +85,9 @@ write admins. Changes to the admin or prefix configuration are checked against e
 - Control-account write access to grant/audit records and project metadata, so narrowing the
   old broad grants need not break Slack registry/brief persistence.
 
-Buckets must already exist and have uniform bucket-level access. The Terraform custom role
+Buckets must already exist. Folder-restricted bucket IAM ceilings require uniform bucket-level
+access; whole-bucket ceilings also support buckets with object ACLs. Every individual upload
+is still downscoped to its exact object. The Terraform custom role
 belongs to `var.project_id`, so these Terraform-managed target buckets must belong to that
 project. Cross-project destinations need an equivalent role in their owning project, configured
 separately. Cloud deployment credentials need permission to configure the bucket policies.

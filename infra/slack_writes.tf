@@ -11,7 +11,7 @@ variable "slack_agent_write_admin_ids" {
 }
 
 variable "slack_agent_write_prefixes" {
-  description = "Maximum writable GCS folders. Include the final slash; a bucket root allows any folder in that bucket. Buckets must use uniform bucket-level access."
+  description = "Maximum writable GCS folders. Include the final slash; a bucket root allows any folder in that bucket. Folder-restricted IAM bindings require uniform bucket-level access."
   type        = set(string)
   default     = []
   validation {
@@ -58,13 +58,17 @@ resource "google_storage_bucket_iam_member" "slack_writer" {
   bucket   = each.key
   role     = google_project_iam_custom_role.slack_writer[0].name
   member   = "serviceAccount:${google_service_account.slack_writer[0].email}"
-  condition {
-    title       = "pistachio_approved_output_folders"
-    description = "Ceiling for Slack write grants; individual uploads are further downscoped."
-    expression = format(
-      "resource.type == 'storage.googleapis.com/Object' && (%s)",
-      join(" || ", [for prefix in each.value : format("resource.name.startsWith(%s)", jsonencode(prefix))])
-    )
+  dynamic "condition" {
+    # A whole-bucket ceiling also supports buckets that retain object ACLs.
+    for_each = contains(each.value, "projects/_/buckets/${each.key}/objects/") ? [] : [true]
+    content {
+      title       = "pistachio_approved_output_folders"
+      description = "Ceiling for Slack write grants; individual uploads are further downscoped."
+      expression = format(
+        "resource.type == 'storage.googleapis.com/Object' && (%s)",
+        join(" || ", [for prefix in each.value : format("resource.name.startsWith(%s)", jsonencode(prefix))])
+      )
+    }
   }
 }
 

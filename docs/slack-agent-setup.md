@@ -176,8 +176,7 @@ See [Slack write access](slack-write-access.md) for examples, limits, and the cl
 
 Project controls: `init <slug> gs://bucket/prefix/` creates and selects a project, `switch` lists
 your projects in a DM with copyable commands, and `switch <name or ID>` selects one for new
-threads. The compact `init`/`switch` guide appears in unlinked chats, after initialization, and
-on `help`; `help all` lists every command. Init automatically changes the DM's selection and
+threads. The compact `init`/`switch` guide appears in unlinked chats and after initialization. `help` shows every command in a grouped bullet list (`help all` is an alias). Init automatically changes the DM's selection and
 includes a command to switch back to the previous project. `use <project>` and `projects` remain
 aliases.
 
@@ -372,7 +371,7 @@ thread changed the shared brief; start a new thread to review and reconcile it.
 | Command | Where and effect |
 | --- | --- |
 | `init liver gs://bucket/folder/` | DM: create/reuse and select your project, draft its brief, and offer a command to switch back. |
-| `help` / `help all` | Show the compact project guide / every command. |
+| `help` / `help all` | Show the same complete, grouped command list. |
 | `switch` (alias: `projects`) | DM: list owned and explicitly shared projects with copyable switch commands; mark the default for new threads. |
 | `switch liver` or `switch p_…` (alias: `use`) | Select a project for new threads. Ambiguous shared names require an ID. |
 | `rename liver liver-atlas` | Owner in DM: change the project name. An ID can replace the old name. Use 3–40 lowercase letters, digits, or hyphens; the new name must not belong to another project you own. |

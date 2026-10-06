@@ -95,9 +95,6 @@ def check(source: Path, mode: str) -> None:
                 "help",
                 settings,
             )
-            if text == "help":
-                assert "help write" in reply
-                continue
             assert all(
                 word in reply
                 for word in (

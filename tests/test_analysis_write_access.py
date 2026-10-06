@@ -234,11 +234,11 @@ def test_reusing_command_id_with_different_scope_is_rejected(grants):
         run(grants, "write grant liver gs://lab-data/liver/output/nested/", event_id="same")
 
 
-def test_basic_help_points_to_write_commands(grants):
-    assert "help write" in run(grants, "help")
+def test_help_alias_matches_the_single_command_list(grants):
+    assert run(grants, "help") == run(grants, "help all")
 
 
-@pytest.mark.parametrize("text", ["help all", "help write", "write help"])
+@pytest.mark.parametrize("text", ["help", "help all", "help write", "write help"])
 def test_help_explains_commands_optional_expiry_and_write_limits(grants, text):
     reply = run(grants, text)
     for required in (

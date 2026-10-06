@@ -9,7 +9,7 @@ from typing import Any
 from .access import Grant
 from .config import Settings
 from .data_links import init_args, message_text
-from .help_text import PROJECT_HELP, WRITE_DETAILS, WRITE_HELP
+from .help_text import COMMAND_HELP, PROJECT_HELP, WRITE_DETAILS, WRITE_HELP
 from .identity import target_email
 from .registry import Registry
 
@@ -103,25 +103,10 @@ def run(
     event = record["payload"]["event"]
     team, channel = record["payload"]["team_id"], event["channel"]
     email, doc = grant.email, grant.doc
-    if cmd.name == "help":
-        return PROJECT_HELP + "\n`help write` for GCS write access; `help all` for all commands."
+    if cmd.name in {"help", "help all"}:
+        return COMMAND_HELP
     if cmd.name == "help write":
         return WRITE_HELP + "\n\n" + WRITE_DETAILS
-    if cmd.name == "help all":
-        detail = ""
-        if grant.allowed:
-            role = "owner" if doc.owns(grant.project_id, email) else "member"
-            detail = f" Project: {grant.project.name}; owner: {grant.project.owner}; role: {role}."
-        return (
-            PROJECT_HELP + "\n"
-            "Aliases: use <project>, projects. "
-            "Other commands: brief, save brief, clean brief, cancel. "
-            "Conversation cache: memory context, forget context. "
-            "In DMs: projects, share/unshare <project> @user, "
-            "publish/unpublish <project> #channel, "
-            "memory, remember <text>, forget <number|profile|preferences|all>." + detail
-            + "\n\n" + WRITE_HELP + "\n`help write` for examples and how saving works."
-        )
     if cmd.name.startswith("write "):
         from .write_access import command
 
