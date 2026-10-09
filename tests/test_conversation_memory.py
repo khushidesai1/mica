@@ -5,11 +5,11 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
+from analysis_helpers import memory_message as message
 from analysis_helpers import seed_project
 from pydantic import ValidationError
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
-from test_analysis_isolation import message
 
 from pistachio.agents.analysis import access, briefs, direct
 from pistachio.agents.analysis import conversation_memory as cm
@@ -157,7 +157,9 @@ async def test_conflicts_retry_twice_then_keep_latest_and_complete_reply(chat, e
         raise Conflict("changed")
 
     monkeypatch.setattr(cm, "save", conflict)
-    record = await message(chat, "Observe", "1.0")
+    with pytest.raises(Conflict):
+        await message(chat, "Observe", "1.0")
+    record = await chat.repository.get_connector_state("claude-event:" + direct_event())
     assert record["status"] == "complete" and editor.await_count == 3
     grant = access.resolve(chat.app, chat.settings, chat.store, record)
     assert cm.load(chat.store, grant, record["thread_key"])[0].summary == "Concurrent update"
@@ -357,7 +359,9 @@ async def test_editor_failure_keeps_previous_cache(chat, editor):
     grant = grant_for(chat.store, chat.pid)
     put_summary(chat.store, grant, "earlier", "Existing decision")
     editor.side_effect = RuntimeError("model unavailable")
-    record = await message(chat, "Another observation", "1.0")
+    with pytest.raises(RuntimeError, match="model unavailable"):
+        await message(chat, "Another observation", "1.0")
+    record = await chat.repository.get_connector_state("claude-event:" + direct_event())
     assert record["status"] == "complete"
     assert cm.load(chat.store, grant, record["thread_key"])[0].summary == "Existing decision"
 
@@ -372,3 +376,9 @@ async def test_compute_cleanup_keeps_a_review_notice(chat, monkeypatch):
     assert record["status"] == "running" and record["brief_cleanup_notified"]
     assert "Use brief to review" in post.call_args.args[3]
     assert checkpoint(chat, record)["brief_cleanup"]["removed"] == ["hypotheses"]
+
+
+def direct_event():
+    from pistachio.agents.analysis.batch import digest
+
+    return digest("T1:D1:1.0")

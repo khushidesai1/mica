@@ -2,10 +2,11 @@
 import json
 from unittest.mock import AsyncMock
 
+import pytest
+from analysis_helpers import memory_message as message
 from analysis_helpers import seed_project
 from test_analysis_batch import bridge  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
-from test_analysis_isolation import message
 
 from pistachio.agents.analysis import access, direct
 from pistachio.agents.analysis import user_memory as mem
@@ -170,8 +171,8 @@ async def test_editor_runs_once_best_effort_and_filters_revoked_content(chat, mo
     await mem.after_turn(chat, event, record, chat.store, "Updated.")
     assert editor.await_count == 1
     editor.side_effect = RuntimeError("failed")
-    record = await message(chat, "Another preference", "2.0")
-    assert record["status"] == "complete"
+    with pytest.raises(RuntimeError, match="failed"):
+        await message(chat, "Another preference", "2.0")
     await message(chat, "memory", "3.0")
     assert editor.await_count == 2
 

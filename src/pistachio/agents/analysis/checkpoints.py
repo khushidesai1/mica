@@ -25,7 +25,9 @@ def digest(path: Path) -> str:
     return h.hexdigest()
 
 
-def workspace_snapshot(archive: Path, home: Path, *, partial: bool, max_bytes: int) -> None:
+def workspace_snapshot(
+    archive: Path, home: Path, *, partial: bool, max_bytes: int, knowledge_enabled: bool = False
+) -> None:
     total = 0
     with tempfile.TemporaryDirectory(dir=archive.parent, prefix="snapshot-") as temporary:
         backup = Path(temporary) / "state.db"
@@ -38,6 +40,8 @@ def workspace_snapshot(archive: Path, home: Path, *, partial: bool, max_bytes: i
         with tarfile.open(archive, "w:gz") as tar:
             for path in paths:
                 relative = Path("state.db") if path == backup else path.relative_to(home)
+                if knowledge_enabled and "knowledge" in relative.parts:
+                    continue
                 if any(
                     p in {"inputs", ".previews", "scratch", "checkpoints", ".tmp", ".mpl"}
                     for p in relative.parts

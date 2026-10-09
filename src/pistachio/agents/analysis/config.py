@@ -23,6 +23,16 @@ class Settings(BaseSettings):
     slack_app_token: SecretStr = Field(default=SecretStr(""), alias="SLACK_APP_TOKEN")
     model: str = "claude-opus-5-5"
     loading_emoji: str = ":hourglass_flowing_sand:"  # AGENT_LOADING_EMOJI; custom emoji supported.
+    knowledge_enabled: bool = False
+    knowledge_index_chars: int = Field(default=4000, ge=1, le=16000)
+    knowledge_file_kb: int = Field(default=16, ge=1, le=64)
+    knowledge_max_files: int = Field(default=200, ge=1, le=1000)
+    knowledge_total_kb: int = Field(default=1024, ge=1, le=16384)
+    knowledge_router_chars: int = Field(default=6000, ge=1, le=32000)
+    knowledge_preserve_unmirrored: bool = False  # Derived worker flag; no GitHub access.
+    knowledge_github_repo: str = ""
+    knowledge_github_branch: str = "main"
+    knowledge_github_token_secret: str = ""  # Control-plane-only Secret Manager resource.
     memory_auto_edit: bool = True
     memory_model: str = ""
     fallback_model: str = "claude-opus-5"

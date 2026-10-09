@@ -289,7 +289,7 @@ def command(cmd: Command, grant: Grant, storage: Storage, event_id: str) -> str 
 
 
 async def edit(key_value: str, model: str, context: dict[str, Any]) -> Edits:
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with httpx.AsyncClient(timeout=90) as client:
         response = await client.post(
             "https://api.anthropic.com/v1/messages",
             headers={"x-api-key": key_value, "anthropic-version": "2023-06-01"},
@@ -359,7 +359,7 @@ async def after_turn(
     ):
         return
     try:
-        async with asyncio.timeout(30):
+        async with asyncio.timeout(150):
             for attempt in range(3):
                 grant = await asyncio.to_thread(
                     access.resolve, bridge.app, bridge.settings, storage, record
@@ -494,5 +494,6 @@ async def after_turn(
                 record.pop("memory_editor_result", None)
                 await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
                 return
-    except Exception:
-        logging.warning("Background memory editor did not complete", exc_info=False)
+    except Exception as exc:
+        logging.warning("Background memory editor did not complete: %s", type(exc).__name__)
+        raise

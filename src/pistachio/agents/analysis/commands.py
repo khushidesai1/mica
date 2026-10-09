@@ -33,6 +33,8 @@ def parse(raw: str) -> Command | None:
         "save brief",
         "cancel",
         "memory",
+        "knowledge",
+        "undo knowledge",
         "memory context",
         "forget context",
         "clean brief",
@@ -52,6 +54,14 @@ def parse(raw: str) -> Command | None:
     if not words:
         return None
     action = words[0].lower()
+    if action == "knowledge" and len(words) == 3 and words[1].lower() == "show":
+        return Command("knowledge show", (words[2],))
+    if action == "knowledge" and len(words) == 3 and words[1].lower() == "github":
+        if words[2].lower() not in {"on", "off"}:
+            raise ValueError("Use knowledge github on or knowledge github off.")
+        return Command("knowledge github", (words[2].lower(),))
+    if action == "forget" and len(words) == 3 and words[1].lower() == "knowledge":
+        return Command("forget knowledge", (words[2],))
     if action == "cancel" and len(words) == 3 and words[1].lower() == "transfer":
         return Command("cancel transfer", (words[2],))
     if action == "transfer":
@@ -208,6 +218,11 @@ def run(
         return (
             f"{'Removed access for' if cmd.name == 'unshare' else 'Shared with'} {target}. "
             "Existing Slack channel messages remain visible to their channel audience."
+            + (
+                " Members also see this project's knowledge."
+                if cmd.name == "share" and settings.knowledge_enabled
+                else ""
+            )
         )
     match = re.fullmatch(r"<#([CG][A-Z0-9]+)(?:\|[^>]+)?>|([CG][A-Z0-9]+)", cmd.args[1])
     if not match:

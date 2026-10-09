@@ -21,7 +21,7 @@ from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import attachments, write_access, write_worker
+from . import attachments, knowledge, write_access, write_worker
 from .access import run_root, worker_permitted
 from .checkpoints import Stages, workspace_snapshot
 from .compute_batch import event_prefix
@@ -29,6 +29,7 @@ from .compute_tools import ComputeManager
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .direct import record_exchange
+from .identity import user_key
 from .outputs import files_under
 from .preflight import check
 from .resources import Sampler
@@ -62,12 +63,14 @@ def restore(archive: Path, home: Path, *, max_bytes: int = 100 * 1024**3) -> Non
         tar.extractall(home, filter="data")
 
 
-def snapshot(archive: Path, home: Path) -> None:
+def snapshot(archive: Path, home: Path, *, knowledge_enabled: bool = False) -> None:
     with tarfile.open(archive, "w:gz") as tar:
         paths = [*files_under(home / "work"), *files_under(home / ".claude/projects")]
         if (home / "state.db").is_file():
             paths.append(home / "state.db")
         for path in paths:
+            if knowledge_enabled and "knowledge" in path.relative_to(home).parts:
+                continue
             # Sources expire independently; rehydrate inputs from their original objects.
             if any(part in {".previews", "inputs"} for part in path.relative_to(home).parts):
                 continue
@@ -159,6 +162,16 @@ async def main(event_id: str) -> None:
         files = await asyncio.to_thread(
             attachments.materialize, storage, data["workdir"], saved.get("thread_files", [])
         )
+    knowledge_base: dict[str, knowledge.Version] = {}
+    if settings.knowledge_enabled:
+        knowledge_base = await asyncio.to_thread(
+            knowledge.download,
+            storage,
+            request["project_id"],
+            Path(saved["context"]["workdir"]),
+            settings,
+        )
+    knowledge_result = knowledge.Saved()
     compute: ComputeManager | None = None
     stages: Stages | None = None
     sample_task: asyncio.Task[None] | None = None
@@ -259,6 +272,9 @@ async def main(event_id: str) -> None:
             user_memory=request.get("user_memory", "") if request.get("private") else "",
             project_name=request.get("project_name", ""),
             conversation_summary=request.get("conversation_memory", ""),
+            knowledge_index=(
+                knowledge_base["INDEX.md"].data.decode() if "INDEX.md" in knowledge_base else ""
+            ),
             write_access=write_access.instructions(
                 write_access.WriteGrant.model_validate(request["write_grant"])
                 if request.get("write_grant")
@@ -320,6 +336,7 @@ async def main(event_id: str) -> None:
                         home,
                         partial=True,
                         max_bytes=min(settings.compute_checkpoint_max_gb * 1024**3, 256 * 1024**2),
+                        knowledge_enabled=settings.knowledge_enabled,
                     )
                     key = f"{prefix}/partial-a{settings.attempt}-{checkpoint_id}.tar.gz"
                     await asyncio.to_thread(storage.upload_new, key, local)
@@ -390,6 +407,33 @@ async def main(event_id: str) -> None:
                     }
                 ).encode(),
             )
+    if (
+        settings.knowledge_enabled
+        and not knowledge.cancelled(storage, event_id)
+        and state
+        and (agent.completed or (compute and compute.pending))
+        and await asyncio.to_thread(worker_permitted, storage, request, saved, settings=settings)
+    ):
+        knowledge_result = await asyncio.to_thread(
+            knowledge.save,
+            storage,
+            request["project_id"],
+            state[0].workdir,
+            knowledge_base,
+            settings,
+            event_id=event_id,
+            user_key=user_key(request["principal"]),
+            attempt=settings.attempt,
+        )
+    knowledge_record = (
+        {
+            "knowledge": knowledge_result.model_dump(),
+            "knowledge_writes": knowledge_result.writes,
+            "knowledge_reads": agent.runner.knowledge_reads,
+        }
+        if settings.knowledge_enabled
+        else {}
+    )
     if compute and compute.pending and state:
         await asyncio.to_thread(
             workspace_snapshot,
@@ -397,6 +441,7 @@ async def main(event_id: str) -> None:
             home,
             partial=False,
             max_bytes=settings.compute_checkpoint_max_gb * 1024**3,
+            knowledge_enabled=settings.knowledge_enabled,
         )
         key = f"{prefix}/handoff-a{settings.attempt}-{uuid4().hex}.tar.gz"
         await asyncio.to_thread(storage.upload_new, key, archive)
@@ -404,6 +449,7 @@ async def main(event_id: str) -> None:
             "event_id": event_id,
             "attempt": settings.attempt,
             "outcome": "handoff",
+            **knowledge_record,
             "archive": key,
             "model_cost": compute.model_cost,
             "state": {"context": asdict(state[0]), "turn": state[1], "is_init": state[2]},
@@ -426,10 +472,14 @@ async def main(event_id: str) -> None:
         return
     if compute:
         workspace_snapshot(
-            archive, home, partial=False, max_bytes=settings.compute_checkpoint_max_gb * 1024**3
+            archive,
+            home,
+            partial=False,
+            max_bytes=settings.compute_checkpoint_max_gb * 1024**3,
+            knowledge_enabled=settings.knowledge_enabled,
         )
     else:
-        snapshot(archive, home)
+        snapshot(archive, home, knowledge_enabled=settings.knowledge_enabled)
     archive_key = f"{PREFIX}/events/{event_id}/checkpoint.tar.gz"
     storage.upload(archive_key, archive)
     checkpoint: dict[str, Any] = {"archive": archive_key}
@@ -457,7 +507,7 @@ async def main(event_id: str) -> None:
         methods=read_methods(state[0].workdir, previous_methods),
     )
     storage.put(pointer, json.dumps(checkpoint, default=str).encode())
-    if compute:
+    if compute or settings.knowledge_enabled:
         storage.put(
             f"{prefix}/attempt-a{settings.attempt}.json",
             json.dumps(
@@ -465,7 +515,8 @@ async def main(event_id: str) -> None:
                     "event_id": event_id,
                     "attempt": settings.attempt,
                     "outcome": "complete",
-                    "model_cost": compute.model_cost,
+                    "model_cost": compute.model_cost if compute else None,
+                    **knowledge_record,
                 }
             ).encode(),
         )

@@ -390,7 +390,18 @@ async def compact_idle_projects(principal: PrincipalDep, services: ServicesDep) 
 @router.post("/internal/maintenance/reconcile-batch", include_in_schema=False)
 async def reconcile_batch_jobs(principal: PrincipalDep, services: ServicesDep) -> dict[str, int]:
     _require_internal_principal(principal, services)
-    return await services.tasks.reconcile_batch_jobs()
+    result = await services.tasks.reconcile_batch_jobs()
+    if services.settings.slack_agent_backend == "claude_batch":
+        from pistachio.agents.analysis import knowledge_mirror
+        from pistachio.agents.analysis.batch import BatchBridge
+        from pistachio.agents.analysis.storage import GCSStorage
+
+        bridge = BatchBridge(services.settings, services.repository)
+        if knowledge_mirror.configured(bridge.settings):
+            result["knowledge_mirrors_enqueued"] = await knowledge_mirror.reconcile(
+                bridge, GCSStorage(services.settings.gcs_bucket)
+            )
+    return result
 
 
 @router.post("/internal/batch/completion", include_in_schema=False)

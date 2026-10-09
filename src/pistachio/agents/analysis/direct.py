@@ -14,7 +14,16 @@ from pydantic import BaseModel, Field
 
 from pistachio.tool_catalog import spatial_analysis_capability
 
-from . import access, attachments, briefs, commands, conversation_memory, user_memory, write_access
+from . import (
+    access,
+    attachments,
+    briefs,
+    commands,
+    conversation_memory,
+    knowledge,
+    user_memory,
+    write_access,
+)
 from .data_links import message_text
 from .help_text import PROJECT_HELP
 from .identity import post
@@ -183,7 +192,11 @@ async def decide(
     event_id: str = "",
     has_archive: bool = False,
     on_demand_enabled: bool = False,
+    knowledge_enabled: bool = False,
 ) -> Decision:
+    system = SYSTEM + WORKER_POLICY if on_demand_enabled else SYSTEM
+    if knowledge_enabled:
+        system = system.replace(briefs.POLICY, briefs.policy(True)) + "\n" + knowledge.ROUTER_RULES
     schema = Decision.model_json_schema()
     if not on_demand_enabled:
         schema["properties"].pop("worker")
@@ -198,7 +211,7 @@ async def decide(
                 json={
                     "model": model,
                     "max_tokens": 8192,
-                    "system": SYSTEM + WORKER_POLICY if on_demand_enabled else SYSTEM,
+                    "system": system,
                     "messages": [
                         {
                             "role": "user",
@@ -368,6 +381,7 @@ async def handle(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage
 ) -> bool:
     """Return False only for an authorized computation with a durable thread context."""
+    from . import knowledge_commands
     from .transfers import Transfers
 
     event = record["payload"]["event"]
@@ -380,6 +394,13 @@ async def handle(
     if files and cmd and cmd.name in {"init", "save brief"}:
         raise ValueError("Send files in their own message, not with init or save brief.")
     registry = Registry(storage)
+    if cmd and cmd.name in knowledge_commands.NAMES:
+        knowledge_reply, saved_knowledge = await asyncio.to_thread(
+            knowledge_commands.run, cmd, grant, storage, event_id, bridge.settings
+        )
+        if saved_knowledge and saved_knowledge.changes_key:
+            record["knowledge_changes_key"] = saved_knowledge.changes_key
+        return await finish(bridge, event_id, record, knowledge_reply)
     if cmd and cmd.name in {"memory context", "forget context"}:
         if not grant.allowed:
             return await finish(bridge, event_id, record, access.deny_text(grant))
@@ -600,6 +621,10 @@ async def handle(
                 )
             ),
         }
+        if bridge.settings.knowledge_enabled:
+            model_context["project_knowledge"] = await asyncio.to_thread(
+                knowledge.router_context, storage, grant.project_id, text, bridge.settings
+            )
         if bridge.settings.on_demand_enabled:
             from .calibration import history
 
@@ -635,6 +660,7 @@ async def handle(
             event_id=event_id,
             has_archive=bool(state.get("archive")),
             on_demand_enabled=bridge.settings.on_demand_enabled,
+            knowledge_enabled=bridge.settings.knowledge_enabled,
             **({"media": media} if media else {}),
         )
         if not is_init and decision.route == "view":
@@ -675,6 +701,7 @@ async def handle(
                 event_id=event_id,
                 has_archive=bool(state.get("archive")),
                 on_demand_enabled=bridge.settings.on_demand_enabled,
+                knowledge_enabled=bridge.settings.knowledge_enabled,
                 **({"media": viewed} if viewed else {}),
             )
             if second.route not in {"reply", "compute"}:
@@ -712,6 +739,7 @@ async def handle(
                 event_id=event_id,
                 has_archive=bool(state.get("archive")),
                 on_demand_enabled=bridge.settings.on_demand_enabled,
+                knowledge_enabled=bridge.settings.knowledge_enabled,
                 **({"media": media} if media else {}),
             )
             if listed.route != "reply":
@@ -825,5 +853,5 @@ async def handle(
             selection = f"Project ready: {grant.project.name}. Select it with `switch {selector}`."
         reply = selection + "\n\n" + decision.reply + "\n\n" + PROJECT_HELP
     completed = await finish(bridge, event_id, record, reply)
-    await user_memory.after_turn(bridge, event_id, record, storage, decision.reply)
+    record["memory_reply"] = decision.reply
     return completed

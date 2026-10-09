@@ -19,6 +19,7 @@ class Storage(Protocol):
     def get(self, key: str) -> tuple[bytes, str]: ...
     def put(self, key: str, data: bytes) -> None: ...
     def put_if(self, key: str, data: bytes, generation: str | None) -> str: ...
+    def delete_if(self, key: str, generation: str) -> None: ...
     def keys(self, prefix: str) -> list[str]: ...
     def upload(self, key: str, path: Path) -> None: ...
     def upload_new(self, key: str, path: Path) -> None: ...
@@ -60,6 +61,17 @@ class LocalStorage:
                 raise Conflict("The object changed since it was read.")
             self.put(key, data)
             return hashlib.sha256(data).hexdigest()
+
+    def delete_if(self, key: str, generation: str) -> None:
+        with _LOCAL_LOCK, (self.root / ".cas.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                current = self.get(key)[1]
+            except FileNotFoundError:
+                current = None
+            if current != generation:
+                raise Conflict("The object changed since it was read.")
+            self.path(key).unlink()
 
     def keys(self, prefix: str) -> list[str]:
         return [str(p.relative_to(self.root)) for p in self.path(prefix).rglob("*") if p.is_file()]
@@ -128,6 +140,14 @@ class GCSStorage:
         except PreconditionFailed as exc:
             raise Conflict("The object changed since it was read.") from exc
         return str(blob.generation)
+
+    def delete_if(self, key: str, generation: str) -> None:
+        from google.api_core.exceptions import NotFound, PreconditionFailed
+
+        try:
+            self.bucket.blob(key).delete(if_generation_match=int(generation))
+        except (NotFound, PreconditionFailed) as exc:
+            raise Conflict("The object changed since it was read.") from exc
 
     def keys(self, prefix: str) -> list[str]:
         return [blob.name for blob in self.bucket.list_blobs(prefix=prefix)]

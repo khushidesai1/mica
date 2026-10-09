@@ -134,6 +134,54 @@ async def process(event_id: str, tick: int, request: Request) -> dict[str, str]:
     return {"status": status}
 
 
+@router.post("/memory/{event_id}", include_in_schema=False)
+async def process_memory(event_id: str, request: Request) -> dict[str, str]:
+    from pistachio.agents.analysis import memory_tasks
+
+    services: Services = request.app.state.services
+    if services.settings.slack_agent_backend != "claude_batch":
+        raise HTTPException(503, "Claude Slack rollout is disabled")
+    principal = await get_principal(request)
+    if principal.id != services.settings.cloud_tasks_service_account.lower():
+        raise HTTPException(403, "Untrusted task dispatcher")
+    if not re.fullmatch(r"[a-f0-9]{32}", event_id):
+        raise HTTPException(400, "Invalid event")
+    try:
+        await memory_tasks.process(
+            BatchBridge(services.settings, services.repository),
+            event_id,
+            GCSStorage(services.settings.gcs_bucket),
+        )
+    except Exception:
+        # after_turn logs only the failure type. Do not let an upstream validation
+        # exception (which can contain model text) become a server traceback.
+        raise HTTPException(503, "Memory editor did not complete; retry") from None
+    return {"status": "complete"}
+
+
+@router.post("/knowledge-mirror/{project_id}/{commit_stamp}", include_in_schema=False)
+async def mirror_knowledge(project_id: str, commit_stamp: str, request: Request) -> dict[str, int]:
+    from pistachio.agents.analysis import knowledge_mirror
+
+    services: Services = request.app.state.services
+    if services.settings.slack_agent_backend != "claude_batch":
+        raise HTTPException(503, "Claude Slack rollout is disabled")
+    principal = await get_principal(request)
+    if principal.id != services.settings.cloud_tasks_service_account.lower():
+        raise HTTPException(403, "Untrusted task dispatcher")
+    try:
+        knowledge_mirror.changes_key(project_id, commit_stamp)
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid knowledge commit") from exc
+    count = await knowledge_mirror.process(
+        BatchBridge(services.settings, services.repository),
+        GCSStorage(services.settings.gcs_bucket),
+        project_id,
+        commit_stamp,
+    )
+    return {"mirrored": count}
+
+
 @router.post("/transfers/{pending_id}/{tick}", include_in_schema=False)
 async def process_transfer(pending_id: str, tick: int, request: Request) -> dict[str, str]:
     from pistachio.agents.analysis.transfers import Transfers

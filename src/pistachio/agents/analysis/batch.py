@@ -21,7 +21,7 @@ from google.cloud import batch_v1
 from pistachio.config import Settings as AppSettings
 from pistachio.storage.base import Repository
 
-from . import access, conversation_memory, user_memory, write_access
+from . import access, conversation_memory, memory_tasks, user_memory, write_access
 from .attachments import AttachmentError
 from .compute_quotes import Provisioning
 from .config import CHECKPOINT_PREFIX as PREFIX
@@ -111,6 +111,19 @@ def job_spec(
         "AGENT_LONG_RUN_UPDATE_SECONDS": str(settings.long_run_update_seconds),
         "AGENT_MAX_RUN_SECONDS": str(seconds),
     }
+    if settings.knowledge_enabled:
+        environment.update(
+            {
+                "AGENT_KNOWLEDGE_ENABLED": "true",
+                "AGENT_KNOWLEDGE_INDEX_CHARS": str(settings.knowledge_index_chars),
+                "AGENT_KNOWLEDGE_FILE_KB": str(settings.knowledge_file_kb),
+                "AGENT_KNOWLEDGE_MAX_FILES": str(settings.knowledge_max_files),
+                "AGENT_KNOWLEDGE_TOTAL_KB": str(settings.knowledge_total_kb),
+                "AGENT_KNOWLEDGE_PRESERVE_UNMIRRORED": str(
+                    bool(settings.knowledge_github_repo) or settings.knowledge_preserve_unmirrored
+                ).lower(),
+            }
+        )
     if settings.tiers_enabled:
         environment.update(
             {
@@ -348,6 +361,8 @@ class BatchBridge:
             if not record:
                 raise LookupError("Unknown Slack event")
             if record["status"] in {"complete", "failed"} or tick < record["tick"]:
+                await memory_tasks.enqueue(self, event_id, record)
+                await self.enqueue_knowledge(event_id, record)
                 return str(record["status"])
             if not record.get("notice_ts"):
                 await self.notify(event_id, record, "received", "On it…")
@@ -391,9 +406,19 @@ class BatchBridge:
                 await self.schedule(event_id, tick + 1)
                 record["tick"] = tick + 1
             await self.repository.set_connector_state(key, record)
+            await memory_tasks.enqueue(self, event_id, record)
+            await self.enqueue_knowledge(event_id, record)
             return str(record["status"])
         finally:
             await self.repository.release_event(mutex, claim.token)
+
+    async def enqueue_knowledge(self, event_id: str, record: dict[str, Any]) -> None:
+        from . import knowledge_mirror
+
+        if self.settings.knowledge_enabled:
+            await knowledge_mirror.after_event(
+                self, GCSStorage(self.app.gcs_bucket), event_id, record
+            )
 
     async def advance(self, event_id: str, record: dict[str, Any]) -> None:
         if record["status"] == "pending" and record.get("route") != "compute":
@@ -714,9 +739,7 @@ class BatchBridge:
                     (m for m in grant.state.get("messages", []) if m.get("id") == event_id), None
                 )
                 if exchange and exchange.get("success", True):
-                    await user_memory.after_turn(
-                        self, event_id, record, storage, exchange["assistant"]
-                    )
+                    record["memory_reply"] = exchange["assistant"]
             await self.repository.release_event(
                 f"{record.get('slot_pool', 'claude-slot')}:{record['slot']}", record["slot_token"]
             )
@@ -759,6 +782,12 @@ class BatchBridge:
                             )
                             name = prior.get("job", name)
                             if not prior.get("cancel_requested"):
+                                if self.settings.knowledge_enabled:
+                                    await asyncio.to_thread(
+                                        GCSStorage(self.app.gcs_bucket).put,
+                                        f"{PREFIX}/events/{cursor}/knowledge-cancelled.json",
+                                        b"true",
+                                    )
                                 with suppress(NotFound):
                                     await asyncio.to_thread(client.delete_job, name=name)
                                 prior["cancel_requested"] = True

@@ -36,6 +36,7 @@ class ProjectEntry(BaseModel):
     members: set[str] = Field(default_factory=set)
     data_uri: str
     created_at: str = Field(default_factory=now)
+    knowledge_github: bool | None = None
     access_revision: int = 0
     published_channels: set[str] = Field(default_factory=set)
 

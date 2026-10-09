@@ -49,3 +49,12 @@ def preserve(storage: Storage, thread_key: str, state: dict[str, Any]) -> str:
     key = f"projects/_threads/{thread_key}/brief-originals/{digest(text)}.md"
     storage.put(key, text.encode())
     return key
+
+
+def policy(knowledge_enabled: bool = False) -> str:
+    if not knowledge_enabled:
+        return POLICY
+    return POLICY + (
+        "\nA routine file listing or newly inspected schema alone is not a reason to edit "
+        "the brief; record it in project knowledge instead, when durable."
+    )

@@ -98,6 +98,7 @@ def build_options(
     sandbox: bool = True,
     user_memory: str = "",
     conversation_summary: str = "",
+    knowledge_index: str = "",
     project_name: str = "",
     write_access: str = "No GCS write grant for this run.",
     runtime_tmp: Path = Path("/tmp"),
@@ -251,6 +252,7 @@ def build_options(
                 project_name,
                 conversation_summary,
                 toolkit=manager.toolkit() if manager else "",
+                knowledge_index=knowledge_index,
             )
             + "\nCurrent GCS write access (application-authorized):\n"
             + write_access
@@ -392,6 +394,7 @@ class Runner:
         sandbox: bool = True,
         user_memory: str = "",
         conversation_summary: str = "",
+        knowledge_index: str = "",
         project_name: str = "",
         write_access: str = "No GCS write grant for this run.",
         runtime_manager: RuntimeManager | None = None,
@@ -400,6 +403,8 @@ class Runner:
         self.settings, self.sandbox = settings, sandbox
         self.user_memory, self.project_name = user_memory, project_name
         self.conversation_summary = conversation_summary
+        self.knowledge_index = knowledge_index
+        self.knowledge_reads = 0
         self.write_access = write_access
         self.compute = compute_manager
         self.last_result: TurnResult | None = None
@@ -463,6 +468,7 @@ class Runner:
                         sandbox=self.sandbox,
                         user_memory=self.user_memory,
                         conversation_summary=self.conversation_summary,
+                        knowledge_index=self.knowledge_index,
                         project_name=self.project_name,
                         write_access=self.write_access,
                         runtime_tmp=runtime_tmp,
@@ -481,6 +487,12 @@ class Runner:
                         if isinstance(msg, AssistantMessage):
                             for block in msg.content:
                                 if isinstance(block, ToolUseBlock):
+                                    if self.settings.knowledge_enabled:
+                                        from .knowledge import is_read
+
+                                        self.knowledge_reads += int(
+                                            is_read(ctx.workdir, block.name, block.input)
+                                        )
                                     result.run_log.append(
                                         {
                                             "tool": block.name,

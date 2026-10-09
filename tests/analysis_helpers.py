@@ -26,3 +26,21 @@ def seed_project(
     if brief is not None:
         write_brief(store, pid, brief, read_brief(store, pid)[1])
     return pid
+
+
+async def memory_message(chat, *args, **kwargs):
+    from unittest.mock import AsyncMock, patch
+
+    from test_analysis_isolation import message
+
+    from pistachio.agents.analysis import memory_tasks
+
+    with patch("pistachio.agents.analysis.job_lifecycle.enqueue", AsyncMock()) as enqueue:
+        record = await message(chat, *args, **kwargs)
+    for call in enqueue.call_args_list:
+        path = call.args[2]
+        if "/memory/" in path:
+            event_id = path.rsplit("/", 1)[-1]
+            await memory_tasks.process(chat, event_id, chat.store)
+            record = await chat.repository.get_connector_state("claude-event:" + event_id)
+    return record

@@ -50,6 +50,16 @@ Existing threads keep their project. In channels, add `--force` to replace a sel
 • `remember <text>` — Save a private note (DM).
 • `forget <number|profile|preferences|all>` — Clear selected private memory (DM).
 
+*Project knowledge — when enabled, shared with project members*
+• `knowledge` — Show the index, file count and last update.
+• `knowledge show <path>` — Read an entry.
+• `forget knowledge <path>` — Remove an entry, retaining its history.
+• `undo knowledge` — Restore the files changed by the most recent save.
+• `knowledge github on` / `knowledge github off` — Owner: enable or stop GitHub mirroring.
+Shared and published projects mirror automatically when configured, unless the owner turns it off.
+Private projects require owner opt-in. Repository readers see all mirrored projects and history.
+GitHub edits do not sync back; corrections should be made here. Deletions retain Git history.
+
 *GCS writes — DM*
 • `write grant <project> gs://bucket/folder/ [duration]` — Allow new files.
 • `write status <project>` — Show the destination and expiry.
