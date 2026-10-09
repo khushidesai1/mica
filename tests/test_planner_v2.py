@@ -468,9 +468,9 @@ async def test_v2_runtime_failure_repairs_code_and_reruns(repository, settings) 
     request = harness.repair_requests[0]
     assert "cannot reshape array" in str(request["repair_error"])
     assert "raise ValueError" in str(request["existing_script"])
-    assert task.result and [item.name for item in task.result.artifacts] == [
-        "result.json",
+    assert task.result and sorted(item.name for item in task.result.artifacts) == [
         "generated_analysis.py",
+        "result.json",
     ]
     assert any("retrying automatically" in item.message for item in task.progress_updates)
     execution_stages = [
