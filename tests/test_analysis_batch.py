@@ -168,6 +168,106 @@ async def test_dedup_serial_order_parallel_threads_and_polling(bridge):
     assert bridge.test_client.create_job.call_count == 3
 
 
+async def test_checkpoint_relaunch_submits_on_demand_job(bridge, monkeypatch):
+    from pistachio.agents.analysis import compute_batch, compute_control, pricing
+    from pistachio.agents.analysis.compute_quotes import Estimate
+
+    bridge.settings.tiers_enabled = True
+    bridge.settings.compute_quote_only = False
+    bridge.settings.on_demand_enabled = True
+    skus = json.loads(
+        (Path(__file__).parent / "fixtures/compute/n2-us-central1-skus.json").read_text()
+    )["skus"]
+    rates = {
+        mode: pricing.from_skus(skus, bridge.app.gcp_region, batch.time.time(), mode)
+        for mode in ("SPOT", "STANDARD")
+    }
+    monkeypatch.setattr(compute_batch, "GCSStorage", lambda bucket: bridge.store)
+    monkeypatch.setattr(pricing, "current", lambda store, region, mode="SPOT": rates[mode])
+    event_id = await bridge.accept(payload())
+    assert await bridge.process(event_id, 0) == "running"
+    first_job = bridge.test_client.create_job.call_args.kwargs["job"]
+    assert first_job.allocation_policy.instances[0].policy.provisioning_model.name == "SPOT"
+    key = f"claude-event:{event_id}"
+    record = await bridge.repository.get_connector_state(key)
+    q = compute_control.operate(
+        event_id,
+        record,
+        compute_control.ComputeCall(
+            attempt=0,
+            action="estimate",
+            estimate=Estimate(
+                tier="standard",
+                hours_low=0.1,
+                hours_high=0.5,
+                peak_gib=20,
+                task_peak_gib=20,
+                disk_gb=1,
+                basis="Measured representative subset.",
+            ),
+        ),
+        bridge.settings,
+        rates.__getitem__,
+        batch.time.time(),
+    )
+    result = compute_control.operate(
+        event_id,
+        record,
+        compute_control.ComputeCall(
+            attempt=0,
+            action="request",
+            quote_id=q["id"],
+            handoff="Resume saved inputs.",
+        ),
+        bridge.settings,
+        rates.__getitem__,
+        batch.time.time(),
+    )
+    assert result["status"] == "checkpoint"
+    await bridge.repository.set_connector_state(key, record)
+    prefix = compute_batch.event_prefix(event_id)
+    archive = f"{prefix}/handoff-a0-{'b' * 32}.tar.gz"
+    bridge.store.put(archive, b"saved archive")
+    bridge.store.put(
+        f"{prefix}/attempt-a0.json",
+        json.dumps(
+            {
+                "event_id": event_id,
+                "attempt": 0,
+                "model_cost": 0.2,
+                "outcome": "handoff",
+                "archive": archive,
+            }
+        ).encode(),
+    )
+    bridge.test_states[record["job"]] = "SUCCEEDED"
+    assert await bridge.process(event_id, 1) == "pending"
+    assert await bridge.process(event_id, 2) == "running"
+    assert bridge.test_client.create_job.call_count == 2
+    second_job = bridge.test_client.create_job.call_args.kwargs["job"]
+    assert second_job.allocation_policy.instances[0].policy.provisioning_model.name == "STANDARD"
+    manifest = json.loads(bridge.store.read_prefix(f"{prefix}/request.json", 64000))
+    assert manifest["compute"]["provisioning"] == "STANDARD"
+    assert manifest["resume"]["archive"] == archive
+    record = await bridge.repository.get_connector_state(key)
+    assert record["attempt"] == 1
+    assert record["escalations"] == 0
+    bridge.store.put(
+        f"{prefix}/attempt-a1.json",
+        json.dumps(
+            {
+                "event_id": event_id,
+                "attempt": 1,
+                "model_cost": 0.2,
+                "outcome": "complete",
+            }
+        ).encode(),
+    )
+    bridge.test_states[record["job"]] = "SUCCEEDED"
+    assert await bridge.process(event_id, 3) == "complete"
+    assert bridge.store.read_prefix(archive, 100) == b"saved archive"
+
+
 async def test_intake_recovers_interrupted_receipt_write(bridge, monkeypatch):
     original = bridge.repository.set_connector_state
     failed = False

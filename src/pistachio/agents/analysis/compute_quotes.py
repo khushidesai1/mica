@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .tiers import TIERS, TierName
 
+Provisioning = Literal["SPOT", "STANDARD"]
+
 
 class Record(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, frozen=True)
@@ -20,7 +22,7 @@ class Record(BaseModel):
 class Rates(Record):
     region: str = Field(min_length=1, max_length=50)
     currency: Literal["USD"] = "USD"
-    provisioning: Literal["SPOT"] = "SPOT"
+    provisioning: Provisioning = "SPOT"
     fetched_at: float = Field(ge=0)
     expires_at: float = Field(gt=0)
     cpu_hour: Decimal = Field(gt=0, le=10)
@@ -47,9 +49,12 @@ class Rates(Record):
 
 class Estimate(Record):
     tier: TierName
-    label: Literal["analysis", "ingest", "segmentation", "plot", "checkpoint"] = "analysis"
+    label: Literal["analysis", "ingest", "segmentation", "plot", "checkpoint", "training"] = (
+        "analysis"
+    )
     hours_low: float = Field(gt=0, le=168)
     hours_high: float = Field(gt=0, le=168)
+    longest_step_minutes: float | None = Field(default=None, gt=0, le=10080)
     peak_gib: float = Field(gt=0, le=4096)
     task_peak_gib: float = Field(gt=0, le=4096)
     disk_gb: float = Field(ge=0, le=10000)
@@ -59,12 +64,19 @@ class Estimate(Record):
     def ordered(self) -> Estimate:
         if self.hours_low > self.hours_high or self.task_peak_gib > self.peak_gib:
             raise ValueError("Estimate ranges or per-task memory are inconsistent.")
+        if (
+            self.longest_step_minutes is not None
+            and self.longest_step_minutes > self.hours_high * 60
+        ):
+            raise ValueError("The longest step cannot exceed the total estimated time.")
         return self
 
 
 class Quote(Record):
     id: str
     estimate: Estimate
+    provisioning: Provisioning = "SPOT"
+    reason: str = ""
     expires_at: float
     vm_hour: float
     disk_hour: float
@@ -85,8 +97,10 @@ class Quote(Record):
 
     def notice(self) -> str:
         e, t = self.estimate, TIERS[self.estimate.tier]
+        mode = "Spot" if self.provisioning == "SPOT" else "on-demand"
         return (
-            f"{t.name}: {t.vcpus} CPUs, {t.memory_gib} GiB RAM (Spot). "
+            (self.reason + " " if self.reason else "")
+            + f"{t.name}: {t.vcpus} CPUs, {t.memory_gib} GiB RAM ({mode}). "
             f"Estimated {e.hours_low:g}–{e.hours_high:g} hours plus startup; "
             f"additional compute ${self.remaining_low_usd:.2f}–${self.remaining_high_usd:.2f}. "
             f"${self.spent_usd:.2f} used/reserved so far; "
@@ -108,6 +122,7 @@ def quote(
     limit_usd: float,
     now: float,
     identity: str = "",
+    reason: str = "",
 ) -> Quote:
     rates.validate_time(now)
     if not math.isfinite(spent_usd) or not 0 <= spent_usd <= 100000:
@@ -137,6 +152,8 @@ def quote(
     return Quote(
         id=hashlib.sha256(fingerprint.encode()).hexdigest()[:32],
         estimate=estimate,
+        provisioning=rates.provisioning,
+        reason=reason,
         expires_at=min(rates.expires_at, now + 3600),
         vm_hour=float(vm),
         disk_hour=float(disk),

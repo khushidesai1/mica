@@ -125,9 +125,9 @@ async def test_local_executor_preflights_the_staged_real_input(settings, tmp_pat
     result = await LocalExecutor(settings).execute(bundle)
 
     assert result.exit_code == 0
-    assert [artifact.name for artifact in result.artifacts] == [
-        "result.json",
+    assert sorted(artifact.name for artifact in result.artifacts) == [
         "generated_analysis.py",
+        "result.json",
     ]
     preflight_log = (
         settings.artifact_root

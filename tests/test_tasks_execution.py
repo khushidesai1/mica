@@ -113,7 +113,10 @@ async def test_scientific_approval_replans_and_records_reproducible_bundle(
     )
     assert task.status == TaskStatus.SUCCEEDED
     assert harness.calls == 2
-    assert task.result and task.result.artifacts[0].name == "approved.json"
+    assert task.result and sorted(item.name for item in task.result.artifacts) == [
+        "approved.json",
+        "generated_analysis.py",
+    ]
     attempt = settings.artifact_root / task.id / "attempt-1"
     assert (attempt / "task.py").exists()
     assert (attempt / "environment.lock").exists()

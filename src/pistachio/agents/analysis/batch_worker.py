@@ -346,6 +346,9 @@ async def main(event_id: str) -> None:
                     )
 
         partial_task = asyncio.create_task(partial_checkpoints())
+    previous_methods = (
+        methods_stamp(Path(saved["context"]["workdir"])) if saved.get("context") else None
+    )
     try:
         event = payload["event"]
         await agent.handle(event, (event["channel"], event.get("thread_ts") or event["ts"]))
@@ -371,6 +374,7 @@ async def main(event_id: str) -> None:
                         "tier": settings.tier,
                         "attempt": settings.attempt,
                         **compute.sampler.summary(),
+                        "finished_at": time.time(),
                     }
                 ).encode(),
             )
@@ -450,6 +454,7 @@ async def main(event_id: str) -> None:
         files=[f["name"] for f in saved.get("thread_files", []) if f["id"] in current_ids],
         outputs=[f["name"] for f in agent.delivered],
         success=agent.last_error is None,
+        methods=read_methods(state[0].workdir, previous_methods),
     )
     storage.put(pointer, json.dumps(checkpoint, default=str).encode())
     if compute:
@@ -464,6 +469,28 @@ async def main(event_id: str) -> None:
                 }
             ).encode(),
         )
+
+
+def methods_stamp(workdir: Path) -> tuple[int, int, int] | None:
+    path = workdir / "notes/methods.md"
+    try:
+        if not path.resolve().is_relative_to(workdir.resolve()) or not path.is_file():
+            return None
+        stat = path.stat()
+        return stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size
+    except OSError:
+        return None
+
+
+def read_methods(workdir: Path, previous: tuple[int, int, int] | None) -> str:
+    stamp = methods_stamp(workdir)
+    if stamp is None or stamp == previous:
+        return ""
+    try:
+        with (workdir / "notes/methods.md").open(encoding="utf-8", errors="replace") as stream:
+            return stream.read(2000)
+    except OSError:
+        return ""
 
 
 if __name__ == "__main__":

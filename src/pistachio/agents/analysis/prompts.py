@@ -75,6 +75,10 @@ in plain language.
   datashader if installed). Say so if you subsampled for display.
 
 ## Figures and scientific choices
+- After an analysis, overwrite `notes/methods.md` (up to 2,000 characters, plain text, not
+  sent to the user). For each number and figure panel you reported, give the exact numerator
+  and denominator, the input files, and the filters, thresholds and exclusions.
+  Use the same labels as your reply.
 - Save figures as PNG at 200 dpi (also PDF if asked). Label axes and legends in plain words.
   Follow figure conventions in the current request and personal preferences.
 - State every choice that changes the result: sample subsets, filtering, normalization, neighbor

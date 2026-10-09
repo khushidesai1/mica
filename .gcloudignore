@@ -10,6 +10,8 @@
 !scripts/check_worker_compatibility.py
 !scripts/check_headless_api.py
 !scripts/check_slack_release.py
+!scripts/check_compute_release.py
+!scripts/check_spatial_release.py
 !src/
 !src/**
 !tools/

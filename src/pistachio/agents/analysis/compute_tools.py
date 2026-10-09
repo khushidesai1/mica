@@ -102,9 +102,29 @@ class ComputeManager:
             if t.vcpus > shape.vcpus
         )
         free = self.sampler.sample().free
+        mode = "on-demand" if self.manifest.get("provisioning", "SPOT") == "STANDARD" else "Spot"
+        threshold = self.manifest.get("on_demand_step_minutes")
+        reason = (self.manifest.get("launch_reason") or "default worker selection").rstrip(".")
+        total = self.manifest.get("on_demand_total_hours", 4)
+        provisioning_policy = (
+            f"This worker was chosen at launch: {mode}, {shape.name} ({reason}). "
+            "Still estimate before long commands; on the same tier and mode, request_worker "
+            "continues here without moving. Ask for a different worker only if the work doesn't "
+            "fit in memory or the launch choice is clearly wrong. On-demand is for one long "
+            "uninterrupted process (training, full-sample segmentation or ingest, or any single "
+            f"command of {threshold}+ minutes). Work made of shorter commands stays on Spot "
+            f"unless the total exceeds {total:g} hours. Save each unit's result in the workspace "
+            "as it finishes. Set longest_step_minutes to the longest single command, not the "
+            "total.\n"
+            if threshold is not None
+            else ""
+        )
+        history = "\n".join(self.manifest.get("worker_history", []))
+        if history:
+            history += "\n"
         return (
             "\n## Compute (trusted application policy)\n"
-            f"Worker: {shape.name}, {shape.machine}, Spot; effective {self.sampler.cpus:g} CPUs, "
+            f"Worker: {shape.name}, {shape.machine}, {mode}; effective {self.sampler.cpus:g} CPUs, "
             f"{self.sampler.memory_gib or shape.memory_gib:.1f} GiB RAM; "
             f"observed free workspace disk {free if free is not None else 'unknown'} GB.\n"
             f"Available larger tiers: {larger or 'none'}. "
@@ -117,6 +137,8 @@ class ComputeManager:
             "Call request_worker with its quote ID to authorize the expensive step or resize. "
             "The application asks the user only when the shared budget is insufficient. "
             "An out-of-range estimate means no fit; do not force it onto xlarge.\n"
+            f"{provisioning_policy}"
+            f"{history}"
             f"Probe with {self.settings.sci_python} {self.settings.tools_dir}/measure.py "
             "--label analysis -- <command>. Check individual task memory as well as total RAM. "
             "Probes are bounded; do not launch the full pipeline to estimate it.\n"
@@ -133,12 +155,21 @@ class ComputeManager:
         )
 
     def tools(self) -> list[SdkMcpTool[Any]]:
+        schema = Estimate.model_json_schema()
+        schema["required"].append("longest_step_minutes")
+        # Stored quotes may omit this field; new agent estimates must supply a number.
+        schema["properties"]["longest_step_minutes"] = schema["properties"]["longest_step_minutes"][
+            "anyOf"
+        ][0]
+
         @tool(
             "estimate_worker",
             "Quote remaining compute from measured workload evidence.",
-            Estimate.model_json_schema(),
+            schema,
         )
         async def estimate(args: dict[str, Any]) -> dict[str, Any]:
+            if args.get("longest_step_minutes") is None:
+                raise ValueError("Estimate the longest single command in longest_step_minutes.")
             return await self.call(
                 "estimate", {"estimate": Estimate.model_validate(args).model_dump()}
             )

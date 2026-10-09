@@ -23,6 +23,7 @@ from pistachio.storage.base import Repository
 
 from . import access, conversation_memory, user_memory, write_access
 from .attachments import AttachmentError
+from .compute_quotes import Provisioning
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .data_links import init_args
@@ -48,12 +49,15 @@ def job_spec(
     attempt: int = 0,
     budget: float | None = None,
     duration: int | None = None,
+    provisioning: Provisioning = "SPOT",
 ) -> batch_v1.Job:
     import math
 
     from .tiers import resolve
 
     shape = resolve(tier, settings)
+    if provisioning not in {"SPOT", "STANDARD"}:
+        raise ValueError("Invalid worker provisioning mode.")
     seconds = shape.max_seconds if duration is None else duration
     if not 1 <= seconds <= shape.max_seconds or not 0 <= attempt <= 20:
         raise ValueError("Invalid worker duration or attempt.")
@@ -167,7 +171,10 @@ def job_spec(
     )
     policy = batch_v1.AllocationPolicy.InstancePolicy(
         machine_type=shape.machine,
-        provisioning_model=batch_v1.AllocationPolicy.ProvisioningModel.SPOT,
+        # Proto-plus enums support name lookup; their stubs omit EnumMeta.__getitem__.
+        provisioning_model=(
+            batch_v1.AllocationPolicy.ProvisioningModel[provisioning]  # type: ignore[misc]
+        ),
         boot_disk=batch_v1.AllocationPolicy.Disk(type_=shape.disk_type, size_gb=shape.disk_gb),
     )
     return batch_v1.Job(
@@ -543,11 +550,25 @@ class BatchBridge:
                 )
                 return
         if record["status"] == "submitting":
+            starting = "Spinning up a compute worker (usually a few minutes)…"
+            if self.settings.on_demand_enabled and record.get("provisioning") == "STANDARD":
+                from .tiers import TIERS
+
+                shape = TIERS[record["tier"]]
+                reason = (
+                    record.get("compute_quote", {}).get("reason")
+                    or record.get("launch_reason")
+                    or "on-demand selected for this request"
+                ).rstrip(".")
+                starting = (
+                    f"Starting an on-demand worker ({shape.name}: {shape.vcpus} CPUs, "
+                    f"{shape.memory_gib} GiB): {reason}."
+                )
             await self.notify(
                 event_id,
                 record,
                 "starting",
-                "Spinning up a compute worker (usually a few minutes)…",
+                starting,
             )
             storage = GCSStorage(self.app.gcs_bucket)
             if "write_grant" not in record:
@@ -633,6 +654,7 @@ class BatchBridge:
                                 "attempt": record["attempt"],
                                 "budget": record["model_reserved"],
                                 "duration": record["max_run_seconds"],
+                                "provisioning": record.get("provisioning", "SPOT"),
                             }
                             if record.get("compute_version")
                             else {}

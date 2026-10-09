@@ -1,0 +1,475 @@
+{
+  "source_commit": "1d72b20",
+  "jobs": {
+    "legacy": {
+      "taskGroups": [
+        {
+          "taskSpec": {
+            "computeResource": {
+              "cpuMilli": "8000",
+              "memoryMib": "65536",
+              "bootDiskMib": "0"
+            },
+            "maxRunDuration": "604800s",
+            "volumes": [
+              {
+                "gcs": {
+                  "remotePath": "reference-data"
+                },
+                "mountPath": "/mnt/stateful_partition/gcs/reference-data",
+                "mountOptions": [
+                  "-o",
+                  "ro,allow_other",
+                  "--implicit-dirs",
+                  "--cache-dir=/mnt/stateful_partition/pistachio-cache/reference-data",
+                  "--file-cache-max-size-mb=200000",
+                  "--file-cache-cache-file-for-range-read=true"
+                ]
+              },
+              {
+                "gcs": {
+                  "remotePath": "science-data"
+                },
+                "mountPath": "/mnt/stateful_partition/gcs/science-data",
+                "mountOptions": [
+                  "-o",
+                  "ro,allow_other",
+                  "--implicit-dirs",
+                  "--cache-dir=/mnt/stateful_partition/pistachio-cache/science-data",
+                  "--file-cache-max-size-mb=200000",
+                  "--file-cache-cache-file-for-range-read=true"
+                ]
+              }
+            ],
+            "runnables": [
+              {
+                "container": {
+                  "imageUri": "us-docker.pkg.dev/test/images/worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "commands": [
+                    "python",
+                    "-m",
+                    "pistachio.agents.analysis.batch_worker",
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                  ],
+                  "volumes": [
+                    "/mnt/stateful_partition/gcs/reference-data:/mnt/gcs/reference-data:ro",
+                    "/mnt/stateful_partition/gcs/science-data:/mnt/gcs/science-data:ro"
+                  ],
+                  "entrypoint": "",
+                  "options": "",
+                  "blockExternalNetwork": false,
+                  "username": "",
+                  "password": "",
+                  "enableImageStreaming": false
+                },
+                "environment": {
+                  "variables": {
+                    "AGENT_DATA_BUCKETS": "reference-data,science-data",
+                    "AGENT_MAX_BUDGET_USD_PER_TURN": "5.0",
+                    "HOME": "/srv/pistachio",
+                    "PISTACHIO_GCS_BUCKET": "test-artifacts",
+                    "AGENT_FALLBACK_MODEL": "claude-opus-5",
+                    "AGENT_MAX_TURNS": "40",
+                    "AGENT_LONG_RUN_THRESHOLD_SECONDS": "600",
+                    "PISTACHIO_CONTROL_PLANE_URL": "https://control.example.com",
+                    "AGENT_LOADING_EMOJI": ":hourglass_flowing_sand:",
+                    "AGENT_MAX_RUN_SECONDS": "604800",
+                    "AGENT_ACCESS_CACHE_SECONDS": "30",
+                    "AGENT_MODEL": "claude-opus-5-5",
+                    "AGENT_LONG_RUN_UPDATE_SECONDS": "7200",
+                    "AGENT_ACCESS_MODE": "channel"
+                  },
+                  "secretVariables": {}
+                },
+                "displayName": "",
+                "ignoreExitStatus": false,
+                "background": false,
+                "alwaysRun": false,
+                "labels": {}
+              }
+            ],
+            "maxRetryCount": 0,
+            "lifecyclePolicies": [],
+            "environments": {}
+          },
+          "taskCount": "1",
+          "name": "",
+          "parallelism": "0",
+          "schedulingPolicy": 0,
+          "taskEnvironments": [],
+          "taskCountPerNode": "0",
+          "requireHostsFile": false,
+          "permissiveSsh": false,
+          "runAsNonRoot": false
+        }
+      ],
+      "allocationPolicy": {
+        "network": {
+          "networkInterfaces": [
+            {
+              "network": "projects/test-project/global/networks/default",
+              "subnetwork": "projects/test-project/regions/us-central1/subnetworks/default",
+              "noExternalIpAddress": true
+            }
+          ]
+        },
+        "instances": [
+          {
+            "policy": {
+              "machineType": "n2-highmem-8",
+              "provisioningModel": 2,
+              "bootDisk": {
+                "type": "pd-balanced",
+                "sizeGb": "500",
+                "diskInterface": ""
+              },
+              "minCpuPlatform": "",
+              "accelerators": [],
+              "disks": [],
+              "reservation": ""
+            },
+            "installGpuDrivers": false,
+            "installOpsAgent": false,
+            "blockProjectSshKeys": false
+          }
+        ],
+        "serviceAccount": {
+          "email": "worker@example.com",
+          "scopes": []
+        },
+        "labels": {},
+        "tags": []
+      },
+      "labels": {
+        "pistachio-agent": "claude",
+        "pistachio-event": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "logsPolicy": {
+        "destination": 1,
+        "logsPath": ""
+      },
+      "name": "",
+      "uid": "",
+      "priority": "0",
+      "notifications": []
+    },
+    "standard": {
+      "taskGroups": [
+        {
+          "taskSpec": {
+            "computeResource": {
+              "cpuMilli": "8000",
+              "memoryMib": "65536",
+              "bootDiskMib": "0"
+            },
+            "maxRunDuration": "1800s",
+            "volumes": [
+              {
+                "gcs": {
+                  "remotePath": "reference-data"
+                },
+                "mountPath": "/mnt/stateful_partition/gcs/reference-data",
+                "mountOptions": [
+                  "-o",
+                  "ro,allow_other",
+                  "--implicit-dirs",
+                  "--cache-dir=/mnt/stateful_partition/pistachio-cache/reference-data",
+                  "--file-cache-max-size-mb=200000",
+                  "--file-cache-cache-file-for-range-read=true"
+                ]
+              },
+              {
+                "gcs": {
+                  "remotePath": "science-data"
+                },
+                "mountPath": "/mnt/stateful_partition/gcs/science-data",
+                "mountOptions": [
+                  "-o",
+                  "ro,allow_other",
+                  "--implicit-dirs",
+                  "--cache-dir=/mnt/stateful_partition/pistachio-cache/science-data",
+                  "--file-cache-max-size-mb=200000",
+                  "--file-cache-cache-file-for-range-read=true"
+                ]
+              }
+            ],
+            "runnables": [
+              {
+                "container": {
+                  "imageUri": "us-docker.pkg.dev/test/images/worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "commands": [
+                    "python",
+                    "-m",
+                    "pistachio.agents.analysis.batch_worker",
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                  ],
+                  "volumes": [
+                    "/mnt/stateful_partition/gcs/reference-data:/mnt/gcs/reference-data:ro",
+                    "/mnt/stateful_partition/gcs/science-data:/mnt/gcs/science-data:ro"
+                  ],
+                  "entrypoint": "",
+                  "options": "",
+                  "blockExternalNetwork": false,
+                  "username": "",
+                  "password": "",
+                  "enableImageStreaming": false
+                },
+                "environment": {
+                  "variables": {
+                    "AGENT_COMPUTE_CHECKPOINT_MAX_GB": "100",
+                    "AGENT_DATA_BUCKETS": "reference-data,science-data",
+                    "AGENT_PARTIAL_CHECKPOINT_SECONDS": "900",
+                    "AGENT_MAX_BUDGET_USD_PER_TURN": "5.0",
+                    "AGENT_ACCESS_MODE": "channel",
+                    "PISTACHIO_GCS_BUCKET": "test-artifacts",
+                    "AGENT_ACCESS_CACHE_SECONDS": "30",
+                    "AGENT_MAX_TURNS": "40",
+                    "AGENT_FALLBACK_MODEL": "claude-opus-5",
+                    "PISTACHIO_CONTROL_PLANE_URL": "https://control.example.com",
+                    "AGENT_MAX_RUN_SECONDS": "1800",
+                    "AGENT_LONG_RUN_UPDATE_SECONDS": "7200",
+                    "AGENT_MAX_TIER": "xlarge",
+                    "AGENT_ATTEMPT": "0",
+                    "HOME": "/srv/pistachio",
+                    "AGENT_COMPUTE_QUOTE_ONLY": "true",
+                    "AGENT_LONG_RUN_THRESHOLD_SECONDS": "600",
+                    "AGENT_LOADING_EMOJI": ":hourglass_flowing_sand:",
+                    "AGENT_TIER": "standard",
+                    "AGENT_MODEL": "claude-opus-5-5",
+                    "AGENT_TIERS_ENABLED": "true"
+                  },
+                  "secretVariables": {}
+                },
+                "displayName": "",
+                "ignoreExitStatus": false,
+                "background": false,
+                "alwaysRun": false,
+                "labels": {}
+              }
+            ],
+            "maxRetryCount": 0,
+            "lifecyclePolicies": [],
+            "environments": {}
+          },
+          "taskCount": "1",
+          "name": "",
+          "parallelism": "0",
+          "schedulingPolicy": 0,
+          "taskEnvironments": [],
+          "taskCountPerNode": "0",
+          "requireHostsFile": false,
+          "permissiveSsh": false,
+          "runAsNonRoot": false
+        }
+      ],
+      "allocationPolicy": {
+        "network": {
+          "networkInterfaces": [
+            {
+              "network": "projects/test-project/global/networks/default",
+              "subnetwork": "projects/test-project/regions/us-central1/subnetworks/default",
+              "noExternalIpAddress": true
+            }
+          ]
+        },
+        "instances": [
+          {
+            "policy": {
+              "machineType": "n2-highmem-8",
+              "provisioningModel": 2,
+              "bootDisk": {
+                "type": "pd-balanced",
+                "sizeGb": "500",
+                "diskInterface": ""
+              },
+              "minCpuPlatform": "",
+              "accelerators": [],
+              "disks": [],
+              "reservation": ""
+            },
+            "installGpuDrivers": false,
+            "installOpsAgent": false,
+            "blockProjectSshKeys": false
+          }
+        ],
+        "serviceAccount": {
+          "email": "worker@example.com",
+          "scopes": []
+        },
+        "labels": {},
+        "tags": []
+      },
+      "labels": {
+        "pistachio-agent": "claude",
+        "pistachio-event": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "logsPolicy": {
+        "destination": 1,
+        "logsPath": ""
+      },
+      "name": "",
+      "uid": "",
+      "priority": "0",
+      "notifications": []
+    },
+    "large-continuation": {
+      "taskGroups": [
+        {
+          "taskSpec": {
+            "computeResource": {
+              "cpuMilli": "32000",
+              "memoryMib": "262144",
+              "bootDiskMib": "0"
+            },
+            "maxRunDuration": "1234s",
+            "volumes": [
+              {
+                "gcs": {
+                  "remotePath": "reference-data"
+                },
+                "mountPath": "/mnt/stateful_partition/gcs/reference-data",
+                "mountOptions": [
+                  "-o",
+                  "ro,allow_other",
+                  "--implicit-dirs",
+                  "--cache-dir=/mnt/stateful_partition/pistachio-cache/reference-data",
+                  "--file-cache-max-size-mb=200000",
+                  "--file-cache-cache-file-for-range-read=true"
+                ]
+              },
+              {
+                "gcs": {
+                  "remotePath": "science-data"
+                },
+                "mountPath": "/mnt/stateful_partition/gcs/science-data",
+                "mountOptions": [
+                  "-o",
+                  "ro,allow_other",
+                  "--implicit-dirs",
+                  "--cache-dir=/mnt/stateful_partition/pistachio-cache/science-data",
+                  "--file-cache-max-size-mb=200000",
+                  "--file-cache-cache-file-for-range-read=true"
+                ]
+              }
+            ],
+            "runnables": [
+              {
+                "container": {
+                  "imageUri": "us-docker.pkg.dev/test/images/worker@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "commands": [
+                    "python",
+                    "-m",
+                    "pistachio.agents.analysis.batch_worker",
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                  ],
+                  "volumes": [
+                    "/mnt/stateful_partition/gcs/reference-data:/mnt/gcs/reference-data:ro",
+                    "/mnt/stateful_partition/gcs/science-data:/mnt/gcs/science-data:ro"
+                  ],
+                  "entrypoint": "",
+                  "options": "",
+                  "blockExternalNetwork": false,
+                  "username": "",
+                  "password": "",
+                  "enableImageStreaming": false
+                },
+                "environment": {
+                  "variables": {
+                    "AGENT_COMPUTE_CHECKPOINT_MAX_GB": "100",
+                    "AGENT_DATA_BUCKETS": "reference-data,science-data",
+                    "AGENT_PARTIAL_CHECKPOINT_SECONDS": "900",
+                    "AGENT_MAX_BUDGET_USD_PER_TURN": "3.0",
+                    "AGENT_ACCESS_MODE": "channel",
+                    "PISTACHIO_GCS_BUCKET": "test-artifacts",
+                    "AGENT_ACCESS_CACHE_SECONDS": "30",
+                    "AGENT_MAX_TURNS": "40",
+                    "AGENT_FALLBACK_MODEL": "claude-opus-5",
+                    "PISTACHIO_CONTROL_PLANE_URL": "https://control.example.com",
+                    "AGENT_MAX_RUN_SECONDS": "1234",
+                    "AGENT_LONG_RUN_UPDATE_SECONDS": "7200",
+                    "AGENT_MAX_TIER": "xlarge",
+                    "AGENT_ATTEMPT": "1",
+                    "HOME": "/srv/pistachio",
+                    "AGENT_COMPUTE_QUOTE_ONLY": "true",
+                    "AGENT_LONG_RUN_THRESHOLD_SECONDS": "600",
+                    "AGENT_LOADING_EMOJI": ":hourglass_flowing_sand:",
+                    "AGENT_TIER": "large",
+                    "AGENT_MODEL": "claude-opus-5-5",
+                    "AGENT_TIERS_ENABLED": "true"
+                  },
+                  "secretVariables": {}
+                },
+                "displayName": "",
+                "ignoreExitStatus": false,
+                "background": false,
+                "alwaysRun": false,
+                "labels": {}
+              }
+            ],
+            "maxRetryCount": 0,
+            "lifecyclePolicies": [],
+            "environments": {}
+          },
+          "taskCount": "1",
+          "name": "",
+          "parallelism": "0",
+          "schedulingPolicy": 0,
+          "taskEnvironments": [],
+          "taskCountPerNode": "0",
+          "requireHostsFile": false,
+          "permissiveSsh": false,
+          "runAsNonRoot": false
+        }
+      ],
+      "allocationPolicy": {
+        "network": {
+          "networkInterfaces": [
+            {
+              "network": "projects/test-project/global/networks/default",
+              "subnetwork": "projects/test-project/regions/us-central1/subnetworks/default",
+              "noExternalIpAddress": true
+            }
+          ]
+        },
+        "instances": [
+          {
+            "policy": {
+              "machineType": "n2-highmem-32",
+              "provisioningModel": 2,
+              "bootDisk": {
+                "type": "pd-balanced",
+                "sizeGb": "1000",
+                "diskInterface": ""
+              },
+              "minCpuPlatform": "",
+              "accelerators": [],
+              "disks": [],
+              "reservation": ""
+            },
+            "installGpuDrivers": false,
+            "installOpsAgent": false,
+            "blockProjectSshKeys": false
+          }
+        ],
+        "serviceAccount": {
+          "email": "worker@example.com",
+          "scopes": []
+        },
+        "labels": {},
+        "tags": []
+      },
+      "labels": {
+        "pistachio-agent": "claude",
+        "pistachio-event": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "logsPolicy": {
+        "destination": 1,
+        "logsPath": ""
+      },
+      "name": "",
+      "uid": "",
+      "priority": "0",
+      "notifications": []
+    }
+  }
+}

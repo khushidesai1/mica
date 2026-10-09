@@ -36,7 +36,7 @@ def tree_rss(root: int) -> int | None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--label", choices=["analysis", "ingest", "segmentation", "plot"], required=True
+        "--label", choices=["analysis", "training", "ingest", "segmentation", "plot"], required=True
     )
     parser.add_argument("--seconds", type=int, default=600)
     parser.add_argument("--output", type=Path)
