@@ -169,7 +169,7 @@ async def test_inventory_rechecks_project_access_before_listing(chat, monkeypatc
     listing = Mock()
     monkeypatch.setattr(direct, "inventory", listing)
 
-    async def switch_project(*args):
+    async def switch_project(*args, **kwargs):
         def switch(doc):
             doc.bind("T1", "D1", "alice@example.com", other, private=True, force=True)
             return other
@@ -572,3 +572,109 @@ async def test_upload_rejection_lists_each_problem(chat, upload_http):
     assert "external.csv" in record["notice_text"]
     assert "large.csv" in record["notice_text"] and "GCS" in record["notice_text"]
     assert not upload_http
+
+
+@pytest.mark.parametrize("archive", [False, True])
+async def test_router_forces_tool_retries_and_logs_only_metadata(monkeypatch, caplog, archive):
+    requests = []
+
+    def respond(request):
+        requests.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "stop_reason": "end_turn",
+                "content": [{"type": "text", "text": "private patient text"}],
+            },
+        )
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(direct.httpx, "AsyncClient", lambda **kw: client)
+    if archive:
+        result = await direct.decide("fake", "model", {}, event_id="event-test", has_archive=True)
+        assert result.route == "compute"
+    else:
+        with pytest.raises(ValueError, match="Couldn't determine the next step"):
+            await direct.decide("fake", "model", {}, event_id="event-test")
+    assert len(requests) == 2 and requests[0] == requests[1]
+    assert requests[0]["tool_choice"] == {
+        "type": "tool",
+        "name": "route_request",
+        "disable_parallel_tool_use": True,
+    }
+    assert "thinking" not in requests[0]
+    assert "event-test" in caplog.text and "end_turn" in caplog.text
+    assert "text" in caplog.text and "private patient text" not in caplog.text
+
+
+async def test_router_uses_valid_second_decision(monkeypatch):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        content = (
+            [{"type": "text", "text": "no tool"}]
+            if len(calls) == 1
+            else [
+                {
+                    "type": "tool_use",
+                    "name": "route_request",
+                    "input": {"route": "reply", "reply": "The denominator is AtoMx export cells."},
+                }
+            ]
+        )
+        return httpx.Response(200, json={"content": content})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(direct.httpx, "AsyncClient", lambda **kw: client)
+    result = await direct.decide("fake", "model", {})
+    assert result.reply == "The denominator is AtoMx export cells." and len(calls) == 2
+
+
+async def test_results_followup_uses_prior_methods_without_worker(chat):
+    first = await chat.accept(payload(text="Compare the counts"))
+    await chat.process(first, 0)
+    record, state = await thread_state(chat, first)
+    # Old messages without methods still load alongside the new optional note.
+    state["messages"][0].pop("methods", None)
+    state["archive"] = "existing/checkpoint.tar.gz"
+    direct.record_exchange(
+        state,
+        "earlier",
+        "Counts?",
+        "AtoMx CellPose cell count",
+        methods=("Panel 1 (cells kept): Proseg cells / AtoMx export cells; OK = >=80%."),
+    )
+    chat.store.put(
+        f"projects/_threads/{record['thread_key']}/checkpoint.json", json.dumps(state).encode()
+    )
+    chat.decision.return_value = direct.Decision(
+        route="reply", reply="The denominator is the AtoMx export, not CellPose."
+    )
+    followup = await chat.accept(
+        payload(
+            "2.0",
+            "1.0",
+            (
+                "Is the first one a percentage of the AtomX or CellPose? you wrote AtomX CellPose "
+                "but theyre two different ones"
+            ),
+        )
+    )
+    assert await chat.process(followup, 0) == "complete"
+    context = chat.decision.call_args.args[2]
+    assert "AtoMx export" in context["recent_messages"][-1]["methods"]
+    assert chat.decision.call_args.kwargs["has_archive"] is True
+    assert chat.decision.call_args.kwargs["event_id"] == followup
+    _, saved = await thread_state(chat, followup)
+    assert saved["messages"][-1]["assistant"] == chat.decision.return_value.reply
+    assert saved["messages"][-1]["methods"] == ""
+    chat.test_client.create_job.assert_not_called()
+
+
+def test_followup_and_methods_prompt_rules():
+    from pistachio.agents.analysis import prompts
+
+    assert "earlier reply or its methods note" in direct.SYSTEM
+    assert "ask instead of guessing or launching a worker" not in direct.SYSTEM
+    assert "notes/methods.md" in prompts.SYSTEM

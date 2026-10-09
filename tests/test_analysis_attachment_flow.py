@@ -23,8 +23,9 @@ from pistachio.agents.analysis.runner import TurnResult
 
 
 @pytest.mark.parametrize("expired", [False, True])
+@pytest.mark.parametrize("note", ["missing", "stale", "updated"])
 async def test_direct_compute_direct_files_survive(
-    chat, upload_http, tmp_path, monkeypatch, expired
+    chat, upload_http, tmp_path, monkeypatch, expired, note
 ):  # noqa: F811
     from test_analysis_attachments import PNG
 
@@ -43,6 +44,12 @@ async def test_direct_compute_direct_files_survive(
     chat.decision.return_value = direct.Decision(route="compute", reply="Making the plot")
     compute = await chat.accept(payload("2.0", "1.0", "plot B against A"))
     assert await chat.process(compute, 0) == "running"
+    _, before = await thread_state(chat, compute)
+    methods_path = Path(before["context"]["workdir"]) / "notes/methods.md"
+    methods_text = "Panel 1 denominator: AtoMx export cells. " + "x" * 2200
+    if note == "stale":
+        methods_path.parent.mkdir(parents=True, exist_ok=True)
+        methods_path.write_text(methods_text)
     calls = []
 
     class Runner:
@@ -52,6 +59,9 @@ async def test_direct_compute_direct_files_survive(
             calls.append(prompt)
             path = ctx.workdir / "outputs/plot.png"
             path.write_bytes(PNG)
+            if note == "updated":
+                methods_path.parent.mkdir(parents=True, exist_ok=True)
+                methods_path.write_text(methods_text)
             return TurnResult("session", "I plotted B against A.", [path])
 
     class Blob:
@@ -86,6 +96,8 @@ async def test_direct_compute_direct_files_survive(
     assert output["source"] == "agent" and output["kind"] == "image"
     assert output["key"].endswith("/turn-1/outputs/plot.png")
     assert saved["messages"][-1]["outputs"] == ["plot.png"]
+    assert saved["messages"][-1]["methods"] == (methods_text[:2000] if note == "updated" else "")
+    assert "Panel 1 denominator" not in str(chat.test_slack.mock_calls)
     if expired:
         chat.store.path(saved["archive"]).unlink()
         shutil.rmtree(home)

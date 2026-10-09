@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlsplit
@@ -118,7 +119,11 @@ sentence. Slack formatting; no markdown headings or tables.
 If a command was denied, use only the reason actually reported. Worker permissions are checked
 automatically, without a Slack approval prompt. Don't blame the user, speculate about a timed-out
 approval, or ask them to say "go" to bypass an automatic block.
-If you lack context to understand a follow-up, ask instead of guessing or launching a worker.
+For a question about results already in recent_messages (what a number or panel means,
+which baseline, denominator, file, method or threshold was used), reply directly when the
+earlier reply or its methods note answers it. Choose compute only when the answer needs
+reading files or code, a new calculation, or a new or changed figure. Never guess a
+definition. If the user's intent itself is unclear, ask one short question.
 """
 )
 
@@ -156,9 +161,13 @@ async def decide(
     context: dict[str, Any],
     *,
     media: Sequence[dict[str, Any]] = (),
+    event_id: str = "",
+    has_archive: bool = False,
 ) -> Decision:
+    invalid_calls = 0
     async with httpx.AsyncClient(timeout=65) as client:
-        for attempt in range(2):
+        # One media fallback and one retry of an invalid routing response, at most.
+        for _ in range(3):
             response = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
@@ -182,35 +191,59 @@ async def decide(
                             "input_schema": Decision.model_json_schema(),
                         }
                     ],
-                    "tool_choice": {"type": "auto", "disable_parallel_tool_use": True},
+                    # Forced tool choice is incompatible with extended thinking; keep it off.
+                    "tool_choice": {
+                        "type": "tool",
+                        "name": "route_request",
+                        "disable_parallel_tool_use": True,
+                    },
                 },
             )
-            if response.status_code != 400 or not media or attempt:
+            if response.status_code == 400 and media:
+                media = ()
+                context = {
+                    **context,
+                    "attachments_note": (
+                        "File contents couldn't be shown; only metadata is available."
+                    ),
+                    "attachments": [
+                        {**{k: v for k, v in f.items() if k != "head"}, "shown": False}
+                        for f in context.get("attachments", [])
+                    ],
+                }
+                continue
+            response.raise_for_status()
+            body = response.json()
+            calls = [
+                b
+                for b in body.get("content", [])
+                if b.get("type") == "tool_use" and b.get("name") == "route_request"
+            ]
+            if len(calls) != 1:
+                invalid_calls += 1
+                if invalid_calls < 2:
+                    continue
+                logging.getLogger(__name__).warning(
+                    "Router omitted a unique route_request: event=%s stop_reason=%s block_types=%s",
+                    event_id,
+                    body.get("stop_reason"),
+                    [b.get("type") for b in body.get("content", [])],
+                )
+                if has_archive:
+                    return Decision(route="compute", reply="Checking the earlier results.")
+            if body.get("stop_reason") == "max_tokens":
+                raise ValueError(
+                    "The response was too long; please ask for a smaller brief change."
+                )
+            if len(calls) != 1:
                 break
-            media = ()
-            context = {
-                **context,
-                "attachments_note": "File contents couldn't be shown; only metadata is available.",
-                "attachments": [
-                    {**{k: v for k, v in f.items() if k != "head"}, "shown": False}
-                    for f in context.get("attachments", [])
-                ],
-            }
-        response.raise_for_status()
-        body = response.json()
-    if body.get("stop_reason") == "max_tokens":
-        raise ValueError("The response was too long; please ask for a smaller brief change.")
-    calls = [
-        b
-        for b in body.get("content", [])
-        if b.get("type") == "tool_use" and b.get("name") == "route_request"
-    ]
-    if len(calls) != 1:
-        raise ValueError("Couldn't determine the next step. Please retry or clarify your request.")
-    result = Decision.model_validate(calls[0]["input"])
-    if result.draft is not None and len(result.draft.encode()) >= 100_000:
-        raise ValueError("The revised brief is too large; please ask for a shorter version.")
-    return result
+            result = Decision.model_validate(calls[0]["input"])
+            if result.draft is not None and len(result.draft.encode()) >= 100_000:
+                raise ValueError(
+                    "The revised brief is too large; please ask for a shorter version."
+                )
+            return result
+    raise ValueError("Couldn't determine the next step. Please retry or clarify your request.")
 
 
 def record_exchange(
@@ -222,6 +255,7 @@ def record_exchange(
     files: Sequence[str] = (),
     outputs: Sequence[str] = (),
     success: bool = True,
+    methods: str = "",
 ) -> None:
     messages = [m for m in state.get("messages", []) if m.get("id") != event_id]
     messages.append(
@@ -232,6 +266,7 @@ def record_exchange(
             "files": list(files),
             "outputs": list(outputs),
             "success": success,
+            "methods": methods[:2000],
         }
     )
     state["messages"] = messages[-12:]
@@ -387,7 +422,9 @@ async def handle(
     transfer_service = Transfers(bridge, storage)
     if event.get("atomx_password_removed"):
         return await finish(
-            bridge, event_id, record,
+            bridge,
+            event_id,
+            record,
             "Please use the AtoMx login button instead, and consider changing that password. "
             "The original message is still in Slack.",
         )
@@ -440,8 +477,14 @@ async def handle(
         state.update(context=ctx, turn=0, is_init=is_init, messages=[])
         if await asyncio.to_thread(briefs.reviewed, storage, grant.project_id, brief):
             state["brief_policy_version"] = briefs.VERSION
-    if cmd and cmd.name in {"transfer", "transfers", "atomx login status", "replace atomx login",
-                            "forget atomx login", "cancel transfer"}:
+    if cmd and cmd.name in {
+        "transfer",
+        "transfers",
+        "atomx login status",
+        "replace atomx login",
+        "forget atomx login",
+        "cancel transfer",
+    }:
         await asyncio.to_thread(
             storage.put, access.checkpoint_key(record["thread_key"]), json.dumps(state).encode()
         )
@@ -559,6 +602,8 @@ async def handle(
             bridge.app.anthropic_api_key.get_secret_value(),
             bridge.settings.model,
             model_context,
+            event_id=event_id,
+            has_archive=bool(state.get("archive")),
             **({"media": media} if media else {}),
         )
         if not is_init and decision.route == "view":
@@ -596,6 +641,8 @@ async def handle(
                 bridge.app.anthropic_api_key.get_secret_value(),
                 bridge.settings.model,
                 context,
+                event_id=event_id,
+                has_archive=bool(state.get("archive")),
                 **({"media": viewed} if viewed else {}),
             )
             if second.route not in {"reply", "compute"}:
@@ -630,6 +677,8 @@ async def handle(
                 bridge.app.anthropic_api_key.get_secret_value(),
                 bridge.settings.model,
                 {**model_context, "data_inventory": metadata},
+                event_id=event_id,
+                has_archive=bool(state.get("archive")),
                 **({"media": media} if media else {}),
             )
             if listed.route != "reply":

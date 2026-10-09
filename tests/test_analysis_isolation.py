@@ -61,7 +61,7 @@ async def test_slack_email_allowlist_is_enforced(bridge):
 async def test_reused_name_never_inherits_other_users_brief(chat, monkeypatch):
     monkeypatch.setattr(direct, "inventory", lambda *a: {"entries": []})
 
-    async def decide(key, model, context):
+    async def decide(key, model, context, **kwargs):
         return direct.Decision(route="reply", reply="Draft ready.", draft=context["brief"])
 
     chat.decision.side_effect = decide
