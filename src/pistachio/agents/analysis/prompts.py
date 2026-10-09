@@ -188,6 +188,7 @@ def build_system_append(
     *,
     toolkit: str = "",
     knowledge_index: str = "",
+    return_scripts: bool = False,
 ) -> str:
     if ctx.survey_only:
         return (
@@ -200,6 +201,15 @@ def build_system_append(
             "upload. Keep the Slack reply short." + "\n" + briefs.POLICY
         )
     system = SYSTEM
+    if return_scripts:
+        system = system.replace(
+            "- For a long script,",
+            "- This user gets copies of the scripts you run attached automatically. "
+            "Don't copy scripts "
+            "into outputs/ or paste whole scripts into your reply; refer to them by file name if "
+            "useful. Keep the final script able to reproduce the delivered results.\n"
+            "- For a long script,",
+        )
     if settings.runtimes_enabled:
         system = system.replace(
             "- Use only packages already installed in {sci_python}. You cannot install packages "

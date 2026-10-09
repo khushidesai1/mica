@@ -268,6 +268,8 @@ async def main(event_id: str) -> None:
         Runner(
             settings,
             runtime_manager=runtimes,
+            return_scripts=request.get("return_scripts") is True,
+            script_manifest=resume.get("script_manifest") if resume else None,
             compute_manager=compute,
             user_memory=request.get("user_memory", "") if request.get("private") else "",
             project_name=request.get("project_name", ""),
@@ -328,6 +330,11 @@ async def main(event_id: str) -> None:
                     if not state or not compute.session_id:
                         continue
                     stage_manifest = stages.manifest()
+                    script_record = (
+                        {"script_manifest": agent.runner.script_capture.checkpoint()}
+                        if agent.runner.script_capture
+                        else {}
+                    )
                     checkpoint_id = uuid4().hex
                     local = home / f"partial-{checkpoint_id}.tar.gz"
                     await asyncio.to_thread(
@@ -344,6 +351,7 @@ async def main(event_id: str) -> None:
                     context = asdict(state[0])
                     context["session_id"] = compute.session_id
                     partial = {
+                        **script_record,
                         "event_id": event_id,
                         "attempt": settings.attempt,
                         "archive": key,
@@ -435,6 +443,11 @@ async def main(event_id: str) -> None:
         else {}
     )
     if compute and compute.pending and state:
+        script_record = (
+            {"script_manifest": agent.runner.script_capture.checkpoint()}
+            if agent.runner.script_capture
+            else {}
+        )
         await asyncio.to_thread(
             workspace_snapshot,
             archive,
@@ -449,6 +462,7 @@ async def main(event_id: str) -> None:
             "event_id": event_id,
             "attempt": settings.attempt,
             "outcome": "handoff",
+            **script_record,
             **knowledge_record,
             "archive": key,
             "model_cost": compute.model_cost,

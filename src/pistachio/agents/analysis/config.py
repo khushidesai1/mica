@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     runtime_timeout_seconds: int = Field(default=900, ge=1, le=900)
     runtime_max_local_gb: float = Field(default=60, gt=0)
     runtime_denylist: str = ""
+    return_scripts_default: bool = False
     attachment_max_files: int = Field(default=10, ge=1, le=20)
     attachment_max_mb: int = Field(default=100, ge=1, le=500)
     attachment_max_message_mb: int = Field(default=250, ge=1, le=1000)

@@ -43,6 +43,10 @@ Existing threads keep their project. In channels, add `--force` to replace a sel
 • `clean brief` — Draft a guide cleanup for review.
 • `cancel` — Stop queued or running computation.
 
+*Script attachments*
+• `scripts` — Show your setting (off by default).
+• `scripts on` / `scripts off` — Attach scripts you run, or stop attaching them (DM or channel).
+
 *Memory*
 • `memory context` — Show the conversation summary for this scope.
 • `forget context` — Clear that summary and start fresh context.

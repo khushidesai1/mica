@@ -1,0 +1,10 @@
+{
+  "PreToolUse": [
+    {
+      "matcher": null,
+      "hooks": [
+        "guard"
+      ]
+    }
+  ]
+}

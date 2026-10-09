@@ -54,6 +54,12 @@ def parse(raw: str) -> Command | None:
     if not words:
         return None
     action = words[0].lower()
+    if action == "scripts":
+        if len(words) == 1:
+            return Command("scripts")
+        if len(words) == 2 and words[1].lower() in {"on", "off"}:
+            return Command("scripts", (words[1].lower(),))
+        raise ValueError("Use scripts, scripts on or scripts off.")
     if action == "knowledge" and len(words) == 3 and words[1].lower() == "show":
         return Command("knowledge show", (words[2],))
     if action == "knowledge" and len(words) == 3 and words[1].lower() == "github":
@@ -139,6 +145,12 @@ def run(
         return COMMAND_HELP
     if cmd.name == "help write":
         return WRITE_HELP + "\n\n" + WRITE_DETAILS
+    if cmd.name == "scripts":
+        from . import user_settings
+
+        return user_settings.command(
+            registry.storage, email, cmd.args, settings.return_scripts_default, event_id
+        )
     if cmd.name.startswith("write "):
         from .write_access import command
 

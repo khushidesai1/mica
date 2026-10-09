@@ -602,6 +602,16 @@ class BatchBridge:
                 )
                 record["write_grant"] = writable.model_dump(mode="json") if writable else None
                 await self.repository.set_connector_state(f"claude-event:{event_id}", record)
+            if "return_scripts" not in record:
+                from . import user_settings
+
+                record["return_scripts"] = await asyncio.to_thread(
+                    user_settings.effective,
+                    storage,
+                    record["principal"],
+                    self.settings.return_scripts_default,
+                )
+                await self.repository.set_connector_state(f"claude-event:{event_id}", record)
             manifest = {
                 "payload": record["payload"],
                 "thread_key": record["thread_key"],
@@ -645,6 +655,8 @@ class BatchBridge:
                 if record["private"]
                 else "",
             }
+            if record["return_scripts"]:
+                manifest["return_scripts"] = True
             if record.get("compute_version"):
                 from .compute_batch import worker_manifest
 

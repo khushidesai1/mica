@@ -16,7 +16,8 @@ from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.web.async_slack_response import AsyncSlackResponse
 
-from . import attachments
+from . import attachments, script_capture
+from .access import run_root
 from .config import Settings
 from .data_links import message_text
 from .outputs import files_under, publish
@@ -140,6 +141,9 @@ class SlackAgent:
             log.exception("Slack computation failed: %s", key)
             await self.say(key, "Sorry, something broke on my end. Mind trying again?")
             raise
+        finally:
+            if getattr(self.runner, "return_scripts", False) and not self.continuing:
+                script_capture.clear(ctx.workdir)
 
     async def run(
         self,
@@ -415,6 +419,26 @@ class SlackAgent:
                 )
             else:
                 uploads.append({"file": str(path), "filename": path.name})
+        script_notes: list[str] = []
+        capture = getattr(self.runner, "script_capture", None)
+        if getattr(self.runner, "return_scripts", False) and capture:
+            try:
+                extra = capture.uploads(turn)
+            except (ValueError, OSError):
+                extra = []
+                for path in list(capture.scripts):
+                    capture.skip(path, "attachment copy could not be prepared")
+            script_notes = capture.notes()
+            for upload in extra:
+                path = Path(upload["file"])
+                root = self.run_prefix or run_root(False, "", ctx.project_slug, "", ctx.thread_ts)
+                object_key = f"{root}/turn-{turn}/{path.relative_to(ctx.workdir)}"
+                try:
+                    await asyncio.to_thread(self.storage.upload, object_key, path)
+                    published[path] = object_key
+                except Exception:
+                    log.warning("Could not archive a returned script")
+            uploads.extend(extra)
         if uploads and self.authorized and not await asyncio.to_thread(self.authorized):
             raise PermissionError("Project access changed before file delivery")
         if uploads:
@@ -434,6 +458,8 @@ class SlackAgent:
         # Preserve the workspace checkpoint after an upload failure so a resend can reuse
         # the reports. Record what the user actually received, not the model's success claim.
         reply = "\n\n".join(delivery_issues) if delivery_issues else result.text
+        if script_notes:
+            reply += "\n\n" + "\n".join(script_notes)
         if gcs.uploaded:
             reply += "\n\nSaved to GCS:\n" + "\n".join(f"- {uri}" for uri in gcs.uploaded)
         notices = [event.notice() for event in result.runtimes if event.notice()]

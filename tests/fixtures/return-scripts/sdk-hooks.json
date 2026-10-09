@@ -1,0 +1,47 @@
+{
+  "sdk_version": "0.2.163",
+  "model_endpoint": "loopback mock; no paid model calls",
+  "events": [
+    {
+      "hook_event_name": "PreToolUse",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "printf success",
+        "timeout": 1000
+      }
+    },
+    {
+      "hook_event_name": "PostToolUse",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "printf success",
+        "timeout": 1000
+      },
+      "tool_response": {
+        "stdout": "success",
+        "stderr": "",
+        "interrupted": false,
+        "isImage": false,
+        "noOutputExpected": false
+      }
+    },
+    {
+      "hook_event_name": "PreToolUse",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "exit 7",
+        "timeout": 1000
+      }
+    },
+    {
+      "hook_event_name": "PostToolUseFailure",
+      "tool_name": "Bash",
+      "tool_input": {
+        "command": "exit 7",
+        "timeout": 1000
+      },
+      "error": "Exit code 7"
+    }
+  ],
+  "cli_version": "2.1.286"
+}

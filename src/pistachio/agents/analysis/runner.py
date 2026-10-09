@@ -28,7 +28,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import HookContext, HookInput, HookJSONOutput, SandboxSettings
 
-from . import prompts
+from . import prompts, script_capture
 from .attachments import classify
 from .compute_tools import ComputeManager, restored_cost
 from .compute_tools import run_query as compute_query
@@ -99,6 +99,8 @@ def build_options(
     user_memory: str = "",
     conversation_summary: str = "",
     knowledge_index: str = "",
+    return_scripts: bool = False,
+    capture: script_capture.Capture | None = None,
     project_name: str = "",
     write_access: str = "No GCS write grant for this run.",
     runtime_tmp: Path = Path("/tmp"),
@@ -118,6 +120,11 @@ def build_options(
     tools.extend(f"mcp__pistachio__{t.name}" for t in compute_tools)
 
     visual_reads = 0
+    capture = (
+        (capture or script_capture.Capture(ctx.workdir))
+        if return_scripts and not ctx.survey_only
+        else None
+    )
 
     async def guard(
         event: HookInput, _tool_id: str | None, _context: HookContext
@@ -210,6 +217,17 @@ def build_options(
             visual_reads += 1
         if compute and name == "Bash":
             compute.sampler.begin(event.get("tool_use_id") or _tool_id or "", args)
+        if capture and name == "Bash":
+            await asyncio.to_thread(
+                capture.before, str(event.get("tool_use_id") or _tool_id or ""), args
+            )
+        return {}
+
+    async def captured_script(
+        event: HookInput, tool_id: str | None, _context: HookContext
+    ) -> HookJSONOutput:
+        if capture and event.get("tool_name") == "Bash":
+            capture.after(str(event.get("tool_use_id") or tool_id or ""), dict(event))
         return {}
 
     async def resource_feedback(
@@ -253,6 +271,7 @@ def build_options(
                 conversation_summary,
                 toolkit=manager.toolkit() if manager else "",
                 knowledge_index=knowledge_index,
+                return_scripts=return_scripts,
             )
             + "\nCurrent GCS write access (application-authorized):\n"
             + write_access
@@ -293,10 +312,22 @@ def build_options(
             "PreToolUse": [HookMatcher(hooks=[guard])],
             **(
                 {
-                    "PostToolUse": [HookMatcher(matcher="Bash", hooks=[resource_feedback])],
-                    "PostToolUseFailure": [HookMatcher(matcher="Bash", hooks=[resource_feedback])],
+                    "PostToolUse": [
+                        HookMatcher(
+                            matcher="Bash",
+                            hooks=([resource_feedback] if compute else [])
+                            + ([captured_script] if capture else []),
+                        )
+                    ],
+                    "PostToolUseFailure": [
+                        HookMatcher(
+                            matcher="Bash",
+                            hooks=([resource_feedback] if compute else [])
+                            + ([captured_script] if capture else []),
+                        )
+                    ],
                 }
-                if compute
+                if compute or capture
                 else {}
             ),
         },
@@ -395,6 +426,8 @@ class Runner:
         user_memory: str = "",
         conversation_summary: str = "",
         knowledge_index: str = "",
+        return_scripts: bool = False,
+        script_manifest: dict[str, Any] | None = None,
         project_name: str = "",
         write_access: str = "No GCS write grant for this run.",
         runtime_manager: RuntimeManager | None = None,
@@ -403,6 +436,9 @@ class Runner:
         self.settings, self.sandbox = settings, sandbox
         self.user_memory, self.project_name = user_memory, project_name
         self.conversation_summary = conversation_summary
+        self.return_scripts = return_scripts
+        self.script_manifest = script_manifest
+        self.script_capture: script_capture.Capture | None = None
         self.knowledge_index = knowledge_index
         self.knowledge_reads = 0
         self.write_access = write_access
@@ -444,6 +480,9 @@ class Runner:
         if self.compute:
             for name in ("scratch", "checkpoints"):
                 (ctx.workdir / name).mkdir(exist_ok=True)
+        if self.return_scripts and not ctx.survey_only:
+            self.script_capture = script_capture.Capture(ctx.workdir, self.script_manifest)
+            self.script_manifest = None
         before, start = snapshot_outputs(ctx.workdir / "outputs"), time.monotonic()
         result = TurnResult(session_id=ctx.session_id)
         manager = self.runtime_manager if not ctx.survey_only else None
@@ -469,6 +508,8 @@ class Runner:
                         user_memory=self.user_memory,
                         conversation_summary=self.conversation_summary,
                         knowledge_index=self.knowledge_index,
+                        return_scripts=self.return_scripts,
+                        capture=self.script_capture,
                         project_name=self.project_name,
                         write_access=self.write_access,
                         runtime_tmp=runtime_tmp,
