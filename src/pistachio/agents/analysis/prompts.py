@@ -33,8 +33,22 @@ in plain language.
   use absolute data paths, or combine `cd` and the operation in the same command.
 - Write analysis code to a script under code/ and run it with {sci_python}. Use `python -c` only
   for one-line checks. For follow-ups, edit and rerun the earlier scripts from this thread.
+- For a long script, set an explicit Bash timeout appropriate to the expected duration, up to
+  {max_run_ms} milliseconds. Keep it in the foreground and wait for its exit status; do not
+  detach it, use run_in_background, or treat a successful launch as a completed analysis.
+  The application updates the existing progress dropdown for long runs. Do not post periodic
+  chat messages or run busy polling loops just to keep the user updated.
 - Use only packages already installed in {sci_python}. You cannot install packages or reach the
   internet. If something you need is missing, say so.
+- For spatial_analysis_pipeline (sap), first Read {tools_dir}/spatial_analysis.md. Its separate
+  interpreter is /opt/sap/bin/python, not the general science interpreter. Check that it exists
+  and run `/opt/sap/bin/python {tools_dir}/spatial_smoke.py` before using it. If absent or the
+  check fails, report the missing runtime; do not install it or replace its scientific method.
+  Use this interpreter only for sap scripts. Follow the guide's offline Dask and CPU settings,
+  channel/scale checks, source completeness checks, and workspace-only output paths.
+- AtoMx/AtomX SFTP transfers use the separate atomx-transfer job integration in the conversation
+  service. Do not run transfer scripts or request credentials in chat. Direct the user to
+  `transfer <sample> [as <name>] [from <export_root>]` for its login and confirmation controls.
 
 ## Choosing data
 - Use the project brief first, then list {data_path}, to decide which file(s) fit the request.
@@ -139,6 +153,7 @@ def build_system_append(
     user_memory: str = "",
     project_name: str = "",
     conversation_summary: str = "",
+    *, toolkit: str = "",
 ) -> str:
     if ctx.survey_only:
         return (
@@ -150,15 +165,30 @@ def build_system_append(
             "in ordinary chat so you can revise the incomplete draft; never require a Markdown "
             "upload. Keep the Slack reply short." + "\n" + briefs.POLICY
         )
+    system = SYSTEM
+    if settings.runtimes_enabled:
+        system = system.replace(
+            "- Use only packages already installed in {sci_python}. You cannot install packages "
+            "or reach the\n"
+            "  internet. If something you need is missing, say so.",
+            "- Use {sci_python} by default. If a needed package is missing, call ensure_packages "
+            "with exact PyPI names or a toolkit name (pin versions when known). It returns a "
+            "separate python path; run scripts needing the package with that path. Shell commands "
+            "still have no internet: never run pip/uv/conda yourself. Do not install something "
+            "the preinstalled stack already does. If setup fails, explain and suggest "
+            "an alternative."
+        )
     return (
-        SYSTEM.format(
+        system.format(
             data_path=ctx.data_path,
             sci_python=settings.sci_python,
             tools_dir=settings.tools_dir,
             project_slug=project_name or ctx.project_slug,
             project_md=ctx.project_md,
             guide_policy=briefs.POLICY,
+            max_run_ms=settings.max_run_seconds * 1000,
         )
+        + ("\n" + toolkit if settings.runtimes_enabled and toolkit else "")
         + ("\n# Conversation memory\n" + conversation_memory.RULES + "\n" + conversation_summary)
         + (
             "\n# Personal preferences (private to you)\n" + RULES + "\n" + user_memory

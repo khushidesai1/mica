@@ -1,3 +1,8 @@
+> **8 October 2026 update:** Use `main`. The deployed resize release has been recovered
+> into Git. The branch and current-release instructions below are historical.
+> See [the current deployment record](slack-agent-deployment.md) and
+> [source provenance](deployed-source-20261008.json). Terraform state remains separate.
+
 # Pistachio handoff to another Mac
 
 Prepared 5 October 2026. This is the setup guide for the existing Pistachio Slack agent.

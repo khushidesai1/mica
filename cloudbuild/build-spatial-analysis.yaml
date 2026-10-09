@@ -1,0 +1,72 @@
+# Build only, on explicit request. Deploying this image is a separate step.
+steps:
+  - id: pinned-spatial-source
+    name: gcr.io/cloud-builders/git
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        git clone https://github.com/harjaisal/spatial_analysis_pipeline spatial-source
+        git -C spatial-source checkout --detach de96763933ab5952bc0ba304cb10edadfb1614a0
+        test "$(git -C spatial-source rev-parse HEAD)" = de96763933ab5952bc0ba304cb10edadfb1614a0
+  - id: pinned-spatial-inputs
+    name: gcr.io/google.com/cloudsdktool/google-cloud-cli:stable
+    entrypoint: bash
+    args:
+      - -ceu
+      - exec "$$(gcloud info --format='value(basic.python_location)')" tools/spatial_build.py fetch
+  - id: spatial-slack-worker
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    env: [DOCKER_BUILDKIT=1]
+    args:
+      - -ceu
+      - |
+        [[ '${_SLACK_AGENT_IMAGE}' =~ @sha256:[a-f0-9]{64}$ ]]
+        docker build --platform linux/amd64 \
+          --build-arg 'SLACK_AGENT_IMAGE=${_SLACK_AGENT_IMAGE}' \
+          -f docker/Dockerfile.spatial-analysis -t '${_SPATIAL_IMAGE}' .
+  - id: synthetic-spatial-canary
+    name: gcr.io/cloud-builders/docker
+    args:
+      - run
+      - --rm
+      - --network=none
+      # Bubblewrap creates the inner sandbox; the image still runs as UID 65532.
+      - --privileged
+      - --cpus=2
+      - --memory=8g
+      - -e
+      - HOME=/tmp
+      - -e
+      - MPLCONFIGDIR=/tmp/mpl
+      - -v
+      - /workspace:/workspace:ro
+      - --entrypoint
+      - bwrap
+      - '${_SPATIAL_IMAGE}'
+      - --unshare-net
+      - --die-with-parent
+      - --ro-bind
+      - /
+      - /
+      - --dev
+      - /dev
+      - --proc
+      - /proc
+      - --tmpfs
+      - /tmp
+      - --chdir
+      - /tmp
+      - --
+      - /opt/sap/bin/python
+      - /workspace/scripts/check_spatial_release.py
+images: ['${_SPATIAL_IMAGE}']
+substitutions:
+  _SLACK_AGENT_IMAGE: REPLACE_WITH_PINNED_SLACK_AGENT_IMAGE_DIGEST
+  _SPATIAL_IMAGE: REPLACE_WITH_SPATIAL_SLACK_IMAGE_URI
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+  diskSizeGb: 100
+timeout: 3600s

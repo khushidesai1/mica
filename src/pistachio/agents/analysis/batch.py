@@ -9,7 +9,6 @@ import logging
 import re
 import time
 from contextlib import suppress
-from datetime import UTC, datetime, timedelta
 from html import escape
 from typing import Any
 from urllib.parse import urlsplit
@@ -40,8 +39,28 @@ def digest(value: str) -> str:
 
 
 def job_spec(
-    app: AppSettings, settings: Settings, event_id: str, mounts: set[str] | None = None
+    app: AppSettings,
+    settings: Settings,
+    event_id: str,
+    mounts: set[str] | None = None,
+    *,
+    tier: str = "standard",
+    attempt: int = 0,
+    budget: float | None = None,
+    duration: int | None = None,
 ) -> batch_v1.Job:
+    import math
+
+    from .tiers import resolve
+
+    shape = resolve(tier, settings)
+    seconds = shape.max_seconds if duration is None else duration
+    if not 1 <= seconds <= shape.max_seconds or not 0 <= attempt <= 20:
+        raise ValueError("Invalid worker duration or attempt.")
+    if budget is not None and (not math.isfinite(budget) or not 0 < budget <= 10000):
+        raise ValueError("Invalid reserved model budget.")
+    if not settings.tiers_enabled and (attempt or duration is not None or budget is not None):
+        raise ValueError("Worker continuation is disabled.")
     if not app.slack_agent_image or "@sha256:" not in app.slack_agent_image:
         raise ValueError("Set PISTACHIO_SLACK_AGENT_IMAGE to a pinned Claude worker image")
     if not settings.data_buckets and not settings.data_project:
@@ -81,8 +100,38 @@ def job_spec(
         "AGENT_LOADING_EMOJI": settings.loading_emoji,
         "AGENT_FALLBACK_MODEL": settings.fallback_model,
         "AGENT_MAX_TURNS": str(settings.max_turns),
-        "AGENT_MAX_BUDGET_USD_PER_TURN": str(settings.max_budget_usd_per_turn),
+        "AGENT_MAX_BUDGET_USD_PER_TURN": str(
+            settings.max_budget_usd_per_turn if budget is None else budget
+        ),
+        "AGENT_LONG_RUN_THRESHOLD_SECONDS": str(settings.long_run_threshold_seconds),
+        "AGENT_LONG_RUN_UPDATE_SECONDS": str(settings.long_run_update_seconds),
+        "AGENT_MAX_RUN_SECONDS": str(seconds),
     }
+    if settings.tiers_enabled:
+        environment.update(
+            {
+                "AGENT_TIERS_ENABLED": "true",
+                "AGENT_TIER": tier,
+                "AGENT_ATTEMPT": str(attempt),
+                "AGENT_MAX_TIER": settings.max_tier,
+                "AGENT_COMPUTE_QUOTE_ONLY": str(settings.compute_quote_only).lower(),
+                "AGENT_PARTIAL_CHECKPOINT_SECONDS": str(settings.partial_checkpoint_seconds),
+                "AGENT_COMPUTE_CHECKPOINT_MAX_GB": str(settings.compute_checkpoint_max_gb),
+            }
+        )
+    if settings.runtimes_enabled:
+        environment.update(
+            {
+                "AGENT_RUNTIMES_ENABLED": "true",
+                "AGENT_RUNTIME_ROOT": str(settings.runtime_root),
+                "AGENT_RUNTIME_MIN_AGE_DAYS": str(settings.runtime_min_age_days),
+                "AGENT_RUNTIME_MAX_GB": str(settings.runtime_max_gb),
+                "AGENT_RUNTIME_MAX_NEW_PER_TURN": str(settings.runtime_max_new_per_turn),
+                "AGENT_RUNTIME_TIMEOUT_SECONDS": str(settings.runtime_timeout_seconds),
+                "AGENT_RUNTIME_MAX_LOCAL_GB": str(settings.runtime_max_local_gb),
+                "AGENT_RUNTIME_DENYLIST": settings.runtime_denylist,
+            }
+        )
     runnable = batch_v1.Runnable(
         container=batch_v1.Runnable.Container(
             image_uri=app.slack_agent_image,
@@ -95,8 +144,10 @@ def job_spec(
     task = batch_v1.TaskSpec(
         runnables=[runnable],
         max_retry_count=0,
-        max_run_duration="3600s",
-        compute_resource=batch_v1.ComputeResource(cpu_milli=8000, memory_mib=65536),
+        max_run_duration=f"{seconds}s",
+        compute_resource=batch_v1.ComputeResource(
+            cpu_milli=shape.vcpus * 1000, memory_mib=shape.memory_gib * 1024
+        ),
         volumes=[
             batch_v1.Volume(
                 gcs=batch_v1.GCS(remote_path=b),
@@ -115,9 +166,9 @@ def job_spec(
         ],
     )
     policy = batch_v1.AllocationPolicy.InstancePolicy(
-        machine_type="n2-highmem-8",
+        machine_type=shape.machine,
         provisioning_model=batch_v1.AllocationPolicy.ProvisioningModel.SPOT,
-        boot_disk=batch_v1.AllocationPolicy.Disk(type_="pd-balanced", size_gb=500),
+        boot_disk=batch_v1.AllocationPolicy.Disk(type_=shape.disk_type, size_gb=shape.disk_gb),
     )
     return batch_v1.Job(
         task_groups=[batch_v1.TaskGroup(task_count=1, task_spec=task)],
@@ -219,45 +270,20 @@ class BatchBridge:
         return settings, {bucket} if bucket else set()
 
     async def schedule(self, event_id: str, tick: int = 0) -> None:
-        """Use the existing queue; named polling tasks survive retries without duplicate jobs."""
-        from google.auth import default
-        from google.auth.transport.requests import AuthorizedSession
+        """Named polling tasks survive retries without duplicate jobs."""
+        from .job_lifecycle import enqueue
 
-        app = self.app
-        parent = (
-            f"projects/{app.gcp_project}/locations/{app.gcp_region}/queues/{app.cloud_tasks_queue}"
+        await enqueue(
+            self.app,
+            f"claude-{event_id}-{tick}",
+            f"/api/v1/internal/slack-analysis/process/{event_id}/{tick}",
+            30 if tick else 0,
         )
-        task: dict[str, Any] = {
-            "name": f"{parent}/tasks/claude-{event_id}-{tick}",
-            "dispatchDeadline": "180s",
-            "httpRequest": {
-                "httpMethod": "POST",
-                "url": (
-                    f"{app.control_plane_url}/api/v1/internal/slack-analysis/"
-                    f"process/{event_id}/{tick}"
-                ),
-                "oidcToken": {
-                    "serviceAccountEmail": app.cloud_tasks_service_account,
-                    "audience": app.control_plane_url,
-                },
-            },
-        }
-        if tick:
-            task["scheduleTime"] = (datetime.now(UTC) + timedelta(seconds=30)).isoformat()
-
-        def enqueue() -> None:
-            credentials, _ = default(scopes=["https://www.googleapis.com/auth/cloud-platform"])  # type: ignore[no-untyped-call]
-            response = AuthorizedSession(credentials).post(  # type: ignore[no-untyped-call]
-                f"https://cloudtasks.googleapis.com/v2/{parent}/tasks",
-                json={"task": task},
-                timeout=20,
-            )
-            if response.status_code != 409:
-                response.raise_for_status()
-
-        await asyncio.to_thread(enqueue)
 
     async def accept(self, payload: dict[str, Any], *, principal: str | None = None) -> str:
+        from .transfers import scrub_password_paste
+
+        payload = await scrub_password_paste(self, payload)
         event = payload["event"]
         thread = event.get("thread_ts") or event["ts"]
         thread_key = digest(f"{payload.get('team_id')}:{event['channel']}:{thread}")
@@ -384,6 +410,12 @@ class BatchBridge:
         client = batch_v1.BatchServiceClient()
         parent = f"projects/{self.app.gcp_project}/locations/{self.app.gcp_region}"
         name = f"{parent}/jobs/claude-{event_id}"
+        name = record.get("job", name)
+        if record["status"] == "awaiting_approval":
+            from .compute_batch import awaiting_approval
+
+            await awaiting_approval(self, event_id, record)
+            return
         if record["status"] in {"pending", "submitting"} and not record.get("cancel_requested"):
             grant = await asyncio.to_thread(
                 access.resolve,
@@ -459,12 +491,44 @@ class BatchBridge:
                 return
             record["data_buckets"] = resolved.data_buckets
             record["mount_buckets"] = sorted(mounts)
-            for slot in range(self.settings.max_concurrent_runs):
+            pool, slots, seconds = (
+                "claude-slot",
+                self.settings.max_concurrent_runs,
+                self.settings.max_run_seconds,
+            )
+            if self.settings.tiers_enabled or record.get("compute_version"):
+                from .compute_batch import prepare_attempt
+
+                try:
+                    prepared = await prepare_attempt(self, event_id, record)
+                    if prepared is None:
+                        return
+                    pool, slots, seconds = prepared
+                except Exception:
+                    log.exception("Compute admission failed for %s", event_id)
+                    record["status"] = "failed"
+                    await self.notify(
+                        event_id,
+                        record,
+                        "failed",
+                        "Could not validate compute prices, access, or remaining budget. "
+                        "No new worker was started; please retry after this is resolved.",
+                    )
+                    return
+                name = record["job"]
+            for slot in range(slots):
                 claim = await self.repository.begin_event(
-                    f"claude-slot:{slot}", lease_seconds=10800
+                    f"{pool}:{slot}", lease_seconds=seconds + 7200
                 )
                 if claim.status == "claimed":
-                    record.update(slot=slot, slot_token=claim.token, status="submitting")
+                    record.update(
+                        slot=slot,
+                        slot_token=claim.token,
+                        status="submitting",
+                        max_run_seconds=seconds,
+                    )
+                    if record.get("compute_version"):
+                        record.update(slot_pool=pool, submitted=time.time())
                     # Persist before submission: an HTTP retry uses the same job and slot.
                     await self.repository.set_connector_state(f"claude-event:{event_id}", record)
                     break
@@ -473,7 +537,9 @@ class BatchBridge:
                     event_id,
                     record,
                     "waiting",
-                    "All workers are busy right now. You're in the queue…",
+                    "Waiting for a large worker; another large run is active…"
+                    if pool != "claude-slot"
+                    else "All workers are busy right now. You're in the queue…",
                 )
                 return
         if record["status"] == "submitting":
@@ -533,6 +599,10 @@ class BatchBridge:
                 if record["private"]
                 else "",
             }
+            if record.get("compute_version"):
+                from .compute_batch import worker_manifest
+
+                manifest.update(worker_manifest(record, self.settings))
             await asyncio.to_thread(
                 storage.put,
                 f"{PREFIX}/events/{event_id}/request.json",
@@ -542,21 +612,34 @@ class BatchBridge:
                 await asyncio.to_thread(
                     client.create_job,
                     parent=parent,
-                    job_id=f"claude-{event_id}",
+                    job_id=name.rsplit("/", 1)[-1],
                     job=job_spec(
                         self.app,
                         self.settings.model_copy(
                             update={
                                 "data_buckets": record.get(
                                     "data_buckets", self.settings.data_buckets
-                                )
+                                ),
+                                "max_run_seconds": record.get("max_run_seconds", 3600),
+                                "tiers_enabled": bool(record.get("compute_version"))
+                                or self.settings.tiers_enabled,
                             }
                         ),
                         event_id,
                         set(record["mount_buckets"]) if "mount_buckets" in record else None,
+                        **(
+                            {
+                                "tier": record["tier"],
+                                "attempt": record["attempt"],
+                                "budget": record["model_reserved"],
+                                "duration": record["max_run_seconds"],
+                            }
+                            if record.get("compute_version")
+                            else {}
+                        ),
                     ),
                 )
-            record.update(status="running", started=time.time())
+            record.update(status="running", started=record.get("submitted", time.time()))
             await self.repository.set_connector_state(f"claude-event:{event_id}", record)
         try:
             job = await asyncio.to_thread(client.get_job, name=name)
@@ -574,11 +657,16 @@ class BatchBridge:
                 )
         if (
             state not in {"SUCCEEDED", "FAILED", "DELETION_IN_PROGRESS"}
-            and time.time() - record["started"] > 7200
+            and time.time() - record["started"] > record.get("max_run_seconds", 3600) + 3600
         ):
             await asyncio.to_thread(client.delete_job, name=name)
             return  # Keep the slot until a later poll observes termination/deletion.
         if state in {"SUCCEEDED", "FAILED"}:
+            if record.get("compute_version"):
+                from .compute_batch import terminal
+
+                if await terminal(self, event_id, record, client, state):
+                    return
             record["status"] = (
                 "complete"
                 if state == "SUCCEEDED" and not record.get("cancel_requested")
@@ -591,7 +679,8 @@ class BatchBridge:
                     event_id,
                     record,
                     "failed",
-                    "The worker stopped before finishing. Your earlier progress is safe, "
+                    record.get("compute_failure")
+                    or "The worker stopped before finishing. Your earlier progress is safe, "
                     "so send another message to retry.",
                 )
             if record["status"] == "complete":
@@ -607,7 +696,7 @@ class BatchBridge:
                         self, event_id, record, storage, exchange["assistant"]
                     )
             await self.repository.release_event(
-                f"claude-slot:{record['slot']}", record["slot_token"]
+                f"{record.get('slot_pool', 'claude-slot')}:{record['slot']}", record["slot_token"]
             )
 
     async def cancel(self, event_id: str, record: dict[str, Any]) -> None:
@@ -635,7 +724,7 @@ class BatchBridge:
                     try:
                         prior = await self.repository.get_connector_state(key) or prior
                         prior["cancelled_by"] = event_id
-                        if prior["status"] == "pending":
+                        if prior["status"] in {"pending", "awaiting_approval"}:
                             prior["status"] = "failed"
                             await self.notify(
                                 cursor, prior, "cancelled", "Cancelled before starting."
@@ -646,6 +735,7 @@ class BatchBridge:
                                 f"projects/{self.app.gcp_project}/locations/"
                                 f"{self.app.gcp_region}/jobs/claude-{cursor}"
                             )
+                            name = prior.get("job", name)
                             if not prior.get("cancel_requested"):
                                 with suppress(NotFound):
                                     await asyncio.to_thread(client.delete_job, name=name)

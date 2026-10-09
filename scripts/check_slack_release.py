@@ -25,8 +25,12 @@ from pistachio.agents.analysis import (
 )
 from pistachio.agents.analysis.commands import Command
 from pistachio.agents.analysis.config import Settings
+from pistachio.agents.analysis.progress import TaskProgress, check_in_due
 from pistachio.agents.analysis.registry import Registry
+from pistachio.agents.analysis.slack_format import activity_blocks
 from pistachio.agents.analysis.storage import LocalStorage
+from pistachio.services.tools import BOOTSTRAP_TOOLS
+from pistachio.tool_catalog import ATOMX_TRANSFER_ID, SPATIAL_ANALYSIS_ID
 
 
 def check(source: Path, mode: str) -> None:
@@ -39,6 +43,20 @@ def check(source: Path, mode: str) -> None:
         ), file
     print(f"SOURCE_VERIFIED: {len(files)} application files")
     settings = Settings(_env_file=None)
+    assert settings.long_run_threshold_seconds == 600
+    assert settings.long_run_update_seconds == 7200
+    assert settings.max_run_seconds == 604800
+    assert not settings.transfers_enabled
+    assert not check_in_due(0, None, 599, 600, 7200)
+    assert check_in_due(0, None, 600, 600, 7200)
+    assert not check_in_due(0, 600, 7799, 600, 7200)
+    assert check_in_due(0, 600, 27 * 3600, 600, 7200)
+    card = activity_blocks(
+        [TaskProgress("job", "Analysis", "Running")], check_in="Run elapsed: 1d 3h 0m"
+    )[0]["tasks"][0]
+    assert card["status"] == "in_progress" and "details" in card
+    assert {ATOMX_TRANSFER_ID, SPATIAL_ANALYSIS_ID} <= {t.id for t in BOOTSTRAP_TOOLS}
+    print("LONG_RUN_PROGRESS_AND_TOOL_CATALOG_VERIFIED")
     with tempfile.TemporaryDirectory() as temporary:
         work = Path(temporary).resolve()
         store = LocalStorage(work / "storage")
@@ -158,6 +176,8 @@ def check_worker(work: Path, source: Path, settings: Settings) -> None:
     assert "User hypothesis: unverified" in opts.system_prompt["append"]
     assert "# Personal preferences" in opts.system_prompt["append"]
     assert opts.max_buffer_size == 16 * 1024 * 1024
+    assert opts.env["BASH_MAX_TIMEOUT_MS"] == "604800000"
+    assert opts.env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
     guard = opts.hooks["PreToolUse"][0].hooks[0]
 
     async def guard_check():

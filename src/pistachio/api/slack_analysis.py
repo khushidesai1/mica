@@ -134,6 +134,23 @@ async def process(event_id: str, tick: int, request: Request) -> dict[str, str]:
     return {"status": status}
 
 
+@router.post("/transfers/{pending_id}/{tick}", include_in_schema=False)
+async def process_transfer(pending_id: str, tick: int, request: Request) -> dict[str, str]:
+    from pistachio.agents.analysis.transfers import Transfers
+
+    services: Services = request.app.state.services
+    principal = await get_principal(request)
+    if principal.id != services.settings.cloud_tasks_service_account.lower():
+        raise HTTPException(403, "Untrusted task dispatcher")
+    if not re.fullmatch(r"[a-f0-9]{32}", pending_id) or tick < 0:
+        raise HTTPException(400, "Invalid transfer request")
+    bridge = BatchBridge(services.settings, services.repository)
+    state = await Transfers(bridge, GCSStorage(services.settings.gcs_bucket)).process(
+        pending_id, tick
+    )
+    return {"status": state}
+
+
 @router.get("/credentials/{event_id}", include_in_schema=False)
 async def credentials(event_id: str, request: Request, response: Response) -> dict[str, str]:
     await worker_context(event_id, request)
@@ -183,6 +200,12 @@ async def worker_context(
         or record.get("access_signature") != grant.signature
         or record.get("memory_epoch", 0)
         != await asyncio.to_thread(access.memory_epoch, storage, grant)
+        or (
+            record.get("compute_version")
+            and not await asyncio.to_thread(
+                conversation_memory.is_current, storage, grant, record["thread_key"], record
+            )
+        )
     ):
         raise HTTPException(403, "This worker grant is inactive")
     return bridge, storage, record
@@ -191,6 +214,42 @@ async def worker_context(
 class WriteUpload(BaseModel):
     relative_path: str = Field(min_length=1, max_length=512)
     grant_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
+@router.post("/compute/{event_id}", include_in_schema=False)
+async def compute_operation(event_id: str, request: Request, response: Response) -> dict[str, Any]:
+    from pistachio.agents.analysis import compute_control, pricing
+
+    bridge, storage, _ = await worker_context(event_id, request)
+    response.headers["Cache-Control"] = "no-store"
+    if int(request.headers.get("content-length", "0")) > 12000:
+        raise HTTPException(413, "Compute request too large")
+    raw = await request.body()
+    if len(raw) > 12000:
+        raise HTTPException(413, "Compute request too large")
+    try:
+        body = compute_control.ComputeCall.model_validate_json(raw)
+    except ValueError as exc:
+        raise HTTPException(422, "Invalid compute request") from exc
+    mutex = f"claude-poll:{event_id}"
+    claim = await bridge.repository.begin_event(mutex, lease_seconds=180)
+    if claim.status != "claimed":
+        raise HTTPException(409, "Controller busy; retry shortly")
+    try:
+        # Revalidate access and attempt after acquiring the same lock used by cancellation.
+        bridge, storage, record = await worker_context(event_id, request)
+        rates = await asyncio.to_thread(pricing.current, storage, bridge.app.gcp_region)
+        import time
+
+        result = compute_control.operate(
+            event_id, record, body, bridge.settings, rates, time.time()
+        )
+        await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+        return result
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    finally:
+        await bridge.repository.release_event(mutex, claim.token)
 
 
 @router.post("/write/{event_id}", include_in_schema=False)

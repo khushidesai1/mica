@@ -6,6 +6,8 @@
 .mypy_cache
 .ruff_cache
 __pycache__
+**/*.egg-info
+tools/atomx_transfer/build
 infra/.terraform
 tests
 

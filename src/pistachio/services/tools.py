@@ -11,6 +11,16 @@ from google.auth.transport.requests import AuthorizedSession
 from pistachio.config import Settings
 from pistachio.models import ToolRecord, ToolStatus
 from pistachio.storage.base import Repository
+from pistachio.tool_catalog import (
+    ATOMX_TRANSFER_COMMIT,
+    ATOMX_TRANSFER_ID,
+    ATOMX_TRANSFER_SOURCE,
+    ATOMX_TRANSFER_UNAVAILABLE,
+    SPATIAL_ANALYSIS_COMMIT,
+    SPATIAL_ANALYSIS_ID,
+    SPATIAL_ANALYSIS_NOTE,
+    SPATIAL_ANALYSIS_SOURCE,
+)
 
 BOOTSTRAP_TOOLS = (
     ToolRecord(
@@ -170,6 +180,35 @@ BOOTSTRAP_TOOLS = (
         status=ToolStatus.CATALOGED,
         provenance="Azizilab bootstrap catalog",
     ),
+    ToolRecord(
+        id=ATOMX_TRANSFER_ID,
+        name="atomx-transfer",
+        source_url=ATOMX_TRANSFER_SOURCE,
+        version=ATOMX_TRANSFER_COMMIT[:12],
+        commit_sha=ATOMX_TRANSFER_COMMIT,
+        license="unknown",
+        install_recipe="cloudbuild/build-transfer.yaml; pinned upstream plus reviewed CLI overlay",
+        execution_backend="transfer_job",
+        availability_note=ATOMX_TRANSFER_UNAVAILABLE,
+        status=ToolStatus.CATALOGED,
+        provenance="Public source reviewed 2026-10-06; README and docs/PLAN.md (M0 only)",
+    ),
+    ToolRecord(
+        id=SPATIAL_ANALYSIS_ID,
+        name="spatial_analysis_pipeline",
+        source_url=SPATIAL_ANALYSIS_SOURCE,
+        version="0.1.0",
+        commit_sha=SPATIAL_ANALYSIS_COMMIT,
+        license="unknown",
+        install_recipe="cloudbuild/build-spatial-analysis.yaml; isolated /opt/sap/bin/python",
+        build_profile="spatial_analysis",
+        availability_note=SPATIAL_ANALYSIS_NOTE,
+        status=ToolStatus.CATALOGED,
+        provenance=(
+            "Public source reviewed 2026-10-06: pyproject.toml, src/sap, and envs; "
+            "no license file or declared runtime dependencies at this pin"
+        ),
+    ),
 )
 
 
@@ -188,6 +227,16 @@ class ToolBuildService:
         self.settings = settings
 
     async def start(self, tool: ToolRecord) -> bool:
+        if tool.execution_backend != "analysis":
+            raise ValueError(
+                f"{tool.name} requires a dedicated transfer job, not the Python package builder. "
+                + tool.availability_note
+            )
+        if tool.build_profile == "spatial_analysis":
+            raise ValueError(
+                f"{tool.name} requires cloudbuild/build-spatial-analysis.yaml, "
+                "not the Python package builder. " + tool.availability_note
+            )
         if not self.settings.tool_build_trigger or not self.settings.tool_image_repository:
             return False
         image_uri = (

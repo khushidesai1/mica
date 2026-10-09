@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import platform
+import re
 import shutil
 import tempfile
 import time
@@ -17,6 +19,7 @@ from claude_agent_sdk import (
     ClaudeAgentOptions,
     HookMatcher,
     ResultMessage,
+    SystemMessage,
     TextBlock,
     ToolResultBlock,
     ToolUseBlock,
@@ -27,10 +30,14 @@ from claude_agent_sdk.types import HookContext, HookInput, HookJSONOutput, Sandb
 
 from . import prompts
 from .attachments import classify
+from .compute_tools import ComputeManager, restored_cost
+from .compute_tools import run_query as compute_query
 from .config import Settings
 from .limits import MAX_VISUAL_READS, PREVIEW_MAX_BYTES, SDK_MAX_BUFFER_BYTES
 from .outputs import changed_files, snapshot_outputs
 from .progress import ProgressUpdate, TaskProgress
+from .runtime_tools import TOOL_NAME, RuntimeEvent, RuntimeManager, create_server
+from .storage import GCSStorage, LocalStorage
 
 log = logging.getLogger(__name__)
 TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
@@ -81,6 +88,7 @@ class TurnResult:
     cost: float | None = None
     error: str | None = None
     duration: float = 0
+    runtimes: list[RuntimeEvent] = field(default_factory=list)
 
 
 def build_options(
@@ -93,11 +101,20 @@ def build_options(
     project_name: str = "",
     write_access: str = "No GCS write grant for this run.",
     runtime_tmp: Path = Path("/tmp"),
+    runtime_manager: RuntimeManager | None = None,
+    compute_manager: ComputeManager | None = None,
 ) -> ClaudeAgentOptions:
     if not sandbox and platform.system() != "Darwin":
         raise ValueError("--no-sandbox is available only for local macOS development")
 
-    tools = ["Read", "Write", "Edit"] if ctx.survey_only else TOOLS
+    tools = ["Read", "Write", "Edit"] if ctx.survey_only else list(TOOLS)
+    runtimes = settings.runtimes_enabled and not ctx.survey_only
+    manager = (runtime_manager or RuntimeManager(settings)) if runtimes else None
+    if manager:
+        tools.append(TOOL_NAME)
+    compute = compute_manager if settings.tiers_enabled and not ctx.survey_only else None
+    compute_tools = compute.tools() if compute else []
+    tools.extend(f"mcp__pistachio__{t.name}" for t in compute_tools)
 
     visual_reads = 0
 
@@ -112,6 +129,19 @@ def build_options(
         visual_read = False
         if name not in tools or args.get("dangerouslyDisableSandbox"):
             reason = "This tool or sandbox bypass is unavailable."
+        elif compute and (denied := compute.deny(name, args)):
+            reason = denied
+        elif name.startswith("mcp__pistachio__") and name != TOOL_NAME or name == TOOL_NAME:
+            return {}
+        elif (
+            runtimes
+            and name == "Bash"
+            and re.search(
+                r"\b(?:pip[0-9.]*\b[^\n;&|]*\binstall|uv\s+pip|(?:conda|mamba)\s+install)\b",
+                str(args.get("command", "")),
+            )
+        ):
+            reason = "Use ensure_packages; shell commands have no network."
         elif name != "Bash":
             raw = args.get("file_path", args.get("path", str(ctx.workdir)))
             path = (ctx.workdir / raw).resolve()
@@ -122,9 +152,16 @@ def build_options(
                     ctx.workdir,
                     ctx.data_path,
                     settings.tools_dir,
+                    *([settings.runtime_root] if runtimes else []),
                 ]
             )
-            if not any(path.is_relative_to(p.resolve()) for p in roots):
+            if (
+                runtimes
+                and name in {"Write", "Edit"}
+                and path.is_relative_to(settings.runtime_root.resolve())
+            ):
+                reason = "Package runtimes are read-only; use ensure_packages."
+            elif not any(path.is_relative_to(p.resolve()) for p in roots):
                 reason = "Access is restricted to this workspace and its project data."
             elif name in {"Write", "Edit"} and path.is_relative_to(
                 (ctx.workdir / "inputs").resolve()
@@ -170,7 +207,33 @@ def build_options(
             }
         if visual_read:
             visual_reads += 1
+        if compute and name == "Bash":
+            compute.sampler.begin(event.get("tool_use_id") or _tool_id or "", args)
         return {}
+
+    async def resource_feedback(
+        event: HookInput,
+        tool_id: str | None,
+        _context: HookContext,
+    ) -> HookJSONOutput:
+        if not compute or event["hook_event_name"] not in {"PostToolUse", "PostToolUseFailure"}:
+            return {}
+        if event.get("tool_name") != "Bash":
+            return {}
+        text = compute.sampler.end(str(event.get("tool_use_id") or tool_id or ""), dict(event))
+        return (
+            cast(
+                HookJSONOutput,
+                {
+                    "hookSpecificOutput": {
+                        "hookEventName": event["hook_event_name"],
+                        "additionalContext": text,
+                    }
+                },
+            )
+            if text
+            else {}
+        )
 
     return ClaudeAgentOptions(
         model=settings.model,
@@ -182,12 +245,23 @@ def build_options(
             "type": "preset",
             "preset": "claude_code",
             "append": prompts.build_system_append(
-                ctx, settings, user_memory, project_name, conversation_summary
-            ) + "\nCurrent GCS write access (application-authorized):\n" + write_access,
+                ctx,
+                settings,
+                user_memory,
+                project_name,
+                conversation_summary,
+                toolkit=manager.toolkit() if manager else "",
+            )
+            + "\nCurrent GCS write access (application-authorized):\n"
+            + write_access
+            + (compute.prompt() if compute else ""),
         },
         setting_sources=[],
         tools=tools,
         allowed_tools=tools,
+        mcp_servers={"pistachio": create_server(manager, compute_tools)}
+        if manager or compute
+        else {},
         disallowed_tools=["WebFetch", "WebSearch", "Agent", "AskUserQuestion", "NotebookEdit"]
         + (["Bash", "Glob", "Grep"] if ctx.survey_only else []),
         permission_mode="dontAsk",
@@ -195,6 +269,7 @@ def build_options(
         max_turns=settings.max_turns,
         max_budget_usd=settings.max_budget_usd_per_turn,
         env={
+            **({"MCP_TOOL_TIMEOUT": "1200000"} if runtimes else {}),
             "ANTHROPIC_API_KEY": settings.anthropic_api_key.get_secret_value(),
             "SLACK_BOT_TOKEN": "",
             "SLACK_APP_TOKEN": "",
@@ -202,6 +277,9 @@ def build_options(
             "PISTACHIO_SLACK_BOT_TOKEN": "",
             "PISTACHIO_SLACK_SIGNING_SECRET": "",
             "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1",
+            # Keep a long command attached until its real result; the app owns check-ins.
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+            "BASH_MAX_TIMEOUT_MS": str(settings.max_run_seconds * 1000),
             # A persisted `cd` into the read-only data mount makes the next sandbox
             # fail while creating .claude metadata, before any recovery command runs.
             "CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR": "1",
@@ -209,7 +287,17 @@ def build_options(
             "MPLCONFIGDIR": str(ctx.workdir / ".mpl"),
             "TMPDIR": str(runtime_tmp),
         },
-        hooks={"PreToolUse": [HookMatcher(hooks=[guard])]},
+        hooks={
+            "PreToolUse": [HookMatcher(hooks=[guard])],
+            **(
+                {
+                    "PostToolUse": [HookMatcher(matcher="Bash", hooks=[resource_feedback])],
+                    "PostToolUseFailure": [HookMatcher(matcher="Bash", hooks=[resource_feedback])],
+                }
+                if compute
+                else {}
+            ),
+        },
         sandbox=cast(
             SandboxSettings,
             {
@@ -226,7 +314,11 @@ def build_options(
                 },
                 "filesystem": {
                     "allowWrite": [str(runtime_tmp)],
-                    "denyWrite": [str(ctx.data_path), str(ctx.workdir / "inputs")],
+                    "denyWrite": [
+                        str(ctx.data_path),
+                        str(ctx.workdir / "inputs"),
+                        *([str(settings.runtime_root)] if runtimes else []),
+                    ],
                     "denyRead": [
                         "/etc/pistachio",
                         str(Path.home() / ".claude"),
@@ -234,7 +326,11 @@ def build_options(
                         str(settings.work_root),
                         str(settings.data_mount_root),
                     ],
-                    "allowRead": [str(ctx.workdir), str(ctx.data_path)],
+                    "allowRead": [
+                        str(ctx.workdir),
+                        str(ctx.data_path),
+                        *([str(settings.runtime_root)] if runtimes else []),
+                    ],
                 },
             },
         ),
@@ -243,6 +339,9 @@ def build_options(
 
 def describe_tool(block: ToolUseBlock) -> str:
     args = block.input
+    if block.name == TOOL_NAME:
+        packages = args.get("packages") or ["packages"]
+        return f"Setting up {str(packages[0])[:60]}…"
     if block.name == "Read" and ".previews" in Path(args.get("file_path", "")).parts:
         return "Looking at a figure preview"
     if block.name == "Bash":
@@ -271,6 +370,7 @@ def tool_progress(block: ToolUseBlock) -> TaskProgress:
         "Write": "Preparing the analysis and outputs…",
         "Edit": "Updating the analysis…",
         "Bash": "Running analysis and checks…",
+        TOOL_NAME: "Setting up tools…",
     }.get(block.name, "Working on the request…")
     if describe_tool(block) == "Looking at a figure preview":
         phase = "Checking the figure…"
@@ -294,11 +394,29 @@ class Runner:
         conversation_summary: str = "",
         project_name: str = "",
         write_access: str = "No GCS write grant for this run.",
+        runtime_manager: RuntimeManager | None = None,
+        compute_manager: ComputeManager | None = None,
     ) -> None:
         self.settings, self.sandbox = settings, sandbox
         self.user_memory, self.project_name = user_memory, project_name
         self.conversation_summary = conversation_summary
         self.write_access = write_access
+        self.compute = compute_manager
+        self.last_result: TurnResult | None = None
+        self.runtime_manager = runtime_manager or (
+            RuntimeManager(
+                settings,
+                storage=(
+                    LocalStorage(settings.local_storage_root)
+                    if settings.storage == "local"
+                    else GCSStorage(settings.bucket)
+                    if settings.bucket
+                    else None
+                ),
+            )
+            if settings.runtimes_enabled
+            else None
+        )
 
     async def run_turn(
         self, ctx: Context, prompt: str, on_status: Callable[[ProgressUpdate], Awaitable[None]]
@@ -318,8 +436,19 @@ class Runner:
     ) -> TurnResult:
         for name in ("code", "outputs", ".tmp", ".mpl"):
             (ctx.workdir / name).mkdir(parents=True, exist_ok=True)
+        if self.compute:
+            for name in ("scratch", "checkpoints"):
+                (ctx.workdir / name).mkdir(exist_ok=True)
         before, start = snapshot_outputs(ctx.workdir / "outputs"), time.monotonic()
         result = TurnResult(session_id=ctx.session_id)
+        manager = self.runtime_manager if not ctx.survey_only else None
+        if manager:
+            manager.begin_turn()
+            try:
+                await asyncio.to_thread(manager.prepare)
+            except Exception:
+                log.warning("Could not refresh the runtime catalog", exc_info=True)
+                manager.restore_errors.append("Saved toolkit status could not be refreshed.")
         tasks: dict[str, TaskProgress] = {}
         previews = ctx.workdir / ".previews"
         clear_previews(previews)
@@ -328,19 +457,27 @@ class Runner:
             for attempt in range(2):
                 details, got_result = "", False
                 try:
-                    async for msg in query(
-                        prompt=prompt,
-                        options=build_options(
-                            ctx,
-                            self.settings,
-                            sandbox=self.sandbox,
-                            user_memory=self.user_memory,
-                            conversation_summary=self.conversation_summary,
-                            project_name=self.project_name,
-                            write_access=self.write_access,
-                            runtime_tmp=runtime_tmp,
-                        ),
-                    ):
+                    options = build_options(
+                        ctx,
+                        self.settings,
+                        sandbox=self.sandbox,
+                        user_memory=self.user_memory,
+                        conversation_summary=self.conversation_summary,
+                        project_name=self.project_name,
+                        write_access=self.write_access,
+                        runtime_tmp=runtime_tmp,
+                        runtime_manager=manager,
+                        compute_manager=self.compute,
+                    )
+                    baseline = restored_cost(ctx.session_id) if self.compute else 0.0
+                    if self.compute and baseline is None:
+                        baseline = self.compute.manifest.get("sdk_cost_total")
+                    stream = (
+                        compute_query(prompt, options, self.compute)
+                        if self.compute
+                        else query(prompt=prompt, options=options)
+                    )
+                    async for msg in stream:
                         if isinstance(msg, AssistantMessage):
                             for block in msg.content:
                                 if isinstance(block, ToolUseBlock):
@@ -367,11 +504,40 @@ class Runner:
                                         status="error" if completed.is_error else "complete",
                                     )
                                     tasks[completed.tool_use_id] = task
+                                    if self.compute:
+                                        usage = self.compute.sampler.commands.get(
+                                            completed.tool_use_id
+                                        )
+                                        if usage:
+                                            result.run_log.append(
+                                                {
+                                                    "tool": "resources",
+                                                    "input": {},
+                                                    "tool_use_id": completed.tool_use_id,
+                                                    "resources": usage,
+                                                }
+                                            )
                                     await on_status(task)
+                        elif isinstance(msg, SystemMessage) and self.compute:
+                            session = msg.data.get("session_id")
+                            if isinstance(session, str):
+                                result.session_id = self.compute.session_id = session
                         elif isinstance(msg, ResultMessage):
                             got_result = True
                             result.session_id = msg.session_id
                             result.cost = (result.cost or 0) + (msg.total_cost_usd or 0)
+                            if self.compute:
+                                total = msg.total_cost_usd
+                                self.compute.sdk_cost_total = total
+                                cost = (
+                                    total - baseline
+                                    if total is not None
+                                    and baseline is not None
+                                    and total >= baseline
+                                    else None
+                                )
+                                result.cost = self.compute.model_cost = cost
+                                self.compute.session_id = msg.session_id
                             details = " ".join(msg.errors or [])
                             result.error = None if msg.subtype == "success" else msg.subtype
                             result.text = msg.result or result.text
@@ -403,5 +569,33 @@ class Runner:
         finally:
             clear_previews(previews)
         result.files = changed_files(ctx.workdir / "outputs", before)
+        if self.compute:
+            # Tar restore can round mtimes. Carry only this request's pending outputs,
+            # never compare restored file timestamps to the previous machine's baseline.
+            from .outputs import files_under
+
+            pending = set(self.compute.manifest.get("pending_outputs", []))
+            result.files = sorted(
+                set(result.files)
+                | {
+                    p
+                    for p in files_under(ctx.workdir / "outputs")
+                    if str(p.relative_to(ctx.workdir / "outputs")) in pending
+                }
+            )
+            self.compute.manifest["pending_outputs"] = [
+                str(p.relative_to(ctx.workdir / "outputs")) for p in result.files
+            ]
+        if manager:
+            result.runtimes = list(manager.events)
+            result.run_log.extend(
+                {
+                    "tool": TOOL_NAME,
+                    "input": {"runtime": dataclasses.asdict(event)},
+                    "timestamp": datetime.now(UTC).isoformat(),
+                }
+                for event in result.runtimes
+            )
         result.duration = time.monotonic() - start
+        self.last_result = result
         return result

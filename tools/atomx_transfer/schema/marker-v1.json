@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AtoMx transfer marker v1",
+  "type": "object",
+  "required": [
+    "version",
+    "sample",
+    "remote_sample",
+    "export_root",
+    "run_folder",
+    "requested_by",
+    "login_saved_by",
+    "started",
+    "heartbeat",
+    "finished",
+    "tool_version",
+    "run_id"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "sample": {
+      "type": "string"
+    },
+    "remote_sample": {
+      "type": "string"
+    },
+    "export_root": {
+      "type": "string"
+    },
+    "run_folder": {
+      "type": "string"
+    },
+    "requested_by": {
+      "type": "string"
+    },
+    "login_saved_by": {
+      "type": "string"
+    },
+    "started": {
+      "type": "string"
+    },
+    "heartbeat": {
+      "type": "string"
+    },
+    "tool_version": {
+      "type": "string"
+    },
+    "run_id": {
+      "type": "string"
+    },
+    "finished": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "manifest": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "size",
+          "crc32c"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "crc32c": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "n_files": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "total_bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "source": {
+      "type": "object",
+      "required": [
+        "n_files",
+        "total_bytes"
+      ]
+    },
+    "step": {
+      "type": "string"
+    },
+    "error": {
+      "type": "string"
+    }
+  },
+  "dependentRequired": {
+    "manifest": [
+      "n_files",
+      "total_bytes",
+      "source"
+    ],
+    "error": [
+      "step"
+    ]
+  }
+}

@@ -6,6 +6,8 @@ from typing import Literal
 from pydantic import AliasChoices, Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .transfer_config import TransferProject
+
 CHECKPOINT_PREFIX = "tasks/slack-analysis"
 
 
@@ -34,12 +36,36 @@ class Settings(BaseSettings):
     state_db: Path = Path("/srv/pistachio/state.db")
     sci_python: Path = Path("/opt/sci/bin/python")
     tools_dir: Path = Path("/opt/pistachio/tools")
+    runtimes_enabled: bool = False
+    runtime_root: Path = Path("/srv/pistachio/runtimes")
+    runtime_min_age_days: int = Field(default=7, ge=0)
+    runtime_max_gb: float = Field(default=8, gt=0)
+    runtime_max_new_per_turn: int = Field(default=3, ge=1, le=10)
+    runtime_timeout_seconds: int = Field(default=900, ge=1, le=900)
+    runtime_max_local_gb: float = Field(default=60, gt=0)
+    runtime_denylist: str = ""
     attachment_max_files: int = Field(default=10, ge=1, le=20)
     attachment_max_mb: int = Field(default=100, ge=1, le=500)
     attachment_max_message_mb: int = Field(default=250, ge=1, le=1000)
     max_turns: int = Field(default=40, ge=1)
     max_budget_usd_per_turn: float = Field(default=5, gt=0)
     max_concurrent_runs: int = Field(default=3, ge=1)
+    tiers_enabled: bool = False
+    compute_quote_only: bool = True
+    tier: Literal["standard", "large", "xlarge"] = "standard"
+    attempt: int = Field(default=0, ge=0, le=20)
+    max_tier: Literal["standard", "large", "xlarge"] = "xlarge"
+    max_concurrent_large_runs: int = Field(default=1, ge=1, le=10)
+    compute_auto_budget_usd: float = Field(default=50, gt=0, le=10000, allow_inf_nan=False)
+    compute_probe_budget_usd: float = Field(default=1, gt=0, le=50, allow_inf_nan=False)
+    compute_probe_seconds: int = Field(default=1800, ge=60, le=7200)
+    partial_checkpoint_seconds: int = Field(default=900, ge=60, le=3600)
+    max_preemption_relaunches: int = Field(default=2, ge=0, le=2)
+    compute_checkpoint_max_gb: int = Field(default=100, ge=1, le=500)
+    long_run_threshold_seconds: int = Field(default=600, ge=60)
+    long_run_update_seconds: int = Field(default=7200, ge=60)
+    # Finite multi-day limit; GCP Batch's general maximum is 14 days.
+    max_run_seconds: int = Field(default=7 * 24 * 3600, ge=600, le=14 * 24 * 3600)
     # Channel mode denies admission until a designated admin enables a channel.
     access_mode: Literal["channel", "mapped", "workspace"] = "channel"
     access_admin_ids: str = ""  # Explicit team:user IDs; onboarding authority only.
@@ -53,6 +79,10 @@ class Settings(BaseSettings):
     batch_proc_mount_opt_in: bool = False
     storage: Literal["gcs", "local"] = "gcs"
     local_storage_root: Path = Path(".local-storage")
+    transfers_enabled: bool = False
+    transfer_image: str = ""
+    transfer_service_account: str = ""
+    transfer_projects: dict[str, TransferProject] = Field(default_factory=dict)
 
     def csv(self, field: str) -> set[str]:
         return {x.strip() for x in getattr(self, field).split(",") if x.strip()}

@@ -103,7 +103,7 @@ def test_job_reuses_spot_resources_and_has_no_credentials(bridge):
     job = job_spec(bridge.app, bridge.settings, "a" * 32)
     task = job.task_groups[0].task_spec
     assert task.max_retry_count == 0
-    assert task.max_run_duration.seconds == 3600
+    assert task.max_run_duration.total_seconds() == 7 * 24 * 3600
     assert job.allocation_policy.instances[0].policy.provisioning_model.name == "SPOT"
     assert job.allocation_policy.service_account.email == "worker@example.com"
     assert job.allocation_policy.network.network_interfaces[0].no_external_ip_address

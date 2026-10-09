@@ -21,6 +21,7 @@ class Storage(Protocol):
     def put_if(self, key: str, data: bytes, generation: str | None) -> str: ...
     def keys(self, prefix: str) -> list[str]: ...
     def upload(self, key: str, path: Path) -> None: ...
+    def upload_new(self, key: str, path: Path) -> None: ...
     def open_write(self, key: str) -> AbstractContextManager[BinaryIO]: ...
     def download(self, key: str, path: Path) -> None: ...
     def read_prefix(self, key: str, limit: int) -> bytes: ...
@@ -67,6 +68,14 @@ class LocalStorage:
         destination = self.path(key)
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(path, destination)
+
+    def upload_new(self, key: str, path: Path) -> None:
+        with _LOCAL_LOCK, (self.root / ".cas.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if self.path(key).exists():
+                raise Conflict("The object already exists.")
+            with self.open_write(key) as stream, path.open("rb") as source:
+                shutil.copyfileobj(source, stream)
 
     @contextmanager
     def open_write(self, key: str) -> Iterator[BinaryIO]:
@@ -125,6 +134,14 @@ class GCSStorage:
 
     def upload(self, key: str, path: Path) -> None:
         self.bucket.blob(key).upload_from_filename(str(path))
+
+    def upload_new(self, key: str, path: Path) -> None:
+        from google.api_core.exceptions import PreconditionFailed
+
+        try:
+            self.bucket.blob(key).upload_from_filename(str(path), if_generation_match=0)
+        except PreconditionFailed as exc:
+            raise Conflict("The object already exists.") from exc
 
     def open_write(self, key: str) -> AbstractContextManager[BinaryIO]:
         # BlobWriter terminates (rather than finalizing) the upload on exceptional exit.

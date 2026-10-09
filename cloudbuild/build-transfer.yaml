@@ -1,0 +1,42 @@
+# Build only after review. The upstream pin and reviewed implementation digest form REVISION.
+steps:
+  - name: gcr.io/cloud-builders/git
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        [[ "${_SOURCE_COMMIT}" =~ ^[0-9a-f]{40}$ ]]
+        git clone --filter=blob:none https://github.com/khushidesai1/atomx-transfer.git atomx-source
+        git -C atomx-source checkout --detach "${_SOURCE_COMMIT}"
+        test "$$(git -C atomx-source rev-parse HEAD)" = "${_SOURCE_COMMIT}"
+  - name: python:3.12.12-slim
+    entrypoint: python
+    env:
+      - ATOMX_HOST_KEY=${_SFTP_HOST_KEY}
+      - ATOMX_BUCKET=${_BUCKET}
+      - ATOMX_IMPLEMENTATION_SHA=${_IMPLEMENTATION_SHA}
+    args: [tools/atomx_build.py]
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --build-arg
+      - SOURCE_COMMIT=${_SOURCE_COMMIT}
+      - --build-arg
+      - IMPLEMENTATION_SHA=${_IMPLEMENTATION_SHA}
+      - -f
+      - docker/Dockerfile.transfer
+      - -t
+      - ${_IMAGE_URI}
+      - .
+  - name: ${_IMAGE_URI}
+    args: [--help]
+images: ['${_IMAGE_URI}']
+substitutions:
+  _SOURCE_COMMIT: 5d864b6cd13f1873364aa70b9ac1939f4c656616
+  _IMPLEMENTATION_SHA: REPLACE_WITH_REVIEWED_IMPLEMENTATION_SHA256
+  _SFTP_HOST_KEY: REPLACE_WITH_INDEPENDENTLY_VERIFIED_HOST_KEY
+  _BUCKET: REPLACE_WITH_SCRATCH_BUCKET_FOR_CANARY
+  _IMAGE_URI: us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/atomx-transfer:reviewed
+options:
+  logging: CLOUD_LOGGING_ONLY
+timeout: 1800s

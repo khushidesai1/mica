@@ -8,20 +8,37 @@ from .progress import TaskProgress
 
 
 def activity_blocks(
-    tasks: Sequence[TaskProgress], *, finished: bool = False, error: str | None = None
+    tasks: Sequence[TaskProgress],
+    *,
+    finished: bool = False,
+    error: str | None = None,
+    check_in: str = "",
 ) -> list[dict[str, Any]]:
-    """Slack's native expandable plan; retain just the two latest concrete tasks."""
+    """Slack's expandable plan; keep two cards, always including the active task."""
     active = next((task for task in reversed(tasks) if task.status == "in_progress"), None)
     title = active.phase if active else "Putting the answer together…"
     if finished:
         title = f"Stopped: {error}" if error else "Finished"
     cards = []
-    for task in tasks[-2:]:
+    visible = list(tasks[-2:])
+    if active is not None and active not in visible:
+        visible = [visible[-1], active]
+    for task in visible:
         card: dict[str, Any] = {
             "task_id": task.task_id,
             "title": task.title[:150] or "Working on the request",
             "status": task.status,
         }
+        if check_in and not finished and task == (active or tasks[-1]):
+            card["details"] = {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [{"type": "text", "text": check_in[:1500]}],
+                    }
+                ],
+            }
         if finished and task.status == "in_progress":
             # Do not infer tool success from the overall turn finishing.
             card["status"] = "error"

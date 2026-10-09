@@ -590,6 +590,9 @@ class ToolRecord(StrictModel):
     license: str = "unknown"
     install_recipe: str
     image_digest: str = ""
+    execution_backend: Literal["analysis", "transfer_job"] = "analysis"
+    build_profile: Literal["python_package", "spatial_analysis"] = "python_package"
+    availability_note: str = ""
     platforms: list[str] = Field(default_factory=lambda: ["linux/amd64"])
     resource_hints: list[ResourceHint] = Field(default_factory=list)
     smoke_test: str = ""

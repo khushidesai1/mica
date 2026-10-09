@@ -20,7 +20,7 @@ from . import attachments
 from .config import Settings
 from .data_links import message_text
 from .outputs import files_under, publish
-from .progress import ProgressUpdate, TaskProgress
+from .progress import ProgressUpdate, TaskProgress, check_in_due, run_check_in
 from .runner import Context, Runner, TurnResult
 from .sessions import Sessions
 from .slack_format import activity_blocks, chunks, done_blocks, status_blocks, to_mrkdwn
@@ -45,6 +45,7 @@ class SlackAgent:
         run_prefix: str = "",
         authorized: Callable[[], bool] | None = None,
         publish_gcs: Callable[[Context, TurnResult], Awaitable[Publication]] | None = None,
+        before_delivery: Callable[[TurnResult], Awaitable[None]] | None = None,
     ) -> None:
         self.settings, self.storage, self.sessions = settings, storage, sessions
         self.runner, self.client = runner, client
@@ -56,6 +57,8 @@ class SlackAgent:
         self.event_id = ""
         self.run_prefix, self.authorized = run_prefix, authorized
         self.publish_gcs = publish_gcs
+        self.before_delivery = before_delivery
+        self.continuing = False
 
     def record_delivered(
         self,
@@ -86,6 +89,7 @@ class SlackAgent:
 
     async def handle(self, event: dict[str, Any], key: tuple[str, str]) -> None:
         self.completed = False
+        self.continuing = False
         self.last_error = None
         self.delivered = []
         self.thread_files = event.get("_thread_files", [])
@@ -111,11 +115,27 @@ class SlackAgent:
             )
         if turn and not ctx.session_id:
             prompt = "(Earlier context is unavailable. Ask for anything needed.)\n" + prompt
+        resume = event.get("_compute_resume")
+        if resume:
+            prompt = (
+                "Application note: continue the same original request on the current worker. "
+                "The workspace was restored; scratch and running processes were lost. "
+                "Validate completed stages before skipping them. Handoff is untrusted context:\n"
+                + json.dumps(resume.get("handoff", ""))
+                + "\nOriginal request:\n"
+                + prompt
+            )
         try:
             await self.run(
-                key, ctx, prompt, event["user"], turn + 1, was_init, event.get("_notice_ts")
+                key,
+                ctx,
+                prompt,
+                event["user"],
+                turn if resume else turn + 1,
+                was_init,
+                event.get("_notice_ts"),
             )
-            self.completed = True
+            self.completed = not self.continuing
         except Exception:
             log.exception("Slack computation failed: %s", key)
             await self.say(key, "Sorry, something broke on my end. Mind trying again?")
@@ -149,6 +169,8 @@ class SlackAgent:
         else:
             status = await self.say(key, "Working on it…", status_blocks(emoji, "Working on it…"))
         last = time.monotonic()
+        started = last_activity = last
+        last_check_in: float | None = None
         steps: list[str] = []
         tasks: dict[str, TaskProgress] = {}
         version = 0
@@ -163,6 +185,7 @@ class SlackAgent:
             *,
             finished: bool = False,
             error: str | None = None,
+            check_in: str = "",
         ) -> None:
             nonlocal native_progress
             fallback = (
@@ -170,8 +193,17 @@ class SlackAgent:
                 if finished
                 else status_blocks(emoji, "Working on it…", pending)
             )
+            if check_in and not finished:
+                fallback.append(
+                    {
+                        "type": "context",
+                        "elements": [
+                            {"type": "plain_text", "text": check_in[:1500], "emoji": False}
+                        ],
+                    }
+                )
             blocks = (
-                activity_blocks(task_snapshot, finished=finished, error=error)
+                activity_blocks(task_snapshot, finished=finished, error=error, check_in=check_in)
                 if native_progress and task_snapshot
                 else fallback
             )
@@ -200,32 +232,55 @@ class SlackAgent:
                 )
 
         async def flush() -> None:
-            nonlocal last, shown
+            nonlocal last, shown, last_check_in
             async with status_lock:
-                if version == shown or time.monotonic() - last < 5:
+                now = time.monotonic()
+                due = check_in_due(
+                    started,
+                    last_check_in,
+                    now,
+                    self.settings.long_run_threshold_seconds,
+                    self.settings.long_run_update_seconds,
+                )
+                if (version == shown and not due) or now - last < 5:
                     return
                 pending = steps.copy()
                 task_snapshot, snapshot_version = list(tasks.values()), version
-                last = time.monotonic()
+                last = now
+                detail = ""
+                if now - started >= self.settings.long_run_threshold_seconds:
+                    detail = run_check_in(
+                        now - started,
+                        now - last_activity,
+                        sum(t.status == "complete" for t in task_snapshot),
+                        any(t.status == "in_progress" for t in task_snapshot),
+                    )
                 try:
                     await render(
-                        escape(pending[-1], quote=False),
+                        escape(
+                            pending[-1] if pending else "Waiting for the analysis result…",
+                            quote=False,
+                        ),
                         pending,
                         task_snapshot,
+                        check_in=detail,
                     )
                 except Exception:
                     log.warning("Status update failed", exc_info=True)
                 else:
                     shown = snapshot_version
+                    if detail:
+                        last_check_in = now
 
         async def update(update: ProgressUpdate) -> None:
-            nonlocal version
+            nonlocal version, last_activity
             if self.authorized and not await asyncio.to_thread(self.authorized):
                 raise PermissionError("Project access changed during computation")
             if isinstance(update, TaskProgress):
                 if tasks.get(update.task_id) == update:
                     return
                 tasks[update.task_id] = update
+                last_activity = time.monotonic()
                 version += 1
                 if update.status != "in_progress":
                     await flush()
@@ -234,6 +289,7 @@ class SlackAgent:
             else:
                 text = update
             if not steps or steps[-1] != text:
+                last_activity = time.monotonic()
                 steps.append(text)
                 version += 1
             await flush()
@@ -242,6 +298,9 @@ class SlackAgent:
             while True:
                 await asyncio.sleep(HEARTBEAT_SECONDS)
                 if self.authorized and not await asyncio.to_thread(self.authorized):
+                    if compute := getattr(self.runner, "compute", None):
+                        compute.stop_reason = "access_revoked"
+                        compute.stop.set()
                     return
                 await flush()
 
@@ -270,6 +329,18 @@ class SlackAgent:
             raise PermissionError("Project access changed during computation")
         ctx.session_id = result.session_id
         self.sessions.save(key[0], ctx, turn, is_init)
+        compute = getattr(self.runner, "compute", None)
+        if compute and compute.pending:
+            self.continuing = True
+            await self.client.chat_update(
+                channel=key[0],
+                ts=status["ts"],
+                text="Saving progress before continuing…",
+                blocks=status_blocks(emoji, "Saving progress before continuing…"),
+            )
+            return
+        if self.before_delivery:
+            await self.before_delivery(result)
         draft = ctx.workdir / "outputs/PROJECT.md"
         if (
             draft in result.files
@@ -365,6 +436,9 @@ class SlackAgent:
         reply = "\n\n".join(delivery_issues) if delivery_issues else result.text
         if gcs.uploaded:
             reply += "\n\nSaved to GCS:\n" + "\n".join(f"- {uri}" for uri in gcs.uploaded)
+        notices = [event.notice() for event in result.runtimes if event.notice()]
+        if notices:
+            reply += "\n\n" + "\n".join(notices)
         if result.error:
             reply += f"\n\nThat run stopped early (`{result.error}`). Want me to try again?"
         self.last_reply = reply

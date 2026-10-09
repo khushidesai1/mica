@@ -59,6 +59,14 @@ Creates new files only; existing files cannot be overwritten or deleted.
 You must belong to the project. Use approved folders in that project's linked bucket.
 Only designated write admins can grant or revoke. Grants apply to future runs.
 
+*AtoMx transfers — configured projects*
+• `transfer <sample> [as <name>] [from <export_root>]` — Preview, then Confirm or Cancel.
+• `transfers` — Show markers and the last published source inventory.
+• `cancel transfer <sample>` — Stop an active transfer.
+• `atomx login status` — Show saved-login details (never the password).
+• `replace atomx login` / `forget atomx login` — Owner or login saver only.
+Enter credentials only through the login button's form, never in chat.
+
 *Help*
 • `help` — Show this command list.
 • `help write` — Show write-access examples and saving instructions."""

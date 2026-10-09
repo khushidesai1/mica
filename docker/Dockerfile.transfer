@@ -1,0 +1,12 @@
+FROM python:3.12.12-slim
+WORKDIR /opt/atomx
+# Reviewed implementation overlay for upstream M1–M3; no dependency in the API image.
+COPY tools/atomx_transfer ./atomx_transfer
+RUN pip install --no-cache-dir ./atomx_transfer
+COPY deploy/atomx ./config
+COPY atomx-source ./upstream
+ARG SOURCE_COMMIT
+ARG IMPLEMENTATION_SHA
+RUN printf '%s+%s' "$SOURCE_COMMIT" "$IMPLEMENTATION_SHA" > REVISION
+USER 65532:65532
+ENTRYPOINT ["atomx-transfer"]

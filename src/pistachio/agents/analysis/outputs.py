@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from .access import run_root
@@ -82,5 +83,7 @@ def publish(
         datasets_touched=touched,
         attachments=[{k: f[k] for k in ("id", "name", "sha256", "key")} for f in attachments],
     )
+    if result.runtimes:
+        meta["runtimes"] = [asdict(event) for event in result.runtimes]
     storage.put(f"{prefix}/meta.json", json.dumps(meta, indent=2).encode())
     return published

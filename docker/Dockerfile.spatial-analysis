@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+# Extend a pinned Slack worker; isolate SAP's AnnData/Zarr versions from /opt/sci.
+ARG SLACK_AGENT_IMAGE
+FROM ${SLACK_AGENT_IMAGE}
+USER root
+ENV CELLPOSE_LOCAL_MODELS_PATH=/opt/sap/models
+COPY deploy/spatial-analysis-assets.json /opt/sap/manifest.json
+COPY spatial-assets /opt/sap/assets
+COPY tools/spatial_build.py /tmp/spatial_build.py
+RUN python /tmp/spatial_build.py verify --manifest /opt/sap/manifest.json --assets /opt/sap/assets
+COPY docker/requirements-spatial-analysis.txt /opt/sap/requirements.txt
+RUN python -m venv /opt/sap && \
+    /opt/sap/bin/pip install --no-cache-dir -r /opt/sap/requirements.txt
+COPY spatial-source /tmp/spatial-source
+RUN /opt/sap/bin/pip install --no-cache-dir --no-deps --no-build-isolation \
+      /tmp/spatial-source /opt/sap/assets/proseg_py-3.1.1-cp38-abi3-manylinux_2_31_x86_64.whl && \
+    /opt/sap/bin/pip check && \
+    mkdir -p /opt/sap/models && \
+    mv /opt/sap/assets/cyto3 /opt/sap/assets/size_cyto3.npy /opt/sap/models/ && \
+    /opt/sap/bin/pip freeze --all > /opt/sap/resolved-requirements.txt && \
+    rm -rf /tmp/spatial-source /opt/sap/assets /tmp/spatial_build.py
+COPY tools/spatial_smoke.py tools/spatial_analysis.md /opt/pistachio/tools/
+USER 65532:65532
+RUN --network=none /opt/sap/bin/python /opt/pistachio/tools/spatial_smoke.py
+# Inherit the Slack Batch worker entry point; no deployment occurs during this build.

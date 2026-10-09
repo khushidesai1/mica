@@ -1,4 +1,4 @@
-# Build a coordinated pair from one source snapshot; deployment remains a separate step.
+# Build coordinated API, Slack, and science workers from one source snapshot.
 steps:
   - id: build-api
     name: gcr.io/cloud-builders/docker
@@ -27,12 +27,29 @@ steps:
     args:
       - -ceu
       - docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_API_IMAGE}' /workspace/scripts/check_worker_compatibility.py export - > /workspace/api-execution-contract.json
-  - id: verify-existing-shared-worker
+  - id: verify-compute-worker
     name: gcr.io/cloud-builders/docker
-    waitFor: [export-api-contract]
+    waitFor: [build-slack-worker]
+    args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_SLACK_IMAGE}', /workspace/scripts/check_compute_release.py]
+  - id: verify-spatial-sizing
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-slack-worker]
+    entrypoint: bash
+    args:
+      - -ceu
+      - if [ '${_VERIFY_SPATIAL}' = '1' ]; then docker run --rm --network=none -e OMP_NUM_THREADS=1 -v /workspace:/workspace:ro --entrypoint /opt/sap/bin/python '${_SLACK_IMAGE}' /workspace/scripts/check_spatial_release.py; fi
+  - id: refresh-shared-worker
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-api]
+    args: [build, --build-arg, 'API_IMAGE=${_API_IMAGE}', --build-arg, 'SCIENCE_IMAGE=${_SHARED_BASE}', -f, docker/Dockerfile.worker-refresh, -t, '${_SHARED_IMAGE}', .]
+  - id: verify-shared-worker
+    name: gcr.io/cloud-builders/docker
+    waitFor: [export-api-contract, refresh-shared-worker]
     args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_SHARED_IMAGE}', /workspace/scripts/check_worker_compatibility.py, check, /workspace/api-execution-contract.json]
-images: ['${_API_IMAGE}', '${_SLACK_IMAGE}']
+images: ['${_API_IMAGE}', '${_SLACK_IMAGE}', '${_SHARED_IMAGE}']
 options:
   logging: CLOUD_LOGGING_ONLY
   machineType: E2_HIGHCPU_8
 timeout: 1800s
+substitutions:
+  _VERIFY_SPATIAL: '0'

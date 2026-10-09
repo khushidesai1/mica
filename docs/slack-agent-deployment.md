@@ -1,6 +1,46 @@
+# Verified deployment source recovery — 8 October 2026
+
+The live service `pistachio-staging-resize-20261006` serves 100% of traffic in
+`azizilab-aml/us-central1`. Its API, Slack spatial worker, and shared science worker
+all match successful Cloud Build `208c3a12-186a-4cbf-b4ba-77fec73dd4d7`, built
+7 October 2026 UTC (6 October Eastern). Worker tiers are enabled through `xlarge`.
+
+The exact versioned source archive was recovered into `main`; its SHA-256 matches
+Cloud Build provenance. The build used source label
+`worktree-06c398dd8387f9ae981e1e40d8f0d862d8d7bb5c4c03596ddef1343905e777c3`.
+See [the recovery manifest](deployed-source-20261008.json) for immutable image digests,
+archive generation, and per-file hashes. All 11 build steps succeeded, including
+source consistency, API/worker compatibility, compute, and spatial sizing checks.
+
+This source adds long-running jobs, worker resizing, resource measurements,
+checkpoints, runtime provisioning, and transfer/spatial tooling. Application source,
+tools, templates, and available build files were recovered byte-for-byte. The README
+was then updated for canonical `main` and valid documentation links. Tests,
+documentation, Terraform, and `config/tools.yaml` were absent from the build archive;
+the repository copies are retained and are not verified as the original release versions.
+An older Batch test was updated from the former one-hour limit to the deployed seven-day
+limit, using `total_seconds()` to include whole days. Existing local planning documents
+remain uncommitted and are preserved separately.
+No cloud deployment or infrastructure change was made during recovery.
+
+Recovery validation: Ruff passed; strict mypy passed for 114 source files; compilation
+and the headless API gate passed. The retained offline suite initially had 551 passing
+tests and three failures; all three passed in focused reruns after updating the stale
+timeout assertion, installing the already-pinned PDF dependency, and permitting the
+local Unix socket test. Three tests were skipped and three deselected. The full
+container-only release gate was not rerun locally because `/opt/pistachio` is absent;
+its source, long-run, and attachment checks passed before that environment limitation.
+The successful Cloud Build supplied the full container release-gate evidence.
+
+`main` is now the canonical development branch. The historical handoff branch is
+fully included in its history and can be removed. The older deployment records below
+are historical; use the recovery manifest for the verified image inventory.
+
+---
+
 # Slack agent deployment — current release 6 October 2026 UTC
 
-Current live revision: `pistachio-staging-writes-20261006`, serving 100% of traffic. This
+Previously recorded revision: `pistachio-staging-writes-20261006`, serving 100% of traffic. This
 release adds scoped GCS output grants and one structured Slack command summary. Historical
 pre-cutover rollback instructions below do not apply to the current private-project runtime.
 

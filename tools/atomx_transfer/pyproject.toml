@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atomx-transfer"
+version = "0.1.0"
+description = "Create-only, verified AtoMx SFTP to GCS transfers"
+requires-python = ">=3.12"
+dependencies = [
+  "paramiko==3.5.1",
+  "google-cloud-storage==3.4.0",
+  "google-crc32c==1.7.1",
+  "PyYAML==6.0.3",
+]
+
+[project.scripts]
+atomx-transfer = "atomx_transfer.cli:main"
+
+[tool.setuptools]
+packages = ["atomx_transfer"]
+package-dir = {atomx_transfer = "."}
+
+[tool.setuptools.package-data]
+atomx_transfer = ["schema/*.json"]

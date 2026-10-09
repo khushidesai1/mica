@@ -25,6 +25,10 @@ oauth_config:
       - groups:history
 settings:
   socket_mode_enabled: false
+  interactivity:
+    is_enabled: true
+    # Set request_url to the existing Cloud Run URL + /integrations/slack/actions.
+    # This reference delta does not change the live Slack app.
   event_subscriptions:
     # Preserve the current /integrations/slack/events request_url in app settings.
     bot_events:

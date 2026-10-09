@@ -36,6 +36,10 @@ def parse(raw: str) -> Command | None:
         "memory context",
         "forget context",
         "clean brief",
+        "transfers",
+        "atomx login status",
+        "replace atomx login",
+        "forget atomx login",
     }:
         return Command(lower)
     if lower == "switch":
@@ -48,6 +52,24 @@ def parse(raw: str) -> Command | None:
     if not words:
         return None
     action = words[0].lower()
+    if action == "cancel" and len(words) == 3 and words[1].lower() == "transfer":
+        return Command("cancel transfer", (words[2],))
+    if action == "transfer":
+        import shlex
+
+        from .transfer_config import TransferRequest
+
+        words = shlex.split(message_text(text))
+        if len(words) not in {2, 4, 6}:
+            raise ValueError("Use transfer <sample> [as <name>] [from <export_root>].")
+        transfer_args = {"sample": words[1]}
+        for i in range(2, len(words), 2):
+            field = {"as": "as_sample", "from": "export_root"}.get(words[i].lower())
+            if not field or field in transfer_args:
+                raise ValueError("Use transfer <sample> [as <name>] [from <export_root>].")
+            transfer_args[field] = words[i + 1]
+        request = TransferRequest(**transfer_args)
+        return Command("transfer", (request.sample, request.export_root, request.as_sample))
     if action == "write":
         from .write_access import USAGE, duration, scope
 

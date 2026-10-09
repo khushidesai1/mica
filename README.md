@@ -74,13 +74,27 @@ docker compose up --build -d
 - `src/pistachio/connectors`: Slack, Gmail, notifications, and read-only GitHub catalog.
 - `src/pistachio/execution`: validation plus local, Docker, and Batch backends.
 - `src/pistachio/worker`: credential-separated Batch bootstrap/collector entry point.
-- `config/tools.yaml`: pinned Azizilab bootstrap metadata.
+- `config/tools.yaml`: pinned Azizilab and external tool metadata.
 - `infra`: staging/production Terraform.
 
 See [architecture](docs/architecture.md), [deployment](docs/deployment.md), [channels](docs/channels.md),
 [memory](docs/memory.md), and [security/operations](docs/security.md).
 
+`atomx-transfer` is registered in the tool catalog for AtoMx SFTP → GCS transfers. The standalone
+CLI runs in a dedicated Batch job, with a saved Secret Manager login and per-transfer confirmation.
+The controller is deployed but actual transfers remain **disabled**; they need a reviewed image,
+cloud configuration, and a scratch-bucket canary before deployment. See
+[deployment recovery record](docs/slack-agent-deployment.md) for provenance and recovery limits.
+
+`spatial_analysis_pipeline` (`sap`) is also registered from its public GitHub source. Its
+dedicated runtime recipe supplies CosMx/CODEX ingest and Cellpose/Proseg segmentation in an
+isolated Python environment. This runtime is deployed in staging; the agent checks it before use.
+See [spatial runtime guide](tools/spatial_analysis.md) for runtime details.
+
 ## Working from another laptop
+
+Use `main`, which contains the source recovered from the verified live deployment.
+See [deployment provenance](docs/slack-agent-deployment.md) for recovery details.
 
 Use the [Mac setup and Codex handoff note](docs/new-mac-setup.md) for the exact branch,
 authentication steps, private local backup, and verified deployment inventory.

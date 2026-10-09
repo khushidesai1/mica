@@ -1,0 +1,26 @@
+{
+  "source": "https://github.com/harjaisal/spatial_analysis_pipeline",
+  "commit": "de96763933ab5952bc0ba304cb10edadfb1614a0",
+  "package": "sap",
+  "version": "0.1.0",
+  "assets": [
+    {
+      "name": "proseg_py-3.1.1-cp38-abi3-manylinux_2_31_x86_64.whl",
+      "uri": "gs://sap-harjaisal-khushi/proseg_py-3.1.1-cp38-abi3-manylinux_2_31_x86_64.whl#1783035241870360",
+      "size": 77948778,
+      "sha256": "2df2b4f06fbc01da2276e26d1871843bc2b729447f78c17ba082ed6cd91de7f2"
+    },
+    {
+      "name": "cyto3",
+      "uri": "gs://sap-harjaisal-khushi/.cellpose/models/cyto3#1785876532436094",
+      "size": 26566255,
+      "md5": "/XuTe//ed6q0w94DlEzqJw=="
+    },
+    {
+      "name": "size_cyto3.npy",
+      "uri": "gs://sap-harjaisal-khushi/.cellpose/models/size_cyto3.npy#1785876531629332",
+      "size": 3627,
+      "md5": "ppsIXG3gEQcMGnFX18KJkQ=="
+    }
+  ]
+}

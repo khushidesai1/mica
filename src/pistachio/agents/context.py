@@ -194,6 +194,9 @@ class ContextBuilder:
                                 "commit": tool.commit_sha,
                                 "license": tool.license,
                                 "status": tool.status.value,
+                                "execution_backend": tool.execution_backend,
+                                "build_profile": tool.build_profile,
+                                "availability_note": tool.availability_note,
                             }
                             for tool in cataloged_tools
                         ],

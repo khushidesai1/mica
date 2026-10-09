@@ -11,6 +11,8 @@ from urllib.parse import urlsplit
 import httpx
 from pydantic import BaseModel, Field
 
+from pistachio.tool_catalog import spatial_analysis_capability
+
 from . import access, attachments, briefs, commands, conversation_memory, user_memory, write_access
 from .data_links import message_text
 from .help_text import PROJECT_HELP
@@ -19,6 +21,7 @@ from .registry import Registry, read_brief, write_brief
 from .slack_format import chunks, to_mrkdwn
 from .storage import Storage
 from .survey import inventory, inventory_uri
+from .transfer_config import TransferRequest
 
 if TYPE_CHECKING:
     from .batch import BatchBridge
@@ -32,6 +35,11 @@ SYSTEM = (
     + "\n"
     + """You are Pistachio, a friendly, laid-back lab assistant in Slack.
 Handle conversation directly.
+The supplied analysis_tools describes known tools, not verified runtime installations.
+spatial_analysis_pipeline (sap) supports CosMx/CODEX ingest and Cellpose/Proseg segmentation.
+For a requested analysis using it, choose compute; the worker checks its dedicated interpreter
+and dependencies before use. For capability questions, explain that its runtime must be checked.
+Do not claim it is installed or that registration deployed an image.
 You have the project brief, recent conversation, and optionally a bounded metadata inventory.
 Use route_request exactly once. Choose reply for questions answerable from this context,
 planning, clarifications, explanations of existing results, and all brief edits.
@@ -48,6 +56,16 @@ running code, calculating new results (including cell counts), making/editing a 
 sending/resending reports or figures from the thread's workspace, including saving files to GCS.
 Only exact human write grant/revoke commands can change GCS access; you cannot grant it.
 The supplied write_access describes current permission, not evidence of an upload.
+The supplied transfer_tool describes whether AtoMx/AtomX SFTP transfers are available.
+When unavailable, choose reply for transfer requests and explain the reported limitation.
+When available, choose transfer to propose an AtoMx sample transfer. Fill transfer_request with
+sample, optional export_root, and optional as_sample. The application presents the source and
+destinations for confirmation; never claim the transfer has started from a route decision.
+Choose reply for status questions using transfer_tool samples and inventory with their ages.
+Never send an SFTP transfer to compute: the analysis worker has no network access.
+Never ask for AtoMx usernames or passwords in chat, or claim a saved login, confirmation
+button, transfer job, or transfer status exists without application-provided evidence.
+Existing GCS files alone do not prove a verified transfer from AtoMx.
 Choose compute up front for requests that also need these operations. Read-only file contents
 require a worker unless supplied below as an attachment head or media block. Listing names
 and object sizes does not. Never invent results or claim to see content that was not supplied.
@@ -106,7 +124,8 @@ If you lack context to understand a follow-up, ask instead of guessing or launch
 
 
 class Decision(BaseModel):
-    route: Literal["reply", "inventory", "view", "compute"]
+    route: Literal["reply", "inventory", "view", "compute", "transfer"]
+    transfer_request: TransferRequest | None = None
     view_ids: list[str] = Field(default_factory=list, max_length=4)
     reply: str = Field(min_length=1, max_length=3500)
     draft: str | None = Field(
@@ -290,6 +309,8 @@ async def handle(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage
 ) -> bool:
     """Return False only for an authorized computation with a durable thread context."""
+    from .transfers import Transfers
+
     event = record["payload"]["event"]
     text = message_text(event.get("text", ""))
     grant = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
@@ -363,6 +384,13 @@ async def handle(
         )
     if not grant.allowed:
         return await finish(bridge, event_id, record, access.deny_text(grant))
+    transfer_service = Transfers(bridge, storage)
+    if event.get("atomx_password_removed"):
+        return await finish(
+            bridge, event_id, record,
+            "Please use the AtoMx login button instead, and consider changing that password. "
+            "The original message is still in Slack.",
+        )
     conversation_doc, _ = await asyncio.to_thread(
         conversation_memory.load, storage, grant, record["thread_key"]
     )
@@ -412,6 +440,13 @@ async def handle(
         state.update(context=ctx, turn=0, is_init=is_init, messages=[])
         if await asyncio.to_thread(briefs.reviewed, storage, grant.project_id, brief):
             state["brief_policy_version"] = briefs.VERSION
+    if cmd and cmd.name in {"transfer", "transfers", "atomx login status", "replace atomx login",
+                            "forget atomx login", "cancel transfer"}:
+        await asyncio.to_thread(
+            storage.put, access.checkpoint_key(record["thread_key"]), json.dumps(state).encode()
+        )
+        reply = await transfer_service.command(cmd, grant, record, event_id)
+        return await finish(bridge, event_id, record, reply)
     replace_brief = bool(files and cmd and cmd.name == "brief")
     if files and not replace_brief:
         if record.get("attachments_access", grant.signature) != grant.signature:
@@ -483,6 +518,8 @@ async def handle(
             "data_path": ctx["data_path"],
             "data_uri": grant.project.data_uri,
             "project_name": grant.project.name,
+            "transfer_tool": await transfer_service.context(grant.project_id),
+            "analysis_tools": [spatial_analysis_capability()],
             "write_access": await asyncio.to_thread(
                 write_access.status, storage, grant.project_id, bridge.settings
             ),
@@ -677,6 +714,11 @@ async def handle(
     await asyncio.to_thread(
         storage.put, access.checkpoint_key(record["thread_key"]), json.dumps(state).encode()
     )
+    if decision.route == "transfer":
+        if decision.transfer_request is None:
+            raise ValueError("Name the AtoMx sample to transfer.")
+        reply = await transfer_service.request(current, record, event_id, decision.transfer_request)
+        return await finish(bridge, event_id, record, reply)
     if decision.route == "compute":
         record["route"] = "compute"
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
