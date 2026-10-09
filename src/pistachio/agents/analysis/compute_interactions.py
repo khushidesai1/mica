@@ -82,6 +82,7 @@ async def handle(bridge: BatchBridge, store: Storage, payload: dict[str, Any]) -
                 limit_usd=approved_limit,
                 now=time.time(),
                 identity=f"{event_id}:approval",
+                reason=q.reason,
             )
             if fresh.requires_approval:
                 record["compute_quote"] = fresh.model_dump(mode="json")

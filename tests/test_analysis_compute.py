@@ -77,14 +77,14 @@ def estimate_and_request(compute, hours=0.5, tier="standard"):
 def test_on_demand_setting_defaults_bounds_and_environment(monkeypatch):
     defaults = Settings(_env_file=None)
     assert defaults.on_demand_enabled is False
-    assert defaults.on_demand_after_minutes == 30
+    assert defaults.on_demand_step_minutes == 30
     for value in (9, 1441):
         with pytest.raises(ValidationError):
-            Settings(_env_file=None, on_demand_after_minutes=value)
+            Settings(_env_file=None, on_demand_step_minutes=value)
     monkeypatch.setenv("AGENT_ON_DEMAND_ENABLED", "true")
-    monkeypatch.setenv("AGENT_ON_DEMAND_AFTER_MINUTES", "60")
+    monkeypatch.setenv("AGENT_ON_DEMAND_STEP_MINUTES", "60")
     assert Settings(_env_file=None).on_demand_enabled
-    assert Settings(_env_file=None).on_demand_after_minutes == 60
+    assert Settings(_env_file=None).on_demand_step_minutes == 60
 
 
 @pytest.mark.parametrize(
@@ -100,7 +100,7 @@ def test_on_demand_setting_defaults_bounds_and_environment(monkeypatch):
 )
 def test_threshold_is_controller_owned(compute, enabled, minutes, hours, mode, status):
     compute.settings.on_demand_enabled = enabled
-    compute.settings.on_demand_after_minutes = minutes
+    compute.settings.on_demand_step_minutes = minutes
     q, result = estimate_and_request(compute, hours)
     assert q["provisioning"] == mode
     assert result["status"] == status
@@ -315,13 +315,17 @@ async def test_terminal_carries_mode_without_extra_size_change(
     await compute_batch.prepare_attempt(compute_bridge, EVENT, record)
     assert record["compute_quote"]["provisioning"] == "STANDARD"
     assert record["rates"]["provisioning"] == "STANDARD"
+    assert record["compute_quote"]["reason"] == pending_quote["reason"]
+    assert pending_quote["reason"] in notice
 
 
 @pytest.mark.parametrize("enabled,mode", [(False, "SPOT"), (True, "SPOT"), (True, "STANDARD")])
 def test_worker_prompt_uses_controller_manifest(compute, enabled, mode):
     compute.settings.on_demand_enabled = enabled
-    compute.settings.on_demand_after_minutes = 45
+    compute.settings.on_demand_step_minutes = 45
+    compute.settings.on_demand_total_hours = 6
     compute.record["provisioning"] = mode
+    compute.record["launch_reason"] = "Compares existing transcript counts."
     manifest = compute_batch.worker_manifest(compute.record, compute.settings)["compute"]
     assert manifest["provisioning"] == mode
     # No new environment variables: the trusted manifest supplies the policy.
@@ -329,11 +333,18 @@ def test_worker_prompt_uses_controller_manifest(compute, enabled, mode):
     sampler = SimpleNamespace(cpus=8, memory_gib=64, sample=lambda: SimpleNamespace(free=50))
     prompt = ComputeManager(worker_settings, manifest, sampler, AsyncMock()).prompt()
     assert f"n2-highmem-8, {'Spot' if mode == 'SPOT' else 'on-demand'};" in prompt
-    line = (
-        "Estimates of 45 minutes or more run on an on-demand worker; "
-        "estimate the full remaining work."
-    )
-    assert (line in prompt) is enabled
+    expected_mode = "Spot" if mode == "SPOT" else "on-demand"
+    for line in (
+        f"This worker was chosen at launch: {expected_mode}, standard "
+        "(Compares existing transcript counts).",
+        "on the same tier and mode, request_worker continues here without moving",
+        "any single command of 45+ minutes",
+        "unless the total exceeds 6 hours",
+        "Save each unit's result in the workspace as it finishes",
+        "Set longest_step_minutes to the longest single command, not the total",
+    ):
+        assert (line in prompt) is enabled
+    assert "Estimates of 45 minutes or more" not in prompt
 
 
 async def test_approval_refreshes_on_demand_prices(compute, compute_bridge, monkeypatch):
@@ -380,4 +391,71 @@ async def test_approval_refreshes_on_demand_prices(compute, compute_bridge, monk
     saved = await compute_bridge.repository.get_connector_state(f"claude-event:{EVENT}")
     assert saved["status"] == "pending"
     assert saved["compute_quote"]["provisioning"] == "STANDARD"
+    assert saved["compute_quote"]["reason"] == record["compute_quote"]["reason"]
     assert saved["compute_limit"] >= saved["compute_quote"]["request_high_usd"]
+
+
+@pytest.mark.parametrize(
+    "hours,step,initial,mode,reason",
+    [
+        (3, 15, "SPOT", "SPOT", "Each step is short (about 15 min)"),
+        (3, 60, "SPOT", "STANDARD", "longest uninterrupted step is about 60 min"),
+        (3, 30, "SPOT", "STANDARD", "longest uninterrupted step is about 30 min"),
+        (4, 15, "SPOT", "STANDARD", "Total work is about 4 h"),
+        (0.2, 5, "STANDARD", "STANDARD", "Already on an on-demand worker."),
+        (3, None, "SPOT", "STANDARD", "longest uninterrupted step is about 180 min"),
+    ],
+)
+def test_fallback_uses_single_step_or_total_hours(compute, hours, step, initial, mode, reason):
+    compute.record.update(provisioning=initial, max_run_seconds=86400)
+    data = estimate_call(hours).model_dump()
+    if step is not None:
+        data["estimate"]["longest_step_minutes"] = step
+    q = operate(
+        EVENT,
+        compute.record,
+        ComputeCall.model_validate(data),
+        compute.settings,
+        compute.lookup,
+        NOW,
+    )
+    assert q["provisioning"] == mode
+    assert reason in q["reason"] and q["notice"].startswith(q["reason"])
+    result = operate(
+        EVENT,
+        compute.record,
+        ComputeCall(attempt=0, action="request", quote_id=q["id"], handoff="Saved the inputs."),
+        compute.settings,
+        compute.lookup,
+        NOW,
+    )
+    assert result["status"] == ("continue" if initial == mode else "checkpoint")
+    assert result["notice"].startswith(q["reason"])
+
+
+def test_estimate_validates_step_and_supports_training():
+    data = estimate_call(1).estimate.model_dump()
+    with pytest.raises(ValidationError, match="longest"):
+        Estimate.model_validate({**data, "longest_step_minutes": 61})
+    assert Estimate.model_validate(data).longest_step_minutes is None
+    assert Estimate.model_validate({**data, "longest_step_minutes": 60, "label": "training"})
+
+
+def test_agent_tool_requires_numeric_longest_step(compute):
+    manager = ComputeManager(compute.settings, {}, Mock(), AsyncMock())
+    schema = manager.tools()[0].input_schema
+    assert "longest_step_minutes" in schema["required"]
+    assert schema["properties"]["longest_step_minutes"]["type"] == "number"
+
+
+def test_fallback_settings_bounds_and_environment(monkeypatch):
+    settings = Settings(_env_file=None)
+    assert settings.on_demand_total_hours == 4
+    assert settings.launch_heavy_tier == "large"
+    for hours in (0.9, 169):
+        with pytest.raises(ValidationError):
+            Settings(_env_file=None, on_demand_total_hours=hours)
+    monkeypatch.setenv("AGENT_ON_DEMAND_TOTAL_HOURS", "6")
+    monkeypatch.setenv("AGENT_LAUNCH_HEAVY_TIER", "xlarge")
+    assert Settings(_env_file=None).on_demand_total_hours == 6
+    assert Settings(_env_file=None).launch_heavy_tier == "xlarge"

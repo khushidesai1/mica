@@ -6,6 +6,8 @@ import time
 from decimal import Decimal
 from typing import Any
 
+import requests
+
 from .compute_quotes import Provisioning, Rates
 from .config import CHECKPOINT_PREFIX
 from .storage import Storage
@@ -78,7 +80,7 @@ def from_skus(
     )
 
 
-def refresh(region: str, provisioning: Provisioning = "SPOT") -> Rates:
+def refresh(region: str) -> dict[Provisioning, Rates]:
     import google.auth
     from google.auth.transport.requests import AuthorizedSession
 
@@ -88,21 +90,29 @@ def refresh(region: str, provisioning: Provisioning = "SPOT") -> Rates:
     started = time.monotonic()
     token: str = ""
     rows: list[dict[str, Any]] = []
-    with AuthorizedSession(credentials) as client:  # type: ignore[no-untyped-call]
-        for _ in range(30):
-            if time.monotonic() - started > 90:
-                raise ValueError("Price refresh exceeded its time allowance.")
-            response = client.get(
-                CATALOG,
-                params={"currencyCode": "USD", "pageSize": "5000", "pageToken": token},
-                timeout=15,
-            )
-            response.raise_for_status()
-            data = response.json()
-            rows.extend(data.get("skus", []))
-            token = str(data.get("nextPageToken", ""))
-            if not token:
-                return from_skus(rows, region, time.time(), provisioning)
+    try:
+        with AuthorizedSession(credentials) as client:  # type: ignore[no-untyped-call]
+            for _ in range(30):
+                remaining = 90 - (time.monotonic() - started)
+                if remaining <= 0:
+                    raise ValueError("Price refresh exceeded its time allowance.")
+                response = client.get(
+                    CATALOG,
+                    params={"currencyCode": "USD", "pageSize": "5000", "pageToken": token},
+                    timeout=min(30, remaining),
+                )
+                response.raise_for_status()
+                data = response.json()
+                rows.extend(data.get("skus", []))
+                token = str(data.get("nextPageToken", ""))
+                if not token:
+                    now = time.time()
+                    return {
+                        "SPOT": from_skus(rows, region, now, "SPOT"),
+                        "STANDARD": from_skus(rows, region, now, "STANDARD"),
+                    }
+    except requests.RequestException as exc:
+        raise ValueError("Compute prices are temporarily unavailable; retry shortly.") from exc
     raise ValueError("Price catalog pagination exceeded its limit.")
 
 
@@ -118,6 +128,11 @@ def current(storage: Storage, region: str, provisioning: Provisioning = "SPOT") 
             raise ValueError("Cached compute prices do not match the provisioning mode.")
         return rates
     except (FileNotFoundError, ValueError):
-        rates = refresh(region, provisioning)
-        storage.put(key, rates.model_dump_json().encode())
-        return rates
+        modes = refresh(region)
+        for mode, rates in modes.items():
+            suffix = "-standard" if mode == "STANDARD" else ""
+            storage.put(
+                f"{CHECKPOINT_PREFIX}/pricing/{region}{suffix}.json",
+                rates.model_dump_json().encode(),
+            )
+        return modes[provisioning]

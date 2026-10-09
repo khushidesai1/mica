@@ -128,6 +128,24 @@ definition. If the user's intent itself is unclear, ask one short question.
 )
 
 
+WORKER_POLICY = """
+When route is compute, set worker. Use training when the request fits a model (Amici,
+Decipher, Starfysh, Echidna, scVI or similar). Use full_segmentation or full_ingest
+when it starts a new Cellpose, Proseg or ingest run over whole samples. Use analysis
+for everything else, including inspecting, comparing or plotting outputs of an earlier run,
+and small probes. Set tier from worker_history and data_inventory sizes when relevant, else
+leave the default. Set on_demand only if the user explicitly asks for an on-demand/Spot or
+a "big" worker. Give a one-line reason a scientist would understand.
+"""
+
+
+class WorkerChoice(BaseModel):
+    category: Literal["training", "full_segmentation", "full_ingest", "analysis"]
+    tier: Literal["standard", "large", "xlarge"] = "standard"
+    on_demand: bool | None = None
+    reason: str = Field(min_length=5, max_length=200)
+
+
 class Decision(BaseModel):
     route: Literal["reply", "inventory", "view", "compute", "transfer"]
     transfer_request: TransferRequest | None = None
@@ -153,6 +171,7 @@ class Decision(BaseModel):
         max_length=2048,
         description="For inventory: folder relative to the project's data_uri; empty for root.",
     )
+    worker: WorkerChoice | None = None
 
 
 async def decide(
@@ -163,7 +182,12 @@ async def decide(
     media: Sequence[dict[str, Any]] = (),
     event_id: str = "",
     has_archive: bool = False,
+    on_demand_enabled: bool = False,
 ) -> Decision:
+    schema = Decision.model_json_schema()
+    if not on_demand_enabled:
+        schema["properties"].pop("worker")
+        schema["$defs"].pop("WorkerChoice")
     invalid_calls = 0
     async with httpx.AsyncClient(timeout=65) as client:
         # One media fallback and one retry of an invalid routing response, at most.
@@ -174,7 +198,7 @@ async def decide(
                 json={
                     "model": model,
                     "max_tokens": 8192,
-                    "system": SYSTEM,
+                    "system": SYSTEM + WORKER_POLICY if on_demand_enabled else SYSTEM,
                     "messages": [
                         {
                             "role": "user",
@@ -188,7 +212,7 @@ async def decide(
                                 "Reply, request a bounded listing, or isolated computation, "
                                 "optionally revising the project brief."
                             ),
-                            "input_schema": Decision.model_json_schema(),
+                            "input_schema": schema,
                         }
                     ],
                     # Forced tool choice is incompatible with extended thinking; keep it off.
@@ -576,6 +600,12 @@ async def handle(
                 )
             ),
         }
+        if bridge.settings.on_demand_enabled:
+            from .calibration import history
+
+            worker_history = await asyncio.to_thread(history, storage)
+            if worker_history:
+                model_context["worker_history"] = worker_history
         memory_text = ""
         if grant.private:
             memory_doc = await asyncio.to_thread(user_memory.load, storage, grant.email)
@@ -604,6 +634,7 @@ async def handle(
             model_context,
             event_id=event_id,
             has_archive=bool(state.get("archive")),
+            on_demand_enabled=bridge.settings.on_demand_enabled,
             **({"media": media} if media else {}),
         )
         if not is_init and decision.route == "view":
@@ -643,6 +674,7 @@ async def handle(
                 context,
                 event_id=event_id,
                 has_archive=bool(state.get("archive")),
+                on_demand_enabled=bridge.settings.on_demand_enabled,
                 **({"media": viewed} if viewed else {}),
             )
             if second.route not in {"reply", "compute"}:
@@ -679,6 +711,7 @@ async def handle(
                 {**model_context, "data_inventory": metadata},
                 event_id=event_id,
                 has_archive=bool(state.get("archive")),
+                on_demand_enabled=bridge.settings.on_demand_enabled,
                 **({"media": media} if media else {}),
             )
             if listed.route != "reply":
@@ -769,6 +802,9 @@ async def handle(
         reply = await transfer_service.request(current, record, event_id, decision.transfer_request)
         return await finish(bridge, event_id, record, reply)
     if decision.route == "compute":
+        from .compute_control import launch_choice
+
+        record["launch"] = launch_choice(decision.worker, bridge.settings)
         record["route"] = "compute"
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
         return False

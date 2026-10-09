@@ -52,7 +52,9 @@ class Settings(BaseSettings):
     max_concurrent_runs: int = Field(default=3, ge=1)
     tiers_enabled: bool = False
     on_demand_enabled: bool = False
-    on_demand_after_minutes: int = Field(default=30, ge=10, le=1440)
+    launch_heavy_tier: Literal["standard", "large", "xlarge"] = "large"
+    on_demand_step_minutes: int = Field(default=30, ge=10, le=1440)
+    on_demand_total_hours: float = Field(default=4, ge=1, le=168)
     compute_quote_only: bool = True
     tier: Literal["standard", "large", "xlarge"] = "standard"
     attempt: int = Field(default=0, ge=0, le=20)

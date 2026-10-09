@@ -550,11 +550,25 @@ class BatchBridge:
                 )
                 return
         if record["status"] == "submitting":
+            starting = "Spinning up a compute worker (usually a few minutes)…"
+            if self.settings.on_demand_enabled and record.get("provisioning") == "STANDARD":
+                from .tiers import TIERS
+
+                shape = TIERS[record["tier"]]
+                reason = (
+                    record.get("compute_quote", {}).get("reason")
+                    or record.get("launch_reason")
+                    or "on-demand selected for this request"
+                ).rstrip(".")
+                starting = (
+                    f"Starting an on-demand worker ({shape.name}: {shape.vcpus} CPUs, "
+                    f"{shape.memory_gib} GiB): {reason}."
+                )
             await self.notify(
                 event_id,
                 record,
                 "starting",
-                "Spinning up a compute worker (usually a few minutes)…",
+                starting,
             )
             storage = GCSStorage(self.app.gcs_bucket)
             if "write_grant" not in record:

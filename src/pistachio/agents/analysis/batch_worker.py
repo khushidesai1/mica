@@ -374,6 +374,7 @@ async def main(event_id: str) -> None:
                         "tier": settings.tier,
                         "attempt": settings.attempt,
                         **compute.sampler.summary(),
+                        "finished_at": time.time(),
                     }
                 ).encode(),
             )

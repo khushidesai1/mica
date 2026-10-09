@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import re
 import time
 from typing import TYPE_CHECKING, Any
 
-from . import access, compute_control, pricing
+from . import access, calibration, compute_control, pricing
 from .compute_quotes import Quote, Rates, affordable_seconds, quote
 from .config import CHECKPOINT_PREFIX, Settings
 from .storage import GCSStorage, Storage
@@ -28,8 +29,12 @@ async def prepare_attempt(
     bridge: BatchBridge, event_id: str, record: dict[str, Any]
 ) -> tuple[str, int, int] | None:
     store = GCSStorage(bridge.app.gcs_bucket)
+    launch = record.get("launch", {}) if bridge.settings.on_demand_enabled else {}
     rates = await asyncio.to_thread(
-        pricing.current, store, bridge.app.gcp_region, record.get("provisioning", "SPOT")
+        pricing.current,
+        store,
+        bridge.app.gcp_region,
+        record.get("provisioning") or launch.get("provisioning", "SPOT"),
     )
     if not record.get("compute_version"):
         compute_control.initialize(record, bridge.settings, rates)
@@ -42,12 +47,16 @@ async def prepare_attempt(
             limit_usd=record["compute_limit"],
             now=time.time(),
             identity=f"{event_id}:resume",
+            reason=old.reason,
         )
         record["compute_quote"] = new.model_dump(mode="json")
         if new.requires_approval:
             record.update(status="awaiting_approval", approval_expires=time.time() + 86400)
             await show_approval(bridge, event_id, record)
             return None
+        record["approved_compute_quote"] = new.model_dump(mode="json")
+    if bridge.settings.on_demand_enabled:
+        record["worker_history"] = await asyncio.to_thread(calibration.history, store)
     record["rates"] = rates.model_dump(mode="json")
     seconds, model = compute_control.attempt_limits(record, bridge.settings, rates, time.time())
     suffix = f"-a{record['attempt']}" if record["attempt"] else ""
@@ -88,7 +97,16 @@ def worker_manifest(record: dict[str, Any], settings: Settings) -> dict[str, Any
             ),
             "duration": q.duration_seconds if q else settings.compute_probe_seconds,
             **(
-                {"on_demand_after_minutes": settings.on_demand_after_minutes}
+                {"worker_history": record["worker_history"]}
+                if settings.on_demand_enabled and record.get("worker_history")
+                else {}
+            ),
+            **(
+                {
+                    "on_demand_step_minutes": settings.on_demand_step_minutes,
+                    "on_demand_total_hours": settings.on_demand_total_hours,
+                    "launch_reason": record.get("launch_reason", ""),
+                }
                 if settings.on_demand_enabled
                 else {}
             ),
@@ -129,6 +147,7 @@ async def terminal(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], client: Any, state: str
 ) -> bool:
     store = GCSStorage(bridge.app.gcs_bucket)
+    settled = any(row["attempt"] == record["attempt"] for row in record.get("attempt_ledger", []))
     try:
         result = await asyncio.to_thread(read_attempt, store, event_id, record["attempt"])
         cost = result.get("model_cost") if result else None
@@ -137,6 +156,13 @@ async def terminal(
         result = None
         compute_control.settle(record, model_cost=None, now=time.time())
         record["compute_failure"] = "The worker's continuation record could not be verified."
+    if bridge.settings.on_demand_enabled and not settled:
+        try:
+            await asyncio.to_thread(calibration.capture, store, event_id, record)
+        except Exception:
+            logging.getLogger(__name__).warning(
+                "Calibration history could not be saved; request outcome is unchanged."
+            )
     if record.get("cancel_requested"):
         return False
     pending = record.get("compute_pending")
@@ -158,7 +184,12 @@ async def terminal(
         record["provisioning"] = q.provisioning
         record["attempt"] += 1
         record["compute_approved"] = True
-        for key in ("compute_pending", "compute_request_id", "compute_request_result"):
+        for key in (
+            "compute_pending",
+            "compute_request_id",
+            "compute_request_result",
+            "approved_compute_quote",
+        ):
             record.pop(key, None)
         await release(bridge, record)
         record["status"] = "pending"

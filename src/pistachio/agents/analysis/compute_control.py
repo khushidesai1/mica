@@ -5,13 +5,35 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field
 
 from .compute_quotes import Estimate, Provisioning, Quote, Rates, Record, affordable_seconds, quote
 from .config import Settings
 from .tiers import ORDER, resolve
+
+if TYPE_CHECKING:
+    from .direct import WorkerChoice
+
+
+def launch_choice(worker: WorkerChoice | None, settings: Settings) -> dict[str, str]:
+    if not settings.on_demand_enabled or worker is None:
+        return {"tier": "standard", "provisioning": "SPOT", "category": "analysis", "reason": ""}
+    heavy = worker.category != "analysis"
+    tier = (
+        (worker.tier if worker.tier != "standard" else settings.launch_heavy_tier)
+        if heavy
+        else "standard"
+    )
+    selected_tier = ORDER[min(ORDER.index(tier), ORDER.index(settings.max_tier))]
+    on_demand = worker.on_demand is True or (heavy and worker.on_demand is not False)
+    return {
+        "tier": selected_tier,
+        "provisioning": "STANDARD" if on_demand else "SPOT",
+        "category": worker.category,
+        "reason": worker.reason,
+    }
 
 
 class ComputeCall(Record):
@@ -33,17 +55,27 @@ def active_cost(record: dict[str, Any], now: float) -> float:
 
 
 def initialize(record: dict[str, Any], settings: Settings, rates: Rates) -> None:
+    launch = record.get("launch", {}) if settings.on_demand_enabled else {}
+    tier = launch.get("tier", "standard")
+    provisioning = launch.get("provisioning", "SPOT")
+    probe_budget = settings.compute_probe_budget_usd
+    if settings.on_demand_enabled:
+        # Round upward so affordable_seconds keeps the entire probe window after teardown.
+        full_window = float(sum(rates.hourly(tier))) * (settings.compute_probe_seconds + 600) / 3600
+        probe_budget = max(probe_budget, math.nextafter(full_window, math.inf))
     record.update(
         compute_version=1,
-        tier="standard",
-        provisioning="SPOT",
+        tier=tier,
+        provisioning=provisioning,
+        launch_reason=launch.get("reason", ""),
+        launch_category=launch.get("category", "analysis"),
         attempt=0,
         compute_spent=0.0,
         model_spent=0.0,
         compute_limit=settings.compute_auto_budget_usd,
         model_limit=settings.max_budget_usd_per_turn,
         compute_probe_seconds=settings.compute_probe_seconds,
-        compute_probe_budget=settings.compute_probe_budget_usd,
+        compute_probe_budget=probe_budget,
         quote_only=settings.compute_quote_only,
         escalations=0,
         preemptions=0,
@@ -101,12 +133,14 @@ def operate(
             raise ValueError("Downsizing is not supported during a request.")
         if shape.name != record.get("tier", "standard") and record.get("escalations", 0) >= 1:
             raise ValueError("This request already resized; revise the plan before another change.")
+        step = body.estimate.longest_step_minutes or body.estimate.hours_high * 60
         provisioning: Provisioning = (
             "STANDARD"
             if settings.on_demand_enabled
             and (
                 record.get("provisioning", "SPOT") == "STANDARD"
-                or body.estimate.hours_high * 60 >= settings.on_demand_after_minutes
+                or step >= settings.on_demand_step_minutes
+                or body.estimate.hours_high >= settings.on_demand_total_hours
             )
             else "SPOT"
         )
@@ -115,6 +149,22 @@ def operate(
         now = time.time()
         if rates.provisioning != provisioning:
             raise ValueError("Compute prices do not match the selected provisioning mode.")
+        reason = ""
+        if settings.on_demand_enabled:
+            if record.get("provisioning", "SPOT") == "STANDARD":
+                reason = "Already on an on-demand worker."
+            elif step >= settings.on_demand_step_minutes:
+                reason = (
+                    f"Its longest uninterrupted step is about {step:g} min "
+                    "and can't resume if interrupted."
+                )
+            elif body.estimate.hours_high >= settings.on_demand_total_hours:
+                reason = (
+                    f"Total work is about {body.estimate.hours_high:g} h; "
+                    "a Spot interruption would lose too much."
+                )
+            else:
+                reason = f"Each step is short (about {step:g} min) and cheap to redo."
         q = quote(
             body.estimate,
             rates,
@@ -122,6 +172,7 @@ def operate(
             limit_usd=record["compute_limit"],
             now=now,
             identity=identity,
+            reason=reason,
         )
         record["compute_quote"] = q.model_dump(mode="json")
         record["rates"] = rates.model_dump(mode="json")
@@ -147,6 +198,7 @@ def operate(
         limit_usd=record["compute_limit"],
         now=now,
         identity=identity,
+        reason=q.reason,
     )
     record["compute_quote"] = fresh.model_dump(mode="json")
     record["rates"] = rates.model_dump(mode="json")
@@ -156,13 +208,13 @@ def operate(
             "notice": fresh.notice(),
             "message": "Quote-only rollout: stop after reporting this estimate.",
         }
-    same = (
-        q.estimate.tier == record.get("tier", "standard")
-        and q.provisioning == record.get("provisioning", "SPOT")
+    same = q.estimate.tier == record.get("tier", "standard") and q.provisioning == record.get(
+        "provisioning", "SPOT"
     )
     remaining = record.get("started", now) + record.get("max_run_seconds", 0) - now
     if same and not fresh.requires_approval and fresh.duration_seconds <= remaining:
         record["compute_approved"] = True
+        record["approved_compute_quote"] = fresh.model_dump(mode="json")
         record["compute_run_deadline"] = now + fresh.duration_seconds
         result = {
             "status": "continue",

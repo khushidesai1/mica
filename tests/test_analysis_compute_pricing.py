@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
+import requests
 
 from pistachio.agents.analysis import pricing
 from pistachio.agents.analysis.compute_quotes import Estimate, Quote, Rates, quote
@@ -75,9 +76,7 @@ def test_cache_separates_modes_and_preserves_legacy_spot_key(skus, tmp_path, mon
     monkeypatch.setattr(pricing.time, "time", lambda: NOW)
     spot = pricing.from_skus(skus, REGION, NOW)
     standard = pricing.from_skus(skus, REGION, NOW, provisioning="STANDARD")
-    refresh = Mock(
-        side_effect=lambda region, provisioning: {"SPOT": spot, "STANDARD": standard}[provisioning]
-    )
+    refresh = Mock(return_value={"SPOT": spot, "STANDARD": standard})
     monkeypatch.setattr(pricing, "refresh", refresh)
     old_key = f"{CHECKPOINT_PREFIX}/pricing/{REGION}.json"
     store.put(old_key, spot.model_dump_json().encode())
@@ -85,7 +84,7 @@ def test_cache_separates_modes_and_preserves_legacy_spot_key(skus, tmp_path, mon
     refresh.assert_not_called()
     assert pricing.current(store, REGION, "STANDARD") == standard
     assert pricing.current(store, REGION, "STANDARD") == standard
-    refresh.assert_called_once_with(REGION, "STANDARD")
+    refresh.assert_called_once_with(REGION)
     assert Rates.model_validate_json(store.get(old_key)[0]) == spot
     new_key = f"{CHECKPOINT_PREFIX}/pricing/{REGION}-standard.json"
     assert Rates.model_validate_json(store.get(new_key)[0]) == standard
@@ -93,3 +92,92 @@ def test_cache_separates_modes_and_preserves_legacy_spot_key(skus, tmp_path, mon
     store.put(new_key, spot.model_dump_json().encode())
     assert pricing.current(store, REGION, "STANDARD") == standard
     assert refresh.call_count == 2
+
+
+@pytest.fixture
+def catalog(monkeypatch, skus):
+    import google.auth
+    from google.auth.transport import requests as transport
+
+    client = Mock()
+    client.__enter__ = Mock(return_value=client)
+    client.__exit__ = Mock(return_value=False)
+    client.get.return_value.json.return_value = {"skus": skus}
+    monkeypatch.setattr(google.auth, "default", Mock(return_value=(Mock(), "test")))
+    monkeypatch.setattr(transport, "AuthorizedSession", Mock(return_value=client))
+    return client
+
+
+def test_one_catalog_download_fills_both_caches(catalog, tmp_path):
+    store = LocalStorage(tmp_path)
+    spot = pricing.current(store, REGION)
+    standard = pricing.current(store, REGION, "STANDARD")
+    assert spot.provisioning == "SPOT" and standard.provisioning == "STANDARD"
+    catalog.get.assert_called_once()
+    assert catalog.get.call_args.kwargs["timeout"] == 30
+    assert spot.fetched_at == standard.fetched_at
+
+
+def test_read_timeout_is_a_retryable_value_error(catalog):
+    catalog.get.side_effect = requests.ReadTimeout("private details")
+    with pytest.raises(
+        ValueError, match="Compute prices are temporarily unavailable; retry shortly"
+    ):
+        pricing.refresh(REGION)
+
+
+async def test_price_timeout_returns_422(catalog, monkeypatch, tmp_path, repository):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from fastapi import HTTPException, Response
+    from starlette.requests import Request
+
+    from pistachio.agents.analysis.config import Settings
+    from pistachio.api import slack_analysis
+
+    record = {
+        "compute_version": 1,
+        "attempt": 0,
+        "project_id": "project",
+        "principal": "user",
+        "compute_limit": 50,
+    }
+    bridge = SimpleNamespace(
+        repository=repository,
+        settings=Settings(_env_file=None),
+        app=SimpleNamespace(gcp_region=REGION),
+    )
+    monkeypatch.setattr(
+        slack_analysis,
+        "worker_context",
+        AsyncMock(return_value=(bridge, LocalStorage(tmp_path), record)),
+    )
+    catalog.get.side_effect = requests.ReadTimeout("private details")
+
+    async def receive():
+        return {
+            "type": "http.request",
+            "body": json.dumps(
+                {
+                    "attempt": 0,
+                    "action": "estimate",
+                    "estimate": {
+                        "tier": "standard",
+                        "hours_low": 0.1,
+                        "hours_high": 0.2,
+                        "peak_gib": 1,
+                        "task_peak_gib": 1,
+                        "disk_gb": 1,
+                        "basis": "Measured fixture for timeout regression.",
+                    },
+                }
+            ).encode(),
+        }
+
+    with pytest.raises(HTTPException) as exc:
+        await slack_analysis.compute_operation(
+            "a" * 32, Request({"type": "http", "headers": []}, receive=receive), Response()
+        )
+    assert exc.value.status_code == 422
+    assert exc.value.detail == "Compute prices are temporarily unavailable; retry shortly."
