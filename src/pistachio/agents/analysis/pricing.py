@@ -6,14 +6,19 @@ import time
 from decimal import Decimal
 from typing import Any
 
-from .compute_quotes import Rates
+from .compute_quotes import Provisioning, Rates
 from .config import CHECKPOINT_PREFIX
 from .storage import Storage
 
 CATALOG = "https://cloudbilling.googleapis.com/v1/services/6F81-5844-456A/skus"
 
 
-def from_skus(skus: list[dict[str, Any]], region: str, now: float) -> Rates:
+def from_skus(
+    skus: list[dict[str, Any]], region: str, now: float, provisioning: Provisioning = "SPOT"
+) -> Rates:
+    if provisioning not in {"SPOT", "STANDARD"}:
+        raise ValueError("Unsupported compute provisioning mode.")
+    prefix = "Spot Preemptible " if provisioning == "SPOT" else ""
     selected: dict[str, dict[str, Any]] = {}
     for sku in skus:
         if region not in sku.get("serviceRegions", []):
@@ -21,9 +26,9 @@ def from_skus(skus: list[dict[str, Any]], region: str, now: float) -> Rates:
         desc = sku.get("description", "")
         key = (
             "cpu_hour"
-            if desc.startswith("Spot Preemptible N2 Instance Core running in ")
+            if desc.startswith(f"{prefix}N2 Instance Core running in ")
             else "memory_gib_hour"
-            if desc.startswith("Spot Preemptible N2 Instance Ram running in ")
+            if desc.startswith(f"{prefix}N2 Instance Ram running in ")
             else "balanced_gb_hour"
             if desc == "Balanced PD Capacity"
             else "ssd_gb_hour"
@@ -33,12 +38,16 @@ def from_skus(skus: list[dict[str, Any]], region: str, now: float) -> Rates:
         if key:
             if key in selected:
                 raise ValueError("Ambiguous regional Compute pricing.")
-            usage = "Preemptible" if key in {"cpu_hour", "memory_gib_hour"} else "OnDemand"
+            usage = (
+                "Preemptible"
+                if provisioning == "SPOT" and key in {"cpu_hour", "memory_gib_hour"}
+                else "OnDemand"
+            )
             if sku.get("category", {}).get("usageType") != usage:
                 raise ValueError("Compute SKU provisioning does not match.")
             selected[key] = sku
     if len(selected) != 4:
-        raise ValueError("Regional N2 Spot and persistent-disk prices are incomplete.")
+        raise ValueError(f"Regional N2 {provisioning} and persistent-disk prices are incomplete.")
     prices: dict[str, Decimal] = {}
     for key, sku in selected.items():
         info = sorted(sku["pricingInfo"], key=lambda row: row["effectiveTime"])[-1]
@@ -61,6 +70,7 @@ def from_skus(skus: list[dict[str, Any]], region: str, now: float) -> Rates:
         prices[key] = price
     return Rates(
         region=region,
+        provisioning=provisioning,
         fetched_at=now,
         expires_at=now + 86400,
         sku_ids=[sku["skuId"] for sku in selected.values()],
@@ -68,7 +78,7 @@ def from_skus(skus: list[dict[str, Any]], region: str, now: float) -> Rates:
     )
 
 
-def refresh(region: str) -> Rates:
+def refresh(region: str, provisioning: Provisioning = "SPOT") -> Rates:
     import google.auth
     from google.auth.transport.requests import AuthorizedSession
 
@@ -92,17 +102,22 @@ def refresh(region: str) -> Rates:
             rows.extend(data.get("skus", []))
             token = str(data.get("nextPageToken", ""))
             if not token:
-                return from_skus(rows, region, time.time())
+                return from_skus(rows, region, time.time(), provisioning)
     raise ValueError("Price catalog pagination exceeded its limit.")
 
 
-def current(storage: Storage, region: str) -> Rates:
-    key = f"{CHECKPOINT_PREFIX}/pricing/{region}.json"
+def current(storage: Storage, region: str, provisioning: Provisioning = "SPOT") -> Rates:
+    if provisioning not in {"SPOT", "STANDARD"}:
+        raise ValueError("Unsupported compute provisioning mode.")
+    suffix = "-standard" if provisioning == "STANDARD" else ""
+    key = f"{CHECKPOINT_PREFIX}/pricing/{region}{suffix}.json"
     try:
         rates = Rates.model_validate_json(storage.get(key)[0])
         rates.validate_time(time.time(), region)
+        if rates.provisioning != provisioning:
+            raise ValueError("Cached compute prices do not match the provisioning mode.")
         return rates
     except (FileNotFoundError, ValueError):
-        rates = refresh(region)
+        rates = refresh(region, provisioning)
         storage.put(key, rates.model_dump_json().encode())
         return rates

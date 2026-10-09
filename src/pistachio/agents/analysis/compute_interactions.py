@@ -71,7 +71,9 @@ async def handle(bridge: BatchBridge, store: Storage, payload: dict[str, Any]) -
             record.update(status="failed", cancel_requested=True)
             await bridge.notify(event_id, record, "cancelled", "Cancelled the pending computation.")
         elif name == "pistachio_compute_approve":
-            rates = await asyncio.to_thread(pricing.current, store, bridge.app.gcp_region)
+            rates = await asyncio.to_thread(
+                pricing.current, store, bridge.app.gcp_region, record.get("provisioning", "SPOT")
+            )
             approved_limit = math.ceil(q.request_high_usd)
             fresh = quote(
                 q.estimate,

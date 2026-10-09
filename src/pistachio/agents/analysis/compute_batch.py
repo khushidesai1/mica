@@ -28,7 +28,9 @@ async def prepare_attempt(
     bridge: BatchBridge, event_id: str, record: dict[str, Any]
 ) -> tuple[str, int, int] | None:
     store = GCSStorage(bridge.app.gcs_bucket)
-    rates = await asyncio.to_thread(pricing.current, store, bridge.app.gcp_region)
+    rates = await asyncio.to_thread(
+        pricing.current, store, bridge.app.gcp_region, record.get("provisioning", "SPOT")
+    )
     if not record.get("compute_version"):
         compute_control.initialize(record, bridge.settings, rates)
     if record.get("compute_quote") and record.get("resume"):
@@ -70,6 +72,7 @@ def worker_manifest(record: dict[str, Any], settings: Settings) -> dict[str, Any
         "compute": {
             "version": 1,
             "tier": record["tier"],
+            "provisioning": record.get("provisioning", "SPOT"),
             "attempt": record["attempt"],
             "approved": record.get("compute_approved", False),
             "limit": record["compute_limit"],
@@ -84,6 +87,11 @@ def worker_manifest(record: dict[str, Any], settings: Settings) -> dict[str, Any
                 ceiling=record["compute_probe_seconds"],
             ),
             "duration": q.duration_seconds if q else settings.compute_probe_seconds,
+            **(
+                {"on_demand_after_minutes": settings.on_demand_after_minutes}
+                if settings.on_demand_enabled
+                else {}
+            ),
         },
         "resume": record.get("resume"),
     }
@@ -137,6 +145,7 @@ async def terminal(
             raise ValueError("Continuation did not checkpoint this attempt.")
         q = Quote.model_validate(pending["quote"])
         old_tier = record["tier"]
+        old_provisioning = record.get("provisioning", "SPOT")
         record["resume"] = {
             **result,
             "handoff": pending["handoff"],
@@ -146,13 +155,21 @@ async def terminal(
         record["compute_quote"] = q.model_dump(mode="json")
         record["escalations"] += int(q.estimate.tier != old_tier)
         record["tier"] = q.estimate.tier
+        record["provisioning"] = q.provisioning
         record["attempt"] += 1
         record["compute_approved"] = True
         for key in ("compute_pending", "compute_request_id", "compute_request_result"):
             record.pop(key, None)
         await release(bridge, record)
         record["status"] = "pending"
-        await bridge.notify(event_id, record, "starting", "Saved progress. " + q.notice())
+        switching = (
+            "Moving to an on-demand worker to avoid Spot preemption. "
+            if q.provisioning == "STANDARD" and old_provisioning != "STANDARD"
+            else ""
+        )
+        await bridge.notify(
+            event_id, record, "starting", "Saved progress. " + switching + q.notice()
+        )
         return True
     if pending or (state == "SUCCEEDED" and (not result or result.get("outcome") != "complete")):
         record["status"] = "failed"

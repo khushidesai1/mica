@@ -12,6 +12,8 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .tiers import TIERS, TierName
 
+Provisioning = Literal["SPOT", "STANDARD"]
+
 
 class Record(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, frozen=True)
@@ -20,7 +22,7 @@ class Record(BaseModel):
 class Rates(Record):
     region: str = Field(min_length=1, max_length=50)
     currency: Literal["USD"] = "USD"
-    provisioning: Literal["SPOT"] = "SPOT"
+    provisioning: Provisioning = "SPOT"
     fetched_at: float = Field(ge=0)
     expires_at: float = Field(gt=0)
     cpu_hour: Decimal = Field(gt=0, le=10)
@@ -65,6 +67,7 @@ class Estimate(Record):
 class Quote(Record):
     id: str
     estimate: Estimate
+    provisioning: Provisioning = "SPOT"
     expires_at: float
     vm_hour: float
     disk_hour: float
@@ -85,8 +88,9 @@ class Quote(Record):
 
     def notice(self) -> str:
         e, t = self.estimate, TIERS[self.estimate.tier]
+        mode = "Spot" if self.provisioning == "SPOT" else "on-demand"
         return (
-            f"{t.name}: {t.vcpus} CPUs, {t.memory_gib} GiB RAM (Spot). "
+            f"{t.name}: {t.vcpus} CPUs, {t.memory_gib} GiB RAM ({mode}). "
             f"Estimated {e.hours_low:g}–{e.hours_high:g} hours plus startup; "
             f"additional compute ${self.remaining_low_usd:.2f}–${self.remaining_high_usd:.2f}. "
             f"${self.spent_usd:.2f} used/reserved so far; "
@@ -137,6 +141,7 @@ def quote(
     return Quote(
         id=hashlib.sha256(fingerprint.encode()).hexdigest()[:32],
         estimate=estimate,
+        provisioning=rates.provisioning,
         expires_at=min(rates.expires_at, now + 3600),
         vm_hour=float(vm),
         disk_hour=float(disk),

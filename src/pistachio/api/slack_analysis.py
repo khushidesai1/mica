@@ -219,6 +219,7 @@ class WriteUpload(BaseModel):
 @router.post("/compute/{event_id}", include_in_schema=False)
 async def compute_operation(event_id: str, request: Request, response: Response) -> dict[str, Any]:
     from pistachio.agents.analysis import compute_control, pricing
+    from pistachio.agents.analysis.compute_quotes import Provisioning, Rates
 
     bridge, storage, _ = await worker_context(event_id, request)
     response.headers["Cache-Control"] = "no-store"
@@ -238,11 +239,14 @@ async def compute_operation(event_id: str, request: Request, response: Response)
     try:
         # Revalidate access and attempt after acquiring the same lock used by cancellation.
         bridge, storage, record = await worker_context(event_id, request)
-        rates = await asyncio.to_thread(pricing.current, storage, bridge.app.gcp_region)
+
+        def get_rates(provisioning: Provisioning) -> Rates:
+            return pricing.current(storage, bridge.app.gcp_region, provisioning)
+
         import time
 
-        result = compute_control.operate(
-            event_id, record, body, bridge.settings, rates, time.time()
+        result = await asyncio.to_thread(
+            compute_control.operate, event_id, record, body, bridge.settings, get_rates, time.time()
         )
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
         return result

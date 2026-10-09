@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Callable
 from typing import Any, Literal
 
 from pydantic import Field
 
-from .compute_quotes import Estimate, Quote, Rates, Record, affordable_seconds, quote
+from .compute_quotes import Estimate, Provisioning, Quote, Rates, Record, affordable_seconds, quote
 from .config import Settings
 from .tiers import ORDER, resolve
 
@@ -35,6 +36,7 @@ def initialize(record: dict[str, Any], settings: Settings, rates: Rates) -> None
     record.update(
         compute_version=1,
         tier="standard",
+        provisioning="SPOT",
         attempt=0,
         compute_spent=0.0,
         model_spent=0.0,
@@ -79,7 +81,7 @@ def operate(
     record: dict[str, Any],
     body: ComputeCall,
     settings: Settings,
-    rates: Rates,
+    get_rates: Callable[[Provisioning], Rates],
     now: float,
 ) -> dict[str, Any]:
     if record.get("compute_version") != 1:
@@ -99,6 +101,20 @@ def operate(
             raise ValueError("Downsizing is not supported during a request.")
         if shape.name != record.get("tier", "standard") and record.get("escalations", 0) >= 1:
             raise ValueError("This request already resized; revise the plan before another change.")
+        provisioning: Provisioning = (
+            "STANDARD"
+            if settings.on_demand_enabled
+            and (
+                record.get("provisioning", "SPOT") == "STANDARD"
+                or body.estimate.hours_high * 60 >= settings.on_demand_after_minutes
+            )
+            else "SPOT"
+        )
+        rates = get_rates(provisioning)
+        # A catalog refresh can produce rates newer than the call's initial timestamp.
+        now = time.time()
+        if rates.provisioning != provisioning:
+            raise ValueError("Compute prices do not match the selected provisioning mode.")
         q = quote(
             body.estimate,
             rates,
@@ -120,6 +136,10 @@ def operate(
     if record.get("compute_pending"):
         return {"status": "checkpoint", "notice": q.notice()}
     # Never trust the quote's arithmetic at launch/approval; recalculate at current prices.
+    rates = get_rates(q.provisioning)
+    now = time.time()
+    if rates.provisioning != q.provisioning:
+        raise ValueError("Compute prices do not match the selected provisioning mode.")
     fresh = quote(
         q.estimate,
         rates,
@@ -136,7 +156,10 @@ def operate(
             "notice": fresh.notice(),
             "message": "Quote-only rollout: stop after reporting this estimate.",
         }
-    same = q.estimate.tier == record.get("tier", "standard")
+    same = (
+        q.estimate.tier == record.get("tier", "standard")
+        and q.provisioning == record.get("provisioning", "SPOT")
+    )
     remaining = record.get("started", now) + record.get("max_run_seconds", 0) - now
     if same and not fresh.requires_approval and fresh.duration_seconds <= remaining:
         record["compute_approved"] = True

@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     max_budget_usd_per_turn: float = Field(default=5, gt=0)
     max_concurrent_runs: int = Field(default=3, ge=1)
     tiers_enabled: bool = False
+    on_demand_enabled: bool = False
+    on_demand_after_minutes: int = Field(default=30, ge=10, le=1440)
     compute_quote_only: bool = True
     tier: Literal["standard", "large", "xlarge"] = "standard"
     attempt: int = Field(default=0, ge=0, le=20)
