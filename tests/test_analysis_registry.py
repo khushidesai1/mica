@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from pistachio.agents.analysis.registry import Registry, RegistryDoc, read_brief, write_brief
+from pistachio.agents.analysis.registry import Registry, RegistryDoc
 from pistachio.agents.analysis.storage import Conflict, LocalStorage
 from tools.migrate_slack_registry import apply, report
 
@@ -34,8 +34,10 @@ def test_names_are_private_and_replayed_share_cannot_regrant(tmp_path):
     assert registry.load().find("liver", B) == b
     with pytest.raises(ValueError):
         registry.load().find(a, B)
+
     def share(d):
         return d.share(a, A, B)
+
     registry.update("share", A, "share", share)
     registry.update("unshare", A, "unshare", lambda d: d.share(a, A, B, remove=True))
     registry.update("share", A, "share", share)
@@ -99,19 +101,6 @@ def test_rename_preserves_legacy_id_and_allows_other_owners_names(tmp_path):
     registry.update("rename-again", A, "rename", lambda d: d.rename("liver", A, "atlas-final"))
     registry.update("rename", A, "rename", lambda d: d.rename("liver", A, "atlas"))
     assert registry.load().projects["liver"].name == "atlas-final"
-
-
-def test_brief_conflict_and_lost_response_are_safe(tmp_path):
-    store = LocalStorage(tmp_path)
-    initial = write_brief(store, "legacy", b"original", None)
-    newer = write_brief(store, "legacy", b"newer", initial)
-    assert write_brief(store, "legacy", b"newer", initial) == newer
-    with pytest.raises(Conflict):
-        write_brief(store, "legacy", b"stale draft", initial)
-    assert read_brief(store, "legacy")[0] == "newer"
-    for bad in ("../escape", "_users", "p_bad"):
-        with pytest.raises(ValueError):
-            read_brief(store, bad)
 
 
 def test_migration_requires_drain_preserves_legacy_and_detects_drift(tmp_path):

@@ -1,13 +1,12 @@
 # Project knowledge
 
 Project knowledge lets analysis workers retain verified data facts, results and their definitions,
-working recipes, pitfalls, corrections, and open questions within a project. The code defaults to disabled; deployments opt in with `AGENT_KNOWLEDGE_ENABLED=true`.
+working recipes, pitfalls, corrections, and open questions within a project. Knowledge is always on; GitHub mirroring remains optional.
 
 ## Configuration
 
 | Environment variable | Default |
 | --- | --- |
-| `AGENT_KNOWLEDGE_ENABLED` | `false` |
 | `AGENT_KNOWLEDGE_INDEX_CHARS` | `4000` |
 | `AGENT_KNOWLEDGE_FILE_KB` | `16` (scripts have a fixed 64 KB limit) |
 | `AGENT_KNOWLEDGE_MAX_FILES` | `200` |
@@ -17,21 +16,27 @@ working recipes, pitfalls, corrections, and open questions within a project. The
 | `AGENT_KNOWLEDGE_GITHUB_BRANCH` | `main` |
 | `AGENT_KNOWLEDGE_GITHUB_TOKEN_SECRET` | empty; full Secret Manager version resource |
 
-The worker receives the knowledge flag and limits, plus a boolean indicating whether unmirrored
+The worker receives the knowledge limits, plus a boolean indicating whether unmirrored
 history must be retained. It receives neither the GitHub token nor its secret resource or repository
 configuration. The analysis sandbox receives no new credentials or network access.
 
-With knowledge disabled, worker/router prompts, model context, and workspace checkpoints retain
-their previous behavior. The memory editor repair is independent of this flag.
+The project guide is `knowledge/PROJECT.md` (100,000 bytes, no provenance header). Chat
+corrections and init save it immediately; worker edits save through the same versioned path.
+`brief` shows the current guide and `undo knowledge` reverts the latest save. The retired
+`save brief` and `clean brief` commands explain automatic saving. Legacy published guides migrate
+once under the project lock, with `source: migrated brief`; the original object is retained.
+Unsaved thread drafts are not migrated.
 
 ## Live files, validation and history
 
 GCS remains authoritative at `projects/{project_id}/knowledge/`. Workers replace any restored
 workspace `knowledge/` directory with the current project copy at the start of an attempt.
-Knowledge is excluded from full and partial thread archives when enabled.
+Knowledge is excluded from full and partial thread archives. Recovery snapshots carry a separate
+bounded, checksummed diff of pending edits and their original base generations. Restoring those
+edits preserves conflict detection against newer shared knowledge.
 
-Allowed paths are `INDEX.md`, `lessons.md`, `open.md`, `data/<topic>.md`, `results/<topic>.md`,
-and `recipes/<name>.md`, `.py`, `.R`, or `.sh`. Markdown entries other than the index begin with
+Allowed paths are `PROJECT.md`, `INDEX.md`, `lessons.md`, `open.md`, `data/<topic>.md`, `results/<topic>.md`,
+and `recipes/<name>.md`, `.py`, `.R`, or `.sh`. Markdown entries other than the index and project guide begin with
 `type:`, `source:`, and `status:` lines. The save path checks allowed names, ordinary files,
 UTF-8, provenance headers, secret patterns, and file/count/total limits. Invalid replacements
 are rejected rather than being interpreted as deletions. All prompt inclusions identify saved
@@ -84,7 +89,10 @@ Memory editing now runs through `POST /api/v1/internal/slack-analysis/memory/{ev
 reply delivery and worker-slot release. It uses a 90-second HTTP timeout inside a 150-second task
 budget. Existing summary/edit receipts suppress duplicate model calls and notices. Transient
 failures propagate to the task dispatcher for retries; logs contain the exception type, not its
-message or conversation content. Disabled, obsolete, cancelled and already-completed edits skip.
+message or conversation content. Each invocation emits one `memory_editor` outcome (`saved`,
+`unchanged`, `skipped:<reason>`, or `failed:<Type>`) with summary length and saved edit count.
+Channel summaries are shared across threads within the same project/channel; DM summaries remain
+private per person/project. Routine personal edits do not reset either conversation cache.
 
 Mirroring uses `POST /api/v1/internal/slack-analysis/knowledge-mirror/{project_id}/{stamp}`.
 Both endpoints require the configured Cloud Tasks dispatcher identity. The existing maintenance
@@ -117,10 +125,10 @@ Add `--apply` to perform the reviewed restore. The tool supports `AGENT_STORAGE=
 
 ## Deployment and verification
 
-The local release checks passed: 705 tests, with six optional integration tests skipped,
-plus Ruff and mypy. The coordinated release builds API, Slack worker and science worker
-images from one source commit. Live rollout enables `AGENT_KNOWLEDGE_ENABLED=true`, preserves
-existing environment and secret mappings, and checks authenticated endpoint boundaries
+The earlier knowledge release passed 705 local tests. Current implementation and verification
+are tracked in [the routing and memory plan](worker-routing-and-memory-plan.md). The coordinated
+release must build API and workers from one source commit, drain old jobs, preserve
+existing environment and secret mappings, and check authenticated endpoint boundaries
 before promoting traffic. Deployment evidence is saved under `.pistachio/deployments/`.
 
 Before enabling the mirror, an administrator must create a private repository with an initialized

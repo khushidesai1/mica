@@ -27,6 +27,8 @@ from pistachio.agents.analysis.storage import LocalStorage
 
 
 class FakeRunner:
+    knowledge_reads = 0
+
     def __init__(self):
         self.calls = []
         self.active = self.maximum = 0
@@ -325,7 +327,7 @@ async def test_missing_context_never_runs(bot):
     assert "no saved context" in bot.client.chat_postMessage.call_args.kwargs["text"]
 
 
-async def test_draft_revision_preserves_brief_base_generation(bot):
+async def test_output_named_project_does_not_change_shared_guide(bot):
     ctx = bot.sessions.get("C123", "1.0")[0]
     ctx.brief_generation = "original-generation"
     bot.sessions.save("C123", ctx)
@@ -339,7 +341,7 @@ async def test_draft_revision_preserves_brief_base_generation(bot):
     bot.runner.run_turn = revise
     await send(bot, event("revise the brief"))
     saved = bot.sessions.get("C123", "1.0")[0]
-    assert saved.project_md == "Revised draft"
+    assert saved.project_md == "# Original"
     assert saved.brief_generation == "original-generation"
 
 
@@ -450,7 +452,7 @@ async def test_failed_provenance_keeps_delivered_file_with_no_key(bot, monkeypat
     assert len(bot.delivered) == 1 and bot.delivered[0]["key"] is None
 
 
-async def test_identical_guide_rewrite_does_not_announce_or_attach_an_edit(bot):
+async def test_project_named_output_is_an_ordinary_deliverable(bot):
     async def rewrite(ctx, prompt, status):
         draft = ctx.workdir / "outputs/PROJECT.md"
         draft.parent.mkdir(parents=True, exist_ok=True)
@@ -461,4 +463,4 @@ async def test_identical_guide_rewrite_does_not_announce_or_attach_an_edit(bot):
     await send(bot, event("Explain this result"))
     replies = str(bot.client.chat_postMessage.call_args_list)
     assert "save brief" not in replies and "draft brief" not in replies
-    bot.client.files_upload_v2.assert_not_awaited()
+    bot.client.files_upload_v2.assert_awaited_once()

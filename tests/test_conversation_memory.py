@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from pistachio.agents.analysis import access, briefs, direct
+from pistachio.agents.analysis import access, direct
 from pistachio.agents.analysis import conversation_memory as cm
 from pistachio.agents.analysis import user_memory as um
 from pistachio.agents.analysis.commands import Command, parse
@@ -117,7 +117,7 @@ async def test_scope_isolation_and_channel_summary_never_edits_personal_memory(c
     await message(chat, "Follow-up", "7.0", channel="C1", thread="6.0")
     assert chat.decision.call_args.args[2]["conversation_memory"] == "Channel-only observation"
     await message(chat, "Other thread", "8.0", channel="C1")
-    assert not chat.decision.call_args.args[2]["conversation_memory"]
+    assert chat.decision.call_args.args[2]["conversation_memory"] == "Channel-only observation"
     visible = await message(chat, "memory context", "9.0", channel="C1", thread="6.0")
     assert "Channel-only observation" in visible["notice_text"]
     assert "memory" not in checkpoint(chat, record)["context"]
@@ -284,49 +284,6 @@ def test_size_validation_cas_and_bounded_receipts(tmp_path):
     assert cm.load(store, grant, "b")[0].epoch == 1
 
 
-async def test_cleanup_is_review_only_preserves_original_and_survives_retry(chat):
-    original, generation = read_brief(chat.store, chat.pid)
-    chat.decision.return_value = direct.Decision(
-        route="reply", reply="Guide draft ready.", draft=GUIDE, brief_cleanup=["research TODOs"]
-    )
-    record = await message(chat, "clean brief", "1.0")
-    state = checkpoint(chat, record)
-    assert chat.store.get(state["brief_cleanup"]["original"])[0].decode() == original
-    assert state["brief_policy_version"] == briefs.VERSION
-    assert state["context"]["brief_generation"] == generation
-    assert read_brief(chat.store, chat.pid)[0] == original
-    assert "Use brief to review" in record["notice_text"]
-    # A delivery retry after the checkpoint write must retain the original backup reference.
-    event_id = next(
-        k.removeprefix("claude-event:")
-        for k, v in chat.repository.connector_state.items()
-        if k.startswith("claude-event:") and v["payload"]["event"]["ts"] == "1.0"
-    )
-    await direct.handle(chat, event_id, record, chat.store)
-    assert (
-        checkpoint(chat, record)["brief_cleanup"]["original"] == state["brief_cleanup"]["original"]
-    )
-    await message(chat, "save brief", "2.0", thread="1.0")
-    assert read_brief(chat.store, chat.pid)[0] == GUIDE
-    assert briefs.reviewed(chat.store, chat.pid, GUIDE)
-    chat.decision.return_value = direct.Decision(route="reply", reply="Okay.")
-    await message(chat, "New thread", "3.0")
-    assert not chat.decision.call_args.args[2]["legacy_brief"]
-
-
-async def test_needed_file_correction_still_uses_draft_save_flow(chat):
-    chat.decision.return_value = direct.Decision(
-        route="reply",
-        reply="Updated the file guide. Say save brief to share it.",
-        draft=GUIDE,
-        brief_cleanup=[],
-    )
-    await message(chat, "processed/ contains the QC-filtered data; use it for analysis", "1.0")
-    assert read_brief(chat.store, chat.pid)[0] != GUIDE
-    await message(chat, "save brief", "2.0", thread="1.0")
-    assert read_brief(chat.store, chat.pid)[0] == GUIDE
-
-
 @pytest.mark.parametrize("text", ["memory context", "forget context", "clean brief"])
 def test_commands_are_explicit(text):
     assert parse(text).name == text
@@ -334,7 +291,7 @@ def test_commands_are_explicit(text):
 
 async def test_full_guide_review_is_not_truncated(chat, monkeypatch):
     guide = GUIDE + "\n" + ("- file: verified purpose\n" * 320)
-    chat.decision.return_value = direct.Decision(route="reply", reply="Draft ready", draft=guide)
+    chat.decision.return_value = direct.Decision(route="reply", reply="Draft ready", guide=guide)
     await message(chat, "Update the file guide", "1.0")
     post = AsyncMock()
     monkeypatch.setattr(direct, "post", post)
@@ -366,19 +323,89 @@ async def test_editor_failure_keeps_previous_cache(chat, editor):
     assert cm.load(chat.store, grant, record["thread_key"])[0].summary == "Existing decision"
 
 
-async def test_compute_cleanup_keeps_a_review_notice(chat, monkeypatch):
-    post = AsyncMock()
-    monkeypatch.setattr(direct, "post", post)
-    chat.decision.return_value = direct.Decision(
-        route="compute", reply="Computing.", draft=GUIDE, brief_cleanup=["hypotheses"]
-    )
-    record = await message(chat, "Plot the samples", "1.0")
-    assert record["status"] == "running" and record["brief_cleanup_notified"]
-    assert "Use brief to review" in post.call_args.args[3]
-    assert checkpoint(chat, record)["brief_cleanup"]["removed"] == ["hypotheses"]
-
-
 def direct_event():
     from pistachio.agents.analysis.batch import digest
 
     return digest("T1:D1:1.0")
+
+
+async def test_channel_memory_follows_new_threads_and_reset(chat, editor):
+    seed_project(chat.store, name="channel", channel="C1", publish=True)
+    await message(chat, "Staining may explain this cluster", "1.0", channel="C1")
+    chat.settings.memory_auto_edit = False
+    await message(chat, "Continue", "2.0", channel="C1")
+    assert chat.decision.call_args.args[2]["conversation_memory"] == OBSERVATION
+    chat.decision.return_value = direct.Decision(route="compute", reply="Plotting")
+    record = await message(chat, "Plot it", "3.0", channel="C1")
+    request = next(
+        json.loads(chat.store.get(k)[0])
+        for k in chat.store.keys("tasks/slack-analysis/events")
+        if k.endswith("request.json")
+    )
+    assert request["conversation_memory"] == OBSERVATION
+    await message(chat, "forget context", "4.0", thread="1.0", channel="C1")
+    chat.decision.return_value = direct.Decision(route="reply", reply="Fresh context")
+    await message(chat, "Continue", "5.0", thread="2.0", channel="C1")
+    assert not chat.decision.call_args.args[2]["conversation_memory"]
+    assert not access.worker_permitted(
+        chat.store, request, checkpoint(chat, record), settings=chat.settings
+    )
+    # Neither another channel nor the private project cache inherits this summary.
+    grant = access.resolve(chat.app, chat.settings, chat.store, record)
+    grant.channel_key = "T1:C2"
+    assert not cm.load(chat.store, grant, "elsewhere")[0].summary
+
+
+async def test_editor_logs_one_content_free_outcome_per_run(chat, editor, caplog):
+    import logging
+
+    caplog.set_level(logging.INFO)
+    record = await message(chat, "An observation with PRIVATE-CONTENT", "1.0")
+    logs = [r.getMessage() for r in caplog.records if r.getMessage().startswith("memory_editor ")]
+    assert len(logs) == 1 and "outcome=saved" in logs[0]
+    assert f"summary_chars={len(OBSERVATION)}" in logs[0] and "edits=0" in logs[0]
+    assert "PRIVATE-CONTENT" not in logs[0] and OBSERVATION not in logs[0]
+    caplog.clear()
+    await um.after_turn(chat, "replay", record, chat.store, "Retry")
+    logs = [r.getMessage() for r in caplog.records if r.getMessage().startswith("memory_editor ")]
+    assert len(logs) == 1 and "outcome=skipped:already_done" in logs[0]
+    caplog.clear()
+    editor.side_effect = RuntimeError("private model detail")
+    with pytest.raises(RuntimeError):
+        await message(chat, "Another observation", "2.0")
+    logs = [r.getMessage() for r in caplog.records if r.getMessage().startswith("memory_editor ")]
+    assert len(logs) == 1 and "outcome=failed:RuntimeError" in logs[0]
+    assert "private model detail" not in logs[0]
+
+
+@pytest.mark.parametrize(
+    "case,outcome",
+    [
+        ("command", "skipped:command"),
+        ("failed", "skipped:not_complete"),
+        ("cancelled", "skipped:cancelled"),
+        ("access", "skipped:access_lost"),
+        ("unchanged", "unchanged"),
+    ],
+)
+async def test_editor_skip_and_unchanged_outcomes(chat, editor, caplog, case, outcome):
+    import logging
+
+    chat.settings.memory_auto_edit = False
+    record = await message(chat, "An observation", "1.0")
+    chat.settings.memory_auto_edit = True
+    if case == "command":
+        record["payload"]["event"]["text"] = "memory context"
+    elif case == "failed":
+        record["status"] = "failed"
+    elif case == "cancelled":
+        record["cancel_requested"] = True
+    elif case == "access":
+        record["decision_access"] = "stale"
+    editor.return_value = um.Edits()
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        await um.after_turn(chat, "outcome", record, chat.store, "Reply")
+    logs = [r.getMessage() for r in caplog.records if r.getMessage().startswith("memory_editor ")]
+    assert len(logs) == 1 and f"outcome={outcome}" in logs[0]
+    assert "edits=0" in logs[0]

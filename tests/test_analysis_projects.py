@@ -54,7 +54,8 @@ async def test_rename_preserves_channel_threads_and_project_content(chat):  # no
     assert "Project renamed to liver-atlas" in reply["notice_text"]
     after = Registry(chat.store).load()
     assert after.projects[chat.pid].model_dump() == {
-        **before.projects[chat.pid].model_dump(), "name": "liver-atlas"
+        **before.projects[chat.pid].model_dump(),
+        "name": "liver-atlas",
     }
     assert after.bindings == before.bindings
     assert chat.store.get(pointer)[0] == checkpoint
@@ -209,8 +210,8 @@ async def test_switch_in_channel_keeps_publication_and_force_requirements(chat):
 @pytest.mark.parametrize("suffix", ["", " --force"])
 async def test_init_selects_new_project_and_offers_switch_back(chat, monkeypatch, suffix):  # noqa: F811
     monkeypatch.setattr(direct, "inventory", lambda *a: {"entries": []})
-    original_brief = read_brief(chat.store, chat.pid)
     old_thread = await message(chat, "Describe this project", "10.0")
+    original_brief = read_brief(chat.store, chat.pid)
     checkpoint = checkpoint_key(old_thread["thread_key"])
     original_context = chat.store.get(checkpoint)[0]
     reply = await message(chat, "init brain gs://lab-data/brain/" + suffix, "11.0")
@@ -235,7 +236,9 @@ async def test_init_selects_new_project_and_offers_switch_back(chat, monkeypatch
 
 @pytest.mark.parametrize("switch_during_retry", [False, True])
 async def test_init_switch_back_survives_interrupted_binding_write(
-    chat, monkeypatch, switch_during_retry  # noqa: F811
+    chat,  # noqa: F811
+    monkeypatch,
+    switch_during_retry,
 ):
     monkeypatch.setattr(direct, "inventory", lambda *a: {"entries": []})
     original = Registry.update
@@ -274,9 +277,7 @@ async def test_init_switch_back_uses_id_when_new_project_shadows_shared_name(cha
     monkeypatch.setattr(direct, "inventory", lambda *a: {"entries": []})
     await message(chat, "share liver <@U2>", "10.0")
     await message(chat, "switch liver", "11.0", user="U2", channel="D2")
-    reply = await message(
-        chat, "init liver gs://lab-data/bob/", "12.0", user="U2", channel="D2"
-    )
+    reply = await message(chat, "init liver gs://lab-data/bob/", "12.0", user="U2", channel="D2")
     assert f"Switch back: `switch {chat.pid}`." in reply["notice_text"]
     await message(chat, f"switch {chat.pid}", "13.0", user="U2", channel="D2")
     assert Registry(chat.store).load().bound("T1", "D2") == chat.pid

@@ -22,7 +22,7 @@ def setup(tmp_path):
     return (
         LocalStorage(tmp_path / "store"),
         tmp_path / "work",
-        Settings(_env_file=None, knowledge_enabled=True),
+        Settings(_env_file=None),
     )
 
 
@@ -125,38 +125,22 @@ def test_symlinks_and_limits_rejected_without_deleting_previous(setup, tmp_path)
     assert "data/extra.md" in saved.rejected
 
 
-def test_flag_off_no_io(setup):
-    store, work, settings = setup
-    settings.knowledge_enabled = False
-    write(work, "data/stale.md")
-    store.get = lambda *args: pytest.fail("flag off accessed storage")
-    store.keys = lambda *args: pytest.fail("flag off accessed storage")
-    base = knowledge.download(store, "liver", work, settings)
-    assert not knowledge.save(
-        store, "liver", work, base, settings, event_id="off", user_key="u"
-    ).changes_key
-    assert (work / "knowledge/data/stale.md").exists()
-
-
 @pytest.mark.parametrize("partial", [None, False, True])
-def test_knowledge_archive_exclusion_is_flagged(tmp_path, partial):
+def test_knowledge_always_excluded_from_archives(tmp_path, partial):
     home = tmp_path / "home"
     work = home / "work/project/thread"
     write(work, "data/samples.md")
     archive = tmp_path / "a.tar.gz"
 
-    def capture(enabled):
+    def capture():
         if partial is None:
-            snapshot(archive, home, knowledge_enabled=enabled)
+            snapshot(archive, home)
         else:
-            workspace_snapshot(
-                archive, home, partial=partial, max_bytes=10000, knowledge_enabled=enabled
-            )
+            workspace_snapshot(archive, home, partial=partial, max_bytes=10000)
         with tarfile.open(archive) as tar:
             return tar.getnames()
 
-    assert capture(False)
-    assert not capture(True)
+    assert not capture()
 
 
 def test_prunes_only_old_history(setup):

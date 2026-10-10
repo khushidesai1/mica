@@ -1,5 +1,7 @@
 # Plan: Attachments and image vision for Pistachio's Slack agent
 
+> Source behavior update, 10 October 2026: [the routing and memory implementation plan](worker-routing-and-memory-plan.md) supersedes the pricing/quote gates, thread-draft guide flow, knowledge feature flag, and per-thread channel summaries described below. Those passages remain historical design/deployment evidence. This local implementation has not been deployed or validated in staging.
+
 **Summary.** People can attach files in Slack (images, PDFs, tables, text) and Pistachio will use
 them. The control plane downloads each attachment once, after the access check. It stores the file
 next to the thread's provenance and records it in the thread checkpoint, so later turns can still

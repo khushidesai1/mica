@@ -18,7 +18,7 @@ def chat(bridge, monkeypatch):  # noqa: F811
     bridge.test_slack.conversations_replies.return_value = {"messages": []}
     bridge.decision = AsyncMock(
         return_value=direct.Decision(
-            route="reply", reply="Updated.", draft="# Project\nSpecies: human (user provided)"
+            route="reply", reply="Updated.", guide="# Project\nSpecies: human (user provided)"
         )
     )
     monkeypatch.setattr(direct, "decide", bridge.decision)
@@ -35,7 +35,7 @@ async def test_direct_edits_save_and_followups_never_create_workers(chat):
     pointer = f"projects/_threads/{record['thread_key']}/checkpoint.json"
     state = json.loads(chat.store.get(pointer)[0])
     assert "human" in state["context"]["project_md"]
-    assert "TODO" in read_brief(chat.store, chat.pid)[0]
+    assert "human" in read_brief(chat.store, chat.pid)[0]
     for i, command in enumerate(["brief", "save brief", "help", "cancel"], start=2):
         event = await chat.accept(payload(f"{i}.0", "1.0", command))
         assert await chat.process(event, 0) == "complete"
@@ -191,7 +191,7 @@ async def test_inventory_delivery_retry_reuses_saved_result(chat, monkeypatch):
     listing = Mock(return_value={"entries": []})
     monkeypatch.setattr(direct, "inventory", listing)
     chat.decision.side_effect = [
-        direct.Decision(route="inventory", reply="Checking.", draft="Revised draft"),
+        direct.Decision(route="inventory", reply="Checking.", guide="Revised draft"),
         direct.Decision(route="reply", reply="The sampled folder is empty."),
     ]
 
@@ -209,7 +209,7 @@ async def test_inventory_delivery_retry_reuses_saved_result(chat, monkeypatch):
     listing.assert_called_once()
     assert chat.decision.await_count == 2
     record = await chat.repository.get_connector_state("claude-event:" + event)
-    assert record["direct_decision"]["draft"] == "Revised draft"
+    assert record["direct_decision"]["guide"] == "Revised draft"
     chat.test_client.create_job.assert_not_called()
 
 
@@ -482,7 +482,7 @@ async def test_view_earlier_output_then_reply_without_worker(chat):
     output = await seed_earlier_output(chat)
     chat.decision.reset_mock()
     chat.decision.side_effect = [
-        direct.Decision(route="view", view_ids=[output.id], reply="Looking", draft="Kept draft"),
+        direct.Decision(route="view", view_ids=[output.id], reply="Looking", guide="Kept draft"),
         direct.Decision(route="reply", reply="The plot shows a red square."),
     ]
     event = await chat.accept(payload("2.0", "1.0", "What does the figure you sent show?"))
@@ -531,7 +531,7 @@ async def test_view_rechecks_access_and_epoch(chat, monkeypatch, change):
     async def forget(*args, **kwargs):
         if change == "epoch":
             memory = user_memory.load(chat.store, "alice@example.com")
-            memory.epoch += 1
+            memory.context_epoch += 1
             chat.store.put(user_memory.key("alice@example.com"), memory.model_dump_json().encode())
         else:
             from pistachio.agents.analysis.registry import Registry
@@ -575,7 +575,7 @@ async def test_upload_rejection_lists_each_problem(chat, upload_http):
 
 
 @pytest.mark.parametrize("archive", [False, True])
-async def test_router_forces_tool_retries_and_logs_only_metadata(monkeypatch, caplog, archive):
+async def test_router_retries_missing_tool_and_logs_only_metadata(monkeypatch, caplog, archive):
     requests = []
 
     def respond(request):
@@ -598,8 +598,7 @@ async def test_router_forces_tool_retries_and_logs_only_metadata(monkeypatch, ca
             await direct.decide("fake", "model", {}, event_id="event-test")
     assert len(requests) == 2 and requests[0] == requests[1]
     assert requests[0]["tool_choice"] == {
-        "type": "tool",
-        "name": "route_request",
+        "type": "auto",
         "disable_parallel_tool_use": True,
     }
     assert "thinking" not in requests[0]

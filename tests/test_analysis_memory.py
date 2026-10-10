@@ -135,7 +135,6 @@ async def test_forget_resets_transcript_draft_workspace_and_queued_worker(chat):
         project_id=grant.project_id,
         payload=old["payload"],
         access_signature=grant.signature,
-        memory_epoch=0,
     )
     assert access.worker_permitted(chat.store, request, state)
     await message(chat, "forget all", "3.0")
@@ -181,11 +180,67 @@ def test_regrant_does_not_revive_old_access_signature():
     doc = RegistryDoc()
     pid = doc.create("alice@example.com", "liver", "gs://lab-data/liver/")
     doc.share(pid, "alice@example.com", "bob@example.com")
-    previous = doc.access_signature("bob@example.com")
+    grant = access.Grant("bob@example.com", True, {}, doc, pid, True, "T1:D2")
+    previous = grant.signature
     doc.share(pid, "alice@example.com", "bob@example.com", remove=True)
     doc.share(pid, "alice@example.com", "bob@example.com")
-    assert doc.access_signature("bob@example.com") != previous
+    assert grant.signature != previous
     assert user_key("alice@example.com") != user_key("bob@example.com")
+
+
+@pytest.mark.parametrize("change", ["replace", "forget", "init", "share"])
+async def test_routine_changes_preserve_thread_and_inflight_worker(chat, change):
+    await message(chat, "remember viridis", "1.0")
+    first = await message(chat, "Continue the analysis", "2.0")
+    pointer = access.checkpoint_key(first["thread_key"])
+    state = json.loads(chat.store.get(pointer)[0])
+    state["context"]["session_id"] = "keep-session"
+    state["thread_files"] = [{"id": "keep-file"}]
+    chat.store.put(pointer, json.dumps(state).encode())
+    grant = access.resolve(chat.app, chat.settings, chat.store, first)
+    request = dict(
+        protocol=2,
+        principal=grant.email,
+        private=True,
+        project_id=grant.project_id,
+        payload=first["payload"],
+        access_signature=grant.signature,
+        thread_key=first["thread_key"],
+        conversation_epoch=state["conversation_epoch"],
+    )
+    if change == "replace":
+        memory = mem.load(chat.store, grant.email)
+        memory.blocks["preferences"].text = "PNG"
+        chat.store.put(mem.key(grant.email), memory.model_dump_json().encode())
+        mem.apply(
+            chat.store,
+            grant.email,
+            "replace",
+            mem.Edits(
+                edits=[mem.Edit(op="block_replace", block="preferences", old="PNG", text="SVG")]
+            ),
+            expected_epoch=0,
+            doc=grant.doc,
+        )
+    elif change == "forget":
+        mem.command(Command("forget", ("1",)), grant, chat.store, "forget-note")
+    else:
+        other = seed_project(chat.store, name="other", channel="D2", owner="bob@example.com")
+        if change == "share":
+            Registry(chat.store).update(
+                "other-share",
+                "bob@example.com",
+                "share",
+                lambda d: d.share(other, "bob@example.com", grant.email),
+            )
+        else:
+            seed_project(chat.store, name="another", channel="D3")
+    current = access.resolve(chat.app, chat.settings, chat.store, first)
+    assert current.signature == grant.signature
+    fresh = access.fresh_private_state(chat.store, current, chat.settings, first["thread_key"])
+    assert fresh == state
+    assert not chat.store.keys(f"projects/_threads/{first['thread_key']}/retired/")
+    assert access.worker_permitted(chat.store, request, fresh, settings=chat.settings)
 
 
 async def test_dm_manifest_contains_only_own_memory_channel_manifest_is_empty(chat):

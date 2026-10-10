@@ -1,5 +1,7 @@
 # Slack Agent: Casual Voice and Claude-Style Progress
 
+> Source behavior update, 10 October 2026: [the routing and memory implementation plan](worker-routing-and-memory-plan.md) supersedes the pricing/quote gates, thread-draft guide flow, knowledge feature flag, and per-thread channel summaries described below. Those passages remain historical design/deployment evidence. This local implementation has not been deployed or validated in staging.
+
 Written 3 October 2026 for an AI coding assistant (Codex) to implement. It covers three small
 changes to the Slack analysis agent in `src/pistachio/agents/analysis/`:
 

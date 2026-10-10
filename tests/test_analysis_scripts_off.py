@@ -20,8 +20,8 @@ def golden(name, value):
 
 def test_off_prompt_and_hooks():
     ctx = Context(Path("/workspace"), Path("/data"), project_md="Fixture project")
-    for knowledge in (False, True):
-        opts = build_options(ctx, Settings(_env_file=None, knowledge_enabled=knowledge))
+    for knowledge in (True,):
+        opts = build_options(ctx, Settings(_env_file=None))
         golden(f"prompt-{knowledge}.txt", opts.system_prompt["append"])
         hooks = {
             k: [{"matcher": h.matcher, "hooks": [f.__name__ for f in h.hooks]} for h in v]
@@ -56,4 +56,10 @@ async def test_off_request_manifest(bridge, monkeypatch):
     value = json.loads(raw)
     for key in ("project_id", "access_signature"):
         raw = raw.replace(value[key], "<" + key + ">")
-    golden("request.json", raw)
+    value = json.loads(raw)
+    assert value["event_id"] == eid
+    assert value["recovery"]["attempt"] == 0
+    assert value["recovery"]["request_deadline"] == 1700000000 + bridge.settings.max_run_seconds
+    for field in ("event_id", "recovery", "resume", "turn_start"):
+        value.pop(field)
+    assert value == json.loads((FIXTURES / "request.json").read_text())

@@ -53,11 +53,14 @@ async def test_direct_compute_direct_files_survive(
     calls = []
 
     class Runner:
+        knowledge_reads = 0
+
         async def run_turn(self, ctx, prompt, status):
             assert (ctx.workdir / original["path"]).read_bytes() == b"a,b\n1,2"
             assert "attached earlier by <@U1>" in prompt
             calls.append(prompt)
             path = ctx.workdir / "outputs/plot.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(PNG)
             if note == "updated":
                 methods_path.parent.mkdir(parents=True, exist_ok=True)

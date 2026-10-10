@@ -43,8 +43,6 @@ def run(
 ) -> tuple[str, knowledge.Saved | None]:
     if not grant.allowed:
         return deny_text(grant), None
-    if not settings.knowledge_enabled:
-        return "Project knowledge is disabled.", None
     pid = grant.project_id
     if cmd.name == "knowledge github":
         if not grant.doc.owns(pid, grant.email):
