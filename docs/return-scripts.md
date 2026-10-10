@@ -47,7 +47,9 @@ asking to attach a `.py`, `.R` or `.sh` file still has the previous extension-fi
 
 ## Verification
 
-Golden fixtures captured from `711a15f` cover the off-state prompt, hooks, reply, uploaded files,
+Delivery/provenance fixtures were originally captured from `711a15f`. The prompt, hooks and
+request fixtures now reflect always-on knowledge and automatic recovery; the retired knowledge-off
+variant has been removed. Script-return remains off by default. Fixtures cover replies, uploads,
 thread file records, provenance and request JSON. Tests cover preferences, request freezing,
 execution snapshots, limits, credentials, continuations, failures, cancellation and delivery.
 

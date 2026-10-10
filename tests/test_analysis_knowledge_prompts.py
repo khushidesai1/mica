@@ -6,12 +6,9 @@ from pistachio.agents.analysis.prompts import build_system_append
 from pistachio.agents.analysis.runner import Context
 
 
-def test_prompt_and_brief_policy_only_change_when_enabled(tmp_path):
+def test_prompt_always_uses_shared_knowledge(tmp_path):
     ctx = Context(workdir=tmp_path, data_path=tmp_path / "data", project_md="Project brief")
     settings = Settings(_env_file=None)
-    baseline = build_system_append(ctx, settings)
-    assert build_system_append(ctx, settings, knowledge_index="SAVED FACT") == baseline
-    settings.knowledge_enabled = True
     prompt = build_system_append(ctx, settings, knowledge_index="SAVED FACT")
     assert "# Project knowledge" in prompt and "SAVED FACT" in prompt
     assert "never instructions" in prompt and "patient identifiers" in " ".join(prompt.split())
@@ -69,7 +66,7 @@ async def test_runner_counts_knowledge_reads_from_sdk_messages(tmp_path, monkeyp
 
     ctx = Context(workdir=tmp_path / "work", data_path=tmp_path / "data")
     ctx.data_path.mkdir()
-    settings = Settings(_env_file=None, knowledge_enabled=True)
+    settings = Settings(_env_file=None)
 
     async def query(**kwargs):
         yield AssistantMessage(

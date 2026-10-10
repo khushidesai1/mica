@@ -38,9 +38,8 @@ Existing threads keep their project. In channels, add `--force` to replace a sel
 • `unpublish <project> #channel` — Stop replies in that channel.
 
 *Project guide and tasks*
-• `brief` — Show this thread's project guide draft.
-• `save brief` — Save the draft for new threads.
-• `clean brief` — Draft a guide cleanup for review.
+• `brief` — Show the current shared project guide.
+Guide corrections save automatically. Use `undo knowledge` to revert a save.
 • `cancel` — Stop queued or running computation.
 
 *Script attachments*
@@ -48,13 +47,14 @@ Existing threads keep their project. In channels, add `--force` to replace a sel
 • `scripts on` / `scripts off` — Attach scripts you run, or stop attaching them (DM or channel).
 
 *Memory*
-• `memory context` — Show the conversation summary for this scope.
+• `memory context` — Show your project summary in DM, or the shared project/channel summary.
 • `forget context` — Clear that summary and start fresh context.
 • `memory` — Show your private profile, preferences, and notes (DM).
 • `remember <text>` — Save a private note (DM).
 • `forget <number|profile|preferences|all>` — Clear selected private memory (DM).
+Routine memory edits keep conversation context. `forget all` also starts fresh private context.
 
-*Project knowledge — when enabled, shared with project members*
+*Project knowledge — shared with project members*
 • `knowledge` — Show the index, file count and last update.
 • `knowledge show <path>` — Read an entry.
 • `forget knowledge <path>` — Remove an entry, retaining its history.

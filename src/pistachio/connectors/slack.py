@@ -460,16 +460,7 @@ async def slack_actions(request: Request) -> dict[str, object]:
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="invalid Slack payload") from exc
 
-    from pistachio.agents.analysis import compute_interactions, transfer_interactions
-
-    if compute_interactions.is_compute(payload):
-        from pistachio.agents.analysis.batch import BatchBridge
-        from pistachio.agents.analysis.storage import GCSStorage
-
-        return await compute_interactions.handle(
-            BatchBridge(services.settings, services.repository),
-            GCSStorage(services.settings.gcs_bucket), payload,
-        )
+    from pistachio.agents.analysis import transfer_interactions
 
     if transfer_interactions.is_transfer(payload):
         from pistachio.agents.analysis.batch import BatchBridge

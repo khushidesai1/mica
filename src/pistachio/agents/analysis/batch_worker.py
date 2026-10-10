@@ -1,8 +1,9 @@
-"""One paid agent turn per Spot job; checkpoint sessions to the existing artifact bucket."""
+"""Execute one attempt of a logical analysis, preserving progress between workers."""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -23,15 +24,15 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from . import attachments, knowledge, write_access, write_worker
 from .access import run_root, worker_permitted
-from .checkpoints import Stages, workspace_snapshot
-from .compute_batch import event_prefix
-from .compute_tools import ComputeManager
+from .checkpoints import Stages, digest, workspace_snapshot
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .direct import record_exchange
 from .identity import user_key
 from .outputs import files_under
 from .preflight import check
+from .recovery import event_prefix
+from .recovery_tools import RecoveryManager
 from .resources import Sampler
 from .runner import Context, Runner, TurnResult
 from .runtime_tools import RuntimeManager
@@ -63,13 +64,13 @@ def restore(archive: Path, home: Path, *, max_bytes: int = 100 * 1024**3) -> Non
         tar.extractall(home, filter="data")
 
 
-def snapshot(archive: Path, home: Path, *, knowledge_enabled: bool = False) -> None:
+def snapshot(archive: Path, home: Path) -> None:
     with tarfile.open(archive, "w:gz") as tar:
         paths = [*files_under(home / "work"), *files_under(home / ".claude/projects")]
         if (home / "state.db").is_file():
             paths.append(home / "state.db")
         for path in paths:
-            if knowledge_enabled and "knowledge" in path.relative_to(home).parts:
+            if "knowledge" in path.relative_to(home).parts:
                 continue
             # Sources expire independently; rehydrate inputs from their original objects.
             if any(part in {".previews", "inputs"} for part in path.relative_to(home).parts):
@@ -84,15 +85,20 @@ async def main(event_id: str) -> None:
     thread_key = request["thread_key"]
     home = settings.work_root.parent
     archive = home / "checkpoint.tar.gz"
-    # Keep the small frozen brief/turn record when 30-day workspace archives expire.
+    # Retain the turn record when workspace archives expire; refresh shared knowledge below.
     pointer = f"projects/_threads/{thread_key}/checkpoint.json"
     try:
         saved: dict[str, Any] = json.loads(storage.get(pointer)[0])
     except FileNotFoundError:
         saved = {}
-    resume = request.get("resume") if settings.tiers_enabled else None
+    worker = request.get("recovery", {})
+    attempt = int(worker.get("attempt", 0))
+    tier = str(worker.get("tier", "standard"))
+    if attempt and request.get("turn_start"):
+        saved = dict(request["turn_start"])
+    resume = request.get("resume")
     if resume:
-        if resume.get("event_id") != event_id or resume.get("attempt") != settings.attempt - 1:
+        if resume.get("event_id") != event_id or resume.get("attempt") != attempt - 1:
             raise ValueError("Continuation belongs to a different request or attempt")
         saved.update(
             resume["state"],
@@ -124,14 +130,31 @@ async def main(event_id: str) -> None:
             )
         return
     restored = False
+    pending_knowledge: bytes | None = None
     if saved.get("archive"):
         try:
             storage.bucket.blob(saved["archive"]).download_to_filename(str(archive))
+            if resume and digest(archive) != resume["sha256"]:
+                raise ValueError("Continuation checksum mismatch")
+            if resume and resume.get("pending_knowledge"):
+                ref = resume["pending_knowledge"]
+                expected = f"{event_prefix(event_id)}/knowledge-a{attempt - 1}-"
+                if not ref["key"].startswith(expected) or "/" in ref["key"][len(expected) :]:
+                    raise ValueError("Knowledge checkpoint belongs to another attempt")
+                pending_knowledge = storage.read_prefix(
+                    ref["key"], knowledge.pending_limit(settings) + 1
+                )
+                if hashlib.sha256(pending_knowledge).hexdigest() != ref["sha256"]:
+                    raise ValueError("Knowledge checkpoint checksum mismatch")
+                knowledge.decode_pending(pending_knowledge, settings)
             restore(archive, home)
             restored = True
-        except NotFound:
+        except (NotFound, FileNotFoundError, ValueError, tarfile.TarError):
             if resume:
-                raise ValueError("The continuation checkpoint is unavailable") from None
+                saved = dict(request["turn_start"])
+                resume = None
+                pending_knowledge = None
+                logging.warning("Recovery checkpoint unavailable; repeating work from turn start")
             logging.warning(
                 "Thread checkpoint expired; continuing with the saved brief and bounded transcript"
             )
@@ -154,44 +177,61 @@ async def main(event_id: str) -> None:
         if not restored:
             data["session_id"] = None
         sessions.save(payload["event"]["channel"], Context(**data), saved["turn"], saved["is_init"])
-        if saved.get("direct_version"):
-            # The small record may contain brief edits made without a compute worker.
-            draft = data["workdir"] / "outputs/PROJECT.md"
-            draft.parent.mkdir(parents=True, exist_ok=True)
-            draft.write_text(data["project_md"])
         files = await asyncio.to_thread(
             attachments.materialize, storage, data["workdir"], saved.get("thread_files", [])
         )
     knowledge_base: dict[str, knowledge.Version] = {}
-    if settings.knowledge_enabled:
-        knowledge_base = await asyncio.to_thread(
-            knowledge.download,
-            storage,
-            request["project_id"],
-            Path(saved["context"]["workdir"]),
-            settings,
+    knowledge_base = await asyncio.to_thread(
+        knowledge.download,
+        storage,
+        request["project_id"],
+        Path(saved["context"]["workdir"]),
+        settings,
+    )
+    if pending_knowledge:
+        knowledge_base = knowledge.restore_pending(
+            pending_knowledge, Path(saved["context"]["workdir"]), knowledge_base, settings
         )
+    guide_path = Path(saved["context"]["workdir"]) / "knowledge/PROJECT.md"
+    saved["context"]["project_md"] = (
+        guide_path.read_text() if guide_path.is_file() else "No project guide yet."
+    )
+    current = sessions.get(
+        payload["event"]["channel"], payload["event"].get("thread_ts") or payload["event"]["ts"]
+    )
+    if current:
+        current[0].project_md = saved["context"]["project_md"]
+        sessions.save(payload["event"]["channel"], *current)
     knowledge_result = knowledge.Saved()
-    compute: ComputeManager | None = None
+    compute: RecoveryManager | None = None
     stages: Stages | None = None
     sample_task: asyncio.Task[None] | None = None
     partial_task: asyncio.Task[None] | None = None
     partial_stop = asyncio.Event()
-    prefix = event_prefix(event_id) if settings.tiers_enabled else f"{PREFIX}/events/{event_id}"
-    if settings.tiers_enabled and request.get("compute"):
+    telemetry_task: asyncio.Task[None] | None = None
+    prefix = event_prefix(event_id)
+    if worker:
         work = Path(saved["context"]["workdir"])
         sampler = Sampler(work)
         stages = Stages(
             storage,
             work,
             event_id,
-            settings.attempt,
+            attempt,
             max_bytes=settings.compute_checkpoint_max_gb * 1024**3,
         )
         if resume:
-            await asyncio.to_thread(stages.restore, resume.get("stages", {}))
+            try:
+                missing = await asyncio.to_thread(
+                    stages.restore_available, resume.get("stages", {})
+                )
+            except ValueError:
+                missing = ["all completed stages"]
+            resume["stages"] = stages.manifest()
+            resume["missing_stages"] = missing
 
         async def operate(body: dict[str, Any]) -> dict[str, Any]:
+            await persist_resources()
             fresh_token = await asyncio.to_thread(
                 id_token.fetch_id_token,
                 GoogleRequest(),  # type: ignore[no-untyped-call]
@@ -200,7 +240,7 @@ async def main(event_id: str) -> None:
             async with httpx.AsyncClient(timeout=120) as http:
                 for retry in range(8):
                     result = await http.post(
-                        f"{url}/api/v1/internal/slack-analysis/compute/{event_id}",
+                        f"{url}/api/v1/internal/slack-analysis/recovery/{event_id}",
                         json=body,
                         headers={"Authorization": f"Bearer {fresh_token}"},
                     )
@@ -218,7 +258,9 @@ async def main(event_id: str) -> None:
 
         async def save_stage(args: dict[str, Any]) -> dict[str, Any]:
             assert stages is not None
-            return await asyncio.to_thread(stages.capture, args)
+            value = await asyncio.to_thread(stages.capture, args)
+            await save_partial()
+            return value
 
         async def compute_status(text: str) -> None:
             await slack.chat_update(
@@ -228,9 +270,9 @@ async def main(event_id: str) -> None:
                 blocks=status_blocks(settings.loading_emoji, text),
             )
 
-        compute = ComputeManager(
+        compute = RecoveryManager(
             settings,
-            request["compute"],
+            worker,
             sampler,
             operate,
             save_stage=save_stage,
@@ -247,9 +289,9 @@ async def main(event_id: str) -> None:
     async def before_delivery(result: TurnResult) -> None:
         await asyncio.to_thread(
             storage.put_if,
-            f"{prefix}/finalizing-a{settings.attempt}.json",
+            f"{prefix}/finalizing-a{attempt}.json",
             json.dumps(
-                {"event_id": event_id, "attempt": settings.attempt, "model_cost": result.cost}
+                {"event_id": event_id, "attempt": attempt, "model_cost": result.cost}
             ).encode(),
             None,
         )
@@ -301,6 +343,8 @@ async def main(event_id: str) -> None:
     payload["event"]["_event_id"] = event_id
     if resume:
         payload["event"]["_compute_resume"] = resume
+    elif attempt:
+        payload["event"]["_recovery_restart"] = True
     payload["event"]["_attachments"] = attachments.worker_listing(files, current_ids)
     present_ids = {f.id for f in files}
     unavailable = [f for f in saved.get("thread_files", []) if f["id"] not in present_ids]
@@ -310,67 +354,107 @@ async def main(event_id: str) -> None:
             + "\n".join(f"- {json.dumps(f['name'])}" for f in unavailable)
         )
     payload["event"]["_thread_files"] = [f.model_dump() for f in files]
-    if compute:
 
-        async def partial_checkpoints() -> None:
-            assert compute is not None and stages is not None
-            while not partial_stop.is_set():
-                try:
-                    await asyncio.wait_for(
-                        partial_stop.wait(), timeout=settings.partial_checkpoint_seconds
-                    )
-                    return
-                except TimeoutError:
-                    pass
-                try:
-                    state = sessions.get(
-                        payload["event"]["channel"],
-                        payload["event"].get("thread_ts") or payload["event"]["ts"],
-                    )
-                    if not state or not compute.session_id:
-                        continue
-                    stage_manifest = stages.manifest()
-                    script_record = (
-                        {"script_manifest": agent.runner.script_capture.checkpoint()}
-                        if agent.runner.script_capture
-                        else {}
-                    )
-                    checkpoint_id = uuid4().hex
-                    local = home / f"partial-{checkpoint_id}.tar.gz"
-                    await asyncio.to_thread(
-                        workspace_snapshot,
-                        local,
-                        home,
-                        partial=True,
-                        max_bytes=min(settings.compute_checkpoint_max_gb * 1024**3, 256 * 1024**2),
-                        knowledge_enabled=settings.knowledge_enabled,
-                    )
-                    key = f"{prefix}/partial-a{settings.attempt}-{checkpoint_id}.tar.gz"
-                    await asyncio.to_thread(storage.upload_new, key, local)
-                    local.unlink(missing_ok=True)
-                    context = asdict(state[0])
-                    context["session_id"] = compute.session_id
-                    partial = {
-                        **script_record,
+    async def persist_resources(*, finished: bool = False) -> None:
+        if compute:
+            await asyncio.to_thread(
+                storage.put,
+                f"{prefix}/resources-a{attempt}.json",
+                json.dumps(
+                    {
                         "event_id": event_id,
-                        "attempt": settings.attempt,
-                        "archive": key,
-                        "saved_at": time.time(),
-                        "model_cost": compute.model_cost,
-                        "stages": stage_manifest,
-                        "state": {"context": context, "turn": state[1], "is_init": state[2]},
+                        "attempt": attempt,
+                        "tier": tier,
+                        **compute.sampler.summary(),
+                        **({"finished_at": time.time()} if finished else {}),
                     }
-                    await asyncio.to_thread(
-                        storage.put,
-                        f"{prefix}/partial-a{settings.attempt}.json",
-                        json.dumps(partial, default=str).encode(),
-                    )
-                except Exception:
-                    logging.warning(
-                        "Partial checkpoint failed; retaining prior snapshot", exc_info=True
-                    )
+                ).encode(),
+            )
 
-        partial_task = asyncio.create_task(partial_checkpoints())
+    async def save_partial() -> None:
+        if not compute or not stages:
+            return
+        try:
+            if not await asyncio.to_thread(
+                worker_permitted, storage, request, saved, settings=settings
+            ):
+                return
+            current_state = sessions.get(
+                payload["event"]["channel"],
+                payload["event"].get("thread_ts") or payload["event"]["ts"],
+            )
+            if not current_state:
+                return
+            checkpoint_id = uuid4().hex
+            pending = await asyncio.to_thread(knowledge.pending, work, knowledge_base, settings)
+            pending_key = f"{prefix}/knowledge-a{attempt}-{checkpoint_id}.json"
+            await asyncio.to_thread(storage.put_if, pending_key, pending, None)
+            local = home / f"partial-{checkpoint_id}.tar.gz"
+            await asyncio.to_thread(
+                workspace_snapshot,
+                local,
+                home,
+                partial=True,
+                max_bytes=min(settings.compute_checkpoint_max_gb * 1024**3, 256 * 1024**2),
+            )
+            key = f"{prefix}/partial-a{attempt}-{checkpoint_id}.tar.gz"
+            sha = await asyncio.to_thread(digest, local)
+            await asyncio.to_thread(storage.upload_new, key, local)
+            local.unlink(missing_ok=True)
+            context = asdict(current_state[0])
+            context["session_id"] = compute.session_id
+            partial = {
+                "event_id": event_id,
+                "attempt": attempt,
+                "archive": key,
+                "sha256": sha,
+                "saved_at": time.time(),
+                "pending_knowledge": {
+                    "key": pending_key,
+                    "sha256": hashlib.sha256(pending).hexdigest(),
+                },
+                "model_cost": compute.model_cost,
+                "sdk_cost_total": compute.sdk_cost_total,
+                "stages": stages.manifest(),
+                "state": {
+                    "context": context,
+                    "turn": int(request.get("turn_start", {}).get("turn", current_state[1])) + 1,
+                    "is_init": current_state[2],
+                },
+                "runtimes": sorted(runtimes.thread_ids) if runtimes else saved.get("runtimes", []),
+                **(
+                    {"script_manifest": agent.runner.script_capture.checkpoint()}
+                    if agent.runner.script_capture
+                    else {}
+                ),
+            }
+            await asyncio.to_thread(
+                storage.put,
+                f"{prefix}/partial-a{attempt}.json",
+                json.dumps(partial, default=str).encode(),
+            )
+        except Exception:
+            logging.warning("Partial checkpoint failed; retaining prior snapshot", exc_info=True)
+
+    async def periodic(interval: int, telemetry: bool = False) -> None:
+        while not partial_stop.is_set():
+            try:
+                await asyncio.wait_for(partial_stop.wait(), timeout=interval)
+                return
+            except TimeoutError:
+                pass
+            if telemetry:
+                try:
+                    await persist_resources()
+                except Exception:
+                    logging.warning("Resource summary upload failed; retaining prior measurements")
+            else:
+                await save_partial()
+
+    if compute:
+        partial_task = asyncio.create_task(periodic(settings.partial_checkpoint_seconds))
+        telemetry_task = asyncio.create_task(periodic(30, telemetry=True))
+        compute.persist_resources = persist_resources
     previous_methods = (
         methods_stamp(Path(saved["context"]["workdir"])) if saved.get("context") else None
     )
@@ -384,6 +468,8 @@ async def main(event_id: str) -> None:
         partial_stop.set()
         if partial_task:
             await partial_task
+        if telemetry_task:
+            await telemetry_task
         for background in (sample_task,):
             if background:
                 background.cancel()
@@ -391,33 +477,21 @@ async def main(event_id: str) -> None:
                     await background
         sessions.close()  # Flush SQLite WAL before archiving.
         if compute:
+            await persist_resources(finished=True)
             await asyncio.to_thread(
                 storage.put,
-                f"{prefix}/resources-a{settings.attempt}.json",
-                json.dumps(
-                    {
-                        "tier": settings.tier,
-                        "attempt": settings.attempt,
-                        **compute.sampler.summary(),
-                        "finished_at": time.time(),
-                    }
-                ).encode(),
-            )
-            await asyncio.to_thread(
-                storage.put,
-                f"{prefix}/attempt-a{settings.attempt}.json",
+                f"{prefix}/attempt-a{attempt}.json",
                 json.dumps(
                     {
                         "event_id": event_id,
-                        "attempt": settings.attempt,
+                        "attempt": attempt,
                         "model_cost": compute.model_cost,
                         "outcome": "prepared",
                     }
                 ).encode(),
             )
     if (
-        settings.knowledge_enabled
-        and not knowledge.cancelled(storage, event_id)
+        not knowledge.cancelled(storage, event_id)
         and state
         and (agent.completed or (compute and compute.pending))
         and await asyncio.to_thread(worker_permitted, storage, request, saved, settings=settings)
@@ -431,17 +505,13 @@ async def main(event_id: str) -> None:
             settings,
             event_id=event_id,
             user_key=user_key(request["principal"]),
-            attempt=settings.attempt,
+            attempt=attempt,
         )
-    knowledge_record = (
-        {
-            "knowledge": knowledge_result.model_dump(),
-            "knowledge_writes": knowledge_result.writes,
-            "knowledge_reads": agent.runner.knowledge_reads,
-        }
-        if settings.knowledge_enabled
-        else {}
-    )
+    knowledge_record = {
+        "knowledge": knowledge_result.model_dump(),
+        "knowledge_writes": knowledge_result.writes,
+        "knowledge_reads": agent.runner.knowledge_reads,
+    }
     if compute and compute.pending and state:
         script_record = (
             {"script_manifest": agent.runner.script_capture.checkpoint()}
@@ -454,17 +524,17 @@ async def main(event_id: str) -> None:
             home,
             partial=False,
             max_bytes=settings.compute_checkpoint_max_gb * 1024**3,
-            knowledge_enabled=settings.knowledge_enabled,
         )
-        key = f"{prefix}/handoff-a{settings.attempt}-{uuid4().hex}.tar.gz"
+        key = f"{prefix}/handoff-a{attempt}-{uuid4().hex}.tar.gz"
         await asyncio.to_thread(storage.upload_new, key, archive)
         handoff = {
             "event_id": event_id,
-            "attempt": settings.attempt,
+            "attempt": attempt,
             "outcome": "handoff",
             **script_record,
             **knowledge_record,
             "archive": key,
+            "sha256": digest(archive),
             "model_cost": compute.model_cost,
             "state": {"context": asdict(state[0]), "turn": state[1], "is_init": state[2]},
             "sdk_cost_total": compute.sdk_cost_total,
@@ -474,7 +544,7 @@ async def main(event_id: str) -> None:
         }
         await asyncio.to_thread(
             storage.put,
-            f"{prefix}/attempt-a{settings.attempt}.json",
+            f"{prefix}/attempt-a{attempt}.json",
             json.dumps(handoff, default=str).encode(),
         )
         return
@@ -490,10 +560,9 @@ async def main(event_id: str) -> None:
             home,
             partial=False,
             max_bytes=settings.compute_checkpoint_max_gb * 1024**3,
-            knowledge_enabled=settings.knowledge_enabled,
         )
     else:
-        snapshot(archive, home, knowledge_enabled=settings.knowledge_enabled)
+        snapshot(archive, home)
     archive_key = f"{PREFIX}/events/{event_id}/checkpoint.tar.gz"
     storage.upload(archive_key, archive)
     checkpoint: dict[str, Any] = {"archive": archive_key}
@@ -506,7 +575,7 @@ async def main(event_id: str) -> None:
     elif saved.get("runtimes"):
         checkpoint["runtimes"] = saved["runtimes"]
     checkpoint["messages"] = saved.get("messages", [])
-    for field in ("conversation_epoch", "brief_policy_version", "brief_cleanup"):
+    for field in ("conversation_epoch",):
         if field in saved:
             checkpoint[field] = saved[field]
     checkpoint["thread_files"] = attachments.merge(saved.get("thread_files", []), agent.delivered)
@@ -521,19 +590,18 @@ async def main(event_id: str) -> None:
         methods=read_methods(state[0].workdir, previous_methods),
     )
     storage.put(pointer, json.dumps(checkpoint, default=str).encode())
-    if compute or settings.knowledge_enabled:
-        storage.put(
-            f"{prefix}/attempt-a{settings.attempt}.json",
-            json.dumps(
-                {
-                    "event_id": event_id,
-                    "attempt": settings.attempt,
-                    "outcome": "complete",
-                    "model_cost": compute.model_cost if compute else None,
-                    **knowledge_record,
-                }
-            ).encode(),
-        )
+    storage.put(
+        f"{prefix}/attempt-a{attempt}.json",
+        json.dumps(
+            {
+                "event_id": event_id,
+                "attempt": attempt,
+                "outcome": "complete",
+                "model_cost": compute.model_cost if compute else None,
+                **knowledge_record,
+            }
+        ).encode(),
+    )
 
 
 def methods_stamp(workdir: Path) -> tuple[int, int, int] | None:

@@ -13,7 +13,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from . import conversation_memory
 from .identity import post, user_key
@@ -56,11 +56,12 @@ class Receipt(BaseModel):
     fingerprint: str
     notice: str = ""
     notified: bool = False
+    edit_count: int = 0
 
 
 class Memory(BaseModel):
     version: Literal[1] = 1
-    epoch: int = 0
+    edit_epoch: int = Field(default=0, validation_alias=AliasChoices("edit_epoch", "epoch"))
     context_epoch: int = 0
     context_cleared_at: float = 0
     next_seq: int = 1
@@ -160,7 +161,7 @@ def apply(
                 raise ValueError("Memory event was reused with different edits.")
             return
         changes = []
-        if memory.epoch == expected_epoch and visible(project_id, doc, email):
+        if memory.edit_epoch == expected_epoch and visible(project_id, doc, email):
             for edit in edits.edits:
                 text = (edit.text or "").strip()
                 if SECRET.search(text):
@@ -186,7 +187,7 @@ def apply(
                     )
                     if target:
                         memory.notes.remove(target)
-                        memory.epoch += 1
+                        memory.edit_epoch += 1
                         changes.append(f"removed #{target.seq}")
                 elif edit.block and edit.op in {"block_append", "block_replace"}:
                     block = memory.blocks[edit.block]
@@ -200,13 +201,14 @@ def apply(
                     ):
                         updated = block.text.replace(edit.old, text)
                     if updated != block.text and len(updated) <= 1500:
-                        memory.epoch += int(edit.op == "block_replace")
+                        memory.edit_epoch += int(edit.op == "block_replace")
                         block.text, block.updated_at = updated, now()
                         if project_id:
                             block.projects.add(project_id)
                         changes.append(edit.block)
         memory.applied_events[event_id] = Receipt(
             fingerprint=fingerprint,
+            edit_count=len(changes),
             notice=(
                 "Memory updated ("
                 + ", ".join(changes)
@@ -251,7 +253,7 @@ def command(cmd: Command, grant: Grant, storage: Storage, event_id: str) -> str 
             event_id,
             Edits(edits=[Edit(op="note_add", text=cmd.args[0])]),
             project_id=grant.project_id if grant.allowed else "",
-            expected_epoch=memory.epoch,
+            expected_epoch=memory.edit_epoch,
             doc=grant.doc,
         )
         return (
@@ -272,15 +274,18 @@ def command(cmd: Command, grant: Grant, storage: Storage, event_id: str) -> str 
         for name in current.blocks:
             if target in {name, "all"} and current.blocks[name] == memory.blocks[name]:
                 current.blocks[name] = Block()
-        current.epoch += 1
-        # Manual forgetting also retires summaries that might repeat forgotten information.
-        current.context_epoch += 1
-        current.context_cleared_at = time.time()
+        current.edit_epoch += 1
+        if target == "all":
+            current.context_epoch += 1
+            current.context_cleared_at = time.time()
         current.applied_events[event_id] = Receipt(
             fingerprint=fingerprint,
+            edit_count=1,
             notice=(
                 "Memory forgotten. Future turns start fresh context; existing Slack messages, "
                 "saved project briefs, and stored outputs remain."
+                if target == "all"
+                else "Memory forgotten. Existing conversation context remains."
             ),
         )
 
@@ -347,153 +352,177 @@ async def edit(key_value: str, model: str, context: dict[str, Any]) -> Edits:
 async def after_turn(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage, reply: str
 ) -> None:
+    metrics = {"summary_chars": 0, "edits": 0, "changed": 0}
+    outcome = "failed:CancelledError"
+    try:
+        outcome = await _after_turn(bridge, event_id, record, storage, reply, metrics)
+    except BaseException as exc:
+        outcome = f"failed:{type(exc).__name__}"
+        raise
+    finally:
+        logging.log(
+            logging.WARNING if outcome.startswith("failed:") else logging.INFO,
+            "memory_editor event=%s outcome=%s summary_chars=%d edits=%d",
+            event_id,
+            outcome,
+            metrics["summary_chars"],
+            metrics["edits"],
+        )
+
+
+async def _after_turn(
+    bridge: BatchBridge,
+    event_id: str,
+    record: dict[str, Any],
+    storage: Storage,
+    reply: str,
+    metrics: dict[str, int],
+) -> str:
     from . import access, commands
 
     event = record["payload"]["event"]
-    if (
-        not bridge.settings.memory_auto_edit
-        or commands.parse(event.get("text", ""))
-        or record.get("status") != "complete"
-        or record.get("cancel_requested")
-        or record.get("memory_editor_done")
-    ):
-        return
-    try:
-        async with asyncio.timeout(150):
-            for attempt in range(3):
-                grant = await asyncio.to_thread(
+    if commands.parse(event.get("text", "")):
+        return "skipped:command"
+    if not bridge.settings.memory_auto_edit or record.get("status") != "complete":
+        return "skipped:not_complete"
+    if record.get("cancel_requested"):
+        return "skipped:cancelled"
+    if record.get("memory_editor_done"):
+        return "skipped:already_done"
+    async with asyncio.timeout(150):
+        for attempt in range(3):
+            grant = await asyncio.to_thread(
+                access.resolve, bridge.app, bridge.settings, storage, record
+            )
+            if not grant.allowed or record.get("decision_access") != grant.signature:
+                return "skipped:access_lost"
+            if not await asyncio.to_thread(
+                conversation_memory.is_current, storage, grant, record["thread_key"], record
+            ):
+                return "skipped:access_lost"
+            memory = (
+                await asyncio.to_thread(load, storage, grant.email) if grant.private else Memory()
+            )
+            context, generation = await asyncio.to_thread(
+                conversation_memory.load, storage, grant, record["thread_key"]
+            )
+            metrics["summary_chars"] = len(context.summary)
+            memory_event = f"auto:{event_id}"
+            receipt = memory.applied_events.get(memory_event) if grant.private else None
+            cached = record.get("memory_editor_result")
+            if event_id in context.applied_events:
+                # Recover an interrupted commit without calling the editor again.
+                edits = Edits.model_validate(cached) if cached else Edits()
+            else:
+                filtered = view(memory, grant.doc, grant.email)
+                edits = await edit(
+                    bridge.app.anthropic_api_key.get_secret_value(),
+                    bridge.settings.memory_model or bridge.settings.model,
+                    {
+                        "blocks": {k: b.text for k, b in filtered.blocks.items()}
+                        if grant.private
+                        else {},
+                        "notes": [
+                            n.model_dump()
+                            for n in ranked(filtered, event.get("text", "") + reply, 20)
+                        ]
+                        if grant.private
+                        else [],
+                        "project": grant.project.name,
+                        "private": grant.private,
+                        "thread": record["thread_key"],
+                        "date": now()[:10],
+                        "conversation_summary": context.summary,
+                        "recent_messages": grant.state.get("messages", [])[-12:],
+                        "user": event.get("text", "")[:6000],
+                        "reply": reply[:6000],
+                    },
+                )
+                current = await asyncio.to_thread(
                     access.resolve, bridge.app, bridge.settings, storage, record
                 )
-                if not grant.allowed or record.get("decision_access") != grant.signature:
-                    return
-                if record.get("memory_epoch", 0) != await asyncio.to_thread(
-                    access.memory_epoch, storage, grant
-                ) or not await asyncio.to_thread(
-                    conversation_memory.is_current, storage, grant, record["thread_key"], record
-                ):
-                    return
-                memory = (
-                    await asyncio.to_thread(load, storage, grant.email)
-                    if grant.private
-                    else Memory()
-                )
-                context, generation = await asyncio.to_thread(
-                    conversation_memory.load, storage, grant, record["thread_key"]
-                )
-                memory_event = f"auto:{event_id}"
-                receipt = memory.applied_events.get(memory_event) if grant.private else None
-                cached = record.get("memory_editor_result")
-                if event_id in context.applied_events:
-                    # Recover an interrupted commit without calling the editor again.
-                    edits = Edits.model_validate(cached) if cached else Edits()
-                else:
-                    filtered = view(memory, grant.doc, grant.email)
-                    edits = await edit(
-                        bridge.app.anthropic_api_key.get_secret_value(),
-                        bridge.settings.memory_model or bridge.settings.model,
-                        {
-                            "blocks": {k: b.text for k, b in filtered.blocks.items()}
-                            if grant.private
-                            else {},
-                            "notes": [
-                                n.model_dump()
-                                for n in ranked(filtered, event.get("text", "") + reply, 20)
-                            ]
-                            if grant.private
-                            else [],
-                            "project": grant.project.name,
-                            "private": grant.private,
-                            "thread": record["thread_key"],
-                            "date": now()[:10],
-                            "conversation_summary": context.summary,
-                            "recent_messages": grant.state.get("messages", [])[-12:],
-                            "user": event.get("text", "")[:6000],
-                            "reply": reply[:6000],
-                        },
-                    )
-                    current = await asyncio.to_thread(
-                        access.resolve, bridge.app, bridge.settings, storage, record
-                    )
-                    if (
-                        not current.allowed
-                        or current.signature != grant.signature
-                        or await asyncio.to_thread(access.memory_epoch, storage, current)
-                        != record.get("memory_epoch", 0)
-                        or not await asyncio.to_thread(
-                            conversation_memory.is_current,
-                            storage,
-                            current,
-                            record["thread_key"],
-                            record,
-                        )
-                    ):
-                        return
-                    record["memory_editor_result"] = edits.model_dump()
-                    await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
-                    try:
-                        await asyncio.to_thread(
-                            conversation_memory.save,
-                            storage,
-                            current,
-                            record["thread_key"],
-                            context,
-                            generation,
-                            event_id,
-                            edits.conversation_summary,
-                        )
-                    except Conflict:
-                        # A different thread updated the shared summary. Re-summarize its latest
-                        # contents; never apply a replacement generated from an obsolete snapshot.
-                        if attempt == 2:
-                            raise
-                        continue
-                if grant.private and receipt is None:
-                    current = await asyncio.to_thread(
-                        access.resolve, bridge.app, bridge.settings, storage, record
-                    )
-                    if (
-                        not current.allowed
-                        or current.signature != grant.signature
-                        or not await asyncio.to_thread(
-                            conversation_memory.is_current,
-                            storage,
-                            current,
-                            record["thread_key"],
-                            record,
-                        )
-                    ):
-                        return
-                    receipt = await asyncio.to_thread(
-                        apply,
+                if (
+                    not current.allowed
+                    or current.signature != grant.signature
+                    or not await asyncio.to_thread(
+                        conversation_memory.is_current,
                         storage,
-                        grant.email,
-                        memory_event,
-                        edits,
-                        project_id=grant.project_id,
-                        expected_epoch=memory.epoch,
-                        doc=current.doc,
+                        current,
+                        record["thread_key"],
+                        record,
                     )
-                if receipt and receipt.notice and not receipt.notified:
-                    await post(
-                        bridge.app.slack_bot_token,
-                        event["channel"],
-                        event.get("thread_ts") or event["ts"],
-                        receipt.notice,
-                        event_id=memory_event,
-                    )
-
-                    def mark_notified(
-                        current_memory: Memory, receipt_id: str = memory_event
-                    ) -> None:
-                        current_memory.applied_events[receipt_id].notified = True
-
-                    await asyncio.to_thread(
-                        update_model, storage, key(grant.email), Memory, mark_notified
-                    )
-                record["memory_editor_done"] = True
-                record.pop("memory_editor_result", None)
+                ):
+                    return "skipped:access_lost"
+                record["memory_editor_result"] = edits.model_dump()
                 await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
-                return
-    except Exception as exc:
-        logging.warning("Background memory editor did not complete: %s", type(exc).__name__)
-        raise
+                try:
+                    await asyncio.to_thread(
+                        conversation_memory.save,
+                        storage,
+                        current,
+                        record["thread_key"],
+                        context,
+                        generation,
+                        event_id,
+                        edits.conversation_summary,
+                    )
+                    updated_summary = (
+                        edits.conversation_summary.strip()
+                        if edits.conversation_summary is not None
+                        else context.summary
+                    )
+                    metrics["summary_chars"] = len(updated_summary)
+                    metrics["changed"] = int(updated_summary != context.summary)
+                except Conflict:
+                    # A different thread updated the shared summary. Re-summarize its latest
+                    # contents; never apply a replacement generated from an obsolete snapshot.
+                    if attempt == 2:
+                        raise
+                    continue
+            if grant.private and receipt is None:
+                current = await asyncio.to_thread(
+                    access.resolve, bridge.app, bridge.settings, storage, record
+                )
+                if (
+                    not current.allowed
+                    or current.signature != grant.signature
+                    or not await asyncio.to_thread(
+                        conversation_memory.is_current,
+                        storage,
+                        current,
+                        record["thread_key"],
+                        record,
+                    )
+                ):
+                    return "skipped:access_lost"
+                receipt = await asyncio.to_thread(
+                    apply,
+                    storage,
+                    grant.email,
+                    memory_event,
+                    edits,
+                    project_id=grant.project_id,
+                    expected_epoch=memory.edit_epoch,
+                    doc=current.doc,
+                )
+                metrics["edits"] = receipt.edit_count
+            if receipt and receipt.notice and not receipt.notified:
+                await post(
+                    bridge.app.slack_bot_token,
+                    event["channel"],
+                    event.get("thread_ts") or event["ts"],
+                    receipt.notice,
+                    event_id=memory_event,
+                )
+
+                def mark_notified(current_memory: Memory, receipt_id: str = memory_event) -> None:
+                    current_memory.applied_events[receipt_id].notified = True
+
+                await asyncio.to_thread(
+                    update_model, storage, key(grant.email), Memory, mark_notified
+                )
+            record["memory_editor_done"] = True
+            record.pop("memory_editor_result", None)
+            await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+            return "saved" if metrics["changed"] or metrics["edits"] else "unchanged"
+    raise RuntimeError("Memory editor retries exhausted")

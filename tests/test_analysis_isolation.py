@@ -62,12 +62,20 @@ async def test_reused_name_never_inherits_other_users_brief(chat, monkeypatch):
     monkeypatch.setattr(direct, "inventory", lambda *a: {"entries": []})
 
     async def decide(key, model, context, **kwargs):
-        return direct.Decision(route="reply", reply="Draft ready.", draft=context["brief"])
+        return direct.Decision(route="reply", reply="Draft ready.", guide=context["brief"])
 
     chat.decision.side_effect = decide
-    from pistachio.agents.analysis.registry import read_brief, write_brief
+    from pistachio.agents.analysis import knowledge
 
-    write_brief(chat.store, chat.pid, b"ALICE-SECRET", read_brief(chat.store, chat.pid)[1])
+    knowledge.commit(
+        chat.store,
+        chat.pid,
+        {"PROJECT.md": b"ALICE-SECRET"},
+        knowledge.load(chat.store, chat.pid, chat.settings),
+        chat.settings,
+        event_id="secret",
+        user_key="alice",
+    )
     for body in [
         payload(text="init brain gs://lab-data/brain/ --force"),
         payload("2.0", text="init liver gs://lab-data/bob/", channel="D2", user="U2"),

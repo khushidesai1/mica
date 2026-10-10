@@ -13,7 +13,6 @@ NOTE = b"type: fact\nsource: inspect, 2026-10-09, A\nstatus: current\nTMA26 fail
 
 
 def seed(chat):
-    chat.settings.knowledge_enabled = True
     root = knowledge.prefix(chat.pid)
     chat.store.put(root + "data/samples.md", NOTE)
     chat.store.put(
@@ -24,7 +23,7 @@ def seed(chat):
 async def test_review_forget_undo_and_help(chat):
     seed(chat)
     result = await message(chat, "knowledge", "1.0")
-    assert "Samples" in result["notice_text"] and "2 files" in result["notice_text"]
+    assert "Samples" in result["notice_text"] and "3 files" in result["notice_text"]
     result = await message(chat, "knowledge show data/samples.md", "2.0")
     assert "TMA26" in result["notice_text"]
     result = await message(chat, "forget knowledge data/samples.md", "3.0")

@@ -86,14 +86,15 @@ Proseg's `um_per_px` must come from verified sample metadata or the user, not it
 Run `/opt/sap/bin/python /opt/pistachio/tools/sap_estimate.py <raw-sample-directory>`
 before ingest. It checks image headers and reports the full global-coordinate canvas without
 loading image pixels. This is a lower bound, not a peak-memory prediction. Use `measure.py`
-on representative bounded probes and estimate total and per-task RAM before requesting compute.
-When the compute tools are available, `estimate_worker` and `request_worker` can continue the
-same request on a larger Spot tier. Quotes include provisioned disk and startup margin; requests
-up to the configured $50 infrastructure limit proceed automatically. Above it, Slack asks for
-approval. Model spending has a separate request-wide limit.
+when a small measurement will resolve genuine uncertainty about expanded memory or runtime.
+Your worker was sized for this job at launch. Run directly when the inputs fit. If measured
+requirements show that a step cannot fit, use `recover_worker` with the evidence and remaining
+steps. The application can automatically continue the same request on a larger worker once.
+Do not deliberately start small or ask the user to choose a machine or resubmit.
 
-After a stage finishes and all writers close, call `checkpoint_stage` for its directory with
-an input/method fingerprint. Validate outputs and the fingerprint before reusing a restored
-stage. Scratch does not survive resizing. Saved stages survive a Spot interruption, but automatic
-preemption restart is not enabled in this first release. Full TMA runtime/memory estimates have
-not yet been calibrated; a larger worker is not a guarantee that an arbitrary SAP job fits.
+After an expensive stage finishes and all writers close, call `checkpoint_stage` for its directory
+with an input/version/method/parameter fingerprint. Validate outputs and fingerprints before
+reusing a restored stage. Scratch and live processes do not survive a restart; unsaved work is
+repeated automatically. A Spot interruption normally triggers one restart on on-demand at the
+same tier. A larger worker is not a guarantee that an arbitrary SAP job fits; if none fits, explain
+the measured requirement and a feasible method without silently reducing scientific scope.

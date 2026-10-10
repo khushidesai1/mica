@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import io
 import re
+import shutil
 import sqlite3
 import tarfile
 import tempfile
@@ -12,8 +13,10 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .compute_batch import event_prefix
+from google.api_core.exceptions import NotFound
+
 from .outputs import files_under
+from .recovery import event_prefix
 from .storage import Storage
 
 
@@ -25,9 +28,7 @@ def digest(path: Path) -> str:
     return h.hexdigest()
 
 
-def workspace_snapshot(
-    archive: Path, home: Path, *, partial: bool, max_bytes: int, knowledge_enabled: bool = False
-) -> None:
+def workspace_snapshot(archive: Path, home: Path, *, partial: bool, max_bytes: int) -> None:
     total = 0
     with tempfile.TemporaryDirectory(dir=archive.parent, prefix="snapshot-") as temporary:
         backup = Path(temporary) / "state.db"
@@ -40,14 +41,14 @@ def workspace_snapshot(
         with tarfile.open(archive, "w:gz") as tar:
             for path in paths:
                 relative = Path("state.db") if path == backup else path.relative_to(home)
-                if knowledge_enabled and "knowledge" in relative.parts:
+                if "knowledge" in relative.parts:
                     continue
                 if any(
                     p in {"inputs", ".previews", "scratch", "checkpoints", ".tmp", ".mpl"}
                     for p in relative.parts
                 ):
                     continue
-                if partial and "outputs" in relative.parts and path.name != "PROJECT.md":
+                if partial and "outputs" in relative.parts:
                     continue
                 before = path.stat()
                 total += before.st_size
@@ -123,6 +124,13 @@ class Stages:
         return {"status": "saved", "path": path, "bytes": total, "fingerprint": fingerprint}
 
     def restore(self, manifest: dict[str, Any]) -> None:
+        self._restore(manifest, skip_invalid=False)
+
+    def restore_available(self, manifest: dict[str, Any]) -> list[str]:
+        """Keep verified stages and name unavailable stages for automatic recomputation."""
+        return self._restore(manifest, skip_invalid=True)
+
+    def _restore(self, manifest: dict[str, Any], *, skip_invalid: bool) -> list[str]:
         stages = manifest.get("stages", [])
         uploaded = manifest.get("uploaded_bytes", 0)
         if (
@@ -133,34 +141,56 @@ class Stages:
         ):
             raise ValueError("Invalid stage checkpoint manifest.")
         total = 0
+        verified, missing = [], []
         for stage in stages:
-            key = str(stage.get("archive", ""))
-            if not re.fullmatch(re.escape(self.prefix) + r"a\d+-[a-f0-9]{32}\.tar\.gz", key):
-                raise ValueError("Stage belongs to a different request.")
-            path = str(stage.get("path", ""))
-            if not re.fullmatch(r"checkpoints/[a-zA-Z0-9_-]{1,80}", path):
-                raise ValueError("Invalid stage restore path.")
-            with tempfile.TemporaryDirectory(prefix="pista-restore-") as temporary:
-                archive = Path(temporary) / "stage.tar.gz"
-                self.storage.download(key, archive)
-                if digest(archive) != stage.get("sha256"):
-                    raise ValueError("Stage checkpoint checksum mismatch.")
-                with tarfile.open(archive, "r:gz") as tar:
-                    members = tar.getmembers()
-                    if len(members) > 200000:
-                        raise ValueError("Too many checkpoint files.")
-                    seen: set[str] = set()
-                    for member in members:
-                        target = self.work / member.name
-                        total += member.size
-                        if (
-                            not member.isfile()
-                            or member.name in seen
-                            or not member.name.startswith(path + "/")
-                            or not target.resolve().is_relative_to(self.work / path)
-                            or total > self.max_bytes
-                        ):
-                            raise ValueError("Unsafe or oversized stage checkpoint.")
-                        seen.add(member.name)
-                    tar.extractall(self.work, filter="data")
-        self.stages, self.uploaded_bytes = stages, uploaded
+            if not isinstance(stage, dict):
+                raise ValueError("Invalid stage checkpoint entry.")
+            try:
+                total += self._restore_stage(stage, self.max_bytes - total)
+                verified.append(stage)
+            except (ValueError, OSError, tarfile.TarError, NotFound):
+                if not skip_invalid:
+                    raise
+                path = str(stage.get("path", "unknown stage"))
+                missing.append(path)
+                if re.fullmatch(r"checkpoints/[a-zA-Z0-9_-]{1,80}", path):
+                    root = self.work / path
+                    if root.is_symlink():
+                        root.unlink()
+                    elif root.exists():
+                        shutil.rmtree(root)
+        self.stages, self.uploaded_bytes = verified, uploaded
+        return missing
+
+    def _restore_stage(self, stage: dict[str, Any], remaining: int) -> int:
+        total = 0
+        key = str(stage.get("archive", ""))
+        if not re.fullmatch(re.escape(self.prefix) + r"a\d+-[a-f0-9]{32}\.tar\.gz", key):
+            raise ValueError("Stage belongs to a different request.")
+        path = str(stage.get("path", ""))
+        if not re.fullmatch(r"checkpoints/[a-zA-Z0-9_-]{1,80}", path):
+            raise ValueError("Invalid stage restore path.")
+        with tempfile.TemporaryDirectory(prefix="pista-restore-") as temporary:
+            archive = Path(temporary) / "stage.tar.gz"
+            self.storage.download(key, archive)
+            if digest(archive) != stage.get("sha256"):
+                raise ValueError("Stage checkpoint checksum mismatch.")
+            with tarfile.open(archive, "r:gz") as tar:
+                members = tar.getmembers()
+                if len(members) > 200000:
+                    raise ValueError("Too many checkpoint files.")
+                seen: set[str] = set()
+                for member in members:
+                    target = self.work / member.name
+                    total += member.size
+                    if (
+                        not member.isfile()
+                        or member.name in seen
+                        or not member.name.startswith(path + "/")
+                        or not target.resolve().is_relative_to(self.work / path)
+                        or total > remaining
+                    ):
+                        raise ValueError("Unsafe or oversized stage checkpoint.")
+                    seen.add(member.name)
+                tar.extractall(self.work, filter="data")
+        return total

@@ -13,24 +13,24 @@ token, always-on VM, or Modal account is required.
 
 `Slack DM → signed webhook → Cloud Tasks → Cloud Run conversation → Slack reply`
 
-Only requests that need file contents, code execution, or plots proceed to a Batch Spot job.
+Only requests that need file contents, code execution, or plots proceed to a sized Batch worker.
 Listing object names, folders, and sizes uses bounded metadata calls on Cloud Run, including
 in ordinary chat. Reading CSV headers or counting cells still requires the worker.
 Conversation routing is always enabled. Ordinary questions, planning, brief edits,
-`help`, `brief`, `save brief`, `cancel`, and bounded initial setup run in the control service.
-The direct Claude call has no shell, filesystem, or network tools. It can answer, revise a draft,
+`help`, `brief`, `cancel`, and bounded initial setup run in the control service.
+The direct Claude call has no shell, filesystem, or network tools. It can answer, update the shared guide,
 request a project-scoped metadata listing, or request isolated computation. API failures produce
 a visible retry message, never a worker fallback. Cancellation bypasses queued work and stops
 the active job without starting a new one.
 
 The new worker calls the Claude Agent SDK directly. It does not invoke Pistachio's shared task planners,
 TaskContract generation, approval stages, or multi-stage execution pipeline. Each Slack thread
-has one resumed Claude compute session, a workspace, and its own PROJECT.md brief snapshot.
+has one resumed Claude compute session, a workspace, and the current shared `knowledge/PROJECT.md` guide.
 The brief stays unchanged by default. It is revised only when requested or when user-provided
 or verified information fills a necessary gap in the project/file guide. Scientific observations,
 hypotheses, results, conversation notes, and research TODOs belong in the hidden conversation cache. Routine
 results, file listings, and plot adjustments do not trigger brief maintenance or save reminders.
-Initial setup still creates a draft, and `save brief` explicitly publishes it. The worker uses
+Initial setup and ordinary guide corrections save automatically; `undo knowledge` reverts a save. The worker uses
 built-in Read/Write/Edit/Glob/Grep/Bash tools and the pinned science environment.
 
 A control-service reply acknowledges each accepted input. Direct replies update it in place;
@@ -151,12 +151,10 @@ Keep this flag false by default and rerun the isolation gate before changing the
 7. Run the Linux isolation and live fixture checks in `docs/acceptance.md` with the pinned worker
    image and real private data mounts. Then cut over Slack only using
    `PISTACHIO_SLACK_AGENT_BACKEND=claude_batch` (Terraform: `slack_agent_enabled=true`).
-8. In the existing bot DM, send `init project-slug gs://bucket/prefix/`, review its draft, then
-   reply `save brief`. A mention is unnecessary in the DM. New top-level messages start threads;
+8. In the existing bot DM, send `init project-slug gs://bucket/prefix/` and review the saved guide. A mention is unnecessary in the DM. New top-level messages start threads;
    reply in the bot's thread to continue an analysis. In a channel, mention the bot on the initial
    message and commands. Reply with missing details or corrections in ordinary language to revise
-   the draft; no Markdown upload is needed. This also works later in an analysis thread.
-   `save brief` publishes the revised draft for new threads. Uploading a UTF-8 `.md` file
+   the shared guide; corrections save automatically and apply on the next turn in every thread. Uploading a UTF-8 `.md` file
    under 100 KB with `brief` remains an optional way to replace the shared brief.
 
 The local implementation was followed by the user-authorized deployment recorded in
@@ -165,9 +163,16 @@ The local implementation was followed by the user-authorized deployment recorded
 ## Settings and use
 
 See `deploy/slack.env.example`. Defaults are 40 model turns, $5 per message and three concurrent
-jobs. Each job requests 8 CPUs / 64 GiB on Spot, a 500 GB boot disk, up to one hour of runtime,
-and no task retry. The controller cancels jobs still unresolved after two hours. File caching
-uses at most 400,000 MiB across mounted buckets, with range-read caching enabled. Validate the
+jobs. Ordinary analysis normally starts on standard Spot (8 CPUs / 64 GiB); segmentation,
+full-sample ingest and training normally start on large on-demand (32 CPUs / 256 GiB).
+Large input expansion or prior measurements can select xlarge (64 CPUs / 512 GiB).
+The seven-day `AGENT_MAX_RUN_SECONDS` limit is one absolute deadline across queueing and all
+attempts. One upward resize and one preemption restart are allowed, at most three attempts total,
+with the same total model allowance. Recovery prefers on-demand unless explicitly constrained.
+Validated stages resume; unsaved or corrupt stages rerun automatically. Unknown task death alone
+does not justify a larger worker, and uncertain final publication is never replayed automatically.
+There is no infrastructure pricing or spending-approval flow.
+File caching uses at most 400,000 MiB across mounted buckets, with range-read caching enabled. Validate the
 Batch image's gcsfuse flags and available disk space during the canary.
 
 Scoped GCS output writes are available through `write grant`, `write status`, and `write revoke`
@@ -182,10 +187,8 @@ changes the DM's selection and
 includes a command to switch back to the previous project. `use <project>` and `projects` remain
 aliases.
 
-Other commands include `brief` and `save brief` in a draft
-thread, including an analysis thread where the agent has revised the brief. The agent uses
-local draft revisions in subsequent turns, while other existing threads keep their snapshots.
-New threads receive revisions after `save brief`. Omit unknown guide details rather than adding
+`brief` shows the current project guide. Guide edits save automatically to shared knowledge,
+with history and concurrent-edit protection; `undo knowledge` reverts the most recent save. Omit unknown guide details rather than adding
 guesses or TODO lists. Rebinding does not
 change existing thread data/briefs. Each turn writes changed outputs,
 code, `run_log.jsonl` and `meta.json` under the audience-specific paths documented below. Slack
@@ -221,16 +224,17 @@ and [gcsfuse flags](https://docs.cloud.google.com/storage/docs/cloud-storage-fus
 4 one-page listings, 80 entries per page, 200 retained entries, 2 levels below the requested
 folder, and a 15-second listing budget with each request capped at 5 seconds and no retries.
 Zarr/N5 stores are opaque entries; hidden/output folders are skipped. An unavailable/partial
-listing still produces an explicitly incomplete draft rather than starting an unbounded scan.
+listing still produces an explicitly incomplete saved guide rather than an unbounded scan.
 
 Ordinary chat can request the same inventory for the project's root or a narrower relative
 folder. The service verifies project access and bucket admission before listing, supplies the
-metadata to a second conversation call, and requires a direct reply. Unavailable or partial
-listings never fall back to a worker; an unlisted file is not evidence that it is absent.
+metadata to a second conversation call, and allows either a listing reply or computation for
+the requested analysis once inputs are sufficiently sized. Unavailable listings do not trigger
+compute just to retry the listing; an unlisted file is not evidence that it is absent.
 Absolute paths, traversal, other buckets, and array-store internals cannot be requested.
 
-The control-plane model drafts from the bounded inventory without tools or a Spot worker.
-Reading file contents is a separate computation request. The draft marks unknown schemas,
+The control-plane model saves the initial guide from bounded metadata without a worker.
+Reading file contents is a separate computation request. The guide omits unknown schemas,
 counts and filename-based guesses; detailed file inspection is deferred until needed.
 
 Retrying the same project/folder binding preserves its identity and saved brief. Init automatically
@@ -366,13 +370,12 @@ Projects are private by default. Their opaque IDs are independent of display nam
 with the same owner, name, and data URI reuses that project; changing the URI requires a new name.
 Each thread retains its selected project even after `switch` changes the default. Send a new
 message outside the existing thread to start with the selected project. Existing threads
-keep their brief snapshots. `save brief` and an optional `.md` upload are explicit publication
-actions to project members and authorized channel audiences. A stale save is rejected if another
-thread changed the shared brief; start a new thread to review and reconcile it.
+refresh their shared guide on each turn. Guide edits are visible to project members and
+authorized channels. Concurrent conflicting edits are retained in `_unmerged/` for reconciliation.
 
 | Command | Where and effect |
 | --- | --- |
-| `init liver gs://bucket/folder/` | DM: create/reuse and select your project, draft its brief, and offer a command to switch back. |
+| `init liver gs://bucket/folder/` | DM: create/reuse and select your project, save its initial guide, and offer a command to switch back. |
 | `help` / `help all` | Show the same complete, grouped command list. |
 | `switch` (alias: `projects`) | DM: list owned and explicitly shared projects with copyable switch commands; mark the default for new threads. |
 | `switch liver` or `switch p_…` (alias: `use`) | Select a project for new threads. Ambiguous shared names require an ID. |
@@ -380,7 +383,7 @@ thread changed the shared brief; start a new thread to review and reconcile it.
 | `share liver @user` / `unshare liver @user` | Owner in DM: grant an enabled user or revoke a former member; email links also work. |
 | `publish liver #channel` / `unpublish liver #channel` | Owner in DM: authorize/withdraw replies visible to the entire channel audience. |
 | `switch p_… [--force]` in a channel | Owner selects an explicitly published project; replacing a binding requires its current owner too. |
-| `brief` / `save brief` | View this draft / publish it, after an access check. |
+| `brief` | View the current shared guide, after an access check. |
 | `cancel` | Cancel queued/active computation after an access check. |
 | `memory` | DM: show private profile/preferences and the newest 20 numbered notes. |
 | `remember <text>` | DM: add a private note (up to 600 characters). |
@@ -406,27 +409,24 @@ ranking and before the memory editor receives context. Revoked notes appear as h
 in `memory`; their content is excluded. A block containing contributions from a revoked project
 is hidden as a whole. Notes retain their original project attribution; they are suggestions,
 not facts about the current project. Init displays them in a private reply, never automatically
-in the initial brief. Applying memory to a later draft requires the user’s request; publishing
-that draft with `save brief` deliberately shares its contents.
+in the initial brief. Applying personal memory to the shared guide requires the user’s request; saving
+guide edits deliberately shares their contents through project knowledge.
 
 Profile and preferences are each bounded to 1,500 characters. Up to 200 notes have stable numbers;
 retrieval selects at most five within 2,500 characters, using keyword overlap and recency. Atomic
 writes prevent lost concurrent updates. Permanent operation receipts prevent delayed deliveries
 from resurrecting forgotten content. The post-reply editor proposes at most three changes, rejects
-credential-like text, and sends a confirmation only after saving. It is best effort with a
-30-second bound and cannot fail the main reply. Set `AGENT_MEMORY_AUTO_EDIT=false` to disable it;
+credential-like text, and sends a confirmation only after saving. It runs as a separate retried task with a 90-second model timeout and a
+150-second task deadline, after the main reply is delivered. Set `AGENT_MEMORY_AUTO_EDIT=false` to disable it;
 explicit memory commands still work. `AGENT_MEMORY_MODEL` defaults to `AGENT_MODEL`.
 
-Forgetting, replacing memory, or changes to accessible project grants invalidate private context.
-The next turn starts a new workspace and SDK session, clears the recent transcript/private draft,
-and reloads the shared brief. Retired small checkpoints are kept as audit records, and run
-numbers continue so old outputs are not overwritten. The first private turn after upgrading a
-legacy checkpoint also starts fresh; an unsaved old draft is retained in the retired checkpoint
-for reviewed recovery, not injected automatically. This also blocks old queued memory snapshots. Access revisions
-ensure revoke-then-regrant does not revive an old grant. Forgotten content is removed from future
-retrieval; this is not deletion of historical Slack messages, explicitly saved shared briefs,
-old outputs, or retained audit archives. Registry/memory receipts and private outputs are under
-the durable `projects/` prefix; include them in retention and backup planning.
+Routine personal-memory edits, deletions, sharing and unrelated project changes keep the current
+workspace, SDK session and transcript. `forget context` and `forget all` explicitly reset the
+applicable context; retired checkpoints retain audit history and output numbering continues.
+Permission checks and revoke-then-regrant protection remain tied to the current project's access
+revision. Existing saved workdirs stay valid through the migration. Removed memory is excluded
+from future retrieval, while existing conversation context remains until explicitly reset.
+Slack messages, old outputs and audit archives retain their existing lifecycle.
 
 DM outputs live at `projects/_users/<user-hash>/runs/<project-id>/<thread-key>/turn-<n>/`.
 Authorized channel outputs retain `projects/<project-id>/runs/<thread-ts>/turn-<n>/`.
@@ -483,21 +483,18 @@ memory are in GCP; the laptop does not need to remain running.
 
 ## Conversation cache and project guide
 
-`PROJECT.md` documents project purpose, data location, file/folder uses, and known metadata needed
-to select or interpret data. The existing concise, necessary auto-update flow still creates thread
-drafts; only `save brief` publishes them. Observations, hypotheses, results, and research TODOs
-are excluded. On the first ordinary turn with a legacy brief, the router prepares any needed
-cleanup as a draft and lists the removed categories. `clean brief` explicitly requests that review.
-Originals are retained under the authorized thread's `brief-originals/` prefix. Use `brief` to
-review and `save brief` to publish. Existing thread snapshots are reviewed independently; an old
-worker archive cannot overwrite the current thread draft. No legacy notes are bulk-imported into
-personal memory or another person's cache.
+`knowledge/PROJECT.md` documents project purpose, data location, file/folder uses, and verified
+metadata needed to select or interpret data. Necessary guide changes save automatically with
+versioned history. Observations, hypotheses, results and research TODOs remain outside the guide.
+`brief` shows it; `undo knowledge` reverts the most recent knowledge save. Legacy published guides
+migrate once, leaving the old object as a backup. Unsaved thread drafts are not imported.
 
 A hidden Markdown summary (at most 6,000 characters) is stored inside a versioned JSON record:
 
 - DMs: `projects/_users/<user-key>/context/<project-id>.json`, shared only across that person's
   DM threads for the same project.
-- Channels: `projects/_threads/<thread-key>/context/<project-id>.json`, limited to that thread.
+- Channels: `projects/<project-id>/context/channel-<hash-of-team-and-channel>.json`, shared across
+  threads only in that project/channel.
 
 Every chat and compute request receives the authorized summary separately from the guide,
 personal preferences, and recent messages. It is advisory context, not scientific evidence,
@@ -510,8 +507,8 @@ the latest cache intact without failing the user's completed request. The record
 256 crash-recovery event IDs; normal permanent deduplication uses the existing event receipts.
 
 `memory context` shows the applicable cache; `forget context` clears it. It remains available
-until cleared. Manual personal-memory forgetting also invalidates conversation caches that could
-repeat the forgotten information, including every project on `forget all`. Reset epochs block
+until cleared. Routine personal-memory edits and individual deletions preserve conversation
+context. `forget context` resets the current scope; `forget all` resets every private project cache. Reset epochs block
 stale background writes, resumed SDK sessions, queued requests, and worker delivery. Clearing
 bypasses an earlier running request in the same thread. Stored outputs, old Slack messages, and
 audit records remain; clearing controls future active context rather than deleting historical

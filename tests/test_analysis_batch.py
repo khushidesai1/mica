@@ -163,71 +163,45 @@ async def test_dedup_serial_order_parallel_threads_and_polling(bridge):
     for name in bridge.test_states:
         if name.endswith(first):
             bridge.test_states[name] = "SUCCEEDED"
+    bridge.store.put(
+        f"tasks/slack-analysis/events/{first}/attempt-a0.json",
+        json.dumps(
+            {"event_id": first, "attempt": 0, "outcome": "complete", "model_cost": 0.1}
+        ).encode(),
+    )
     assert await bridge.process(first, 7) == "complete"
     assert await bridge.process(second, 1) == "running"
     assert bridge.test_client.create_job.call_count == 3
 
 
 async def test_checkpoint_relaunch_submits_on_demand_job(bridge, monkeypatch):
-    from pistachio.agents.analysis import compute_batch, compute_control, pricing
-    from pistachio.agents.analysis.compute_quotes import Estimate
+    from pistachio.agents.analysis import recovery
 
-    bridge.settings.tiers_enabled = True
-    bridge.settings.compute_quote_only = False
-    bridge.settings.on_demand_enabled = True
-    skus = json.loads(
-        (Path(__file__).parent / "fixtures/compute/n2-us-central1-skus.json").read_text()
-    )["skus"]
-    rates = {
-        mode: pricing.from_skus(skus, bridge.app.gcp_region, batch.time.time(), mode)
-        for mode in ("SPOT", "STANDARD")
-    }
-    monkeypatch.setattr(compute_batch, "GCSStorage", lambda bucket: bridge.store)
-    monkeypatch.setattr(pricing, "current", lambda store, region, mode="SPOT": rates[mode])
     event_id = await bridge.accept(payload())
     assert await bridge.process(event_id, 0) == "running"
     first_job = bridge.test_client.create_job.call_args.kwargs["job"]
     assert first_job.allocation_policy.instances[0].policy.provisioning_model.name == "SPOT"
     key = f"claude-event:{event_id}"
     record = await bridge.repository.get_connector_state(key)
-    q = compute_control.operate(
+    result = recovery.operate(
         event_id,
         record,
-        compute_control.ComputeCall(
+        recovery.RecoverCall(
             attempt=0,
-            action="estimate",
-            estimate=Estimate(
-                tier="standard",
-                hours_low=0.1,
-                hours_high=0.5,
-                peak_gib=20,
-                task_peak_gib=20,
-                disk_gb=1,
-                basis="Measured representative subset.",
-            ),
-        ),
-        bridge.settings,
-        rates.__getitem__,
-        batch.time.time(),
-    )
-    result = compute_control.operate(
-        event_id,
-        record,
-        compute_control.ComputeCall(
-            attempt=0,
-            action="request",
-            quote_id=q["id"],
+            cause="capacity",
+            memory_gib=100,
+            evidence="Expanded arrays exceed RAM",
             handoff="Resume saved inputs.",
         ),
         bridge.settings,
-        rates.__getitem__,
-        batch.time.time(),
+        bridge.store,
+        now=batch.time.time(),
     )
     assert result["status"] == "checkpoint"
     await bridge.repository.set_connector_state(key, record)
-    prefix = compute_batch.event_prefix(event_id)
+    prefix = recovery.event_prefix(event_id)
     archive = f"{prefix}/handoff-a0-{'b' * 32}.tar.gz"
-    bridge.store.put(archive, b"saved archive")
+    bridge.store.put(archive, b"\x1f\x8bsaved archive")
     bridge.store.put(
         f"{prefix}/attempt-a0.json",
         json.dumps(
@@ -237,6 +211,8 @@ async def test_checkpoint_relaunch_submits_on_demand_job(bridge, monkeypatch):
                 "model_cost": 0.2,
                 "outcome": "handoff",
                 "archive": archive,
+                "sha256": "c" * 64,
+                "state": record["turn_start"],
             }
         ).encode(),
     )
@@ -247,11 +223,11 @@ async def test_checkpoint_relaunch_submits_on_demand_job(bridge, monkeypatch):
     second_job = bridge.test_client.create_job.call_args.kwargs["job"]
     assert second_job.allocation_policy.instances[0].policy.provisioning_model.name == "STANDARD"
     manifest = json.loads(bridge.store.read_prefix(f"{prefix}/request.json", 64000))
-    assert manifest["compute"]["provisioning"] == "STANDARD"
+    assert manifest["recovery"]["provisioning"] == "STANDARD"
     assert manifest["resume"]["archive"] == archive
     record = await bridge.repository.get_connector_state(key)
     assert record["attempt"] == 1
-    assert record["escalations"] == 0
+    assert record["resize_count"] == 1
     bridge.store.put(
         f"{prefix}/attempt-a1.json",
         json.dumps(
@@ -265,7 +241,7 @@ async def test_checkpoint_relaunch_submits_on_demand_job(bridge, monkeypatch):
     )
     bridge.test_states[record["job"]] = "SUCCEEDED"
     assert await bridge.process(event_id, 3) == "complete"
-    assert bridge.store.read_prefix(archive, 100) == b"saved archive"
+    assert bridge.store.read_prefix(archive, 100) == b"\x1f\x8bsaved archive"
 
 
 async def test_intake_recovers_interrupted_receipt_write(bridge, monkeypatch):
@@ -479,7 +455,7 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
     grant = access.Grant(
         "alice@example.com", True, {}, Registry(storage).load(), pid, True, "T1:D1"
     )
-    ctx.workdir = Path(access.private_workdir(settings, grant, "thread", 0))
+    ctx.workdir = Path(access.private_workdir(settings, grant, "thread"))
     storage.put(
         pointer,
         json.dumps({"context": asdict(ctx), "turn": 0, "is_init": False}, default=str).encode(),
@@ -491,7 +467,7 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
             else None
         )
         storage.put(
-            f"{CHECKPOINT_PREFIX}/events/event-{turn}/request.json",
+            f"{CHECKPOINT_PREFIX}/events/{turn:032x}/request.json",
             json.dumps(
                 {
                     "payload": payload(f"{turn}.0", "1.0" if turn > 1 else None),
@@ -506,14 +482,12 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
                 }
             ).encode(),
         )
-        await batch_worker.main(f"event-{turn}")
+        await batch_worker.main(f"{turn:032x}")
         saved = json.loads(storage.get(pointer)[0])
         assert saved["turn"] == turn
         assert runner_contexts[-1]["conversation_summary"] == "User hypothesis: cold-start memory"
         if turn > 1:
-            assert saved["brief_policy_version"] == 1
             assert saved["conversation_epoch"] == {"epoch": 0, "owner_epoch": 0}
-        saved["brief_policy_version"] = 1
         saved["conversation_epoch"] = {"epoch": 0, "owner_epoch": 0}
         storage.put(pointer, json.dumps(saved).encode())
         if upload_failure and turn == 1:
@@ -523,7 +497,7 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
                 assert any(name.endswith("/outputs/plot.png") for name in archive.getnames())
         if upload_failure and turn == 2:
             assert "couldn't confirm their delivery to Slack" in runner.calls[-1][2]
-        expected = "Revised in chat" if direct_revision and turn > 1 else "Frozen original brief"
+        expected = "Frozen original brief" if turn == 1 else "Changed shared guide"
         assert saved["context"]["project_md"] == expected
         if direct_revision and turn == 1:
             saved["context"]["project_md"] = "Revised in chat"
@@ -531,12 +505,17 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
             storage.put(pointer, json.dumps(saved).encode())
         if direct_revision and turn > 1:
             assert "Use sample B" in runner.calls[-1][2]
-            assert (
-                Path(saved["context"]["workdir"]) / "outputs/PROJECT.md"
-            ).read_text() == expected
-        from pistachio.agents.analysis.registry import read_brief, write_brief
+        from pistachio.agents.analysis import knowledge
 
-        write_brief(storage, pid, b"Changed brief for future threads", read_brief(storage, pid)[1])
+        knowledge.commit(
+            storage,
+            pid,
+            {"PROJECT.md": b"Changed shared guide"},
+            knowledge.load(storage, pid, settings),
+            settings,
+            event_id=f"guide-{turn}",
+            user_key="u",
+        )
         shutil.rmtree(home)  # End this disposable worker; preserve only GCS.
         home.mkdir()
         if turn == 2:
@@ -608,7 +587,7 @@ async def test_dynamic_project_buckets_and_outside_project_rejection(bridge, mon
     )
     from pistachio.agents.analysis import direct
 
-    direct.decide.return_value = direct.Decision(route="reply", reply="Draft.", draft="New brief")
+    direct.decide.return_value = direct.Decision(route="reply", reply="Draft.", guide="New brief")
     assert await bridge.process(first, 0) == "complete"
     direct.decide.return_value = direct.Decision(route="compute", reply="Plotting.")
     compute = await bridge.accept(payload("1.1", "1.0", "plot"))

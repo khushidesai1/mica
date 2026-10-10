@@ -230,11 +230,7 @@ def run(
         return (
             f"{'Removed access for' if cmd.name == 'unshare' else 'Shared with'} {target}. "
             "Existing Slack channel messages remain visible to their channel audience."
-            + (
-                " Members also see this project's knowledge."
-                if cmd.name == "share" and settings.knowledge_enabled
-                else ""
-            )
+            + (" Members also see this project's knowledge." if cmd.name == "share" else "")
         )
     match = re.fullmatch(r"<#([CG][A-Z0-9]+)(?:\|[^>]+)?>|([CG][A-Z0-9]+)", cmd.args[1])
     if not match:

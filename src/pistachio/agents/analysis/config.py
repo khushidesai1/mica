@@ -23,7 +23,6 @@ class Settings(BaseSettings):
     slack_app_token: SecretStr = Field(default=SecretStr(""), alias="SLACK_APP_TOKEN")
     model: str = "claude-opus-5-5"
     loading_emoji: str = ":hourglass_flowing_sand:"  # AGENT_LOADING_EMOJI; custom emoji supported.
-    knowledge_enabled: bool = False
     knowledge_index_chars: int = Field(default=4000, ge=1, le=16000)
     knowledge_file_kb: int = Field(default=16, ge=1, le=64)
     knowledge_max_files: int = Field(default=200, ge=1, le=1000)
@@ -61,21 +60,10 @@ class Settings(BaseSettings):
     max_turns: int = Field(default=40, ge=1)
     max_budget_usd_per_turn: float = Field(default=5, gt=0)
     max_concurrent_runs: int = Field(default=3, ge=1)
-    tiers_enabled: bool = False
-    on_demand_enabled: bool = False
     launch_heavy_tier: Literal["standard", "large", "xlarge"] = "large"
-    on_demand_step_minutes: int = Field(default=30, ge=10, le=1440)
-    on_demand_total_hours: float = Field(default=4, ge=1, le=168)
-    compute_quote_only: bool = True
-    tier: Literal["standard", "large", "xlarge"] = "standard"
-    attempt: int = Field(default=0, ge=0, le=20)
     max_tier: Literal["standard", "large", "xlarge"] = "xlarge"
     max_concurrent_large_runs: int = Field(default=1, ge=1, le=10)
-    compute_auto_budget_usd: float = Field(default=50, gt=0, le=10000, allow_inf_nan=False)
-    compute_probe_budget_usd: float = Field(default=1, gt=0, le=50, allow_inf_nan=False)
-    compute_probe_seconds: int = Field(default=1800, ge=60, le=7200)
     partial_checkpoint_seconds: int = Field(default=900, ge=60, le=3600)
-    max_preemption_relaunches: int = Field(default=2, ge=0, le=2)
     compute_checkpoint_max_gb: int = Field(default=100, ge=1, le=500)
     long_run_threshold_seconds: int = Field(default=600, ge=60)
     long_run_update_seconds: int = Field(default=7200, ge=60)

@@ -246,13 +246,8 @@ async def worker_context(
         or record.get("cancel_requested")
         or record.get("principal") != grant.email
         or record.get("access_signature") != grant.signature
-        or record.get("memory_epoch", 0)
-        != await asyncio.to_thread(access.memory_epoch, storage, grant)
-        or (
-            record.get("compute_version")
-            and not await asyncio.to_thread(
-                conversation_memory.is_current, storage, grant, record["thread_key"], record
-            )
+        or not await asyncio.to_thread(
+            conversation_memory.is_current, storage, grant, record["thread_key"], record
         )
     ):
         raise HTTPException(403, "This worker grant is inactive")
@@ -264,10 +259,9 @@ class WriteUpload(BaseModel):
     grant_id: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
-@router.post("/compute/{event_id}", include_in_schema=False)
-async def compute_operation(event_id: str, request: Request, response: Response) -> dict[str, Any]:
-    from pistachio.agents.analysis import compute_control, pricing
-    from pistachio.agents.analysis.compute_quotes import Provisioning, Rates
+@router.post("/recovery/{event_id}", include_in_schema=False)
+async def recovery_operation(event_id: str, request: Request, response: Response) -> dict[str, Any]:
+    from pistachio.agents.analysis import recovery
 
     bridge, storage, _ = await worker_context(event_id, request)
     response.headers["Cache-Control"] = "no-store"
@@ -277,7 +271,7 @@ async def compute_operation(event_id: str, request: Request, response: Response)
     if len(raw) > 12000:
         raise HTTPException(413, "Compute request too large")
     try:
-        body = compute_control.ComputeCall.model_validate_json(raw)
+        body = recovery.RecoverCall.model_validate_json(raw)
     except ValueError as exc:
         raise HTTPException(422, "Invalid compute request") from exc
     mutex = f"claude-poll:{event_id}"
@@ -288,13 +282,10 @@ async def compute_operation(event_id: str, request: Request, response: Response)
         # Revalidate access and attempt after acquiring the same lock used by cancellation.
         bridge, storage, record = await worker_context(event_id, request)
 
-        def get_rates(provisioning: Provisioning) -> Rates:
-            return pricing.current(storage, bridge.app.gcp_region, provisioning)
-
         import time
 
         result = await asyncio.to_thread(
-            compute_control.operate, event_id, record, body, bridge.settings, get_rates, time.time()
+            recovery.operate, event_id, record, body, bridge.settings, storage, now=time.time()
         )
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
         return result
@@ -325,7 +316,6 @@ async def write_output(
             or grant.project_id != record.get("project_id")
             or grant.email != record.get("principal")
             or grant.signature != record.get("access_signature")
-            or access.memory_epoch(storage, grant) != record.get("memory_epoch", 0)
             or not conversation_memory.is_current(storage, grant, record["thread_key"], record)
         ):
             raise PermissionError("Project access changed. GCS publishing is blocked.")

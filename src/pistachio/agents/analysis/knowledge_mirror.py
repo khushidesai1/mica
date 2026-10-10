@@ -35,11 +35,7 @@ BOT = {"name": "Pistachio Knowledge", "email": "pistachio-knowledge@users.norepl
 
 
 def configured(settings: Settings) -> bool:
-    return bool(
-        settings.knowledge_enabled
-        and settings.knowledge_github_repo
-        and settings.knowledge_github_token_secret
-    )
+    return bool(settings.knowledge_github_repo and settings.knowledge_github_token_secret)
 
 
 def api_root(settings: Settings) -> str:
@@ -294,12 +290,7 @@ async def mirror_through(
 ) -> int:
     _stamp(pid, key)
     project = Registry(storage).load().projects.get(pid)
-    if (
-        not settings.knowledge_enabled
-        or not settings.knowledge_github_repo
-        or not project
-        or not mirror_project(project)
-    ):
+    if not settings.knowledge_github_repo or not project or not mirror_project(project):
         return 0
     await asyncio.to_thread(knowledge.recover, storage, pid, settings)
     # Check a recorded receipt before making any GitHub call.
@@ -342,8 +333,6 @@ async def enqueue_save(
 async def after_event(
     bridge: BatchBridge, storage: Storage, event_id: str, record: dict[str, Any]
 ) -> None:
-    if not bridge.settings.knowledge_enabled:
-        return
     pid = record.get("project_id")
     keys: set[str] = set()
     if record.get("knowledge_changes_key"):
@@ -434,8 +423,6 @@ async def restore_commit(
     project_key(pid)
     if not re.fullmatch(r"[a-f0-9]{40}", sha):
         raise ValueError("Use a full Git commit SHA for restoration.")
-    if not settings.knowledge_enabled:
-        raise ValueError("Enable project knowledge before restoring it.")
     if not (await api(client, settings, "GET", ""))["private"]:
         raise ValueError("The knowledge mirror requires a private GitHub repository.")
     _, tree = await _tree(client, settings, sha)

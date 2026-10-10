@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import conversation_memory, user_memory
+from . import conversation_memory
 from .config import Settings
 from .help_text import PROJECT_HELP
 from .identity import NOT_ENABLED, is_private, resolve_email, user_key
@@ -49,7 +49,7 @@ class Grant:
             self.project_id,
             self.channel_key,
             self.private,
-            self.doc.access_signature(self.email),
+            self.project.access_revision if self.allowed else None,
             self.project.data_uri if self.allowed else "",
         ]
         if self.identity_policy:
@@ -108,20 +108,7 @@ def deny_text(grant: Grant) -> str:
 def read_state(storage: Storage, grant: Grant) -> dict[str, Any]:
     if not grant.allowed:
         raise ValueError(deny_text(grant))
-    state = grant.state
-    if state.get("context") and not state.get("direct_version"):
-        ctx = state["context"]
-        for turn in range(int(state.get("turn", 0)), max(0, int(state.get("turn", 0)) - 10), -1):
-            try:
-                data = storage.get(
-                    f"projects/{grant.project_id}/runs/{ctx['thread_ts']}/turn-{turn}/outputs/PROJECT.md"
-                )[0]
-                if len(data) < 100_000:
-                    ctx["project_md"] = data.decode()
-                    break
-            except FileNotFoundError:
-                continue
-    return state
+    return grant.state
 
 
 def worker_permitted(
@@ -133,6 +120,20 @@ def worker_permitted(
 ) -> bool:
     if request.get("protocol") != 2:
         return False
+    if request.get("recovery"):
+        from .config import CHECKPOINT_PREFIX
+        from .knowledge import cancelled
+        from .recovery import read_json
+
+        event_id = request.get("event_id", "")
+        active = read_json(storage, f"{CHECKPOINT_PREFIX}/events/{event_id}/request.json")
+        if (
+            not event_id
+            or not active
+            or cancelled(storage, event_id)
+            or active.get("recovery", {}).get("attempt") != request["recovery"]["attempt"]
+        ):
+            return False
     email, pid = request.get("principal", ""), request.get("project_id", "")
     event = request.get("payload", {}).get("event", {})
     if not email or not pid or state.get("context", {}).get("project_slug") != pid:
@@ -161,49 +162,46 @@ def worker_permitted(
         expected_data = settings.data_mount_root / uri.netloc / uri.path.lstrip("/")
         if str(context.get("data_path")) != str(expected_data):
             return False
-        if grant.private and str(context.get("workdir")) != private_workdir(
-            settings,
-            grant,
-            request["thread_key"],
-            memory_epoch(storage, grant),
-            conversation_memory.current_token(storage, grant, thread_key),
-        ):
-            return False
-    if request.get("access_signature") != grant.signature:
-        return False
-    return not (grant.private and request.get("memory_epoch", 0) != memory_epoch(storage, grant))
-
-
-def memory_epoch(storage: Storage, grant: Grant) -> int:
-    return user_memory.load(storage, grant.email).epoch if grant.private else 0
+        if grant.private:
+            expected = private_workdir(
+                settings,
+                grant,
+                thread_key,
+                conversation_memory.current_token(storage, grant, thread_key),
+            )
+            try:
+                saved = json.loads(storage.get(checkpoint_key(thread_key))[0])
+            except FileNotFoundError:
+                saved = {}
+            if saved.get("context") and conversation_memory.is_current(
+                storage, grant, thread_key, saved
+            ):
+                # Existing workspaces retain their trusted saved path, including legacy stamps.
+                expected = saved["context"]["workdir"]
+            if str(context.get("workdir")) != expected:
+                return False
+    return request.get("access_signature") == grant.signature
 
 
 def private_workdir(
     settings: Settings,
     grant: Grant,
     thread_key: str,
-    epoch: int,
     conversation_epoch: dict[str, int] | None = None,
 ) -> str:
-    stamp_input = f"{grant.signature}:{epoch}"
+    root = settings.work_root / user_key(grant.email) / grant.project_id / thread_key
     if conversation_epoch and any(conversation_epoch.values()):
-        stamp_input += ":" + json.dumps(conversation_epoch, sort_keys=True)
-    stamp = hashlib.sha256(stamp_input.encode()).hexdigest()[:24]
-    return str(settings.work_root / user_key(grant.email) / grant.project_id / thread_key / stamp)
+        root /= f"context-{conversation_epoch['owner_epoch']}-{conversation_epoch['epoch']}"
+    return str(root)
 
 
 def fresh_private_state(
-    storage: Storage, grant: Grant, settings: Settings, thread_key: str, epoch: int
+    storage: Storage, grant: Grant, settings: Settings, thread_key: str
 ) -> dict[str, Any]:
     state = read_state(storage, grant)
     conversation_epoch = conversation_memory.current_token(storage, grant, thread_key)
     reset = state.get("conversation_epoch", {"epoch": 0, "owner_epoch": 0}) != conversation_epoch
-    if (
-        grant.private
-        and state.get("context")
-        and state["context"]["workdir"]
-        != private_workdir(settings, grant, thread_key, epoch, conversation_epoch)
-    ) or (reset and state.get("context")):
+    if reset and state.get("context"):
         # A new workspace cannot restore an old SDK session, script, draft, or transcript.
         # Persist the reset before continuing, including when the model call subsequently fails.
         retired = json.dumps(state, sort_keys=True).encode()
@@ -214,7 +212,7 @@ def fresh_private_state(
         uri = urlsplit(grant.project.data_uri)
         context.update(
             workdir=(
-                private_workdir(settings, grant, thread_key, epoch, conversation_epoch)
+                private_workdir(settings, grant, thread_key, conversation_epoch)
                 if grant.private
                 else str(
                     settings.work_root

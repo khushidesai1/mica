@@ -1,6 +1,6 @@
 """Offline registry fixtures shared by Slack integration tests."""
 
-from pistachio.agents.analysis.registry import Registry, read_brief, write_brief
+from pistachio.agents.analysis.registry import Registry
 
 
 def seed_project(
@@ -24,7 +24,7 @@ def seed_project(
 
     pid = registry.update(f"seed:{owner}:{name}:{channel}", owner, "seed", change)
     if brief is not None:
-        write_brief(store, pid, brief, read_brief(store, pid)[1])
+        store.put(f"projects/{pid}/PROJECT.md", brief)
     return pid
 
 

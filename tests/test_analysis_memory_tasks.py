@@ -84,6 +84,10 @@ async def test_worker_slot_released_before_memory_enqueue(bridge, monkeypatch):
     state["messages"] = [{"id": event, "assistant": "Done", "success": True}]
     bridge.store.put(state_key, json.dumps(state).encode())
     bridge.test_states[next(iter(bridge.test_states))] = "SUCCEEDED"
+    bridge.store.put(
+        f"tasks/slack-analysis/events/{event}/attempt-a0.json",
+        json.dumps({"event_id": event, "attempt": 0, "outcome": "complete"}).encode(),
+    )
 
     async def enqueue(*args):
         assert not any(k.startswith("claude-slot:") for k in bridge.repository.event_claims)

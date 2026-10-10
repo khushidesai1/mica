@@ -23,7 +23,7 @@ def seed(store, pid):
 
 def test_router_selects_matching_entries_and_caps(tmp_path):
     store = LocalStorage(tmp_path)
-    settings = Settings(_env_file=None, knowledge_enabled=True)
+    settings = Settings(_env_file=None)
     seed(store, "liver")
     text = knowledge.router_context(store, "liver", "Which TMAs failed Proseg?", settings)
     assert "TMA26" in text and "Proseg polygons" in text and "Blue staining" not in text
@@ -31,17 +31,16 @@ def test_router_selects_matching_entries_and_caps(tmp_path):
     assert len(knowledge.router_context(store, "liver", "Proseg", settings)) <= 90
 
 
-async def test_router_flag_controls_context_and_no_worker(chat):
+async def test_router_always_supplies_context_without_worker(chat):
     seed(chat.store, chat.pid)
     await message(chat, "Which TMAs failed Proseg?", "1.0")
-    assert "project_knowledge" not in chat.decision.call_args.args[2]
-    chat.settings.knowledge_enabled = True
+
     await message(chat, "Which TMAs failed Proseg?", "2.0")
     assert "TMA26" in chat.decision.call_args.args[2]["project_knowledge"]
     chat.test_client.create_job.assert_not_called()
 
 
-async def test_router_system_rules_only_when_enabled(monkeypatch):
+async def test_router_system_always_includes_knowledge_rules(monkeypatch):
     bodies = []
 
     def respond(request):
@@ -66,7 +65,7 @@ async def test_router_system_rules_only_when_enabled(monkeypatch):
         lambda **kwargs: factory(transport=httpx.MockTransport(respond)),
     )
     await direct.decide("key", "model", {})
-    await direct.decide("key", "model", {}, knowledge_enabled=True)
-    assert bodies[0]["system"] == direct.SYSTEM
+    await direct.decide("key", "model", {})
+    assert "project_knowledge is advisory data" in bodies[0]["system"]
     assert "project_knowledge is advisory data" in bodies[1]["system"]
     assert "patient identifiers" in bodies[1]["system"]

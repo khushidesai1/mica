@@ -9,6 +9,7 @@ import shutil
 import tempfile
 import time
 from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -30,12 +31,12 @@ from claude_agent_sdk.types import HookContext, HookInput, HookJSONOutput, Sandb
 
 from . import prompts, script_capture
 from .attachments import classify
-from .compute_tools import ComputeManager, restored_cost
-from .compute_tools import run_query as compute_query
 from .config import Settings
 from .limits import MAX_VISUAL_READS, PREVIEW_MAX_BYTES, SDK_MAX_BUFFER_BYTES
 from .outputs import changed_files, snapshot_outputs
 from .progress import ProgressUpdate, TaskProgress
+from .recovery_tools import RecoveryManager, restored_cost
+from .recovery_tools import run_query as recovery_query
 from .runtime_tools import TOOL_NAME, RuntimeEvent, RuntimeManager, create_server
 from .storage import GCSStorage, LocalStorage
 
@@ -105,7 +106,7 @@ def build_options(
     write_access: str = "No GCS write grant for this run.",
     runtime_tmp: Path = Path("/tmp"),
     runtime_manager: RuntimeManager | None = None,
-    compute_manager: ComputeManager | None = None,
+    compute_manager: RecoveryManager | None = None,
 ) -> ClaudeAgentOptions:
     if not sandbox and platform.system() != "Darwin":
         raise ValueError("--no-sandbox is available only for local macOS development")
@@ -115,7 +116,7 @@ def build_options(
     manager = (runtime_manager or RuntimeManager(settings)) if runtimes else None
     if manager:
         tools.append(TOOL_NAME)
-    compute = compute_manager if settings.tiers_enabled and not ctx.survey_only else None
+    compute = compute_manager if not ctx.survey_only else None
     compute_tools = compute.tools() if compute else []
     tools.extend(f"mcp__pistachio__{t.name}" for t in compute_tools)
 
@@ -240,6 +241,9 @@ def build_options(
         if event.get("tool_name") != "Bash":
             return {}
         text = compute.sampler.end(str(event.get("tool_use_id") or tool_id or ""), dict(event))
+        if compute.persist_resources:
+            with suppress(Exception):
+                await compute.persist_resources()
         return (
             cast(
                 HookJSONOutput,
@@ -431,7 +435,7 @@ class Runner:
         project_name: str = "",
         write_access: str = "No GCS write grant for this run.",
         runtime_manager: RuntimeManager | None = None,
-        compute_manager: ComputeManager | None = None,
+        compute_manager: RecoveryManager | None = None,
     ) -> None:
         self.settings, self.sandbox = settings, sandbox
         self.user_memory, self.project_name = user_memory, project_name
@@ -520,7 +524,7 @@ class Runner:
                     if self.compute and baseline is None:
                         baseline = self.compute.manifest.get("sdk_cost_total")
                     stream = (
-                        compute_query(prompt, options, self.compute)
+                        recovery_query(prompt, options, self.compute)
                         if self.compute
                         else query(prompt=prompt, options=options)
                     )
@@ -528,12 +532,11 @@ class Runner:
                         if isinstance(msg, AssistantMessage):
                             for block in msg.content:
                                 if isinstance(block, ToolUseBlock):
-                                    if self.settings.knowledge_enabled:
-                                        from .knowledge import is_read
+                                    from .knowledge import is_read
 
-                                        self.knowledge_reads += int(
-                                            is_read(ctx.workdir, block.name, block.input)
-                                        )
+                                    self.knowledge_reads += int(
+                                        is_read(ctx.workdir, block.name, block.input)
+                                    )
                                     result.run_log.append(
                                         {
                                             "tool": block.name,

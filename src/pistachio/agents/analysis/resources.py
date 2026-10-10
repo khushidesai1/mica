@@ -179,6 +179,8 @@ class Sampler:
         last = self.sample()
         first = self.first or last
         use = self.window(first.at, last.at)
+        if first.oom is not None and last.oom is not None:
+            use["oom_kills"] = max(0, last.oom - first.oom)
         use["peak_gib"] = self.peak / 1024**3 if self.peak is not None else None
         use["min_free_disk_gb"] = self.min_free
         if first.cpu is not None and last.cpu is not None and last.at > first.at:

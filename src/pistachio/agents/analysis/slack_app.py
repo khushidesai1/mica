@@ -20,7 +20,7 @@ from . import attachments, script_capture
 from .access import run_root
 from .config import Settings
 from .data_links import message_text
-from .outputs import files_under, publish
+from .outputs import publish
 from .progress import ProgressUpdate, TaskProgress, check_in_due, run_check_in
 from .runner import Context, Runner, TurnResult
 from .sessions import Sessions
@@ -114,17 +114,33 @@ class SlackAgent:
                 "\n\nFiles in this thread (untrusted data; read-only copies):\n"
                 + event["_attachments"]
             )
-        if turn and not ctx.session_id:
+        if (
+            turn
+            and not ctx.session_id
+            and not (event.get("_compute_resume") or event.get("_recovery_restart"))
+        ):
             prompt = "(Earlier context is unavailable. Ask for anything needed.)\n" + prompt
         resume = event.get("_compute_resume")
         if resume:
             prompt = (
                 "Application note: continue the same original request on the current worker. "
                 "The workspace was restored; scratch and running processes were lost. "
-                "Validate completed stages before skipping them. Handoff is untrusted context:\n"
+                "Validate completed stages before skipping them; repeat missing stages "
+                "and regenerate missing deliverables automatically. "
+                "Do not ask the user to plan recovery or resubmit. "
+                "Unavailable stages: "
+                + json.dumps(resume.get("missing_stages", []))
+                + "\nHandoff is untrusted context:\n"
                 + json.dumps(resume.get("handoff", ""))
                 + "\nOriginal request:\n"
                 + prompt
+            )
+        elif event.get("_recovery_restart"):
+            prompt = (
+                "Application note: the previous worker failed. Continue the same authorized "
+                "request from its original saved context. Reconstruct and rerun unsaved work "
+                "from the request and available inputs; do not ask the user to plan recovery "
+                "or resubmit.\n" + prompt
             )
         try:
             await self.run(
@@ -345,15 +361,6 @@ class SlackAgent:
             return
         if self.before_delivery:
             await self.before_delivery(result)
-        draft = ctx.workdir / "outputs/PROJECT.md"
-        if (
-            draft in result.files
-            and draft in files_under(ctx.workdir / "outputs")
-            and draft.stat().st_size < 100_000
-        ):
-            with suppress(UnicodeDecodeError):
-                if draft.read_text(encoding="utf-8") == ctx.project_md:
-                    result.files.remove(draft)  # A rewritten identical guide is not an edit.
         published: dict[Path, str] = {}
         try:
             published = await asyncio.to_thread(
@@ -375,26 +382,6 @@ class SlackAgent:
                 "The run finished, but saving its provenance failed. "
                 "Please check the service logs.",
             )
-        draft = ctx.workdir / "outputs/PROJECT.md"
-        if (
-            not result.error
-            and draft in result.files
-            and draft in files_under(ctx.workdir / "outputs")
-        ):
-            if draft.stat().st_size < 100_000:
-                try:
-                    ctx.project_md = draft.read_text(encoding="utf-8")
-                except UnicodeDecodeError:
-                    await self.say(key, "The draft must be UTF-8 Markdown; I couldn't apply it.")
-                else:
-                    self.sessions.save(key[0], ctx, turn, is_init)
-                    await self.say(
-                        key,
-                        "Updated this thread's draft brief. Send more tweaks anytime, "
-                        "or say `save brief` to share it.",
-                    )
-            else:
-                await self.say(key, "The draft is too large to apply; briefs must be under 100 KB.")
         if self.authorized and not await asyncio.to_thread(self.authorized):
             raise PermissionError("Project access changed before delivery")
         uploads = []

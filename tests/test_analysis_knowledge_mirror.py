@@ -133,7 +133,6 @@ def mirror(tmp_path):
     pid = seed_project(store)
     settings = Settings(
         _env_file=None,
-        knowledge_enabled=True,
         knowledge_github_repo="lab/knowledge",
         knowledge_github_token_secret="projects/test/secrets/knowledge/versions/latest",
     )
@@ -174,10 +173,14 @@ async def test_one_commit_retry_and_immutable_saved_versions(mirror):
     await run(mirror, first.changes_key)
     store, pid, _, github = mirror
     assert github.files()[f"projects/{pid}/data/samples.md"] == NOTE
-    assert set(github.files()) == {f"projects/{pid}/data/samples.md", f"projects/{pid}/README.md"}
-    assert len(github.messages) == 1 and "PRIVATE-USER-TEXT" not in github.messages[0]
+    assert set(github.files()) == {
+        f"projects/{pid}/data/samples.md",
+        f"projects/{pid}/README.md",
+        f"projects/{pid}/PROJECT.md",
+    }
+    assert len(github.messages) == 2 and "PRIVATE-USER-TEXT" not in github.messages[0]
     await run(mirror, first.changes_key)
-    assert len(github.messages) == 1
+    assert len(github.messages) == 2
     await run(mirror, second.changes_key)
     assert github.files()[f"projects/{pid}/data/samples.md"] == NOTE + b" updated"
     assert json.loads(store.get(first.changes_key)[0])["mirror_sha"]
@@ -240,12 +243,12 @@ async def test_maintenance_reenqueues_old_saves(bridge, mirror, monkeypatch):
 
 
 def test_token_never_reaches_worker_environment(bridge):
-    bridge.settings.knowledge_enabled = True
+
     bridge.settings.knowledge_github_repo = "lab/knowledge"
     bridge.settings.knowledge_github_token_secret = "sensitive-resource-name"
     job = job_spec(bridge.app, bridge.settings, "a" * 32)
     env = dict(job.task_groups[0].task_spec.runnables[0].environment.variables)
-    assert env["AGENT_KNOWLEDGE_ENABLED"] == "true"
+    assert "AGENT_KNOWLEDGE_ENABLED" not in env
     assert "sensitive-resource-name" not in str(env) and not any("GITHUB" in key for key in env)
 
 
@@ -283,7 +286,9 @@ async def test_lost_ref_acknowledgement_does_not_duplicate_commit(mirror):
             )
     assert len(github.messages) == 1
     await run(mirror, saved.changes_key)
-    assert len(github.messages) == 1
+    assert len(github.messages) == 2
+    await run(mirror, saved.changes_key)
+    assert len(github.messages) == 2
     assert json.loads(mirror[0].get(saved.changes_key)[0])["mirrored"]
 
 
@@ -335,7 +340,6 @@ async def test_restore_dry_run_does_not_write(mirror):
 async def test_save_notice_is_retryable_and_independent_of_mirror(bridge, monkeypatch):
     from test_analysis_batch import payload
 
-    bridge.settings.knowledge_enabled = True
     event = await bridge.accept(payload(text="Plot data"))
     await bridge.process(event, 0)
     record = await bridge.repository.get_connector_state("claude-event:" + event)

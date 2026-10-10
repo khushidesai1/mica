@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import secrets
 from collections.abc import Callable
@@ -14,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from .data_links import data_uri
 from .identity import normalize
-from .storage import Conflict, Storage, update_model
+from .storage import Storage, update_model
 
 REGISTRY_KEY = "projects/_registry/registry.json"
 NO_BRIEF = "No brief yet. Rely on listing and inspecting the data folder."
@@ -201,14 +200,6 @@ class RegistryDoc(BaseModel):
             channels.add(key)
         return project_id
 
-    def access_signature(self, email: str) -> str:
-        # A lost source-project grant invalidates private contexts using its memories.
-        return hashlib.sha256(
-            json.dumps(
-                sorted((pid, p.access_revision) for pid, p in self.visible(email).items())
-            ).encode()
-        ).hexdigest()
-
 
 class Registry:
     def __init__(self, storage: Storage) -> None:
@@ -239,26 +230,8 @@ class Registry:
 
 
 def read_brief(storage: Storage, project_id: str) -> tuple[str, str | None]:
-    try:
-        content, generation = storage.get(project_key(project_id) + "/PROJECT.md")
-        return content.decode("utf-8"), generation
-    except FileNotFoundError:
-        return NO_BRIEF, None
+    from .config import Settings
+    from .knowledge import load
 
-
-def write_brief(storage: Storage, project_id: str, data: bytes, generation: str | None) -> str:
-    if len(data) >= 100_000:
-        raise ValueError("The brief must be under 100 KB.")
-    data.decode("utf-8")
-    key = project_key(project_id) + "/PROJECT.md"
-    try:
-        return storage.put_if(key, data, generation)
-    except Conflict:
-        # Covers a successful write whose response was lost, without overwriting newer content.
-        current, current_generation = storage.get(key)
-        if current == data:
-            return current_generation
-        raise Conflict(
-            "The saved brief changed in another thread. Start a new thread to review "
-            "the latest version before saving."
-        ) from None
+    guide = load(storage, project_id, Settings()).get("PROJECT.md")
+    return (guide.data.decode(), guide.generation) if guide else (NO_BRIEF, None)

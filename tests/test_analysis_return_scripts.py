@@ -458,7 +458,7 @@ def test_capture_merges_existing_compute_hooks(tmp_path):
 
     compute = SimpleNamespace(tools=lambda: [], prompt=lambda: "\nCompute policy")
     ctx = Context(tmp_path, tmp_path / "data")
-    settings = Settings(_env_file=None, tiers_enabled=True)
+    settings = Settings(_env_file=None)
     old = build_options(ctx, settings, compute_manager=compute)
     new = build_options(ctx, settings, compute_manager=compute, return_scripts=True)
     for name in ("PostToolUse", "PostToolUseFailure"):
