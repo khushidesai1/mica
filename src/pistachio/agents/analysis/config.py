@@ -23,6 +23,14 @@ class Settings(BaseSettings):
     slack_app_token: SecretStr = Field(default=SecretStr(""), alias="SLACK_APP_TOKEN")
     model: str = "claude-opus-5-5"
     loading_emoji: str = ":hourglass_flowing_sand:"  # AGENT_LOADING_EMOJI; custom emoji supported.
+    memory_repo: str = ""
+    memory_branch: str = "main"
+    memory_token_secret: str = ""  # Control-plane-only Secret Manager version.
+    memory_index_chars: int = Field(default=4000, ge=1, le=16000)
+    memory_file_kb: int = Field(default=16, ge=1, le=64)
+    memory_max_files: int = Field(default=200, ge=1, le=1000)
+    memory_total_kb: int = Field(default=1024, ge=1, le=16384)
+    memory_router_chars: int = Field(default=12000, ge=1, le=64000)
     knowledge_index_chars: int = Field(default=4000, ge=1, le=16000)
     knowledge_file_kb: int = Field(default=16, ge=1, le=64)
     knowledge_max_files: int = Field(default=200, ge=1, le=1000)

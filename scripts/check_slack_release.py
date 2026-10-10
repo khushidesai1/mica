@@ -17,10 +17,10 @@ import pistachio
 from pistachio.agents.analysis import (
     access,
     attachments,
-    briefs,
     commands,
     conversation_memory,
     direct,
+    knowledge,
     write_access,
 )
 from pistachio.agents.analysis.commands import Command
@@ -95,7 +95,7 @@ def check(source: Path, mode: str) -> None:
         conversation_memory.command(Command("forget context"), grant, store, "b", "clear")
         assert not conversation_memory.load(store, grant, "a")[0].summary
         assert not conversation_memory.is_current(store, grant, "a", {})
-        assert briefs.POLICY in direct.SYSTEM
+        assert knowledge.GUIDE_POLICY in direct.SYSTEM
         assert (
             Path("/opt/pistachio/templates/PROJECT.template.md").read_bytes()
             == (source / "templates/PROJECT.template.md").read_bytes()
