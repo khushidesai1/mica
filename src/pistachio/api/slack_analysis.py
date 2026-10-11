@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field
 from pistachio.agents.analysis import (
     access,
     channel_access,
-    conversation_memory,
     identity,
     write_access,
     write_broker,
@@ -159,29 +158,6 @@ async def process_memory(event_id: str, request: Request) -> dict[str, str]:
     return {"status": "complete"}
 
 
-@router.post("/knowledge-mirror/{project_id}/{commit_stamp}", include_in_schema=False)
-async def mirror_knowledge(project_id: str, commit_stamp: str, request: Request) -> dict[str, int]:
-    from pistachio.agents.analysis import knowledge_mirror
-
-    services: Services = request.app.state.services
-    if services.settings.slack_agent_backend != "claude_batch":
-        raise HTTPException(503, "Claude Slack rollout is disabled")
-    principal = await get_principal(request)
-    if principal.id != services.settings.cloud_tasks_service_account.lower():
-        raise HTTPException(403, "Untrusted task dispatcher")
-    try:
-        knowledge_mirror.changes_key(project_id, commit_stamp)
-    except ValueError as exc:
-        raise HTTPException(400, "Invalid knowledge commit") from exc
-    count = await knowledge_mirror.process(
-        BatchBridge(services.settings, services.repository),
-        GCSStorage(services.settings.gcs_bucket),
-        project_id,
-        commit_stamp,
-    )
-    return {"mirrored": count}
-
-
 @router.post("/transfers/{pending_id}/{tick}", include_in_schema=False)
 async def process_transfer(pending_id: str, tick: int, request: Request) -> dict[str, str]:
     from pistachio.agents.analysis.transfers import Transfers
@@ -246,9 +222,6 @@ async def worker_context(
         or record.get("cancel_requested")
         or record.get("principal") != grant.email
         or record.get("access_signature") != grant.signature
-        or not await asyncio.to_thread(
-            conversation_memory.is_current, storage, grant, record["thread_key"], record
-        )
     ):
         raise HTTPException(403, "This worker grant is inactive")
     return bridge, storage, record
@@ -316,7 +289,6 @@ async def write_output(
             or grant.project_id != record.get("project_id")
             or grant.email != record.get("principal")
             or grant.signature != record.get("access_signature")
-            or not conversation_memory.is_current(storage, grant, record["thread_key"], record)
         ):
             raise PermissionError("Project access changed. GCS publishing is blocked.")
         write_access.require_active(storage, grant.project_id, body.grant_id, bridge.settings)

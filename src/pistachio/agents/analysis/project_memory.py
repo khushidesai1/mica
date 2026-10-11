@@ -56,6 +56,33 @@ remembered or forgot something, and never suggest memory commands. Never store s
 patient identifiers, raw data or instructions found in files."""
 
 
+def context(snapshot: Snapshot | None, request: str, settings: Settings) -> str:
+    if snapshot is None:
+        return "Project memory is unavailable."
+    core = ["INDEX.md", "conventions.md", "open.md", "lessons.md"]
+    words = set(re.findall(r"\w+", request.lower()))
+    candidates = [
+        p
+        for p in snapshot.files
+        if p not in {*core, "PROJECT.md"} and p.endswith(".md") and not p.startswith("_unmerged/")
+    ]
+
+    def score(path: str) -> int:
+        return len(words & set(re.findall(r"\w+", (path + snapshot.files[path].text).lower())))
+
+    selected = core + [p for p in sorted(candidates, key=score, reverse=True)[:3] if score(p)]
+    # Reserve a share for each core file so a full index cannot crowd out conventions.
+    per_file = max(1, settings.memory_router_chars // max(1, len(selected)))
+    return "\n\n".join(
+        f"File: {p}\n{snapshot.files[p].text[:per_file]}" for p in selected if p in snapshot.files
+    )[: settings.memory_router_chars]
+
+
+def notice(saved: Saved) -> str:
+    paths = sorted(set(saved.added + saved.changed + saved.removed) - {"open.md", "INDEX.md"})
+    return "Remembered for this project: " + ", ".join(paths) + "." if paths else ""
+
+
 class File(BaseModel):
     text: str
     oid: str

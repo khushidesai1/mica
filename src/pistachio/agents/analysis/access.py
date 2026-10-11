@@ -5,14 +5,14 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import conversation_memory
 from .config import Settings
 from .help_text import PROJECT_HELP
 from .identity import NOT_ENABLED, is_private, resolve_email, user_key
-from .registry import ProjectEntry, Registry, RegistryDoc, read_brief
+from .registry import ProjectEntry, Registry, RegistryDoc
 from .storage import Storage
 
 
@@ -122,7 +122,7 @@ def worker_permitted(
         return False
     if request.get("recovery"):
         from .config import CHECKPOINT_PREFIX
-        from .knowledge import cancelled
+        from .memory_workspace import cancelled
         from .recovery import read_json
 
         event_id = request.get("event_id", "")
@@ -153,9 +153,6 @@ def worker_permitted(
     grant = Grant(
         email, is_private(event), state, doc, pid, True, channel_key, identity_policy=policy
     )
-    thread_key = request.get("thread_key", "")
-    if not conversation_memory.is_current(storage, grant, thread_key, request):
-        return False
     if settings is not None:
         uri = urlsplit(grant.project.data_uri)
         context = state["context"]
@@ -163,78 +160,12 @@ def worker_permitted(
         if str(context.get("data_path")) != str(expected_data):
             return False
         if grant.private:
-            expected = private_workdir(
-                settings,
-                grant,
-                thread_key,
-                conversation_memory.current_token(storage, grant, thread_key),
-            )
-            try:
-                saved = json.loads(storage.get(checkpoint_key(thread_key))[0])
-            except FileNotFoundError:
-                saved = {}
-            if saved.get("context") and conversation_memory.is_current(
-                storage, grant, thread_key, saved
-            ):
-                # Existing workspaces retain their trusted saved path, including legacy stamps.
-                expected = saved["context"]["workdir"]
-            if str(context.get("workdir")) != expected:
+            root = (settings.work_root / user_key(email) / pid).resolve()
+            work = Path(str(context.get("workdir", ""))).resolve()
+            if work == root or not work.is_relative_to(root):
                 return False
     return request.get("access_signature") == grant.signature
 
 
-def private_workdir(
-    settings: Settings,
-    grant: Grant,
-    thread_key: str,
-    conversation_epoch: dict[str, int] | None = None,
-) -> str:
-    root = settings.work_root / user_key(grant.email) / grant.project_id / thread_key
-    if conversation_epoch and any(conversation_epoch.values()):
-        root /= f"context-{conversation_epoch['owner_epoch']}-{conversation_epoch['epoch']}"
-    return str(root)
-
-
-def fresh_private_state(
-    storage: Storage, grant: Grant, settings: Settings, thread_key: str
-) -> dict[str, Any]:
-    state = read_state(storage, grant)
-    conversation_epoch = conversation_memory.current_token(storage, grant, thread_key)
-    reset = state.get("conversation_epoch", {"epoch": 0, "owner_epoch": 0}) != conversation_epoch
-    if reset and state.get("context"):
-        # A new workspace cannot restore an old SDK session, script, draft, or transcript.
-        # Persist the reset before continuing, including when the model call subsequently fails.
-        retired = json.dumps(state, sort_keys=True).encode()
-        revision = hashlib.sha256(retired).hexdigest()
-        storage.put(f"projects/_threads/{thread_key}/retired/{revision}.json", retired)
-        brief, generation = read_brief(storage, grant.project_id)
-        context = dict(state["context"])
-        uri = urlsplit(grant.project.data_uri)
-        context.update(
-            workdir=(
-                private_workdir(settings, grant, thread_key, conversation_epoch)
-                if grant.private
-                else str(
-                    settings.work_root
-                    / grant.project_id
-                    / thread_key
-                    / f"context-{conversation_epoch['epoch']}"
-                )
-            ),
-            project_md=brief,
-            brief_generation=generation,
-            session_id=None,
-            data_path=str(settings.data_mount_root / uri.netloc / uri.path.lstrip("/")),
-        )
-        state = dict(
-            context=context,
-            turn=state.get("turn", 0),
-            is_init=False,
-            messages=[],
-            thread_files=[],
-            direct_version=1,
-            conversation_epoch=conversation_epoch,
-        )
-        storage.put(checkpoint_key(thread_key), json.dumps(state).encode())
-    state["conversation_epoch"] = conversation_epoch
-    return state
+def private_workdir(settings: Settings, email: str, pid: str, thread_key: str) -> str:
+    return str(settings.work_root / user_key(email) / pid / thread_key)

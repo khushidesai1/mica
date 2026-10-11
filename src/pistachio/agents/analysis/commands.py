@@ -54,6 +54,8 @@ def parse(raw: str) -> Command | None:
     if not words:
         return None
     action = words[0].lower()
+    if action == "memory" and len(words) == 2:
+        return Command("memory", (words[1],))
     if action == "scripts":
         if len(words) == 1:
             return Command("scripts")
@@ -127,6 +129,28 @@ def parse(raw: str) -> Command | None:
     ):
         return Command(action, (words[1].lower(),))
     return None
+
+
+MEMORY_CHANGED = (
+    "Pistachio now remembers and tidies project memory itself. Use `memory` to see it, "
+    "or just tell me what's wrong."
+)
+
+
+def removed_memory(cmd: Command) -> bool:
+    return cmd.name in {
+        "remember",
+        "forget",
+        "memory context",
+        "forget context",
+        "knowledge",
+        "knowledge show",
+        "knowledge github",
+        "forget knowledge",
+        "undo knowledge",
+        "save brief",
+        "clean brief",
+    }
 
 
 def run(
@@ -248,6 +272,6 @@ def run(
         )
     return (
         "Project publication authorized for everyone who can view that channel, including future "
-        "channel members. Private DM histories, outputs, and user memory remain private. "
+        "channel members. DM histories and outputs remain private; project memory is shared. "
         f"In the channel, send `switch {pid}` to select the project."
     )

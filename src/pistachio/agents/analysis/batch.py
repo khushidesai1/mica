@@ -21,12 +21,11 @@ from google.cloud import batch_v1
 from pistachio.config import Settings as AppSettings
 from pistachio.storage.base import Repository
 
-from . import access, conversation_memory, memory_tasks, user_memory, write_access
+from . import access, memory_tasks, project_memory, write_access
 from .attachments import AttachmentError
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .data_links import init_args
-from .registry import Registry
 from .slack_format import status_blocks
 from .storage import GCSStorage, Storage
 from .tiers import Provisioning
@@ -111,13 +110,10 @@ def job_spec(
     }
     environment.update(
         {
-            "AGENT_KNOWLEDGE_INDEX_CHARS": str(settings.knowledge_index_chars),
-            "AGENT_KNOWLEDGE_FILE_KB": str(settings.knowledge_file_kb),
-            "AGENT_KNOWLEDGE_MAX_FILES": str(settings.knowledge_max_files),
-            "AGENT_KNOWLEDGE_TOTAL_KB": str(settings.knowledge_total_kb),
-            "AGENT_KNOWLEDGE_PRESERVE_UNMIRRORED": str(
-                bool(settings.knowledge_github_repo) or settings.knowledge_preserve_unmirrored
-            ).lower(),
+            "AGENT_MEMORY_INDEX_CHARS": str(settings.memory_index_chars),
+            "AGENT_MEMORY_FILE_KB": str(settings.memory_file_kb),
+            "AGENT_MEMORY_MAX_FILES": str(settings.memory_max_files),
+            "AGENT_MEMORY_TOTAL_KB": str(settings.memory_total_kb),
         }
     )
     environment.update(
@@ -357,7 +353,7 @@ class BatchBridge:
                 raise LookupError("Unknown Slack event")
             if record["status"] in {"complete", "failed"} or tick < record["tick"]:
                 await memory_tasks.enqueue(self, event_id, record)
-                await self.enqueue_knowledge(event_id, record)
+
                 return str(record["status"])
             if not record.get("notice_ts"):
                 await self.notify(event_id, record, "received", "On it…")
@@ -402,15 +398,10 @@ class BatchBridge:
                 record["tick"] = tick + 1
             await self.repository.set_connector_state(key, record)
             await memory_tasks.enqueue(self, event_id, record)
-            await self.enqueue_knowledge(event_id, record)
+
             return str(record["status"])
         finally:
             await self.repository.release_event(mutex, claim.token)
-
-    async def enqueue_knowledge(self, event_id: str, record: dict[str, Any]) -> None:
-        from . import knowledge_mirror
-
-        await knowledge_mirror.after_event(self, GCSStorage(self.app.gcs_bucket), event_id, record)
 
     async def advance(self, event_id: str, record: dict[str, Any]) -> None:
         if record["status"] == "pending" and record.get("route") != "compute":
@@ -454,13 +445,6 @@ class BatchBridge:
             )
             if (
                 not grant.allowed
-                or not await asyncio.to_thread(
-                    conversation_memory.is_current,
-                    GCSStorage(self.app.gcs_bucket),
-                    grant,
-                    record["thread_key"],
-                    record,
-                )
                 or not grant.has_context
                 or (record.get("decision_access") and record["decision_access"] != grant.signature)
             ):
@@ -589,6 +573,17 @@ class BatchBridge:
                     self.settings.return_scripts_default,
                 )
                 await self.repository.set_connector_state(f"claude-event:{event_id}", record)
+            memory_key = f"{PREFIX}/events/{event_id}/memory-snapshot.json"
+            try:
+                memory = project_memory.Snapshot.model_validate_json(
+                    (await asyncio.to_thread(storage.get, memory_key))[0]
+                )
+            except FileNotFoundError:
+                memory = await project_memory.GitHubMemory(self.settings).read(
+                    grant.project_id, event_id=event_id
+                )
+                memory = memory or project_memory.Snapshot(head_oid="")
+                await asyncio.to_thread(storage.put, memory_key, memory.model_dump_json().encode())
             manifest = {
                 "event_id": event_id,
                 "payload": record["payload"],
@@ -604,24 +599,7 @@ class BatchBridge:
                 "private": record["private"],
                 "access_signature": record["access_signature"],
                 "created": record["created"],
-                "conversation_epoch": record.get(
-                    "conversation_epoch", {"epoch": 0, "owner_epoch": 0}
-                ),
-                "conversation_memory": (
-                    await asyncio.to_thread(
-                        conversation_memory.load, storage, grant, record["thread_key"]
-                    )
-                )[0].summary,
-                "user_memory": (
-                    user_memory.render(
-                        await asyncio.to_thread(user_memory.load, storage, record["principal"]),
-                        await asyncio.to_thread(Registry(storage).load),
-                        record["principal"],
-                        record["payload"]["event"].get("text", ""),
-                    )
-                    if record["private"]
-                    else ""
-                ),
+                "memory": memory.model_dump(include={"head_oid", "files"}),
                 "run_prefix": access.run_root(
                     record["private"],
                     record["principal"],
@@ -792,7 +770,7 @@ class BatchBridge:
                             if not prior.get("cancel_requested"):
                                 await asyncio.to_thread(
                                     GCSStorage(self.app.gcs_bucket).put,
-                                    f"{PREFIX}/events/{cursor}/knowledge-cancelled.json",
+                                    f"{PREFIX}/events/{cursor}/memory-cancelled.json",
                                     b"true",
                                 )
                                 with suppress(NotFound):
