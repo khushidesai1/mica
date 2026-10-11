@@ -23,6 +23,17 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 
+_LOG = logging.getLogger("pistachio.memory")
+_LOG.setLevel(logging.INFO)
+
+
+def log_event(level: int, message: str, *args: object) -> None:
+    # Uvicorn configures its own handlers, leaving the application root at WARNING.
+    # Install a sink if needed without enabling verbose HTTP or SDK logs globally.
+    logging.basicConfig()
+    _LOG.log(level, message, *args)
+
+
 SECRET = re.compile(
     r"xox[a-z]-|sk-[A-Za-z0-9_-]{8,}|AKIA[A-Z0-9]{12,}|-----BEGIN .*PRIVATE KEY|"
     r"password\s*[:=]|github_pat_[A-Za-z0-9_]+|gh[pousr]_[A-Za-z0-9]+",
@@ -283,7 +294,7 @@ class GitHubMemory:
         except Exception:
             return None
         finally:
-            logging.log(
+            log_event(
                 logging.INFO if snapshot else logging.WARNING,
                 "memory_read pid=%s event=%s head=%s files=%d chars=%d source=%s ms=%d",
                 pid,
@@ -473,7 +484,7 @@ class GitHubMemory:
             outcome = f"failed:{type(exc).__name__}"
             raise
         finally:
-            logging.log(
+            log_event(
                 logging.WARNING if outcome.startswith("failed:") else logging.INFO,
                 "memory_commit pid=%s event=%s source=%s commit=%s changed=%d "
                 "unmerged=%d rejected=%d outcome=%s",

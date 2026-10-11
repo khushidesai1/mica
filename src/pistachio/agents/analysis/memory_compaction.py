@@ -211,7 +211,7 @@ async def process(bridge: BatchBridge, pid: str, head: str, storage: Storage) ->
         outcome = f"failed:{type(exc).__name__}"
         raise
     finally:
-        logging.log(
+        project_memory.log_event(
             logging.WARNING if outcome.startswith("failed:") else logging.INFO,
             "memory_compaction pid=%s head=%s outcome=%s",
             pid,

@@ -138,3 +138,22 @@ async def test_aggregate_limit_rejects_new_files_without_losing_existing(store):
     )
     assert saved.writes == 2 and len(saved.rejected) == 1
     assert len(github.trees[github.head]) == 2
+
+
+async def test_success_metrics_survive_default_application_warning_level(store, caplog):
+    backend, _ = store
+    caplog.set_level(logging.INFO)
+    root = logging.getLogger()
+    root.setLevel(logging.WARNING)
+    try:
+        base = await backend.read("logging_test", event_id="visible")
+        await backend.commit(
+            "logging_test", base, {"PROJECT.md": "A guide"}, source="editor", event_id="visible"
+        )
+        assert "memory_read pid=logging_test" in caplog.text
+        assert "memory_commit pid=logging_test" in caplog.text
+        assert "outcome=committed" in caplog.text
+        assert root.level == logging.WARNING
+        assert "A guide" not in caplog.text
+    finally:
+        root.setLevel(logging.INFO)

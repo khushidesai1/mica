@@ -226,7 +226,7 @@ async def process(bridge: BatchBridge, event_id: str, storage: Storage) -> None:
         outcome = f"failed:{type(exc).__name__}"
         raise
     finally:
-        logging.log(
+        project_memory.log_event(
             logging.WARNING if outcome.startswith("failed:") else logging.INFO,
             "memory_editor event=%s outcome=%s",
             event_id,
