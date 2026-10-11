@@ -273,7 +273,7 @@ async def test_visual_reads_only_from_bounded_previews(tmp_path):
     )  # Full-resolution artifact remains available to upload.
 
 
-async def test_private_memory_is_in_system_only(setup, monkeypatch):
+async def test_project_memory_is_in_system_only(setup, monkeypatch):
     ctx, settings = setup
     calls = []
 
@@ -282,12 +282,12 @@ async def test_private_memory_is_in_system_only(setup, monkeypatch):
         yield result(result="Done")
 
     monkeypatch.setattr(runner, "query", query)
-    await Runner(settings, user_memory="PRIVATE-PREFERENCE", project_name="liver").run_turn(
+    await Runner(settings, memory_context="PROJECT-CONVENTION", project_name="liver").run_turn(
         ctx, "plot", AsyncMock()
     )
-    assert "PRIVATE-PREFERENCE" in calls[0]["options"].system_prompt["append"]
-    assert "PRIVATE-PREFERENCE" not in calls[0]["prompt"]
-    assert "PRIVATE-PREFERENCE" not in build_options(ctx, settings).system_prompt["append"]
+    assert "PROJECT-CONVENTION" in calls[0]["options"].system_prompt["append"]
+    assert "PROJECT-CONVENTION" not in calls[0]["prompt"]
+    assert "PROJECT-CONVENTION" not in build_options(ctx, settings).system_prompt["append"]
 
 
 async def test_tool_lifecycle_tracks_parallel_checks_without_exposing_results(setup, monkeypatch):

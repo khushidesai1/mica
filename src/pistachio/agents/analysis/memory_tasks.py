@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from pydantic import BaseModel, Field
 
-from . import access, commands, job_lifecycle, memory_workspace, project_memory
+from . import access, commands, job_lifecycle, memory_compaction, memory_workspace, project_memory
 from .config import CHECKPOINT_PREFIX
 from .identity import post
 from .storage import Storage
@@ -129,7 +129,7 @@ async def process(bridge: BatchBridge, event_id: str, storage: Storage) -> None:
             except FileNotFoundError:
                 latest = await backend.read(grant.project_id, event_id=event_id)
                 if latest is None:
-                    raise RuntimeError("Project memory is unavailable; retry")
+                    raise RuntimeError("Project memory is unavailable; retry") from None
                 if record.get("route") == "compute":
                     # A completed worker must produce an explicit empty proposal too. Never
                     # fall back to a second model writer when transport is missing.
@@ -147,7 +147,7 @@ async def process(bridge: BatchBridge, event_id: str, storage: Storage) -> None:
                         else project_memory.Snapshot(head_oid=latest.head_oid)
                     )
                     if base is None:
-                        raise RuntimeError("Worker memory base is unavailable; retry")
+                        raise RuntimeError("Worker memory base is unavailable; retry") from None
                     cached = {
                         "base": base.model_dump(),
                         "changes": proposal.changes,
@@ -215,6 +215,7 @@ async def process(bridge: BatchBridge, event_id: str, storage: Storage) -> None:
                     event_id=notice_key,
                 )
                 await bridge.repository.set_connector_state(notice_key, {"notified": True})
+            await memory_compaction.enqueue(bridge, grant.project_id, saved)
             record["memory_editor_done"] = True
             record["memory_commit_oid"] = saved.commit_oid
             await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)

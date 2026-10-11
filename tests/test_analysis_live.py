@@ -74,7 +74,7 @@ async def test_agent_looks_at_its_figure(tmp_path):
 
 @pytest.mark.live
 async def test_observations_stay_out_of_project_guide():
-    from pistachio.agents.analysis import direct, user_memory
+    from pistachio.agents.analysis import direct, memory_tasks
 
     if os.environ.get("PISTACHIO_RUN_LIVE_TESTS") != "1" or not os.environ.get("ANTHROPIC_API_KEY"):
         pytest.skip("Requires explicit approval and live API credits")
@@ -85,35 +85,30 @@ async def test_observations_stay_out_of_project_guide():
     context = {
         "request": observation,
         "brief": guide,
-        "legacy_brief": False,
-        "conversation_memory": "",
+        "project_memory": "",
         "recent_messages": [],
         "data_uri": "gs://example/liver/",
         "project_name": "Liver",
     }
     decision = await direct.decide(key, settings.model, context)
-    assert decision.route == "reply" and decision.draft is None
+    assert decision.route == "reply" and decision.guide is None
     assert "save brief" not in decision.reply.lower()
-    memory = await user_memory.edit(
+    memory = await memory_tasks.edit(
         key,
         settings.memory_model or settings.model,
         {
-            "private": True,
-            "blocks": {},
-            "notes": [],
-            "conversation_summary": "",
+            "files": {"PROJECT.md": guide},
+            "speaker": "Test user",
+            "date": "2026-10-10",
             "user": observation,
             "reply": decision.reply,
             "project": "Liver",
             "thread": "test",
         },
     )
-    assert not memory.edits
-    assert memory.conversation_summary and len(memory.conversation_summary) <= 6000
-    assert any(
-        label in memory.conversation_summary.lower()
-        for label in ("hypothes", "unverified", "unconfirmed", "user")
-    )
+    assert "PROJECT.md" not in memory
+    assert "open.md" in memory
+    assert any(label in memory["open.md"].lower() for label in ("hypothes", "unverified", "user"))
     corrected = await direct.decide(
         key,
         settings.model,
@@ -124,4 +119,17 @@ async def test_observations_stay_out_of_project_guide():
             ),
         },
     )
-    assert corrected.draft and "processed/qc_v2.h5ad" in corrected.draft
+    corrections = await memory_tasks.edit(
+        key,
+        settings.memory_model or settings.model,
+        {
+            "files": {"PROJECT.md": guide},
+            "speaker": "Test user",
+            "date": "2026-10-10",
+            "user": (
+                "Correct the file guide: use processed/qc_v2.h5ad, the validated QC-filtered file."
+            ),
+            "reply": corrected.reply,
+        },
+    )
+    assert "processed/qc_v2.h5ad" in corrections["PROJECT.md"]

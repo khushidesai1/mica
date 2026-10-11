@@ -119,8 +119,6 @@ def parse(raw: str) -> Command | None:
         return Command(action, tuple(words[1:]))
     if action == "remember" and len(words) > 1:
         content = text.split(maxsplit=1)[1]
-        if len(content) > 600:
-            raise ValueError("Remember accepts at most 600 characters.")
         return Command(action, (content,))
     if (
         action == "forget"

@@ -29,3 +29,40 @@ Administrators can edit files in GitHub or use `git revert <sha>`; edits take ef
 the next read. Purging Git history with `git filter-repo` and a force-push is a human-only
 operation. Anything said about a project, in a DM or a channel, may be remembered for
 everyone using that project, and repository readers can see it.
+
+## Turns and viewing memory
+
+Each completed turn has one writer: a forced-tool editor for chat, or the worker's
+workspace proposal for computation. `init` commits its guide immediately. Workers receive
+an immutable snapshot in the request, edit `knowledge/`, and return a proposal through GCS;
+they never connect to GitHub. Recovery keeps the same snapshot and any pending edits.
+New turns read the current repository head. Editing memory or sharing another project does
+not reset SDK sessions, messages, attachments, or saved working directories.
+
+Use `memory` for the index and active work, `memory conventions.md` for a file, or `brief`
+for the guide. Correct mistakes in plain language. The old `remember`, `forget`, `knowledge`,
+`save brief`, and `clean brief` commands explain this change without editing memory.
+A single notice lists changed files, excluding index-only or active-work-only edits.
+
+## Compaction and operations
+
+After a turn, compaction is queued once per head when any limit exceeds 80%, conflicts or
+rejections exist, or the project reaches a multiple of 20 commits. A forced-tool editor
+merges duplicates and conflict copies, preserves sources and working recipes, and reaches
+70% of every limit with one index link per entry. Invalid output commits nothing. A newer
+head supersedes a pending compaction, so it cannot overwrite a concurrent conversation.
+Compaction runs silently. Model inputs, proposals and receipts are cached as temporary GCS
+task state so retries use the same inputs and do not duplicate commits.
+
+For migration, set the memory environment variables and run
+`.venv/bin/python tools/memory_import.py --bucket <artifact-bucket>` to preview, then add
+`--apply` once. Only existing GCS project guides are imported; GitHub guides are never
+replaced. Repeating the import is safe. Legacy GCS objects can remain for rollback but are
+no longer read during turns.
+
+Set `AGENT_MEMORY_AUTO_EDIT=false` to suspend background writes and compaction (explicit
+`init` still saves a guide). Unset `AGENT_MEMORY_REPO` to disable all GitHub memory.
+Inspect `memory_read`, `memory_commit`, `memory_editor`, and `memory_compaction` logs for
+IDs, counts, and failure types. Failed background operations return 503 for Cloud Tasks
+retry. Unreadable or invalid repository files need an administrator's correction before
+compaction; their contents are never sent to the model.

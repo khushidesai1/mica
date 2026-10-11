@@ -65,17 +65,7 @@ async def test_reused_name_never_inherits_other_users_brief(chat, monkeypatch):
         return direct.Decision(route="reply", reply="Draft ready.", guide=context["brief"])
 
     chat.decision.side_effect = decide
-    from pistachio.agents.analysis import knowledge
-
-    knowledge.commit(
-        chat.store,
-        chat.pid,
-        {"PROJECT.md": b"ALICE-SECRET"},
-        knowledge.load(chat.store, chat.pid, chat.settings),
-        chat.settings,
-        event_id="secret",
-        user_key="alice",
-    )
+    chat.github.seed({f"projects/{chat.pid}/PROJECT.md": "ALICE-SECRET"})
     for body in [
         payload(text="init brain gs://lab-data/brain/ --force"),
         payload("2.0", text="init liver gs://lab-data/bob/", channel="D2", user="U2"),
@@ -117,7 +107,9 @@ async def test_nonmember_channel_commands_never_read_or_compute(chat, command):
     await message(chat, "Describe project", "12.0", channel="C1")
     calls = chat.decision.await_count
     result = await message(chat, command, "13.0", user="U2", channel="C1", thread="12.0")
-    assert "private project" in result["notice_text"]
+    assert ("remembers and tidies" if command == "save brief" else "private project") in result[
+        "notice_text"
+    ]
     assert "Species" not in result["notice_text"]
     assert chat.decision.await_count == calls
     chat.test_client.delete_job.assert_not_called()

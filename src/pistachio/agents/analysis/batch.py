@@ -579,10 +579,10 @@ class BatchBridge:
                     (await asyncio.to_thread(storage.get, memory_key))[0]
                 )
             except FileNotFoundError:
-                memory = await project_memory.GitHubMemory(self.settings).read(
+                loaded_memory = await project_memory.GitHubMemory(self.settings).read(
                     grant.project_id, event_id=event_id
                 )
-                memory = memory or project_memory.Snapshot(head_oid="")
+                memory = loaded_memory or project_memory.Snapshot(head_oid="")
                 await asyncio.to_thread(storage.put, memory_key, memory.model_dump_json().encode())
             manifest = {
                 "event_id": event_id,

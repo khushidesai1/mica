@@ -158,6 +158,32 @@ async def process_memory(event_id: str, request: Request) -> dict[str, str]:
     return {"status": "complete"}
 
 
+@router.post("/memory-compact/{project_id}", include_in_schema=False)
+async def compact_memory(project_id: str, head_oid: str, request: Request) -> dict[str, str]:
+    from pistachio.agents.analysis import memory_compaction
+
+    services: Services = request.app.state.services
+    if services.settings.slack_agent_backend != "claude_batch":
+        raise HTTPException(503, "Claude Slack rollout is disabled")
+    principal = await get_principal(request)
+    if principal.id != services.settings.cloud_tasks_service_account.lower():
+        raise HTTPException(403, "Untrusted task dispatcher")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", project_id) or not re.fullmatch(
+        r"[a-f0-9]{40}", head_oid
+    ):
+        raise HTTPException(400, "Invalid project or memory head")
+    try:
+        await memory_compaction.process(
+            BatchBridge(services.settings, services.repository),
+            project_id,
+            head_oid,
+            GCSStorage(services.settings.gcs_bucket),
+        )
+    except Exception:
+        raise HTTPException(503, "Memory compaction did not complete; retry") from None
+    return {"status": "complete"}
+
+
 @router.post("/transfers/{pending_id}/{tick}", include_in_schema=False)
 async def process_transfer(pending_id: str, tick: int, request: Request) -> dict[str, str]:
     from pistachio.agents.analysis.transfers import Transfers

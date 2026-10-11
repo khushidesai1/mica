@@ -60,6 +60,8 @@ async def test_off_request_manifest(bridge, monkeypatch):
     assert value["event_id"] == eid
     assert value["recovery"]["attempt"] == 0
     assert value["recovery"]["request_deadline"] == 1700000000 + bridge.settings.max_run_seconds
+    assert value["memory"]["head_oid"] == bridge.github.head
+    value["memory"]["head_oid"] = "<memory_head>"
     for field in ("event_id", "recovery", "resume", "turn_start"):
         value.pop(field)
     assert value == json.loads((FIXTURES / "request.json").read_text())

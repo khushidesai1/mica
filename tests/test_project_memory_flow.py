@@ -1,3 +1,4 @@
+# ruff: noqa: F811
 """Prompt -> editor -> GitHub -> new router/worker context, without network."""
 
 import json
@@ -8,7 +9,6 @@ from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
 from pistachio.agents.analysis import direct, job_lifecycle, memory_tasks, project_memory
-from tests.fake_github import FakeGitHub
 
 CONVENTION = (
     "type: user\nsource: alice@example.com, 2026-10-10\nstatus: current\n\n"
@@ -18,11 +18,8 @@ CONVENTION = (
 
 @pytest.fixture
 def memory_chat(chat, monkeypatch):  # noqa: F811
-    github = FakeGitHub()
-    chat.settings.memory_repo = "owner/memory"
+    github, backend = chat.github, chat.memory_backend
     chat.settings.memory_auto_edit = True
-    backend = project_memory.GitHubMemory(chat.settings, client=github.client)
-    monkeypatch.setattr(project_memory, "GitHubMemory", lambda settings: backend)
     monkeypatch.setattr(job_lifecycle, "enqueue", AsyncMock())
     chat.decision.return_value = direct.Decision(route="reply", reply="I'll use viridis.")
     chat.github, chat.memory_backend = github, backend
@@ -109,3 +106,104 @@ async def test_worker_workspace_round_trip(tmp_path):
     proposal = memory_workspace.proposal(tmp_path, base, settings)
     assert proposal.changes == {"results/tma101.md": CONVENTION}
     assert proposal.base_head == base.head_oid
+
+
+async def test_dm_fact_is_shared_with_channel_but_not_another_project(memory_chat, monkeypatch):
+    from analysis_helpers import memory_message as message
+
+    chat = memory_chat
+    monkeypatch.setattr(
+        memory_tasks, "edit", AsyncMock(return_value={"conventions.md": CONVENTION})
+    )
+    await message(chat, "We always use viridis for heatmaps", "1.0")
+    monkeypatch.setattr(memory_tasks, "edit", AsyncMock(return_value={}))
+    await message(chat, "publish liver <#C1>", "2.0")
+    await message(chat, "use liver", "3.0", channel="C1")
+    await message(chat, "What colormap?", "4.0", channel="C1")
+    assert "viridis" in chat.decision.call_args.args[2]["project_memory"]
+    from analysis_helpers import seed_project
+
+    seed_project(chat.store, name="other", channel="D2")
+    await message(chat, "What colormap?", "5.0", channel="D2")
+    assert "viridis" not in chat.decision.call_args.args[2]["project_memory"]
+
+
+async def test_edits_other_init_and_share_keep_older_thread_state(memory_chat, monkeypatch):
+    from analysis_helpers import memory_message as message
+    from test_analysis_direct import seed_earlier_output, thread_state
+
+    chat = memory_chat
+    monkeypatch.setattr(
+        memory_tasks, "edit", AsyncMock(return_value={"conventions.md": CONVENTION})
+    )
+    monkeypatch.setattr(direct, "inventory", lambda *args: {"entries": []})
+    output = await seed_earlier_output(chat)
+    first = next(
+        k.split(":", 1)[1] for k in chat.repository.connector_state if k.startswith("claude-event:")
+    )
+    record, state = await thread_state(chat, first)
+    key = f"projects/_threads/{record['thread_key']}/checkpoint.json"
+    state["context"]["session_id"] = "keep-session"
+    # Mimic a path from the old epoch-based scheme: it must stay usable.
+    state["context"]["workdir"] += "/legacy-hash"
+    chat.store.put(key, json.dumps(state).encode())
+    await memory_tasks.process(chat, first, chat.store)
+    chat.decision.return_value = direct.Decision(
+        route="reply", reply="Ready.", guide="# Other guide"
+    )
+    await message(chat, "init other gs://lab-data/other/ --force", "2.0")
+    await message(chat, "share other <@U2>", "3.0")
+    chat.decision.return_value = direct.Decision(route="reply", reply="We use viridis.")
+    await message(chat, "Which colormap?", "4.0", thread="1.0")
+    after = json.loads(chat.store.get(key)[0])
+    assert after["context"]["workdir"] == state["context"]["workdir"]
+    assert after["context"]["session_id"] == "keep-session"
+    assert after["thread_files"] == state["thread_files"]
+    assert after["thread_files"][0]["id"] == output.id
+    assert after["messages"][:-1] == state["messages"]
+    assert not any("retired/" in k for k in chat.store.keys("projects/"))
+    assert all(
+        "Memory changed" not in str(c) and "Project access changed" not in str(c)
+        for c in chat.test_slack.chat_update.call_args_list
+    )
+
+
+async def test_worker_result_materializes_in_next_workspace(memory_chat, monkeypatch, tmp_path):
+    await test_worker_proposal_is_the_only_writer(memory_chat, monkeypatch)
+    from pistachio.agents.analysis import memory_workspace
+
+    saved = await memory_chat.memory_backend.read(memory_chat.pid)
+    memory_workspace.materialize(tmp_path, saved, memory_chat.settings)
+    assert "Count: 12" in (tmp_path / "knowledge/results/tma101.md").read_text()
+
+
+async def test_notice_retry_keeps_commit_receipt_and_deduplicates(memory_chat, monkeypatch):
+    chat = memory_chat
+    monkeypatch.setattr(
+        memory_tasks, "edit", AsyncMock(return_value={"conventions.md": CONVENTION})
+    )
+    event = await chat.accept(payload(text="We use viridis"))
+    await chat.process(event, 0)
+    original = chat.store.put
+    lost = False
+
+    def put(key, data):
+        nonlocal lost
+        if key.endswith("memory-editor.json") and b'"saved"' in data and not lost:
+            lost = True
+            raise TimeoutError("lost acknowledgment")
+        return original(key, data)
+
+    monkeypatch.setattr(chat.store, "put", put)
+    with pytest.raises(TimeoutError):
+        await memory_tasks.process(chat, event, chat.store)
+    commits = len(chat.github.commits)
+    await memory_tasks.process(chat, event, chat.store)
+    await memory_tasks.process(chat, event, chat.store)
+    assert len(chat.github.commits) == commits
+    notices = [
+        c
+        for c in chat.test_slack.chat_postMessage.call_args_list
+        if "Remembered for this project" in c.kwargs.get("text", "")
+    ]
+    assert len(notices) == 1 and "conventions.md" in notices[0].kwargs["text"]

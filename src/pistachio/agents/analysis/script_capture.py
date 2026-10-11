@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .user_memory import SECRET
+from .project_memory import SECRET
 
 MAX_BYTES = 1_000_000
 MAX_SCRIPTS = 10

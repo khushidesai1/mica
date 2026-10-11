@@ -32,9 +32,17 @@ class FakeGitHub:
                 files.pop(path, None)
             else:
                 files[path] = text
+        parent = self.head
         self.head = hashlib.sha1((self.head + json.dumps(changes)).encode()).hexdigest()
         self.trees[self.head] = files
-        self.commits.insert(0, {"oid": self.head, "messageHeadline": headline})
+        self.commits.insert(
+            0,
+            {
+                "oid": self.head,
+                "messageHeadline": headline,
+                "parents": {"nodes": [{"oid": parent}]},
+            },
+        )
         return self.head
 
     def tree(self, files, prefix):

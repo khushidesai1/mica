@@ -203,7 +203,8 @@ READ_HEAD = """query MemoryReadHead($owner: String!, $repo: String!, $head: GitO
 HISTORY = """query MemoryHistory($owner: String!, $repo: String!, $head: GitObjectID!,
   $after: String) { repository(owner: $owner, name: $repo) {
     object(oid: $head) { ... on Commit { history(first: 100, after: $after) {
-      nodes { oid messageHeadline } pageInfo { hasNextPage endCursor }
+      nodes { oid messageHeadline parents(first: 1) { nodes { oid } } }
+      pageInfo { hasNextPage endCursor }
     } } }
   }
 }"""
@@ -342,7 +343,7 @@ class GitHubMemory:
 
     async def _prior_commit(
         self, client: httpx.AsyncClient, pid: str, head: str, base: str, message: str
-    ) -> str:
+    ) -> Saved | None:
         variables = self.variables(pid)
         variables.pop("path")
         variables.update(head=head, after=None)
@@ -351,13 +352,28 @@ class GitHubMemory:
             history = data["repository"]["object"]["history"]
             for entry in history["nodes"]:
                 if entry["oid"] == base:
-                    return ""
+                    return None
                 if entry["messageHeadline"] == message:
-                    return str(entry["oid"])
+                    before = await self._read(
+                        client, pid, head_oid=entry["parents"]["nodes"][0]["oid"]
+                    )
+                    after = await self._read(client, pid, head_oid=entry["oid"])
+                    saved = Saved(commit_oid=entry["oid"])
+                    for path in before.files.keys() | after.files.keys():
+                        old, new = before.files.get(path), after.files.get(path)
+                        if old == new:
+                            continue
+                        field = (
+                            "removed" if new is None else ("added" if old is None else "changed")
+                        )
+                        getattr(saved, field).append(path)
+                        if new is not None and path.startswith("_unmerged/"):
+                            saved.unmerged.append(path)
+                    return saved
             if not history["pageInfo"]["hasNextPage"]:
                 break
             variables["after"] = history["pageInfo"]["endCursor"]
-        return ""
+        return None
 
     async def commit(
         self,
@@ -393,11 +409,16 @@ class GitHubMemory:
                         client, pid, latest.head_oid, base.head_oid, message
                     )
                     if prior:
-                        saved.commit_oid = prior
+                        prior.rejected.update(saved.rejected)
+                        saved = prior
                         outcome = "committed"
                         return saved
+                    if source == "compaction" and latest.head_oid != base.head_oid:
+                        raise HeadMoved("Compaction snapshot changed")
                     proposed, unmerged = self._merge(base, latest, updates, event_id)
                     accepted = self._bounded(latest, proposed, saved)
+                    if source == "compaction" and saved.rejected:
+                        raise ValueError("Compaction rejected; nothing was committed")
                     saved.unmerged = [p for p in unmerged if p in accepted]
                     if not accepted:
                         outcome = "nothing"
@@ -464,9 +485,11 @@ class GitHubMemory:
         unmerged: list[str] = []
         for path, value in updates.items():
             before, current = base.files.get(path), latest.files.get(path)
-            if value == (current.text if current else None):
+            if value == (current.text if current else None) and path not in latest.invalid:
                 continue
-            if (before.oid if before else None) != (current.oid if current else None):
+            if (before.oid if before else None) != (current.oid if current else None) or (
+                path in latest.invalid and path not in base.invalid
+            ):
                 original = path.split("/", 2)[-1] if path.startswith("_unmerged/") else path
                 target = f"_unmerged/{hashlib.sha256(event_id.encode()).hexdigest()[:8]}/{original}"
                 proposed[target] = (
@@ -511,10 +534,9 @@ class GitHubMemory:
                 else:
                     validate(path, value.encode(), self.settings)
                     candidate[path] = len(value.encode())
-                if (
-                    len(candidate) > self.settings.memory_max_files
-                    or sum(candidate.values()) > self.settings.memory_total_kb * 1024
-                ):
+                if len(candidate) > max(len(sizes), self.settings.memory_max_files) or sum(
+                    candidate.values()
+                ) > max(sum(sizes.values()), self.settings.memory_total_kb * 1024):
                     raise ValueError("Project exceeds its file count or total size limit.")
             except ValueError as exc:
                 saved.rejected[path] = str(exc)

@@ -6,7 +6,8 @@ ARG INSTALL_BOT_DEPENDENCIES=0
 COPY deploy/requirements-bot.txt /tmp/pistachio-requirements-bot.txt
 RUN if [ "$INSTALL_BOT_DEPENDENCIES" = "1" ]; then \
       pip install --no-cache-dir --no-deps -r /tmp/pistachio-requirements-bot.txt; \
-    fi
+    fi && \
+    rm -rf /usr/local/lib/python3.12/site-packages/pistachio /app/src/pistachio /opt/pistachio/src/pistachio
 COPY src/pistachio /usr/local/lib/python3.12/site-packages/pistachio
 COPY src /app/src
 COPY src /opt/pistachio/src

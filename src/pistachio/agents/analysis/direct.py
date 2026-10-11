@@ -639,6 +639,9 @@ async def handle(
             )
             if saved_guide.rejected:
                 raise ValueError("Initial project guide was rejected")
+            from . import memory_compaction
+
+            await memory_compaction.enqueue(bridge, grant.project_id, saved_guide)
             record["memory_init_saved"] = saved_guide.model_dump()
             notice = project_memory.notice(saved_guide)
             if notice and not record.get("guide_notified"):

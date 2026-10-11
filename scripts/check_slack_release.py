@@ -18,12 +18,11 @@ from pistachio.agents.analysis import (
     access,
     attachments,
     commands,
-    conversation_memory,
     direct,
-    knowledge,
+    memory_workspace,
+    project_memory,
     write_access,
 )
-from pistachio.agents.analysis.commands import Command
 from pistachio.agents.analysis.config import Settings
 from pistachio.agents.analysis.progress import TaskProgress, check_in_due
 from pistachio.agents.analysis.registry import Registry
@@ -85,22 +84,33 @@ def check(source: Path, mode: str) -> None:
         doc = Registry(store).load()
         pid = doc.create("test@example.com", "test", "gs://test/data/")
         grant = access.Grant("test@example.com", True, {}, doc, pid, True, "T:D")
-        summary, generation = conversation_memory.load(store, grant, "a")
-        conversation_memory.save(
-            store, grant, "a", summary, generation, "one", "User hypothesis: unverified"
+        snapshot = project_memory.Snapshot(
+            head_oid="a" * 40,
+            files={
+                "PROJECT.md": project_memory.File(text="Verified guide", oid="b" * 40),
+                "conventions.md": project_memory.File(
+                    text="type: user\nsource: Test, 2026-10-10\nstatus: current\n\nUse viridis",
+                    oid="c" * 40,
+                ),
+            },
         )
-        assert (
-            conversation_memory.load(store, grant, "b")[0].summary == "User hypothesis: unverified"
-        )
-        conversation_memory.command(Command("forget context"), grant, store, "b", "clear")
-        assert not conversation_memory.load(store, grant, "a")[0].summary
-        assert not conversation_memory.is_current(store, grant, "a", {})
-        assert knowledge.GUIDE_POLICY in direct.SYSTEM
+        memory_workspace.materialize(work / "memory-work", snapshot, settings)
+        assert memory_workspace.proposal(work / "memory-work", snapshot, settings).changes == {}
+        assert "viridis" in project_memory.context(snapshot, "heatmaps", settings)
+        assert project_memory.GUIDE_POLICY in direct.SYSTEM
+        for removed in (
+            "user_memory",
+            "conversation_memory",
+            "knowledge_mirror",
+            "knowledge",
+            "knowledge_commands",
+        ):
+            assert not (installed / "agents/analysis" / (removed + ".py")).exists(), removed
         assert (
             Path("/opt/pistachio/templates/PROJECT.template.md").read_bytes()
             == (source / "templates/PROJECT.template.md").read_bytes()
         )
-        print("CONVERSATION_MEMORY_AND_GUIDE_POLICY_VERIFIED")
+        print("GITHUB_MEMORY_SNAPSHOT_AND_GUIDE_POLICY_VERIFIED")
         for text in ("help", "help all", "help write", "write help"):
             cmd = commands.parse(text)
             assert cmd is not None
@@ -169,12 +179,11 @@ def check_worker(work: Path, source: Path, settings: Settings) -> None:
     opts = build_options(
         Context(work, work / "data"),
         settings,
-        conversation_summary="User hypothesis: unverified",
-        user_memory="Prefer PNG",
+        memory_context="User hypothesis: unverified; use viridis",
     )
-    assert "# Conversation memory" in opts.system_prompt["append"]
+    assert "# Project knowledge" in opts.system_prompt["append"]
     assert "User hypothesis: unverified" in opts.system_prompt["append"]
-    assert "# Personal preferences" in opts.system_prompt["append"]
+    assert "viridis" in opts.system_prompt["append"]
     assert opts.max_buffer_size == 16 * 1024 * 1024
     assert opts.env["BASH_MAX_TIMEOUT_MS"] == "604800000"
     assert opts.env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"

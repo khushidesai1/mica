@@ -10,15 +10,15 @@ import pytest
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from pistachio.agents.analysis import job_lifecycle, memory_tasks, user_memory
+from pistachio.agents.analysis import job_lifecycle, memory_tasks
 
 
 async def test_delivery_queues_but_does_not_run_editor(chat, monkeypatch):
     chat.settings.memory_auto_edit = True
     enqueue = AsyncMock()
-    editor = AsyncMock(return_value=user_memory.Edits(conversation_summary="A result"))
+    editor = AsyncMock(return_value={})
     monkeypatch.setattr(job_lifecycle, "enqueue", enqueue)
-    monkeypatch.setattr(user_memory, "edit", editor)
+    monkeypatch.setattr(memory_tasks, "edit", editor)
     event = await chat.accept(payload(text="Explain this result"))
     await chat.process(event, 0)
     editor.assert_not_awaited()
@@ -32,14 +32,14 @@ async def test_failure_logs_type_only_and_retries(chat, monkeypatch, caplog):
     chat.settings.memory_auto_edit = True
     monkeypatch.setattr(job_lifecycle, "enqueue", AsyncMock())
     editor = AsyncMock(side_effect=httpx.ReadTimeout("PRIVATE CONTENT"))
-    monkeypatch.setattr(user_memory, "edit", editor)
+    monkeypatch.setattr(memory_tasks, "edit", editor)
     event = await chat.accept(payload(text="Explain this result"))
     await chat.process(event, 0)
     with caplog.at_level(logging.WARNING), pytest.raises(httpx.ReadTimeout):
         await memory_tasks.process(chat, event, chat.store)
     assert "ReadTimeout" in caplog.text and "PRIVATE CONTENT" not in caplog.text
     editor.side_effect = None
-    editor.return_value = user_memory.Edits()
+    editor.return_value = {}
     await memory_tasks.process(chat, event, chat.store)
     assert editor.await_count == 2
 
@@ -58,10 +58,10 @@ async def test_editor_has_time_for_45_second_response(chat, monkeypatch):
         # Simulate elapsed model time without adding 45 s to the offline suite.
         assert budgets[-1] > 45
         await asyncio.sleep(0)
-        return user_memory.Edits()
+        return {}
 
-    monkeypatch.setattr(user_memory.asyncio, "timeout", capture)
-    monkeypatch.setattr(user_memory, "edit", slow_model)
+    monkeypatch.setattr(memory_tasks.asyncio, "timeout", capture)
+    monkeypatch.setattr(memory_tasks, "edit", slow_model)
     event = await chat.accept(payload(text="Explain this result"))
     await chat.process(event, 0)
     await memory_tasks.process(chat, event, chat.store)
@@ -75,7 +75,7 @@ async def test_worker_slot_released_before_memory_enqueue(bridge, monkeypatch):
 
     bridge.settings.memory_auto_edit = True
     editor = AsyncMock()
-    monkeypatch.setattr(user_memory, "edit", editor)
+    monkeypatch.setattr(memory_tasks, "edit", editor)
     event = await bridge.accept(payload(text="Plot data"))
     await bridge.process(event, 0)
     record = await bridge.repository.get_connector_state("claude-event:" + event)
@@ -109,16 +109,22 @@ async def test_http_timeout_is_90_seconds(monkeypatch):
         budgets.append(kwargs["timeout"])
 
         def respond(request):
-            assert json.loads(request.content)["max_tokens"] == 4000
+            assert json.loads(request.content)["max_tokens"] == 8192
             return httpx.Response(
                 200,
                 json={
-                    "content": [{"type": "tool_use", "name": "edit_memory", "input": {"edits": []}}]
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "name": "edit_project_memory",
+                            "input": {"changes": {}},
+                        }
+                    ]
                 },
             )
 
         return factory(transport=httpx.MockTransport(respond))
 
-    monkeypatch.setattr(user_memory.httpx, "AsyncClient", client)
-    await user_memory.edit("test", "model", {})
+    monkeypatch.setattr(memory_tasks.httpx, "AsyncClient", client)
+    await memory_tasks.edit("test", "model", {})
     assert budgets == [90]
