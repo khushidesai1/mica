@@ -4,7 +4,9 @@ Project memory uses a private GitHub repository, with one folder per project at
 `projects/<project_id>/`. Enable it with `AGENT_MEMORY_REPO=owner/repository`,
 `AGENT_MEMORY_BRANCH=main`, and `AGENT_MEMORY_TOKEN_SECRET` set to a Secret Manager
 version resource (`projects/<gcp-project>/secrets/<name>/versions/latest`).
-Initialize the branch before use. Give its fine-grained GitHub token Contents read/write
+Set `AGENT_MEMORY_MODEL` to a model supporting forced tool choice (default: `claude-opus-5`).
+The deployed `claude-opus-5-5` rejected forced tools in live verification; routing and analysis
+can keep using that model. Initialize the branch before use. Give its fine-grained GitHub token Contents read/write
 on this repository only and give the control service access to the secret. Tokens are
 cached for ten minutes and must never be passed to workers.
 
@@ -39,7 +41,7 @@ they never connect to GitHub. Recovery keeps the same snapshot and any pending e
 New turns read the current repository head. Editing memory or sharing another project does
 not reset SDK sessions, messages, attachments, or saved working directories.
 
-Use `memory` for the index and active work, `memory conventions.md` for a file, or `brief`
+Use `memory` for the index and active work (or a file listing until an index exists), `memory conventions.md` for a file, or `brief`
 for the guide. Correct mistakes in plain language. The old `remember`, `forget`, `knowledge`,
 `save brief`, and `clean brief` commands explain this change without editing memory.
 A single notice lists changed files, excluding index-only or active-work-only edits.

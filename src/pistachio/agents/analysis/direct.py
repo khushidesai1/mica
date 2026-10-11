@@ -360,6 +360,10 @@ async def handle(
         contents = "\n\n".join(
             f"{path}:\n{snapshot.files[path].text}" for path in paths if path in snapshot.files
         )
+        if cmd.name == "memory" and not cmd.args and "INDEX.md" not in snapshot.files:
+            listing = "\n".join(f"• {path}" for path in sorted(snapshot.files))
+            contents = "\n\n".join(part for part in (listing, contents) if part)
+
         return await show_context(
             bridge, event_id, record, storage, contents or "No project memory saved yet."
         )

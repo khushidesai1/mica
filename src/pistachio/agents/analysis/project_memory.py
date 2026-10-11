@@ -38,6 +38,15 @@ HEADER = re.compile(
     r"\Atype: (fact|result|recipe|lesson|open|user)\nsource: [^\n]+\n"
     r"status: (current|superseded by [^\n]+)(?:\n|$)"
 )
+ENTRY_HEADER_RULES = """Every Markdown entry except PROJECT.md and INDEX.md MUST begin with
+these three literal lines, with no title, blank line, code fence or YAML delimiter before them:
+type: user
+source: <speaker or evidence, date>
+status: current
+Replace user with fact, result, recipe, lesson, or open when appropriate. Replace the source
+placeholder with the actual attribution. Put a blank line and any title/body AFTER these
+headers. Do not wrap the headers in --- delimiters.
+"""
 NO_GUIDE = "No guide yet."
 PRIVACY = (
     "Anything said about a project, in a DM or a channel, may be remembered for everyone "

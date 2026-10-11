@@ -81,7 +81,7 @@ async def compact(key: str, model: str, context: dict[str, Any]) -> dict[str, st
             json={
                 "model": model,
                 "max_tokens": 32768,
-                "system": RULES,
+                "system": RULES + project_memory.ENTRY_HEADER_RULES,
                 "messages": [{"role": "user", "content": json.dumps(context)}],
                 "tools": [
                     {

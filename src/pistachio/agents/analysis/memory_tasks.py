@@ -49,7 +49,9 @@ async def edit(key: str, model: str, context: dict[str, Any]) -> dict[str, str]:
             json={
                 "model": model,
                 "max_tokens": 8192,
-                "system": EDITOR_RULES + project_memory.GUIDE_POLICY,
+                "system": EDITOR_RULES
+                + project_memory.ENTRY_HEADER_RULES
+                + project_memory.GUIDE_POLICY,
                 "messages": [{"role": "user", "content": json.dumps(context)}],
                 "tools": [
                     {

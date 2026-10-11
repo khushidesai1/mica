@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     memory_total_kb: int = Field(default=1024, ge=1, le=16384)
     memory_router_chars: int = Field(default=12000, ge=1, le=64000)
     memory_auto_edit: bool = True
-    memory_model: str = ""
+    memory_model: str = "claude-opus-5"  # Requires forced tool choice support.
     fallback_model: str = "claude-opus-5"
     bucket: str = Field(
         default="", validation_alias=AliasChoices("AGENT_BUCKET", "PISTACHIO_GCS_BUCKET")

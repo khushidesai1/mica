@@ -207,3 +207,17 @@ async def test_notice_retry_keeps_commit_receipt_and_deduplicates(memory_chat, m
         if "Remembered for this project" in c.kwargs.get("text", "")
     ]
     assert len(notices) == 1 and "conventions.md" in notices[0].kwargs["text"]
+
+
+async def test_memory_lists_saved_convention_before_first_index(memory_chat, monkeypatch):
+    from analysis_helpers import memory_message as message
+
+    chat = memory_chat
+    monkeypatch.setattr(
+        memory_tasks, "edit", AsyncMock(return_value={"conventions.md": CONVENTION})
+    )
+    await message(chat, "We use viridis for heatmaps", "1.0")
+    shown = await message(chat, "memory", "2.0")
+    assert "conventions.md" in shown["notice_text"]
+    shown = await message(chat, "memory conventions.md", "3.0")
+    assert "viridis" in shown["notice_text"] and "alice@example.com" in shown["notice_text"]

@@ -235,6 +235,8 @@ def build_system_append(
         + (
             "\n# Project knowledge\n"
             + KNOWLEDGE_RULES
+            + "\n"
+            + project_memory.ENTRY_HEADER_RULES
             + f"\nLimits: index {settings.memory_index_chars} characters, "
             + "PROJECT.md 100,000 bytes, other Markdown "
             + f"{settings.memory_file_kb} KB per file, {settings.memory_max_files} files, "
