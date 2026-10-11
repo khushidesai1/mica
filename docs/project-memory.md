@@ -68,3 +68,6 @@ Inspect `memory_read`, `memory_commit`, `memory_editor`, and `memory_compaction`
 IDs, counts, and failure types. Failed background operations return 503 for Cloud Tasks
 retry. Unreadable or invalid repository files need an administrator's correction before
 compaction; their contents are never sent to the model.
+
+See [staging verification](project-memory-staging.md) for deployed commit IDs,
+live save/recall and compaction evidence, and known verification limits.
