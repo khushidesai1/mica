@@ -23,3 +23,8 @@ build/
 terraform.tfvars
 *.tfvars
 *.tfplan
+
+# Local agent workflow (not pushed)
+CLAUDE.md
+AGENTS.md
+plans/

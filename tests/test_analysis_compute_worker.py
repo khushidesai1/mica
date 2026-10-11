@@ -132,8 +132,9 @@ async def test_cold_resize_suppresses_intermediate_delivery_and_preserves_output
     slack.files_upload_v2.assert_not_called()
     slack.chat_postMessage.assert_not_called()
     handoff = json.loads(store.get(f"{prefix}/attempt-a0.json")[0])
-    assert store.get("projects/test/knowledge/PROJECT.md")[0] == b"# Verified shared guide"
-    assert handoff["knowledge"]["added"] == ["PROJECT.md"]
+    pending = json.loads(store.get(handoff["pending_memory"]["key"])[0])
+    assert pending["changes"] == {"PROJECT.md": "# Verified shared guide"}
+    assert not list(store.keys("projects/test/knowledge/"))
     assert handoff["outcome"] == "handoff" and handoff["state"]["turn"] == 7
     assert handoff["stages"]["stages"][0]["fingerprint"] == "synthetic-input-v1"
     shutil.rmtree(home)

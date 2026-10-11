@@ -7,7 +7,6 @@ from analysis_helpers import seed_project
 from test_analysis_batch import bridge, payload  # noqa: F401
 
 from pistachio.agents.analysis import batch, direct
-from pistachio.agents.analysis.registry import read_brief
 
 
 @pytest.fixture
@@ -26,7 +25,16 @@ def chat(bridge, monkeypatch):  # noqa: F811
     return bridge
 
 
-async def test_direct_edits_save_and_followups_never_create_workers(chat):
+async def test_direct_edits_save_and_followups_never_create_workers(chat, monkeypatch):
+    from pistachio.agents.analysis import job_lifecycle, memory_tasks
+
+    chat.settings.memory_auto_edit = True
+    monkeypatch.setattr(job_lifecycle, "enqueue", AsyncMock())
+    monkeypatch.setattr(
+        memory_tasks,
+        "edit",
+        AsyncMock(return_value={"PROJECT.md": "# Project\nSpecies: human (Alice provided)"}),
+    )
     first = await chat.accept(payload(text="These are human samples"))
     assert await chat.process(first, 0) == "complete"
     assert await chat.process(first, 0) == "complete"
@@ -34,20 +42,31 @@ async def test_direct_edits_save_and_followups_never_create_workers(chat):
     record = await chat.repository.get_connector_state("claude-event:" + first)
     pointer = f"projects/_threads/{record['thread_key']}/checkpoint.json"
     state = json.loads(chat.store.get(pointer)[0])
-    assert "human" in state["context"]["project_md"]
-    assert "human" in read_brief(chat.store, chat.pid)[0]
+    assert "TODO" in state["context"]["project_md"]
+    await memory_tasks.process(chat, first, chat.store)
+    assert "human" in (await chat.memory_backend.read(chat.pid)).files["PROJECT.md"].text
     for i, command in enumerate(["brief", "save brief", "help", "cancel"], start=2):
         event = await chat.accept(payload(f"{i}.0", "1.0", command))
         assert await chat.process(event, 0) == "complete"
-    assert "human" in read_brief(chat.store, chat.pid)[0]
+    assert "human" in (await chat.memory_backend.read(chat.pid)).files["PROJECT.md"].text
     assert chat.decision.await_count == 1
     chat.test_client.create_job.assert_not_called()
     assert not any(k.startswith("claude-slot") for k in chat.repository.event_claims)
 
 
-async def test_compute_uses_direct_brief_and_cached_routing(chat):
+async def test_compute_uses_direct_brief_and_cached_routing(chat, monkeypatch):
+    from pistachio.agents.analysis import job_lifecycle, memory_tasks
+
+    chat.settings.memory_auto_edit = True
+    monkeypatch.setattr(job_lifecycle, "enqueue", AsyncMock())
+    monkeypatch.setattr(
+        memory_tasks,
+        "edit",
+        AsyncMock(return_value={"PROJECT.md": "# Project\nSpecies: human (Alice provided)"}),
+    )
     first = await chat.accept(payload(text="These are human samples"))
     await chat.process(first, 0)
+    await memory_tasks.process(chat, first, chat.store)
     chat.decision.return_value = direct.Decision(
         route="compute", reply="Plotting needs data access."
     )
@@ -80,7 +99,7 @@ async def test_direct_failure_does_not_fall_back_to_compute(chat):
     event = await chat.accept(payload(text="Please revise my brief"))
     assert await chat.process(event, 0) == "failed"
     chat.test_client.create_job.assert_not_called()
-    assert "TODO" in read_brief(chat.store, chat.pid)[0]
+    assert "TODO" in (await chat.memory_backend.read(chat.pid)).files["PROJECT.md"].text
 
 
 async def test_file_listing_uses_project_metadata_without_worker_and_caches_reply(
@@ -252,13 +271,13 @@ async def test_cancel_bypasses_queue_and_releases_slot_only_after_job_ends(chat)
     assert not any(k.startswith("claude-slot") for k in chat.repository.event_claims)
 
 
-async def test_optional_file_rejects_external_url_without_worker(chat):
+async def test_read_only_brief_ignores_attachment_without_download(chat):
     body = payload(text="brief")
     body["event"]["files"] = [
         {"name": "PROJECT.md", "url_private_download": "https://evil.example/x"}
     ]
     event = await chat.accept(body)
-    assert await chat.process(event, 0) == "failed"
+    assert await chat.process(event, 0) == "complete"
     chat.decision.assert_not_called()
     chat.test_client.create_job.assert_not_called()
 
@@ -393,20 +412,17 @@ async def test_denied_user_files_never_downloaded(chat, upload_http):
 @pytest.mark.parametrize("command", ["init new gs://lab-data/new/", "save brief", "brief"])
 async def test_attachment_command_rejections(chat, upload_http, command):
     event = await attachment_message(chat, [attached()], command)
-    assert await chat.process(event, 0) == "failed"
+    assert await chat.process(event, 0) == ("failed" if command.startswith("init") else "complete")
     assert not upload_http
     chat.test_client.create_job.assert_not_called()
 
 
-async def test_brief_md_still_replaces_brief(chat, monkeypatch):
-    original = b"# Project\r\nuser supplied\n"
-    client = httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, content=original))
-    )
-    monkeypatch.setattr(direct.httpx, "AsyncClient", lambda **kwargs: client)
+async def test_brief_is_read_only_even_with_uploaded_guide(chat, upload_http):
+    before = await chat.memory_backend.read(chat.pid)
     event = await attachment_message(chat, [attached("PROJECT.md")], "brief")
     assert await chat.process(event, 0) == "complete"
-    assert read_brief(chat.store, chat.pid)[0].encode() == original
+    assert await chat.memory_backend.read(chat.pid) == before
+    assert not upload_http
     chat.decision.assert_not_called()
 
 
@@ -492,7 +508,7 @@ async def test_view_earlier_output_then_reply_without_worker(chat):
     assert second.kwargs["media"][0]["text"].startswith("Attachment o12345678:")
     assert second.kwargs["media"][1]["type"] == "image"
     record, state = await thread_state(chat, event)
-    assert state["context"]["project_md"] == "Kept draft"
+    assert state["context"]["project_md"] == "# Project\nSpecies: TODO"
     chat.test_client.create_job.assert_not_called()
 
 
@@ -520,27 +536,21 @@ async def test_view_ignores_foreign_and_already_shown_ids(chat, upload_http, mon
     assert calls[1] == []  # No new reads; current media can be reused from the first pass.
 
 
-@pytest.mark.parametrize("change", ["access", "epoch"])
-async def test_view_rechecks_access_and_epoch(chat, monkeypatch, change):
+async def test_view_rechecks_access(chat, monkeypatch):
     output = await seed_earlier_output(chat)
-    from pistachio.agents.analysis import attachments, user_memory
+    from pistachio.agents.analysis import attachments
 
     media = Mock(wraps=attachments.router_media)
     monkeypatch.setattr(attachments, "router_media", media)
 
     async def forget(*args, **kwargs):
-        if change == "epoch":
-            memory = user_memory.load(chat.store, "alice@example.com")
-            memory.context_epoch += 1
-            chat.store.put(user_memory.key("alice@example.com"), memory.model_dump_json().encode())
-        else:
-            from pistachio.agents.analysis.registry import Registry
+        from pistachio.agents.analysis.registry import Registry
 
-            def alter(doc):
-                doc.projects[chat.pid].access_revision += 1
-                return "changed"
+        def alter(doc):
+            doc.projects[chat.pid].access_revision += 1
+            return "changed"
 
-            Registry(chat.store).update("changed", "alice@example.com", "changed", alter)
+        Registry(chat.store).update("changed", "alice@example.com", "changed", alter)
         return direct.Decision(route="view", view_ids=[output.id], reply="Looking")
 
     chat.decision.side_effect = forget

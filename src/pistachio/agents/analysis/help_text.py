@@ -39,30 +39,20 @@ Existing threads keep their project. In channels, add `--force` to replace a sel
 
 *Project guide and tasks*
 • `brief` — Show the current shared project guide.
-Guide corrections save automatically. Use `undo knowledge` to revert a save.
+Guide corrections save automatically when you describe them in ordinary chat.
 • `cancel` — Stop queued or running computation.
 
 *Script attachments*
 • `scripts` — Show your setting (off by default).
 • `scripts on` / `scripts off` — Attach scripts you run, or stop attaching them (DM or channel).
 
-*Memory*
-• `memory context` — Show your project summary in DM, or the shared project/channel summary.
-• `forget context` — Clear that summary and start fresh context.
-• `memory` — Show your private profile, preferences, and notes (DM).
-• `remember <text>` — Save a private note (DM).
-• `forget <number|profile|preferences|all>` — Clear selected private memory (DM).
-Routine memory edits keep conversation context. `forget all` also starts fresh private context.
-
-*Project knowledge — shared with project members*
-• `knowledge` — Show the index, file count and last update.
-• `knowledge show <path>` — Read an entry.
-• `forget knowledge <path>` — Remove an entry, retaining its history.
-• `undo knowledge` — Restore the files changed by the most recent save.
-• `knowledge github on` / `knowledge github off` — Owner: enable or stop GitHub mirroring.
-Shared and published projects mirror automatically when configured, unless the owner turns it off.
-Private projects require owner opt-in. Repository readers see all mirrored projects and history.
-GitHub edits do not sync back; corrections should be made here. Deletions retain Git history.
+*Project memory*
+• `memory` — Show the project index and current work.
+• `memory <file>` — Read an entry, such as `memory conventions.md`.
+• `brief` — Show `PROJECT.md`.
+Pistachio remembers and tidies project memory automatically. Tell it corrections in plain language.
+Anything said about a project, in a DM or a channel, may be remembered for everyone using that
+project, and repository readers can see it.
 
 *GCS writes — DM*
 • `write grant <project> gs://bucket/folder/ [duration]` — Allow new files.

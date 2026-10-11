@@ -22,13 +22,12 @@ from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import attachments, knowledge, write_access, write_worker
+from . import attachments, memory_workspace, project_memory, write_access, write_worker
 from .access import run_root, worker_permitted
 from .checkpoints import Stages, digest, workspace_snapshot
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .direct import record_exchange
-from .identity import user_key
 from .outputs import files_under
 from .preflight import check
 from .recovery import event_prefix
@@ -130,30 +129,30 @@ async def main(event_id: str) -> None:
             )
         return
     restored = False
-    pending_knowledge: bytes | None = None
+    pending_memory: bytes | None = None
     if saved.get("archive"):
         try:
             storage.bucket.blob(saved["archive"]).download_to_filename(str(archive))
             if resume and digest(archive) != resume["sha256"]:
                 raise ValueError("Continuation checksum mismatch")
-            if resume and resume.get("pending_knowledge"):
-                ref = resume["pending_knowledge"]
-                expected = f"{event_prefix(event_id)}/knowledge-a{attempt - 1}-"
+            if resume and resume.get("pending_memory"):
+                ref = resume["pending_memory"]
+                expected = f"{event_prefix(event_id)}/memory-a{attempt - 1}-"
                 if not ref["key"].startswith(expected) or "/" in ref["key"][len(expected) :]:
                     raise ValueError("Knowledge checkpoint belongs to another attempt")
-                pending_knowledge = storage.read_prefix(
-                    ref["key"], knowledge.pending_limit(settings) + 1
+                pending_memory = storage.read_prefix(
+                    ref["key"], memory_workspace.pending_limit(settings) + 1
                 )
-                if hashlib.sha256(pending_knowledge).hexdigest() != ref["sha256"]:
+                if hashlib.sha256(pending_memory).hexdigest() != ref["sha256"]:
                     raise ValueError("Knowledge checkpoint checksum mismatch")
-                knowledge.decode_pending(pending_knowledge, settings)
+                memory_workspace.decode_pending(pending_memory, settings)
             restore(archive, home)
             restored = True
         except (NotFound, FileNotFoundError, ValueError, tarfile.TarError):
             if resume:
                 saved = dict(request["turn_start"])
                 resume = None
-                pending_knowledge = None
+                pending_memory = None
                 logging.warning("Recovery checkpoint unavailable; repeating work from turn start")
             logging.warning(
                 "Thread checkpoint expired; continuing with the saved brief and bounded transcript"
@@ -180,17 +179,15 @@ async def main(event_id: str) -> None:
         files = await asyncio.to_thread(
             attachments.materialize, storage, data["workdir"], saved.get("thread_files", [])
         )
-    knowledge_base: dict[str, knowledge.Version] = {}
-    knowledge_base = await asyncio.to_thread(
-        knowledge.download,
-        storage,
-        request["project_id"],
-        Path(saved["context"]["workdir"]),
-        settings,
+    memory_base = project_memory.Snapshot.model_validate(
+        request.get("memory", {"head_oid": "", "files": {}})
     )
-    if pending_knowledge:
-        knowledge_base = knowledge.restore_pending(
-            pending_knowledge, Path(saved["context"]["workdir"]), knowledge_base, settings
+    await asyncio.to_thread(
+        memory_workspace.materialize, Path(saved["context"]["workdir"]), memory_base, settings
+    )
+    if pending_memory:
+        memory_base = memory_workspace.restore_pending(
+            pending_memory, Path(saved["context"]["workdir"]), memory_base, settings
         )
     guide_path = Path(saved["context"]["workdir"]) / "knowledge/PROJECT.md"
     saved["context"]["project_md"] = (
@@ -202,7 +199,7 @@ async def main(event_id: str) -> None:
     if current:
         current[0].project_md = saved["context"]["project_md"]
         sessions.save(payload["event"]["channel"], *current)
-    knowledge_result = knowledge.Saved()
+    memory_record: dict[str, Any] = {}
     compute: RecoveryManager | None = None
     stages: Stages | None = None
     sample_task: asyncio.Task[None] | None = None
@@ -313,11 +310,9 @@ async def main(event_id: str) -> None:
             return_scripts=request.get("return_scripts") is True,
             script_manifest=resume.get("script_manifest") if resume else None,
             compute_manager=compute,
-            user_memory=request.get("user_memory", "") if request.get("private") else "",
             project_name=request.get("project_name", ""),
-            conversation_summary=request.get("conversation_memory", ""),
-            knowledge_index=(
-                knowledge_base["INDEX.md"].data.decode() if "INDEX.md" in knowledge_base else ""
+            memory_context=project_memory.context(
+                memory_base, payload["event"].get("text", ""), settings
             ),
             write_access=write_access.instructions(
                 write_access.WriteGrant.model_validate(request["write_grant"])
@@ -386,8 +381,8 @@ async def main(event_id: str) -> None:
             if not current_state:
                 return
             checkpoint_id = uuid4().hex
-            pending = await asyncio.to_thread(knowledge.pending, work, knowledge_base, settings)
-            pending_key = f"{prefix}/knowledge-a{attempt}-{checkpoint_id}.json"
+            pending = await asyncio.to_thread(memory_workspace.pending, work, memory_base, settings)
+            pending_key = f"{prefix}/memory-a{attempt}-{checkpoint_id}.json"
             await asyncio.to_thread(storage.put_if, pending_key, pending, None)
             local = home / f"partial-{checkpoint_id}.tar.gz"
             await asyncio.to_thread(
@@ -409,7 +404,7 @@ async def main(event_id: str) -> None:
                 "archive": key,
                 "sha256": sha,
                 "saved_at": time.time(),
-                "pending_knowledge": {
+                "pending_memory": {
                     "key": pending_key,
                     "sha256": hashlib.sha256(pending).hexdigest(),
                 },
@@ -491,27 +486,23 @@ async def main(event_id: str) -> None:
                 ).encode(),
             )
     if (
-        not knowledge.cancelled(storage, event_id)
+        not memory_workspace.cancelled(storage, event_id)
         and state
         and (agent.completed or (compute and compute.pending))
         and await asyncio.to_thread(worker_permitted, storage, request, saved, settings=settings)
     ):
-        knowledge_result = await asyncio.to_thread(
-            knowledge.save,
-            storage,
-            request["project_id"],
-            state[0].workdir,
-            knowledge_base,
-            settings,
-            event_id=event_id,
-            user_key=user_key(request["principal"]),
-            attempt=attempt,
+        proposal = await asyncio.to_thread(
+            memory_workspace.pending, state[0].workdir, memory_base, settings
         )
-    knowledge_record = {
-        "knowledge": knowledge_result.model_dump(),
-        "knowledge_writes": knowledge_result.writes,
-        "knowledge_reads": agent.runner.knowledge_reads,
-    }
+        proposal_key = (
+            f"{prefix}/memory-proposal.json"
+            if agent.completed
+            else f"{prefix}/memory-a{attempt}-{uuid4().hex}.json"
+        )
+        await asyncio.to_thread(storage.put, proposal_key, proposal)
+        memory_record = {
+            "pending_memory": {"key": proposal_key, "sha256": hashlib.sha256(proposal).hexdigest()}
+        }
     if compute and compute.pending and state:
         script_record = (
             {"script_manifest": agent.runner.script_capture.checkpoint()}
@@ -532,7 +523,7 @@ async def main(event_id: str) -> None:
             "attempt": attempt,
             "outcome": "handoff",
             **script_record,
-            **knowledge_record,
+            **memory_record,
             "archive": key,
             "sha256": digest(archive),
             "model_cost": compute.model_cost,
@@ -575,9 +566,6 @@ async def main(event_id: str) -> None:
     elif saved.get("runtimes"):
         checkpoint["runtimes"] = saved["runtimes"]
     checkpoint["messages"] = saved.get("messages", [])
-    for field in ("conversation_epoch",):
-        if field in saved:
-            checkpoint[field] = saved[field]
     checkpoint["thread_files"] = attachments.merge(saved.get("thread_files", []), agent.delivered)
     record_exchange(
         checkpoint,
@@ -598,7 +586,7 @@ async def main(event_id: str) -> None:
                 "attempt": attempt,
                 "outcome": "complete",
                 "model_cost": compute.model_cost if compute else None,
-                **knowledge_record,
+                **memory_record,
             }
         ).encode(),
     )

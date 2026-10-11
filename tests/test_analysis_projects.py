@@ -11,7 +11,7 @@ from test_analysis_isolation import message
 from pistachio.agents.analysis import direct
 from pistachio.agents.analysis.access import checkpoint_key
 from pistachio.agents.analysis.commands import Command, parse
-from pistachio.agents.analysis.registry import Registry, read_brief
+from pistachio.agents.analysis.registry import Registry
 
 
 @pytest.mark.parametrize(
@@ -46,7 +46,7 @@ async def test_rename_preserves_channel_threads_and_project_content(chat):  # no
     pointer = checkpoint_key(first["thread_key"])
     checkpoint = chat.store.get(pointer)[0]
     before = Registry(chat.store).load()
-    brief = read_brief(chat.store, chat.pid)
+    brief = (await chat.memory_backend.read(chat.pid)).files["PROJECT.md"]
     chat.store.put(f"projects/{chat.pid}/runs/saved/outputs/result.txt", b"saved result")
     chat.decision.reset_mock()
 
@@ -59,7 +59,7 @@ async def test_rename_preserves_channel_threads_and_project_content(chat):  # no
     }
     assert after.bindings == before.bindings
     assert chat.store.get(pointer)[0] == checkpoint
-    assert read_brief(chat.store, chat.pid) == brief
+    assert (await chat.memory_backend.read(chat.pid)).files["PROJECT.md"] == brief
     saved_output = f"projects/{chat.pid}/runs/saved/outputs/result.txt"
     assert chat.store.get(saved_output)[0] == b"saved result"
     chat.decision.assert_not_called()
@@ -133,7 +133,7 @@ async def test_unbound_dm_controls_and_structured_help(chat):  # noqa: F811
         assert "liver" not in reply["notice_text"]
     full = await message(chat, "help all", "13.0")
     assert "• `share <project> @user`" in full["notice_text"]
-    assert "• `remember <text>`" in full["notice_text"]
+    assert "• `memory`" in full["notice_text"]
     chat.decision.assert_not_called()
     chat.test_client.create_job.assert_not_called()
 
@@ -211,7 +211,7 @@ async def test_switch_in_channel_keeps_publication_and_force_requirements(chat):
 async def test_init_selects_new_project_and_offers_switch_back(chat, monkeypatch, suffix):  # noqa: F811
     monkeypatch.setattr(direct, "inventory", lambda *a: {"entries": []})
     old_thread = await message(chat, "Describe this project", "10.0")
-    original_brief = read_brief(chat.store, chat.pid)
+    original_brief = (await chat.memory_backend.read(chat.pid)).files["PROJECT.md"]
     checkpoint = checkpoint_key(old_thread["thread_key"])
     original_context = chat.store.get(checkpoint)[0]
     reply = await message(chat, "init brain gs://lab-data/brain/" + suffix, "11.0")
@@ -224,7 +224,7 @@ async def test_init_selects_new_project_and_offers_switch_back(chat, monkeypatch
     target = doc.find("brain", "alice@example.com")
     assert doc.bound("T1", "D1") == target
     assert chat.store.get(checkpoint)[0] == original_context
-    assert read_brief(chat.store, chat.pid) == original_brief
+    assert (await chat.memory_backend.read(chat.pid)).files["PROJECT.md"] == original_brief
     assert chat.decision.call_args.args[2]["project_name"] == "brain"
 
     await message(chat, "switch liver", "12.0", thread="11.0")

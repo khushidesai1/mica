@@ -1,0 +1,22 @@
+# Repair an exhausted overlay layer stack without changing the pinned filesystem.
+# This only publishes a runtime base; use build-slack-release.yaml before deployment.
+steps:
+  - id: flatten-and-verify-runtime
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        docker pull '${_BASE_IMAGE}'
+        docker inspect '${_BASE_IMAGE}' > /workspace/runtime-before.json
+        docker run --rm --network=none --user=0 -v /workspace:/workspace --entrypoint python '${_BASE_IMAGE}' /workspace/tools/flatten_runtime.py /workspace/runtime-before.json /workspace/runtime-flat.Dockerfile
+        docker build --build-arg 'BASE_IMAGE=${_BASE_IMAGE}' -f /workspace/runtime-flat.Dockerfile -t '${_FLAT_IMAGE}' /workspace
+        docker inspect '${_FLAT_IMAGE}' > /workspace/runtime-after.json
+        docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_FLAT_IMAGE}' /workspace/tools/flatten_runtime.py /workspace/runtime-before.json /workspace/runtime-after.json --verify
+        docker run --rm --network=none -e OMP_NUM_THREADS=1 -v /workspace:/workspace:ro --entrypoint /opt/sap/bin/python '${_FLAT_IMAGE}' /workspace/scripts/check_spatial_release.py
+images: ['${_FLAT_IMAGE}']
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_8
+  diskSizeGb: 200
+timeout: 1800s

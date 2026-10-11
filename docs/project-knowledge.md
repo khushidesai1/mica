@@ -1,3 +1,5 @@
+> Superseded by [GitHub project memory](project-memory.md). The GCS knowledge store and its commands are removed. The material below describes the previous implementation.
+
 # Project knowledge
 
 Project knowledge lets analysis workers retain verified data facts, results and their definitions,

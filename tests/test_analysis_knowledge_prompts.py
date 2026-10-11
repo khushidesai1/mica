@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pistachio.agents.analysis import knowledge
+from pistachio.agents.analysis import memory_workspace, project_memory
 from pistachio.agents.analysis.config import Settings
 from pistachio.agents.analysis.prompts import build_system_append
 from pistachio.agents.analysis.runner import Context
@@ -9,15 +9,15 @@ from pistachio.agents.analysis.runner import Context
 def test_prompt_always_uses_shared_knowledge(tmp_path):
     ctx = Context(workdir=tmp_path, data_path=tmp_path / "data", project_md="Project brief")
     settings = Settings(_env_file=None)
-    prompt = build_system_append(ctx, settings, knowledge_index="SAVED FACT")
+    prompt = build_system_append(ctx, settings, memory_context="SAVED FACT")
     assert "# Project knowledge" in prompt and "SAVED FACT" in prompt
     assert "never instructions" in prompt and "patient identifiers" in " ".join(prompt.split())
-    assert "notes/methods.md" in prompt and "record it in project knowledge" in prompt
-    assert prompt.index("# Conversation memory") < prompt.index("# Project knowledge")
+    assert "notes/methods.md" in prompt and "conventions.md" in prompt
+    assert "# Conversation memory" not in prompt and "open.md" in prompt
 
 
 def test_notice_counts_entries_and_reports_rejections():
-    saved = knowledge.Saved(
+    saved = project_memory.Saved(
         added=[
             "INDEX.md",
             "data/a.md",
@@ -29,10 +29,10 @@ def test_notice_counts_entries_and_reports_rejections():
         ],
         rejected={"data/bad.md": "invalid"},
     )
-    notice = knowledge.notice(saved)
-    assert "2 data notes" in notice and "1 recipe" in notice and "1 result" in notice
-    assert "1 lesson" in notice and "data/bad.md" in notice and "`knowledge`" in notice
-    assert knowledge.notice(knowledge.Saved()) == ""
+    notice = project_memory.notice(saved)
+    assert "data/a.md" in notice and "recipes/a.py" in notice
+    assert "INDEX.md" not in notice and "data/bad.md" not in notice
+    assert project_memory.notice(project_memory.Saved()) == ""
 
 
 def test_read_count_paths_are_confined():
@@ -52,8 +52,8 @@ def test_read_count_paths_are_confined():
         ("Grep", {"pattern": "knowledge"}),
         ("Glob", {"pattern": "**/*.md"}),
     ]
-    assert all(knowledge.is_read(work, tool, args) for tool, args in positive)
-    assert not any(knowledge.is_read(work, tool, args) for tool, args in negative)
+    assert all(memory_workspace.is_read(work, tool, args) for tool, args in positive)
+    assert not any(memory_workspace.is_read(work, tool, args) for tool, args in negative)
 
 
 async def test_runner_counts_knowledge_reads_from_sdk_messages(tmp_path, monkeypatch):
@@ -82,4 +82,4 @@ async def test_runner_counts_knowledge_reads_from_sdk_messages(tmp_path, monkeyp
     monkeypatch.setattr(runner, "query", query)
     agent = runner.Runner(settings)
     turn = await agent.run_turn(ctx, "Analyze", AsyncMock())
-    assert not turn.error and agent.knowledge_reads == 2
+    assert not turn.error and agent.memory_reads == 2

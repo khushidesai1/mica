@@ -8,7 +8,7 @@ import pytest
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_slack import bot, event, send  # noqa: F401
 
-from pistachio.agents.analysis import commands, script_capture, user_memory, user_settings
+from pistachio.agents.analysis import commands, script_capture, user_settings
 from pistachio.agents.analysis.config import Settings
 from pistachio.agents.analysis.runner import Context, TurnResult, build_options
 from pistachio.agents.analysis.storage import Conflict, LocalStorage
@@ -52,9 +52,9 @@ def test_settings_default_override_cas_and_old_retry(tmp_path, monkeypatch):
     user_settings.set_scripts(store, "a@lab.org", False, "off")
     user_settings.set_scripts(store, "a@lab.org", True, "on")
     assert not user_settings.effective(store, "a@lab.org", True)
-    assert user_settings.key("a@lab.org") != user_memory.key("a@lab.org")
+    assert user_settings.key("a@lab.org") != "legacy-personal-memory"
     # Model-produced memory can never become a trusted preference.
-    store.put(user_memory.key("b@lab.org"), b'{"return_scripts": true}')
+    store.put("legacy-personal-memory", b'{"return_scripts": true}')
     assert not user_settings.effective(store, "b@lab.org")
 
 

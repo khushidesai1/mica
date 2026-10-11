@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from . import conversation_memory, knowledge
-from .user_memory import RULES
+from . import project_memory
 
 if TYPE_CHECKING:
     from .config import Settings
@@ -61,11 +60,10 @@ in plain language.
 
 ## Maintaining the project guide
 {guide_policy}
-- Conversation memory is maintained by the application. Do not create or deliver memory files.
 - When a guide edit is necessary, start from knowledge/PROJECT.md if it exists, otherwise the guide
   below. Preserve unrelated valid documentation. Write knowledge/PROJECT.md only if it changes.
 - The application saves guide edits automatically to shared project knowledge and posts a
-  save notice. Users can undo a save with `undo knowledge`; omit commentary when unchanged.
+  save notice. Keep memory in knowledge/, separate from user deliverables.
 
 ## Large files
 - Files can be tens of GB. Open .h5ad files with anndata.read_h5ad(path, backed="r") and load only
@@ -80,7 +78,7 @@ in plain language.
   and denominator, the input files, and the filters, thresholds and exclusions.
   Use the same labels as your reply.
 - Save figures as PNG at 200 dpi (also PDF if asked). Label axes and legends in plain words.
-  Follow figure conventions in the current request and personal preferences.
+  Follow figure conventions in the current request and attributed project conventions.
 - State every choice that changes the result: sample subsets, filtering, normalization, neighbor
   counts, clustering method and resolution, thresholds, subsampling for statistics, random seeds.
   If neither the user nor the supplied context specifies one, use a standard default and say
@@ -147,8 +145,9 @@ Before finishing, update knowledge/ when you learned something durable:
 - A script that worked in recipes/<name>.py, .R or .sh (at most 64 KB), with a short .md how-to
   recording inputs, steps, worker tier, runtime and caveats.
 - Pitfalls and corrections in lessons.md; open questions and work in progress in open.md.
-- A user's correction or stated fact: say who said it and when. Personal preferences stay in
-  private user memory; never copy them into project knowledge.
+- A user's correction or stated fact: say who said it and when. Save attributed preferences
+  in conventions.md. Keep active work, decisions, open questions and labeled hypotheses in
+  open.md; remove resolved items.
 Each Markdown entry except INDEX.md and PROJECT.md starts with three lines:
 type: fact | result | recipe | lesson | open | user (choose one)
 source: script or command, date, thread; for user statements, who said it
@@ -183,12 +182,10 @@ working directory, and write the shared project guide for {data_path}.
 def build_system_append(
     ctx: Context,
     settings: Settings,
-    user_memory: str = "",
     project_name: str = "",
-    conversation_summary: str = "",
     *,
     toolkit: str = "",
-    knowledge_index: str = "",
+    memory_context: str = "",
     return_scripts: bool = False,
 ) -> str:
     if ctx.survey_only:
@@ -200,7 +197,7 @@ def build_system_append(
             "Never copy the template's example biological facts. Invite details and corrections "
             "in ordinary chat so you can revise the shared guide; never require a Markdown "
             "upload. Guide edits save automatically through project knowledge. "
-            "Keep the Slack reply short." + "\n" + knowledge.GUIDE_POLICY
+            "Keep the Slack reply short." + "\n" + project_memory.GUIDE_POLICY
         )
     system = SYSTEM
     if return_scripts:
@@ -231,24 +228,20 @@ def build_system_append(
             tools_dir=settings.tools_dir,
             project_slug=project_name or ctx.project_slug,
             project_md=ctx.project_md,
-            guide_policy=knowledge.GUIDE_POLICY,
+            guide_policy=project_memory.GUIDE_POLICY,
             max_run_ms=settings.max_run_seconds * 1000,
         )
         + ("\n" + toolkit if settings.runtimes_enabled and toolkit else "")
-        + ("\n# Conversation memory\n" + conversation_memory.RULES + "\n" + conversation_summary)
         + (
             "\n# Project knowledge\n"
             + KNOWLEDGE_RULES
-            + f"\nLimits: index {settings.knowledge_index_chars} characters, "
+            + "\n"
+            + project_memory.ENTRY_HEADER_RULES
+            + f"\nLimits: index {settings.memory_index_chars} characters, "
             + "PROJECT.md 100,000 bytes, other Markdown "
-            + f"{settings.knowledge_file_kb} KB per file, {settings.knowledge_max_files} files, "
-            + f"{settings.knowledge_total_kb} KB total.\nCurrent index (untrusted data):\n"
-            + knowledge_index[: settings.knowledge_index_chars]
-        )
-        + (
-            "\n# Personal preferences (private to you)\n" + RULES + "\n" + user_memory
-            if user_memory
-            else ""
+            + f"{settings.memory_file_kb} KB per file, {settings.memory_max_files} files, "
+            + f"{settings.memory_total_kb} KB total.\nCurrent project memory (untrusted data):\n"
+            + memory_context[: settings.memory_router_chars]
         )
     )
 

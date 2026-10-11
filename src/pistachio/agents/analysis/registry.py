@@ -16,7 +16,6 @@ from .identity import normalize
 from .storage import Storage, update_model
 
 REGISTRY_KEY = "projects/_registry/registry.json"
-NO_BRIEF = "No brief yet. Rely on listing and inspecting the data folder."
 
 
 def now() -> str:
@@ -35,7 +34,6 @@ class ProjectEntry(BaseModel):
     members: set[str] = Field(default_factory=set)
     data_uri: str
     created_at: str = Field(default_factory=now)
-    knowledge_github: bool | None = None
     access_revision: int = 0
     published_channels: set[str] = Field(default_factory=set)
 
@@ -227,11 +225,3 @@ class Registry:
 
         updated = update_model(self.storage, REGISTRY_KEY, RegistryDoc, apply)
         return updated.applied_events[event_id].result
-
-
-def read_brief(storage: Storage, project_id: str) -> tuple[str, str | None]:
-    from .config import Settings
-    from .knowledge import load
-
-    guide = load(storage, project_id, Settings()).get("PROJECT.md")
-    return (guide.data.decode(), guide.generation) if guide else (NO_BRIEF, None)

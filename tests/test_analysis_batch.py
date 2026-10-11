@@ -52,6 +52,7 @@ def bridge(monkeypatch, settings, repository, tmp_path):
         _env_file=None,
         access_mode="mapped",
         memory_auto_edit=False,
+        memory_repo="owner/memory",
         data_buckets="lab-data",
         storage="local",
     )
@@ -74,6 +75,13 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     client.get_job.side_effect = get
     monkeypatch.setattr(batch.batch_v1, "BatchServiceClient", lambda: client)
     storage = LocalStorage(tmp_path / "storage")
+    from pistachio.agents.analysis import project_memory
+    from tests.fake_github import FakeGitHub
+
+    github = FakeGitHub()
+    memory = project_memory.GitHubMemory(agent_settings, client=github.client)
+    storage.memory_github = github
+    monkeypatch.setattr(project_memory, "GitHubMemory", lambda settings: memory)
     monkeypatch.setattr(batch, "GCSStorage", lambda bucket: storage)
     monkeypatch.setattr(slack_analysis, "GCSStorage", lambda bucket: storage)
     monkeypatch.setattr(BatchBridge, "schedule", AsyncMock())
@@ -94,6 +102,7 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     result = BatchBridge(settings, repository)
     result.test_client, result.test_states, result.test_slack = client, states, slack
     result.store, result.pid = storage, pid
+    result.memory_backend, result.github = memory, github
     return result
 
 
@@ -455,7 +464,7 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
     grant = access.Grant(
         "alice@example.com", True, {}, Registry(storage).load(), pid, True, "T1:D1"
     )
-    ctx.workdir = Path(access.private_workdir(settings, grant, "thread"))
+    ctx.workdir = Path(access.private_workdir(settings, grant.email, grant.project_id, "thread"))
     storage.put(
         pointer,
         json.dumps({"context": asdict(ctx), "turn": 0, "is_init": False}, default=str).encode(),
@@ -477,19 +486,32 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
                     "project_id": pid,
                     "private": True,
                     "access_signature": grant.signature,
-                    "conversation_memory": "User hypothesis: cold-start memory",
-                    "conversation_epoch": {"epoch": 0, "owner_epoch": 0},
+                    "memory": {
+                        "head_oid": "a" * 40,
+                        "files": {
+                            "PROJECT.md": {
+                                "oid": "b" * 40,
+                                "text": "Frozen original brief"
+                                if turn == 1
+                                else "Changed shared guide",
+                            },
+                            "open.md": {
+                                "oid": "c" * 40,
+                                "text": (
+                                    "type: open\nsource: Alice\nstatus: current\n\n"
+                                    "User hypothesis: cold-start memory"
+                                ),
+                            },
+                        },
+                    },
                 }
             ).encode(),
         )
         await batch_worker.main(f"{turn:032x}")
         saved = json.loads(storage.get(pointer)[0])
         assert saved["turn"] == turn
-        assert runner_contexts[-1]["conversation_summary"] == "User hypothesis: cold-start memory"
-        if turn > 1:
-            assert saved["conversation_epoch"] == {"epoch": 0, "owner_epoch": 0}
-        saved["conversation_epoch"] = {"epoch": 0, "owner_epoch": 0}
-        storage.put(pointer, json.dumps(saved).encode())
+        assert "User hypothesis: cold-start memory" in runner_contexts[-1]["memory_context"]
+        assert "conversation_epoch" not in saved
         if upload_failure and turn == 1:
             assert "couldn't confirm their delivery to Slack" in saved["messages"][-1]["assistant"]
             assert saved["messages"][-1]["success"] is False
@@ -505,17 +527,6 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
             storage.put(pointer, json.dumps(saved).encode())
         if direct_revision and turn > 1:
             assert "Use sample B" in runner.calls[-1][2]
-        from pistachio.agents.analysis import knowledge
-
-        knowledge.commit(
-            storage,
-            pid,
-            {"PROJECT.md": b"Changed shared guide"},
-            knowledge.load(storage, pid, settings),
-            settings,
-            event_id=f"guide-{turn}",
-            user_key="u",
-        )
         shutil.rmtree(home)  # End this disposable worker; preserve only GCS.
         home.mkdir()
         if turn == 2:

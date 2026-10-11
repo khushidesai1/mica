@@ -73,7 +73,7 @@ class Context:
     workdir: Path
     data_path: Path
     project_slug: str = "local"
-    project_md: str = "No brief yet. Rely on listing and inspecting the data folder."
+    project_md: str = "No guide yet."
     brief_generation: str | None = None
     session_id: str | None = None
     thread_ts: str = "local"
@@ -97,9 +97,7 @@ def build_options(
     settings: Settings,
     *,
     sandbox: bool = True,
-    user_memory: str = "",
-    conversation_summary: str = "",
-    knowledge_index: str = "",
+    memory_context: str = "",
     return_scripts: bool = False,
     capture: script_capture.Capture | None = None,
     project_name: str = "",
@@ -270,11 +268,9 @@ def build_options(
             "append": prompts.build_system_append(
                 ctx,
                 settings,
-                user_memory,
                 project_name,
-                conversation_summary,
                 toolkit=manager.toolkit() if manager else "",
-                knowledge_index=knowledge_index,
+                memory_context=memory_context,
                 return_scripts=return_scripts,
             )
             + "\nCurrent GCS write access (application-authorized):\n"
@@ -427,9 +423,7 @@ class Runner:
         settings: Settings,
         *,
         sandbox: bool = True,
-        user_memory: str = "",
-        conversation_summary: str = "",
-        knowledge_index: str = "",
+        memory_context: str = "",
         return_scripts: bool = False,
         script_manifest: dict[str, Any] | None = None,
         project_name: str = "",
@@ -438,13 +432,12 @@ class Runner:
         compute_manager: RecoveryManager | None = None,
     ) -> None:
         self.settings, self.sandbox = settings, sandbox
-        self.user_memory, self.project_name = user_memory, project_name
-        self.conversation_summary = conversation_summary
+        self.project_name = project_name
         self.return_scripts = return_scripts
         self.script_manifest = script_manifest
         self.script_capture: script_capture.Capture | None = None
-        self.knowledge_index = knowledge_index
-        self.knowledge_reads = 0
+        self.memory_context = memory_context
+        self.memory_reads = 0
         self.write_access = write_access
         self.compute = compute_manager
         self.last_result: TurnResult | None = None
@@ -509,9 +502,7 @@ class Runner:
                         ctx,
                         self.settings,
                         sandbox=self.sandbox,
-                        user_memory=self.user_memory,
-                        conversation_summary=self.conversation_summary,
-                        knowledge_index=self.knowledge_index,
+                        memory_context=self.memory_context,
                         return_scripts=self.return_scripts,
                         capture=self.script_capture,
                         project_name=self.project_name,
@@ -532,9 +523,9 @@ class Runner:
                         if isinstance(msg, AssistantMessage):
                             for block in msg.content:
                                 if isinstance(block, ToolUseBlock):
-                                    from .knowledge import is_read
+                                    from .memory_workspace import is_read
 
-                                    self.knowledge_reads += int(
+                                    self.memory_reads += int(
                                         is_read(ctx.workdir, block.name, block.input)
                                     )
                                     result.run_log.append(

@@ -24,7 +24,10 @@ def seed_project(
 
     pid = registry.update(f"seed:{owner}:{name}:{channel}", owner, "seed", change)
     if brief is not None:
-        store.put(f"projects/{pid}/PROJECT.md", brief)
+        if hasattr(store, "memory_github"):
+            store.memory_github.seed({f"projects/{pid}/PROJECT.md": brief.decode()})
+        else:
+            store.put(f"projects/{pid}/PROJECT.md", brief)
     return pid
 
 

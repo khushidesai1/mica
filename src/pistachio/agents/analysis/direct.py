@@ -18,15 +18,13 @@ from . import (
     access,
     attachments,
     commands,
-    conversation_memory,
-    knowledge,
-    user_memory,
+    project_memory,
     write_access,
 )
 from .data_links import message_text
 from .help_text import PROJECT_HELP
-from .identity import post, user_key
-from .registry import Registry, read_brief
+from .identity import post
+from .registry import Registry
 from .slack_format import chunks, to_mrkdwn
 from .storage import Storage
 from .survey import inventory, inventory_uri
@@ -36,11 +34,7 @@ if TYPE_CHECKING:
     from .batch import BatchBridge
 
 SYSTEM = (
-    user_memory.RULES
-    + "\n"
-    + knowledge.GUIDE_POLICY
-    + "\n"
-    + conversation_memory.RULES
+    project_memory.GUIDE_POLICY
     + "\n"
     + """You are Pistachio, a friendly, laid-back lab assistant in Slack.
 Handle conversation directly.
@@ -100,13 +94,10 @@ previous model reply.
 An answer to your own clarification is context, not automatically permission for computation;
 use the conversation to determine whether the user is continuing a requested analysis.
 
-Leave guide=null unless a project-guide edit is warranted by the policy above. Never use the
-project guide as conversation memory. When editing, return the complete revised guide in guide.
-The application saves it immediately to shared knowledge/PROJECT.md and posts its own notice;
-undo knowledge reverts a save. Users can supply corrections in ordinary chat without uploading
-Markdown. On init, choose reply and provide the initial guide from the known data location and
-file/folder inventory, even when that inventory is unavailable. Filename listings do not verify
-schemas, biology or counts; state their limited coverage. Omit guide commentary when unchanged.
+Leave guide=null except on init. Guide corrections and other durable facts are saved by the
+post-turn memory editor. On init, choose reply and provide the initial guide from the known
+data location and file/folder inventory, even when inventory is unavailable. Filename listings
+do not verify schemas, biology or counts; describe their limited coverage.
 Write reply like a relaxed labmate: use plain words, contractions, and short conversational
 paragraphs. Lead with the answer in a sentence or two; a short answer can end there. Default to
 prose for questions, clarifications, apologies, and failures. Use bullets only for a genuine
@@ -163,8 +154,7 @@ class Decision(BaseModel):
         default=None,
         max_length=99_999,
         description=(
-            "Default null. Complete revised brief only for init, a user-requested brief edit, "
-            "or a necessary file-guide detail. "
+            "Default null. Complete initial project guide only for init. "
             "Exclude observations, hypotheses, results, and TODOs. "
             "Leave null for routine messages, results, and unchanged content."
         ),
@@ -186,7 +176,7 @@ async def decide(
     event_id: str = "",
     has_archive: bool = False,
 ) -> Decision:
-    system = SYSTEM + WORKER_POLICY + "\n" + knowledge.ROUTER_RULES
+    system = SYSTEM + WORKER_POLICY + "\n" + project_memory.ROUTER_RULES
     schema = Decision.model_json_schema()
     invalid_calls = 0
     async with httpx.AsyncClient(timeout=65) as client:
@@ -338,37 +328,10 @@ async def show_context(
     return True
 
 
-async def download_brief(bridge: BatchBridge, event: dict[str, Any]) -> bytes:
-    files = event["files"]
-    if len(files) != 1 or not files[0].get("name", "").lower().endswith(".md"):
-        raise ValueError("Attach one UTF-8 .md file with brief.")
-    url = attachments.validate_url(files[0].get("url_private_download", ""))
-    async with (
-        httpx.AsyncClient(timeout=20, follow_redirects=False) as client,
-        client.stream(
-            "GET",
-            url,
-            headers={
-                "Authorization": f"Bearer {bridge.app.slack_bot_token}",
-            },
-        ) as response,
-    ):
-        if response.status_code != 200:
-            raise ValueError("Slack did not return the attached file.")
-        data = bytearray()
-        async for chunk in response.aiter_bytes(8192):
-            data.extend(chunk)
-            if len(data) >= 100_000:
-                raise ValueError("The brief must be under 100 KB.")
-    bytes(data).decode("utf-8")
-    return bytes(data)
-
-
 async def handle(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage
 ) -> bool:
     """Return False only for an authorized computation with a durable thread context."""
-    from . import knowledge_commands
     from .transfers import Transfers
 
     event = record["payload"]["event"]
@@ -378,30 +341,32 @@ async def handle(
         return await finish(bridge, event_id, record, access.deny_text(grant))
     cmd = commands.parse(event.get("text", ""))
     files = event.get("files") or []
-    if files and cmd and cmd.name in {"init", "save brief"}:
-        raise ValueError("Send files in their own message, not with init or save brief.")
+    if files and cmd and cmd.name == "init":
+        raise ValueError("Send files in their own message, not with init.")
     registry = Registry(storage)
-    if cmd and cmd.name in knowledge_commands.NAMES:
-        knowledge_reply, saved_knowledge = await asyncio.to_thread(
-            knowledge_commands.run, cmd, grant, storage, event_id, bridge.settings
-        )
-        if saved_knowledge and saved_knowledge.changes_key:
-            record["knowledge_changes_key"] = saved_knowledge.changes_key
-        return await finish(bridge, event_id, record, knowledge_reply)
-    if cmd and cmd.name in {"memory context", "forget context"}:
+    if cmd and commands.removed_memory(cmd):
+        return await finish(bridge, event_id, record, commands.MEMORY_CHANGED)
+    if cmd and cmd.name in {"memory", "brief"}:
         if not grant.allowed:
             return await finish(bridge, event_id, record, access.deny_text(grant))
-        context_reply = await asyncio.to_thread(
-            conversation_memory.command, cmd, grant, storage, record["thread_key"], event_id
+        snapshot = await project_memory.GitHubMemory(bridge.settings).read(
+            grant.project_id, event_id=event_id
         )
-        assert context_reply is not None
-        if cmd.name == "memory context":
-            return await show_context(bridge, event_id, record, storage, context_reply)
-        return await finish(bridge, event_id, record, context_reply)
-    if cmd:
-        memory_reply = await asyncio.to_thread(user_memory.command, cmd, grant, storage, event_id)
-        if memory_reply is not None:
-            return await finish(bridge, event_id, record, memory_reply)
+        if snapshot is None:
+            return await finish(bridge, event_id, record, "Project memory is unavailable.")
+        paths = ["PROJECT.md"] if cmd.name == "brief" else list(cmd.args) or ["INDEX.md", "open.md"]
+        for path in paths:
+            project_memory.valid_path(path)
+        contents = "\n\n".join(
+            f"{path}:\n{snapshot.files[path].text}" for path in paths if path in snapshot.files
+        )
+        if cmd.name == "memory" and not cmd.args and "INDEX.md" not in snapshot.files:
+            listing = "\n".join(f"• {path}" for path in sorted(snapshot.files))
+            contents = "\n\n".join(part for part in (listing, contents) if part)
+
+        return await show_context(
+            bridge, event_id, record, storage, contents or "No project memory saved yet."
+        )
     if cmd and cmd.name != "init":
         reply = await asyncio.to_thread(
             commands.run, cmd, grant, registry, bridge.app, record, event_id, bridge.settings
@@ -460,31 +425,20 @@ async def handle(
             "Please use the AtoMx login button instead, and consider changing that password. "
             "The original message is still in Slack.",
         )
-    conversation_doc, _ = await asyncio.to_thread(
-        conversation_memory.load, storage, grant, record["thread_key"]
-    )
-    record.setdefault("conversation_epoch", conversation_memory.token(conversation_doc))
-    if not await asyncio.to_thread(
-        conversation_memory.is_current, storage, grant, record["thread_key"], record
-    ):
-        return await finish(
-            bridge, event_id, record, "Memory changed. Send a new request to use fresh context."
-        )
-    state = await asyncio.to_thread(
-        access.fresh_private_state, storage, grant, bridge.settings, record["thread_key"]
-    )
+    state = access.read_state(storage, grant)
+    backend = project_memory.GitHubMemory(bridge.settings)
+    memory = await backend.read(grant.project_id, event_id=event_id)
     ctx = state.get("context")
     if not ctx:
-        brief, generation = await asyncio.to_thread(read_brief, storage, grant.project_id)
         uri = urlsplit(grant.project.data_uri)
         thread = event.get("thread_ts") or event["ts"]
         ctx = dict(
             workdir=(
                 access.private_workdir(
                     bridge.settings,
-                    grant,
+                    grant.email,
+                    grant.project_id,
                     record["thread_key"],
-                    record["conversation_epoch"],
                 )
                 if grant.private
                 else str(
@@ -493,32 +447,19 @@ async def handle(
             ),
             data_path=str(bridge.settings.data_mount_root / uri.netloc / uri.path.lstrip("/")),
             project_slug=grant.project_id,
-            project_md=brief,
-            brief_generation=generation,
+            project_md=project_memory.NO_GUIDE,
             session_id=None,
             thread_ts=thread,
             survey_only=False,
         )
         state.update(context=ctx, turn=0, is_init=is_init, messages=[])
-    guide_versions = await asyncio.to_thread(
-        knowledge.load, storage, grant.project_id, bridge.settings
-    )
-    current_guide = guide_versions.get("PROJECT.md")
-    ctx["project_md"] = current_guide.data.decode() if current_guide else "No project guide yet."
-    ctx["brief_generation"] = current_guide.generation if current_guide else None
-    if "guide_base" not in record:
-        record["guide_base"] = (
-            {"data": current_guide.data.decode(), "generation": current_guide.generation}
-            if current_guide
-            else None
-        )
-    if cmd and cmd.name in {"save brief", "clean brief"}:
-        return await finish(
-            bridge,
-            event_id,
-            record,
-            "The project guide now saves automatically. Use `undo knowledge` to revert a change.",
-        )
+    guide = memory.files.get("PROJECT.md") if memory else None
+    ctx["project_md"] = guide.text if guide else project_memory.NO_GUIDE
+    if is_init and "memory_init_base" not in record and memory is not None:
+        # Only the guide base is needed for init CAS; do not put a 1 MiB project in Firestore.
+        record["memory_init_base"] = project_memory.Snapshot(
+            head_oid=memory.head_oid, files={"PROJECT.md": guide} if guide else {}
+        ).model_dump()
     if cmd and cmd.name in {
         "transfer",
         "transfers",
@@ -532,8 +473,7 @@ async def handle(
         )
         reply = await transfer_service.command(cmd, grant, record, event_id)
         return await finish(bridge, event_id, record, reply)
-    replace_brief = bool(files and cmd and cmd.name == "brief")
-    if files and not replace_brief:
+    if files:
         if record.get("attachments_access", grant.signature) != grant.signature:
             return await finish(
                 bridge, event_id, record, "Project access changed. Send a new request."
@@ -559,17 +499,7 @@ async def handle(
             state.get("thread_files", []), record["attachments"]
         )
     current_ids = {f["id"] for f in record.get("attachments", [])}
-    if replace_brief:
-        data = await download_brief(bridge, event)
-        decision = Decision(route="reply", reply="Updated the project guide.", guide=data.decode())
-    elif cmd and cmd.name == "brief":
-        await asyncio.to_thread(
-            storage.put, access.checkpoint_key(record["thread_key"]), json.dumps(state).encode()
-        )
-        return await show_context(
-            bridge, event_id, record, storage, "Project guide:\n" + ctx["project_md"]
-        )
-    elif record.get("direct_decision"):
+    if record.get("direct_decision"):
         decision = Decision.model_validate(record["direct_decision"])
     else:
         await bridge.notify(event_id, record, "replying", "Thinking…")
@@ -585,22 +515,13 @@ async def handle(
                 write_access.status, storage, grant.project_id, bridge.settings
             ),
             "recent_messages": state.get("messages", []),
-            "conversation_memory": conversation_doc.summary,
         }
-        model_context["project_knowledge"] = await asyncio.to_thread(
-            knowledge.router_context, storage, grant.project_id, text, bridge.settings
-        )
+        model_context["project_memory"] = project_memory.context(memory, text, bridge.settings)
         from .calibration import history
 
         worker_history = await asyncio.to_thread(history, storage, grant.project_id)
         if worker_history:
             model_context["worker_history"] = worker_history
-        memory_text = ""
-        if grant.private:
-            memory_doc = await asyncio.to_thread(user_memory.load, storage, grant.email)
-            memory_text = user_memory.render(memory_doc, grant.doc, grant.email, text)
-            if not is_init:
-                model_context["user_memory"] = memory_text
         if is_init:
             assert cmd
             settings, _ = await asyncio.to_thread(bridge.resolve_data, record)
@@ -629,13 +550,7 @@ async def handle(
             current = await asyncio.to_thread(
                 access.resolve, bridge.app, bridge.settings, storage, record
             )
-            if (
-                not current.allowed
-                or current.signature != grant.signature
-                or not await asyncio.to_thread(
-                    conversation_memory.is_current, storage, current, record["thread_key"], record
-                )
-            ):
+            if not current.allowed or current.signature != grant.signature:
                 return await finish(
                     bridge, event_id, record, "Project access changed. Send a new request."
                 )
@@ -672,13 +587,7 @@ async def handle(
             current = await asyncio.to_thread(
                 access.resolve, bridge.app, bridge.settings, storage, record
             )
-            if (
-                not current.allowed
-                or current.signature != grant.signature
-                or not await asyncio.to_thread(
-                    conversation_memory.is_current, storage, current, record["thread_key"], record
-                )
-            ):
+            if not current.allowed or current.signature != grant.signature:
                 return await finish(
                     bridge, event_id, record, "Project access changed. Send a new request."
                 )
@@ -705,13 +614,6 @@ async def handle(
             decision = listed
         if is_init and (decision.route != "reply" or decision.guide is None):
             raise ValueError("Could not draft the initial brief. Please retry init in this thread.")
-        if is_init and memory_text:
-            # Keep suggestions outside the draft and out of the draft-generating model call.
-            suggestions = (
-                "\nFrom your private memory (please confirm before using here):\n"
-                + memory_text[:900]
-            )
-            decision.reply = decision.reply[:2400] + suggestions
         record["direct_decision"] = decision.model_dump()
         record["decision_access"] = grant.signature
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
@@ -723,50 +625,39 @@ async def handle(
     if (
         not current.allowed
         or current.signature != grant.signature
-        or not await asyncio.to_thread(
-            conversation_memory.is_current, storage, current, record["thread_key"], record
-        )
         or (record.get("decision_access") and record["decision_access"] != current.signature)
     ):
         return await finish(bridge, event_id, record, "Project access changed. Send a new request.")
-    if decision.guide is not None:
-        base_record = record.get("guide_base")
-        base = (
-            {
-                "PROJECT.md": knowledge.Version(
-                    base_record["data"].encode(), base_record["generation"]
-                )
-            }
-            if base_record
-            else {}
-        )
-        saved_guide = await asyncio.to_thread(
-            knowledge.commit,
-            storage,
-            grant.project_id,
-            {"PROJECT.md": decision.guide.encode()},
-            base,
-            bridge.settings,
-            event_id=f"{event_id}:guide",
-            user_key=user_key(grant.email),
-        )
-        record["knowledge_changes_key"] = saved_guide.changes_key
-        latest = await asyncio.to_thread(knowledge.load, storage, grant.project_id, bridge.settings)
-        guide = latest.get("PROJECT.md")
-        ctx.update(
-            project_md=guide.data.decode() if guide else "No project guide yet.",
-            brief_generation=guide.generation if guide else None,
-        )
-        notice = knowledge.notice(saved_guide)
-        if notice and not record.get("guide_notified"):
-            await post(
-                bridge.app.slack_bot_token,
-                event["channel"],
-                event.get("thread_ts") or event["ts"],
-                notice,
-                event_id=f"{event_id}:guide-notice",
+    if is_init and decision.guide is not None:
+        if bridge.settings.memory_repo:
+            if memory is None:
+                raise RuntimeError("Project memory is unavailable; retry init")
+            base = project_memory.Snapshot.model_validate(record["memory_init_base"])
+            saved_guide = await backend.commit(
+                grant.project_id,
+                base,
+                {"PROJECT.md": decision.guide},
+                source="init",
+                event_id=event_id,
+                author_line=f"Speaker: {grant.email}",
             )
-            record["guide_notified"] = True
+            if saved_guide.rejected:
+                raise ValueError("Initial project guide was rejected")
+            from . import memory_compaction
+
+            await memory_compaction.enqueue(bridge, grant.project_id, saved_guide)
+            record["memory_init_saved"] = saved_guide.model_dump()
+            notice = project_memory.notice(saved_guide)
+            if notice and not record.get("guide_notified"):
+                await post(
+                    bridge.app.slack_bot_token,
+                    event["channel"],
+                    event.get("thread_ts") or event["ts"],
+                    notice,
+                    event_id=f"memory-notice:{saved_guide.commit_oid}",
+                )
+                record["guide_notified"] = True
+        ctx["project_md"] = decision.guide
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
     if decision.route == "reply":
         record_exchange(
@@ -808,7 +699,15 @@ async def handle(
         else:
             selector = current.doc.selector(grant.project_id, grant.email)
             selection = f"Project ready: {grant.project.name}. Select it with `switch {selector}`."
-        reply = selection + "\n\n" + decision.reply + "\n\n" + PROJECT_HELP
+        reply = (
+            selection
+            + "\n\n"
+            + decision.reply
+            + "\n\n"
+            + PROJECT_HELP
+            + "\n\n"
+            + project_memory.PRIVACY
+        )
     completed = await finish(bridge, event_id, record, reply)
     record["memory_reply"] = decision.reply
     return completed
