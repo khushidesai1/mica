@@ -253,3 +253,35 @@ def test_help_explains_commands_optional_expiry_and_write_limits(grants, text):
         assert required in reply
     if text in {"help write", "write help"}:
         assert "future runs" in reply and "cannot be overwritten or deleted" in reply
+
+
+def test_write_access_log_identifies_grant_without_prompt_or_file_content(grants, caplog):
+    store, pid, settings = grants
+    run(grants, "write grant liver gs://lab-data/liver/output/")
+    grant = write_access.active(store, pid, settings)
+    with caplog.at_level("INFO"):
+        write_access.log_turn("a" * 32, grant)
+        write_access.log_turn("b" * 32, None)
+    messages = [
+        r.getMessage() for r in caplog.records if r.getMessage().startswith("write_access ")
+    ]
+    assert messages == [
+        f"write_access event={'a' * 32} grant={grant.id[:8]} uri=gs://lab-data/liver/output/",
+        f"write_access event={'b' * 32} grant=none uri=none",
+    ]
+
+
+def test_store_instructions_describe_layout_current_grant_and_confirmed_uris(grants):
+    store, pid, settings = grants
+    run(grants, "write grant liver gs://lab-data/liver/output/")
+    text = write_access.instructions(write_access.active(store, pid, settings))
+    for phrase in [
+        "outputs/gcs/",
+        "tables/*.zarr",
+        "publish_gcs",
+        "new destination folder",
+        "unchanged inputs",
+        "only URIs returned",
+        "earlier turns",
+    ]:
+        assert phrase in text

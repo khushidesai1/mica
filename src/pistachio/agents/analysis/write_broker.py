@@ -72,7 +72,9 @@ def destination_blob(settings: Settings, uri: str) -> Any:
         target_scopes=["https://www.googleapis.com/auth/devstorage.read_write"],
         lifetime=300,
     )
-    # Neither the impersonated token nor this per-object token leaves the control service.
+    # Keep refreshable credentials, not a frozen access token: AuthorizedSession calls
+    # before_request for each resumable-upload request. Refreshing the downscoped token
+    # also refreshes its 300-second impersonated source. Neither token leaves this service.
     credentials = downscoped.Credentials(writer, boundary(uri))  # type: ignore[no-untyped-call]
     target = urlsplit(uri)
     return (
@@ -92,8 +94,11 @@ def upload(
     authorized: Callable[[], None],
 ) -> dict[str, str]:
     relative = relative_path(relative)
+    deadline = time.monotonic() + settings.write_upload_seconds
 
     def check() -> write_access.WriteGrant:
+        if time.monotonic() >= deadline:
+            raise ValueError("Upload timed out. Use smaller files and retry.")
         authorized()
         return write_access.require_active(storage, project_id, grant_id, settings)
 
@@ -129,7 +134,6 @@ def upload(
 
     if not already_uploaded():
         destination.metadata = metadata
-        started = time.monotonic()
         try:
             # Generation preconditions pin the source and prohibit replacement of any target.
             with (
@@ -146,8 +150,6 @@ def upload(
             ):
                 while True:
                     check()
-                    if time.monotonic() - started > 240:
-                        raise ValueError("Upload timed out. Use smaller files and retry.")
                     chunk = reader.read(CHUNK_SIZE)
                     if not chunk:
                         break

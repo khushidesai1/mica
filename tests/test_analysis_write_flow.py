@@ -207,3 +207,251 @@ async def test_slack_uses_confirmed_publication_outcome_over_model_claim(bot):  
     await send(bot, event("Save it now", ts="2.0", thread="1.0"))
     assert "Saved to GCS" in bot.last_reply and "gs://lab-data/result.csv" in bot.last_reply
     assert not bot.last_error
+
+
+def publisher(worker):
+    return write_worker.Publisher(worker.store, worker.request, "a" * 32, "https://control")
+
+
+def add_store(worker, name, count=1):
+    root = worker.ctx.workdir / "outputs/gcs" / name
+    root.mkdir(parents=True, exist_ok=True)
+    paths = [root / str(i) for i in range(count)]
+    for path in paths:
+        path.write_bytes(b"chunk")
+    return paths
+
+
+async def test_result_store_preserves_601_paths_with_bounded_concurrency(worker, monkeypatch):
+    import asyncio
+
+    paths = add_store(worker, "result/tables/proseg_table.zarr", 600)
+    paths += add_store(worker, "result/points", 1)
+    worker.result.files = paths
+    measure = write_worker.file_sizes
+    monkeypatch.setattr(
+        write_worker,
+        "file_sizes",
+        lambda selected: {
+            p: 600 * 1024**2 if "/points/" in p else n for p, n in measure(selected).items()
+        },
+    )
+    active = maximum = 0
+
+    async def post(url, **kwargs):
+        nonlocal active, maximum
+        active += 1
+        maximum = max(active, maximum)
+        await asyncio.sleep(0.001)
+        active -= 1
+        return httpx.Response(
+            200,
+            json={"uri": "gs://lab-data/" + kwargs["json"]["relative_path"]},
+            request=httpx.Request("POST", url),
+        )
+
+    worker.client.post.side_effect = post
+    result = await publish(worker)
+    assert not result.errors and len(result.uploaded) == 601
+    assert 1 < maximum <= write_worker.CONCURRENCY
+    assert set(result.uploaded) == {
+        "gs://lab-data/" + p.relative_to(worker.ctx.workdir / "outputs/gcs").as_posix()
+        for p in paths
+    }
+
+
+@pytest.mark.parametrize("limit", ["files", "total", "file"])
+async def test_all_limits_are_preflighted_before_any_staging(worker, monkeypatch, limit):
+    paths = add_store(worker, "result", 5001 if limit == "files" else 2)
+    worker.result.files = paths
+    if limit != "files":
+        worker.request["write_max_total_gb"] = 1
+        monkeypatch.setattr(
+            write_worker,
+            "file_sizes",
+            lambda selected: {
+                p: (600 * 1024**2 if limit == "total" else 9 * 1024**3) for p in selected
+            },
+        )
+    worker.store.upload_new = Mock(wraps=worker.store.upload_new)
+    result = await publish(worker)
+    assert result.errors and not result.uploaded
+    worker.store.upload_new.assert_not_called()
+    worker.client.post.assert_not_called()
+    worker.token.assert_not_called()
+
+
+async def test_mid_turn_publish_survives_error_and_end_turn_skips_confirmed_paths(worker):
+    first, second = add_store(worker, "first"), add_store(worker, "second")
+    service = publisher(worker)
+    response = await service.tool(worker.ctx).handler({"folder": "outputs/gcs/first"})
+    assert not response["isError"]
+    assert json.loads(response["content"][0]["text"])["uploaded"]
+    failed = await service.publish(worker.ctx, TurnResult(files=first + second, error="late error"))
+    assert failed.uploaded and failed.errors and worker.client.post.call_count == 1
+    result = await service.publish(worker.ctx, TurnResult(files=first + second))
+    assert len(result.uploaded) == 2 and not result.errors
+    assert worker.client.post.call_count == 2
+    # Durable transport receipts survive worker replacement, too.
+    result = await publisher(worker).publish(worker.ctx, TurnResult(files=first + second))
+    assert len(result.uploaded) == 2 and worker.client.post.call_count == 2
+
+
+@pytest.mark.parametrize("limit", ["files", "total"])
+async def test_cumulative_budget_cannot_be_evaded_by_separate_tool_calls(
+    worker, monkeypatch, limit
+):
+    add_store(worker, "first")
+    add_store(worker, "second")
+    if limit == "files":
+        worker.request["write_max_files"] = 1
+    else:
+        worker.request["write_max_total_gb"] = 1
+        monkeypatch.setattr(
+            write_worker, "file_sizes", lambda selected: {p: 600 * 1024**2 for p in selected}
+        )
+    result = await publisher(worker).publish(worker.ctx, TurnResult(), folder="outputs/gcs/first")
+    assert result.uploaded and not result.errors
+    worker.store.upload_new = Mock(wraps=worker.store.upload_new)
+    result = await publisher(worker).publish(worker.ctx, TurnResult(), folder="outputs/gcs/second")
+    assert result.errors and not result.uploaded
+    worker.store.upload_new.assert_not_called()
+    assert worker.client.post.call_count == 1
+
+
+async def test_lost_broker_response_reuses_immutable_stage(worker):
+    successful = worker.client.post.return_value
+    worker.client.post.side_effect = [httpx.ReadTimeout("lost acknowledgement"), successful]
+    first = await publish(worker)
+    assert first.errors and not first.uploaded
+    key = "tasks/slack-analysis/events/" + "a" * 32 + "/write-exports/report.csv"
+    modified = worker.store.path(key).stat().st_mtime_ns
+    second = await publish(worker)
+    assert second.uploaded and not second.errors
+    assert worker.store.path(key).stat().st_mtime_ns == modified
+
+
+@pytest.mark.parametrize(
+    "folder",
+    [
+        "../secret",
+        "/tmp",
+        "outputs/gcs/../outside",
+        "outputs/other",
+        "outputs/gcs/missing",
+        "outputs/gcs/link",
+    ],
+)
+async def test_tool_rejects_escaping_missing_or_symlink_folders(worker, folder):
+    (worker.ctx.workdir / "outputs/gcs/link").symlink_to(
+        worker.ctx.workdir, target_is_directory=True
+    )
+    result = await publisher(worker).tool(worker.ctx).handler({"folder": folder})
+    assert result["isError"]
+    worker.client.post.assert_not_called()
+
+
+@pytest.mark.parametrize("granted", [True, False])
+def test_publish_tool_is_registered_only_with_current_grant(worker, granted):
+    from pistachio.agents.analysis.config import Settings
+    from pistachio.agents.analysis.runner import build_options
+
+    if not granted:
+        worker.request["write_grant"] = None
+    options = build_options(worker.ctx, Settings(_env_file=None), gcs_publisher=publisher(worker))
+    assert (write_worker.TOOL_NAME in options.allowed_tools) is granted
+    assert bool(options.mcp_servers) is granted
+    if granted:
+        assert int(options.env["MCP_TOOL_TIMEOUT"]) >= 840_000
+
+
+async def test_current_grant_is_in_each_resumed_turn_prompt(bot):  # noqa: F811
+    from datetime import UTC, datetime
+
+    await send(bot, event("Earlier there was no write grant"))
+    bot.write_grant = write_access.WriteGrant(
+        id="b" * 32,
+        uri="gs://lab-data/results/",
+        actor="alice@example.com",
+        admin_id="T:U",
+        created_at=datetime.now(UTC),
+    )
+    await send(
+        bot,
+        event(
+            "Save the full result",
+            ts="2.0",
+            thread="1.0",
+            _conversation_context=[{"assistant": "No GCS write grant for this run."}],
+        ),
+    )
+    session, _, prompt, _ = bot.runner.calls[-1]
+    assert session == "session"
+    assert "No GCS write grant for this run." in prompt
+    assert "supersedes anything said earlier" in prompt
+    assert "create new files under gs://lab-data/results/" in prompt
+    assert prompt.index("GCS write access for this turn") > prompt.index("Current request:")
+    bot.write_grant = None
+    await send(bot, event("Try again", ts="3.0", thread="1.0"))
+    assert "in this thread): none." in bot.runner.calls[-1][2]
+
+
+async def test_upload_mutex_outlives_streaming_deadline(writable, monkeypatch):
+    compute, request, _, body = await worker_request(writable, monkeypatch)
+    monkeypatch.setattr(
+        slack_analysis.write_broker, "upload", Mock(return_value={"uri": "gs://ok"})
+    )
+    begin = AsyncMock(wraps=writable.repository.begin_event)
+    monkeypatch.setattr(writable.repository, "begin_event", begin)
+    await slack_analysis.write_output(compute, body, request, Response())
+    assert begin.call_args.kwargs["lease_seconds"] == 900
+
+
+async def test_revocation_stops_remaining_store_files(worker):
+    import asyncio
+
+    worker.result.files = add_store(worker, "store", 32)
+    started = 0
+
+    async def deny(url, **kwargs):
+        nonlocal started
+        started += 1
+        await asyncio.sleep(0.01)
+        return httpx.Response(403, json={"detail": "Write access revoked."})
+
+    worker.client.post.side_effect = deny
+    outcome = await publish(worker)
+    assert not outcome.uploaded and outcome.errors
+    assert 1 <= started <= write_worker.CONCURRENCY
+    assert len(worker.store.keys("tasks/slack-analysis/events/" + "a" * 32 + "/write-exports")) < 32
+
+
+async def test_complete_folder_rejects_symlinks_before_publishing_any_part(worker):
+    paths = add_store(worker, "store")
+    paths[0].with_name("link").symlink_to(worker.path)
+    outcome = await publisher(worker).publish(worker.ctx, TurnResult(), folder="outputs/gcs/store")
+    assert outcome.errors and not outcome.uploaded
+    worker.client.post.assert_not_called()
+
+
+async def test_limited_manifest_carries_all_publication_limits(writable):
+    await allow(writable)
+    compute = await writable.accept(payload("3.0"))
+    await writable.process(compute, 0)
+    manifest = json.loads(
+        writable.store.get(f"tasks/slack-analysis/events/{compute}/request.json")[0]
+    )
+    assert {
+        name: manifest[name]
+        for name in [
+            "write_max_mb",
+            "write_max_files",
+            "write_max_total_gb",
+            "write_upload_seconds",
+        ]
+    } == {
+        "write_max_mb": 8192,
+        "write_max_files": 5000,
+        "write_max_total_gb": 100,
+        "write_upload_seconds": 840,
+    }

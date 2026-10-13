@@ -33,7 +33,7 @@
     }
   ],
   "provenance": {
-    "projects/liver/runs/1.0/turn-1/meta.json": "{\n  \"user_id\": \"U123\",\n  \"prompt\": \"[U123]: plot\",\n  \"session_id\": \"session\",\n  \"model\": \"claude-opus-5-5\",\n  \"cost\": null,\n  \"duration\": 0,\n  \"error\": null,\n  \"brief_generation\": null,\n  \"datasets_touched\": [],\n  \"attachments\": []\n}",
+    "projects/liver/runs/1.0/turn-1/meta.json": "{\n  \"user_id\": \"U123\",\n  \"prompt\": \"[U123]: plot\\n\\nGCS write access for this turn (application-set, supersedes anything said earlier in this thread): none. The publisher rechecks this grant before uploading.\",\n  \"session_id\": \"session\",\n  \"model\": \"claude-opus-5-5\",\n  \"cost\": null,\n  \"duration\": 0,\n  \"error\": null,\n  \"brief_generation\": null,\n  \"datasets_touched\": [],\n  \"attachments\": []\n}",
     "projects/liver/runs/1.0/turn-1/outputs/plot.png": "figure",
     "projects/liver/runs/1.0/turn-1/run_log.jsonl": ""
   },

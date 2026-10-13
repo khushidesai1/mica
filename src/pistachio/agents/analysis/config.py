@@ -74,7 +74,10 @@ class Settings(BaseSettings):
     write_admin_ids: str = ""  # Separate team:user IDs authorized to manage output grants.
     write_allowed_prefixes: str = ""  # Comma-separated gs://bucket/folder/ ceilings.
     write_service_account: str = ""  # Dedicated create/get-only identity; control plane only.
-    write_max_mb: int = Field(default=512, ge=1, le=10000)
+    write_max_mb: int = Field(default=8192, ge=1, le=20000)
+    write_max_files: int = Field(default=5000, ge=1, le=20000)
+    write_max_total_gb: int = Field(default=100, ge=1, le=1000)
+    write_upload_seconds: int = Field(default=840, ge=1, le=840)
     access_cache_seconds: int = Field(default=30, ge=0, le=60)
     allowed_user_ids: str = ""  # Legacy mapped mode only.
     # Separate staging-only approval for Docker's proc masking exception.
