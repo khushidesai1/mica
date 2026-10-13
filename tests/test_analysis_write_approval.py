@@ -177,3 +177,47 @@ def test_recursive_snapshot_follows_pages_and_bounds_count(monkeypatch):
     monkeypatch.setattr(write_approval.time, "monotonic", lambda: next(clock))
     with pytest.raises(ValueError, match="timed out"):
         write_approval.inspect(["gs://lab-data/output/store/"], grant, 2)
+
+
+@pytest.mark.parametrize("signed", [False, True])
+async def test_signed_slack_action_routes_to_run_confirmation(replacing, monkeypatch, signed):
+    import json
+    from urllib.parse import urlencode
+
+    from fastapi import HTTPException
+    from starlette.requests import Request
+    from test_slack_projects import _headers
+
+    from pistachio.agents.analysis import storage
+    from pistachio.connectors import slack
+
+    event_id, record = await start(replacing)
+    replacing.app.slack_signing_secret = "test-secret"
+    raw = urlencode({"payload": json.dumps(click(event_id, record))}).encode()
+    headers = _headers(raw, "test-secret" if signed else "wrong-secret")
+    services = SimpleNamespace(settings=replacing.app, repository=replacing.repository)
+    monkeypatch.setattr(storage, "GCSStorage", lambda bucket: replacing.store)
+    monkeypatch.setattr(slack, "_slack_principal", Mock(side_effect=AssertionError("Legacy route")))
+
+    async def receive():
+        return {"type": "http.request", "body": raw, "more_body": False}
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/integrations/slack/actions",
+            "headers": [(k.lower().encode(), v.encode()) for k, v in headers.items()],
+            "app": SimpleNamespace(state=SimpleNamespace(services=services)),
+        },
+        receive=receive,
+    )
+    if signed:
+        assert await slack.slack_actions(request) == {}
+        assert write_approval.load(replacing.store, event_id)[0].status == "approved"
+    else:
+        with pytest.raises(HTTPException) as error:
+            await slack.slack_actions(request)
+        assert error.value.status_code == 401
+        assert write_approval.load(replacing.store, event_id)[0].status == "pending"
+    replacing.test_client.create_job.assert_not_called()  # Only the scheduled poll may launch.
