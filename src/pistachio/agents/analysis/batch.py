@@ -21,7 +21,7 @@ from google.cloud import batch_v1
 from pistachio.config import Settings as AppSettings
 from pistachio.storage.base import Repository
 
-from . import access, memory_tasks, project_memory, write_access, write_broker
+from . import access, memory_tasks, project_memory, write_access, write_approval, write_broker
 from .attachments import AttachmentError
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
@@ -427,14 +427,23 @@ class BatchBridge:
         name = f"{parent}/jobs/claude-{event_id}"
         name = record.get("job", name)
         if record["status"] == "awaiting_approval":
-            record["status"] = "failed"
-            await self.notify(
-                event_id,
-                record,
-                "failed",
-                "This request expired during an update; please send it again.",
-            )
-            return
+            if record.get("overwrite_approval"):
+                try:
+                    if not await write_approval.ready(self, event_id, record, self.storage):
+                        return
+                except (ValueError, PermissionError) as exc:
+                    record["status"] = "failed"
+                    await self.notify(event_id, record, "failed", str(exc))
+                    return
+            else:
+                record["status"] = "failed"
+                await self.notify(
+                    event_id,
+                    record,
+                    "failed",
+                    "This request expired during an update; please send it again.",
+                )
+                return
         if record["status"] in {"pending", "submitting"} and not record.get("cancel_requested"):
             grant = await asyncio.to_thread(
                 access.resolve,
@@ -484,6 +493,23 @@ class BatchBridge:
             # without creating late work after cancellation or the original deadline.
             record.update(status="running", started=record.get("started", time.time()))
         if record["status"] == "pending":
+            if "write_grant" not in record:
+                writable = await asyncio.to_thread(
+                    write_access.active, self.storage, record["project_id"], self.settings
+                )
+                record["write_grant"] = writable.model_dump(mode="json") if writable else None
+            try:
+                if not await write_approval.ready(self, event_id, record, self.storage):
+                    return
+            except (ValueError, PermissionError, GoogleAPICallError) as exc:
+                record["status"] = "failed"
+                text = (
+                    str(exc)
+                    if isinstance(exc, (ValueError, PermissionError))
+                    else ("Couldn't check existing outputs. Please retry before overwriting.")
+                )
+                await self.notify(event_id, record, "failed", text)
+                return
             try:
                 resolved, mounts = await asyncio.to_thread(self.resolve_data, record)
             except ValueError as exc:
@@ -591,6 +617,7 @@ class BatchBridge:
                 "notice_ts": record.get("notice_ts"),
                 "protocol": 2,
                 "write_grant": record["write_grant"],
+                "overwrite_paths": record.get("overwrite_paths", []),
                 "write_max_mb": self.settings.write_max_mb,
                 "write_max_files": self.settings.write_max_files,
                 "write_max_total_gb": self.settings.write_max_total_gb,

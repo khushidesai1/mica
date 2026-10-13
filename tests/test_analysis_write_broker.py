@@ -5,7 +5,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
-from google.api_core.exceptions import NotFound
+from google.api_core.exceptions import NotFound, PreconditionFailed
 from test_analysis_write_access import STAMP, grants, run  # noqa: F401
 
 from pistachio.agents.analysis import write_access, write_broker
@@ -36,7 +36,11 @@ class Blob:
             assert kwargs["if_generation_match"] == self.generation
             yield io.BytesIO(self.data)
             return
-        assert kwargs["if_generation_match"] == 0
+        expected = kwargs["if_generation_match"]
+        if (self.data is None and expected != 0) or (
+            self.data is not None and expected != self.generation
+        ):
+            raise PreconditionFailed("target changed")
         self.writes += 1
         buffer = io.BytesIO()
         try:
@@ -45,8 +49,12 @@ class Blob:
             self.aborts += 1
             raise
         else:
-            assert self.data is None
+            if (self.data is None and expected != 0) or (
+                self.data is not None and expected != self.generation
+            ):
+                raise PreconditionFailed("target changed")
             self.data = buffer.getvalue()
+            self.generation += 1
             self.refresh()
 
 
@@ -243,3 +251,82 @@ def test_upload_deadline_aborts_without_committing(transfer, monkeypatch):
         transfer.upload()
     assert transfer.dest.data is None and transfer.dest.aborts == 1
     assert not transfer.store.keys("write-access/uploads")
+
+
+def approve_existing(transfer):
+    import time
+
+    from pistachio.agents.analysis import write_approval
+
+    approval = write_approval.Approval(
+        event_id="a" * 32,
+        project_id=transfer.pid,
+        grant_id=transfer.grant.id,
+        principal=transfer.grant.actor,
+        access_signature="test",
+        paths=[transfer.grant.uri + "nested/"],
+        generations={"nested/result.csv": 7},
+        expires_at=time.time() + 3600,
+        status="approved",
+        approved_at=time.time(),
+    )
+    transfer.store.put(write_approval.key(approval.event_id), approval.model_dump_json().encode())
+    transfer.dest.data = b"old approved result"
+    return approval
+
+
+def test_approved_replacement_pins_generation_and_retries_once(transfer):
+    import json
+
+    approve_existing(transfer)
+    result = transfer.upload()
+    assert transfer.dest.data == transfer.source.data and transfer.dest.generation == 8
+    transfer.factory.assert_called_once_with(transfer.settings, result["uri"], overwrite=True)
+    assert transfer.upload() == result and transfer.dest.writes == 1
+    receipt = json.loads(transfer.store.get(transfer.store.keys("write-access/uploads")[0])[0])
+    assert receipt["replaced_generation"] == 7
+
+
+@pytest.mark.parametrize("change", ["new-version", "deleted", "wrong-grant", "not-approved"])
+def test_replacement_requires_the_exact_approved_version(transfer, change):
+    from pistachio.agents.analysis import write_approval
+
+    approval = approve_existing(transfer)
+    if change == "new-version":
+        transfer.dest.generation = 8
+    elif change == "deleted":
+        transfer.dest.data = None
+    elif change == "wrong-grant":
+        approval.grant_id = "b" * 32
+    else:
+        approval.status = "pending"
+    transfer.store.put(write_approval.key(approval.event_id), approval.model_dump_json().encode())
+    before = transfer.dest.data
+    with pytest.raises(FileExistsError):
+        transfer.upload()
+    assert transfer.dest.data == before
+    assert not transfer.store.keys("write-access/uploads")
+
+
+def test_concurrent_writer_is_preserved_after_approval(transfer):
+    approve_existing(transfer)
+
+    def change():
+        transfer.dest.generation = 8
+        transfer.dest.data = b"newer external content"
+        transfer.dest.metadata = {"external": "writer"}
+
+    transfer.dest.on_chunk = change
+    with pytest.raises(FileExistsError):
+        transfer.upload()
+    assert transfer.dest.data == b"newer external content"
+    assert not transfer.store.keys("write-access/uploads")
+
+
+def test_overwrite_credential_remains_scoped_to_one_object():
+    cab = write_broker.boundary("gs://lab-data/output/result.csv", overwrite=True).to_json()
+    rule = cab["accessBoundary"]["accessBoundaryRules"][0]
+    assert rule["availablePermissions"] == ["inRole:roles/storage.objectAdmin"]
+    assert rule["availabilityCondition"]["expression"] == (
+        'resource.name == "projects/_/buckets/lab-data/objects/output/result.csv"'
+    )

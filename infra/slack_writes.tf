@@ -48,9 +48,9 @@ resource "google_service_account" "slack_writer" {
 resource "google_project_iam_custom_role" "slack_writer" {
   count       = length(var.slack_agent_write_prefixes) == 0 ? 0 : 1
   role_id     = "pistachio_${var.environment}_output_writer"
-  title       = "Pistachio output creator"
-  description = "Create outputs and read them to reconcile retries; never overwrite or delete."
-  permissions = ["storage.objects.create", "storage.objects.get"]
+  title       = "Pistachio output writer"
+  description = "Create outputs and replace approved versions; the controller scopes every operation."
+  permissions = ["storage.objects.create", "storage.objects.get", "storage.objects.delete"]
 }
 
 resource "google_storage_bucket_iam_member" "slack_writer" {

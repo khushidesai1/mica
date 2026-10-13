@@ -460,7 +460,29 @@ async def slack_actions(request: Request) -> dict[str, object]:
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="invalid Slack payload") from exc
 
-    from pistachio.agents.analysis import transfer_interactions
+    from pistachio.agents.analysis import transfer_interactions, write_approval
+
+    if write_approval.is_action(payload):
+        from slack_sdk.web.async_client import AsyncWebClient
+
+        from pistachio.agents.analysis.batch import BatchBridge
+        from pistachio.agents.analysis.storage import GCSStorage
+
+        try:
+            return await write_approval.handle(
+                BatchBridge(services.settings, services.repository),
+                GCSStorage(services.settings.gcs_bucket),
+                payload,
+            )
+        except (ValueError, PermissionError) as exc:
+            await AsyncWebClient(
+                token=services.settings.slack_bot_token, timeout=5
+            ).chat_postEphemeral(
+                channel=payload.get("channel", {}).get("id", ""),
+                user=payload.get("user", {}).get("id", ""),
+                text=str(exc),
+            )
+            return {}
 
     if transfer_interactions.is_transfer(payload):
         from pistachio.agents.analysis.batch import BatchBridge

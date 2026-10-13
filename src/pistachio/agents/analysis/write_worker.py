@@ -334,7 +334,8 @@ class Publisher:
         @tool(
             "publish_gcs",
             "Publish a completed, checked folder under outputs/gcs/ to this turn's GCS grant. "
-            "Preserves paths and creates new objects only. Returns folder totals and errors; "
+            "Preserves paths, creating files or replacing versions approved for this run. "
+            "Returns folder totals and errors; "
             "full URIs are in the workspace manifest.",
             {
                 "type": "object",
