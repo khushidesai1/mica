@@ -190,16 +190,19 @@ def upload(
     destination = destination_blob(settings, uri, overwrite=bool(expected))
 
     def already_uploaded() -> bool:
+        # reload caches the old checksum and generation. Keep the upload handle clean,
+        # and inspect the current generation afresh when reconciling a lost response.
+        existing = destination.bucket.blob(destination.name)
         try:
-            destination.reload(timeout=30, retry=None)
+            existing.reload(timeout=30, retry=None)
         except NotFound:
             return False
         if (
-            destination.metadata != metadata
-            or destination.size != source.size
-            or destination.crc32c != source.crc32c
+            existing.metadata != metadata
+            or existing.size != source.size
+            or existing.crc32c != source.crc32c
         ):
-            if expected and int(destination.generation) == expected:
+            if expected and int(existing.generation) == expected:
                 return False
             raise FileExistsError(
                 "The destination exists without approval for its current version. "

@@ -270,7 +270,8 @@ def instructions(grant: WriteGrant | None, overwrite_paths: list[str] | None = N
 
 def overwrite_instructions(paths: list[str] | None) -> str:
     return (
-        "Overwrite targets approved for this run: " + ", ".join(paths) + "."
+        "The requester confirmed these overwrite targets with the Slack approval button "
+        "before this run started: " + ", ".join(paths) + ". Do not ask again."
         if paths
         else "No existing output versions were approved for replacement in this run."
     )

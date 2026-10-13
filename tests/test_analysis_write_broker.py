@@ -19,6 +19,7 @@ class Blob:
         self.writes = 0
         self.aborts = 0
         self.on_chunk = lambda: None
+        self.bucket = SimpleNamespace(blob=lambda name: self)
         self.refresh()
 
     def refresh(self):
@@ -330,3 +331,79 @@ def test_overwrite_credential_remains_scoped_to_one_object():
     assert rule["availabilityCondition"]["expression"] == (
         'resource.name == "projects/_/buckets/lab-data/objects/output/result.csv"'
     )
+
+
+def test_real_storage_blob_replacement_uses_new_checksum_and_latest_retry_probe(
+    transfer, monkeypatch
+):
+    import base64
+    import json
+    from urllib.parse import parse_qs, urlsplit
+
+    import google_crc32c
+    import requests
+    from google.auth.credentials import AnonymousCredentials
+    from google.cloud import storage
+
+    approve_existing(transfer)
+
+    def crc(data):
+        return base64.b64encode(google_crc32c.Checksum(data).digest()).decode()
+
+    source_crc = crc(transfer.source.data)
+    transfer.source.crc32c = source_crc
+    monkeypatch.setattr(transfer.source, "refresh", lambda: None)
+    current = {
+        "name": transfer.dest.name,
+        "generation": "7",
+        "size": str(len(transfer.dest.data)),
+        "crc32c": crc(transfer.dest.data),
+        "metadata": {},
+    }
+    calls = []
+    metadata = {}
+
+    def request(method, url, **kwargs):
+        nonlocal metadata
+        calls.append(method)
+        response = requests.Response()
+        response.status_code = 200
+        response.headers["content-type"] = "application/json"
+        query = parse_qs(urlsplit(url).query)
+        if method == "GET":
+            assert "generation" not in query, "Retry must inspect the current object"
+            body = current
+        elif method == "POST":
+            assert query["ifGenerationMatch"] == ["7"]
+            metadata = json.loads(kwargs["data"])
+            assert metadata.get("crc32c") in {None, source_crc}, "Old checksum reused"
+            response.headers["location"] = "https://storage.googleapis.com/upload-canary"
+            body = {}
+        else:
+            assert method == "PUT" and kwargs["data"] == transfer.source.data
+            current.update(
+                generation="8",
+                size=str(len(transfer.source.data)),
+                crc32c=source_crc,
+                metadata=metadata["metadata"],
+            )
+            # Simulate a completed upload whose acknowledgement needs reconciliation.
+            raise PreconditionFailed("completed before acknowledgement")
+        response._content = json.dumps(body).encode()
+        return response
+
+    session = requests.Session()
+    monkeypatch.setattr(session, "is_mtls", False, raising=False)
+    monkeypatch.setattr(session, "request", request)
+    client = storage.Client(project="test", credentials=AnonymousCredentials(), _http=session)
+    monkeypatch.setattr(
+        write_broker,
+        "destination_blob",
+        lambda *args, **kwargs: client.bucket("lab-data").blob(transfer.dest.name),
+    )
+    monkeypatch.setattr(write_broker, "CHUNK_SIZE", 256 * 1024)
+    assert transfer.upload()["status"] == "uploaded"
+    assert calls == ["GET", "POST", "PUT", "GET"]
+    assert transfer.upload()["status"] == "uploaded"
+    assert calls[-1] == "GET" and calls.count("PUT") == 1
+    session.close()
