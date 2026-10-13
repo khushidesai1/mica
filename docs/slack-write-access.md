@@ -1,6 +1,6 @@
 # Scoped GCS writes from Slack
 
-Slack supports project-scoped, create-only GCS output grants. The feature is disabled unless
+Slack supports project-scoped GCS output grants. The feature is disabled unless
 an administrator configures the writer identity, approved storage locations and Slack write
 administrators. See [deployment status](slack-agent-deployment.md) for the live configuration.
 
@@ -58,9 +58,19 @@ errors separately; a multi-object store is not an atomic upload. Verify all expe
 before using it. Once publication begins, staged copies are immutable for safe retry; put
 revised results at a new destination path.
 
-Grants permit **creating new objects only**. Existing objects cannot be overwritten or deleted;
-use a new filename for revised results. A retry of the same upload can recognize its completed
-object without creating another copy. Defaults are 8192 MiB per file, 5,000 files and 100 GiB
+The same grant permits new files and confirmed overwrites. Name the destination when asking
+to replace an existing output. Before starting the worker, Pistachio lists the affected files
+and presents a concise folder/file summary with **Approve and run** and **Cancel** buttons.
+Only the requester can approve it in the original Slack thread. Approval expires after one
+hour if unused; a confirmed run stays bounded by its normal execution limits. There is no
+separate overwrite grant. New destinations start without this confirmation.
+
+Confirmation pins each existing object's generation. Files changed, removed, or newly created
+after that check cannot be silently replaced; request a new run to confirm the new versions.
+Unknown destinations discovered later remain create-only until a new request confirms them.
+Other existing files stay unchanged, including extra keys in a result store: this is not a
+folder synchronization or delete operation. Use a fresh folder when a new store layout would
+leave obsolete keys behind. A retry recognizes its completed object without uploading again. Defaults are 8192 MiB per file, 5,000 files and 100 GiB
 per run, including earlier mid-turn calls and reserved retry paths. All three limits are
 checked before staging a selected group of files; exceeding one uploads none of that group.
 Files publish with at most eight concurrent transfers. Each object's controller upload has
@@ -101,8 +111,10 @@ and upload budgets 1–840 seconds. Limits are copied into each run's request ma
 `infra/slack_writes.tf` provides optional configuration through
 `slack_agent_write_admin_ids` and `slack_agent_write_prefixes`. It provisions:
 
-- A dedicated writer account with only `storage.objects.create` and `storage.objects.get`,
-  conditioned to the approved bucket prefixes. `get` reconciles upload retries.
+- A dedicated writer account with `storage.objects.create`, `storage.objects.get`, and
+  `storage.objects.delete`, conditioned to approved bucket prefixes. Cloud Storage requires
+  `delete` to overwrite an object; the application exposes no delete operation.
+  `get` reconciles retries and generation preconditions prevent replacing an unapproved version.
 - Permission for the control account alone to impersonate that writer, plus IAM Credentials
   and Security Token Service API enablement. Workers cannot impersonate it.
 - Control-account write access to grant/audit records and project metadata, so narrowing the
@@ -110,7 +122,9 @@ and upload budgets 1–840 seconds. Limits are copied into each run's request ma
 
 Buckets must already exist. Folder-restricted bucket IAM ceilings require uniform bucket-level
 access; whole-bucket ceilings also support buckets with object ACLs. Every individual upload
-is still downscoped to its exact object. The Terraform custom role
+is still downscoped to its exact object. Replacement tokens use the object-admin permission
+boundary intersected with the writer's three-permission IAM role; create-only calls keep the
+creator/viewer boundary. The Terraform custom role
 belongs to `var.project_id`, so these Terraform-managed target buckets must belong to that
 project. Cross-project destinations need an equivalent role in their owning project, configured
 separately. Cloud deployment credentials need permission to configure the bucket policies.
@@ -139,11 +153,14 @@ an independently existing broad grant, and Terraform member resources will not a
 remove an out-of-band binding. Preserve the required artifact-prefix writes while removing
 that broader data write access. See the deployment record for the current live IAM state.
 
-Validate the rollout with an approved test prefix: create a new object, refuse an existing
-object and a sibling prefix, revoke/expire a grant, and verify the dedicated writer cannot
-delete objects. Local tests mock cloud I/O; they do not establish live IAM conformance.
+Validate the rollout with a disposable test prefix: require approval before starting a
+replacement run, replace the confirmed version, preserve a changed version and an unapproved
+sibling, and verify grant revocation and expiry. Check exact-object credential boundaries.
+Local tests mock cloud I/O; they do not establish live IAM conformance.
 See [result-store staging verification](gcs-result-stores-staging.md) for the deployed
 release, unit-test scope, and the successful 287-object live publish check.
+See [overwrite staging verification](gcs-overwrites-staging.md) for the live approval,
+replacement, unchanged-sibling, and cleanup checks.
 
 References: [Cloud Storage IAM conditions](https://docs.cloud.google.com/storage/docs/access-control/iam)
 and [credential access boundaries](https://docs.cloud.google.com/iam/docs/downscoping-short-lived-credentials).
@@ -168,3 +185,9 @@ archives them during normal job polling and before terminal reconciliation; work
 write permission to the protected audit prefix. Archive paths and reported destinations are
 checked against the event and captured grant, and earlier publication reports are immutable.
 The manifests are worker reports; controller per-object receipts confirm actual uploads.
+
+Overwrite confirmations are stored under `write-access/approvals/<event>.json`, outside the
+worker's writable area. They bind the project, requester, access revision, grant, destination
+paths, and generations. Duplicate clicks cannot start another worker. Current access and grants
+are rechecked on confirmation and during upload. Controller receipts include the replaced
+object generation. See [Cloud Storage upload permissions](https://docs.cloud.google.com/storage/docs/uploading-objects#required_roles).

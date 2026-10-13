@@ -246,13 +246,13 @@ def test_help_explains_commands_optional_expiry_and_write_limits(grants, text):
         "write status",
         "write revoke",
         "until revoked",
-        "new files only",
+        "overwrites",
         "write admins",
         "project's linked bucket",
     ):
         assert required in reply
     if text in {"help write", "write help"}:
-        assert "future runs" in reply and "cannot be overwritten or deleted" in reply
+        assert "future runs" in reply and "Confirm overwrites" in reply
 
 
 def test_write_access_log_identifies_grant_without_prompt_or_file_content(grants, caplog):
@@ -279,7 +279,7 @@ def test_store_instructions_describe_layout_current_grant_and_confirmed_uris(gra
         "outputs/gcs/",
         "tables/*.zarr",
         "publish_gcs",
-        "new destination folder",
+        "application-confirmed targets",
         "unchanged inputs",
         "only URIs returned",
         "earlier turns",

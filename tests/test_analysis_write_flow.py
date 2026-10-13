@@ -392,7 +392,7 @@ async def test_current_grant_is_in_each_resumed_turn_prompt(bot):  # noqa: F811
     assert session == "session"
     assert "No GCS write grant for this run." in prompt
     assert "supersedes anything said earlier" in prompt
-    assert "create new files under gs://lab-data/results/" in prompt
+    assert "write files under gs://lab-data/results/" in prompt
     assert prompt.index("GCS write access for this turn") > prompt.index("Current request:")
     bot.write_grant = None
     await send(bot, event("Try again", ts="3.0", thread="1.0"))

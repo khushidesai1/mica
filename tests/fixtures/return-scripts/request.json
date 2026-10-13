@@ -36,5 +36,6 @@
   "write_max_files": 5000,
   "write_max_mb": 8192,
   "write_max_total_gb": 100,
-  "write_upload_seconds": 840
+  "write_upload_seconds": 840,
+  "overwrite_paths": []
 }

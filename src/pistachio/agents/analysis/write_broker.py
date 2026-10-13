@@ -1,4 +1,4 @@
-"""Stream staged outputs through a create-only, object-scoped cloud credential."""
+"""Stream staged outputs through a object-scoped cloud credential."""
 
 from __future__ import annotations
 
@@ -86,7 +86,7 @@ def relative_path(raw: str) -> str:
         not raw
         or len(raw.encode()) > 512
         or any(p in {"", ".", ".."} for p in raw.split("/"))
-        or any(ord(c) < 32 or ord(c) == 127 or c in "\\%<>|`" for c in raw)
+        or any(ord(c) < 32 or ord(c) == 127 or c in "\\%<>|`?#" for c in raw)
     ):
         raise ValueError("Use a relative output filename without traversal or control characters.")
     return raw
@@ -100,7 +100,7 @@ def staged_key(event_id: str, relative: str) -> str:
     return f"{CHECKPOINT_PREFIX}/events/{event_id}/write-exports/{relative_path(relative)}"
 
 
-def boundary(uri: str) -> Any:
+def boundary(uri: str, *, overwrite: bool = False) -> Any:
     from google.auth import downscoped
 
     target = urlsplit(uri)
@@ -109,10 +109,14 @@ def boundary(uri: str) -> Any:
         rules=[
             downscoped.AccessBoundaryRule(  # type: ignore[no-untyped-call]
                 available_resource=f"//storage.googleapis.com/projects/_/buckets/{target.netloc}",
-                available_permissions=[
-                    "inRole:roles/storage.objectCreator",
-                    "inRole:roles/storage.objectViewer",
-                ],
+                available_permissions=(
+                    ["inRole:roles/storage.objectAdmin"]
+                    if overwrite
+                    else [
+                        "inRole:roles/storage.objectCreator",
+                        "inRole:roles/storage.objectViewer",
+                    ]
+                ),
                 availability_condition=downscoped.AvailabilityCondition(  # type: ignore[no-untyped-call]
                     expression=f"resource.name == {json.dumps(name)}"
                 ),
@@ -121,7 +125,7 @@ def boundary(uri: str) -> Any:
     )
 
 
-def destination_blob(settings: Settings, uri: str) -> Any:
+def destination_blob(settings: Settings, uri: str, *, overwrite: bool = False) -> Any:
     import google.auth
     from google.auth import downscoped, impersonated_credentials
     from google.cloud import storage
@@ -138,7 +142,7 @@ def destination_blob(settings: Settings, uri: str) -> Any:
     # Keep refreshable credentials, not a frozen access token: AuthorizedSession calls
     # before_request for each resumable-upload request. Refreshing the downscoped token
     # also refreshes its 300-second impersonated source. Neither token leaves this service.
-    credentials = downscoped.Credentials(writer, boundary(uri))  # type: ignore[no-untyped-call]
+    credentials = downscoped.Credentials(writer, boundary(uri, overwrite=overwrite))  # type: ignore[no-untyped-call]
     target = urlsplit(uri)
     return (
         storage.Client(project=project, credentials=credentials)
@@ -180,25 +184,36 @@ def upload(
         "pistachio-source-generation": str(generation),
         "pistachio-source": hashlib.sha256(source.name.encode()).hexdigest(),
     }
-    destination = destination_blob(settings, uri)
+    from .write_approval import expected_generation
+
+    expected = expected_generation(storage, event_id, project_id, grant, relative)
+    destination = destination_blob(settings, uri, overwrite=bool(expected))
 
     def already_uploaded() -> bool:
+        # reload caches the old checksum and generation. Keep the upload handle clean,
+        # and inspect the current generation afresh when reconciling a lost response.
+        existing = destination.bucket.blob(destination.name)
         try:
-            destination.reload(timeout=30, retry=None)
+            existing.reload(timeout=30, retry=None)
         except NotFound:
             return False
         if (
-            destination.metadata != metadata
-            or destination.size != source.size
-            or destination.crc32c != source.crc32c
+            existing.metadata != metadata
+            or existing.size != source.size
+            or existing.crc32c != source.crc32c
         ):
-            raise FileExistsError("The destination already exists. Use a new filename.")
+            if expected and int(existing.generation) == expected:
+                return False
+            raise FileExistsError(
+                "The destination exists without approval for its current version. "
+                "Request a new run naming this output path, or use a new filename."
+            )
         return True
 
     if not already_uploaded():
         destination.metadata = metadata
         try:
-            # Generation preconditions pin the source and prohibit replacement of any target.
+            # Pin both source and approved target version; unapproved paths remain create-only.
             with (
                 source.open(
                     "rb",
@@ -208,7 +223,11 @@ def upload(
                     retry=None,
                 ) as reader,
                 destination.open(
-                    "wb", chunk_size=CHUNK_SIZE, if_generation_match=0, timeout=30, retry=None
+                    "wb",
+                    chunk_size=CHUNK_SIZE,
+                    if_generation_match=expected,
+                    timeout=30,
+                    retry=None,
                 ) as writer,
             ):
                 while True:
@@ -222,7 +241,9 @@ def upload(
         except PreconditionFailed:
             # A lost response or concurrent retry may have completed this exact upload.
             if not already_uploaded():
-                raise
+                raise FileExistsError(
+                    "The destination changed since approval. Request a new run."
+                ) from None
     result = {"uri": uri, "status": "uploaded"}
     receipt = {
         **result,
@@ -231,6 +252,7 @@ def upload(
         "event_id": event_id,
         "relative_path": relative,
         "source_generation": generation,
+        "replaced_generation": expected or None,
         "bytes": source.size,
         "at": write_access.now().isoformat(),
     }

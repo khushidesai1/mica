@@ -138,13 +138,16 @@ def description(grant: WriteGrant) -> str:
         if grant.expires_at
         else "no expiry — until revoked"
     )
-    return f"Create new files in `{escape(grant.uri, quote=False)}`; {expiry}."
+    return f"Write files in `{escape(grant.uri, quote=False)}`; {expiry}."
 
 
 def status(storage: Storage, project_id: str, settings: Settings) -> str:
     grant = active(storage, project_id, settings)
     if grant:
-        return description(grant) + " Existing files cannot be overwritten or deleted."
+        return (
+            description(grant)
+            + " Existing files can be overwritten after confirmation for each run."
+        )
     previous = load(storage, project_id).grant
     if previous and previous.expires_at and now() >= previous.expires_at:
         return "Write access expired. No new GCS writes are allowed."
@@ -238,7 +241,7 @@ def command(
     )
 
 
-def instructions(grant: WriteGrant | None) -> str:
+def instructions(grant: WriteGrant | None, overwrite_paths: list[str] | None = None) -> str:
     if grant is None:
         return "No GCS write grant for this run. Do not stage files in outputs/gcs/."
     return (
@@ -251,22 +254,36 @@ def instructions(grant: WriteGrant | None) -> str:
         "Report GCS saves as a short summary (folders and what each holds). Don't list "
         "individual files; the application appends a receipt. Full publication manifests "
         "are in logs/gcs-publish-*.json when you need to check specific files. "
-        "Always choose a new destination folder (for example resegmentation/tma15_atomx_prior); "
-        "never overwrite. Once publishing starts, staged paths are immutable, even on retry. "
+        "Existing objects may be replaced only in this run's application-confirmed targets. "
+        "Other paths are create-only; a collision needs a new request naming its destination. "
+        "The publisher rejects versions changed after confirmation and never deletes extra files. "
+        "For a result store, verify the complete key layout; use a new folder if old keys would "
+        "be left behind. Once publishing starts, staged paths are immutable, even on retry. "
         "Do not copy unchanged inputs such as large image stores unless asked. "
         "Report only URIs returned by the publisher; do not invent or predict successful uploads. "
         "Do not infer write access from the read-only mount or earlier turns. "
         "Do not use cloud credentials, gsutil, or modify the data mount. "
-        "A changed/revoked/expired grant blocks publishing, even in a resumed session."
+        "A changed/revoked/expired grant blocks publishing, even in a resumed session. "
+        + overwrite_instructions(overwrite_paths)
     )
 
 
-def turn_instructions(grant: WriteGrant | None) -> str:
+def overwrite_instructions(paths: list[str] | None) -> str:
+    return (
+        "The requester confirmed these overwrite targets with the Slack approval button "
+        "before this run started: " + ", ".join(paths) + ". Do not ask again."
+        if paths
+        else "No existing output versions were approved for replacement in this run."
+    )
+
+
+def turn_instructions(grant: WriteGrant | None, overwrite_paths: list[str] | None = None) -> str:
     return (
         "GCS write access for this turn (application-set, supersedes anything said earlier "
         "in this thread): "
-        + (f"create new files under {grant.uri}" if grant else "none")
-        + ". The publisher rechecks this grant before uploading."
+        + (f"write files under {grant.uri}" if grant else "none")
+        + ". The publisher rechecks this grant before uploading. "
+        + overwrite_instructions(overwrite_paths)
     )
 
 

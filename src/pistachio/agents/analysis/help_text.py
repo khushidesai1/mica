@@ -10,7 +10,8 @@ WRITE_HELP = (
     "GCS writes (DM): `write grant <project> gs://bucket/folder/ [duration]` · "
     "`write status <project>` · `write revoke <project>`.\n"
     "Use `30m`, `1h`, or `7d`; omit duration for no expiry (until revoked). "
-    "Grants create new files only, within approved folders in that project's linked bucket. "
+    "Grants allow new files and confirmed overwrites within approved folders "
+    "in that project's linked bucket. "
     "You must belong to the project. Only designated write admins can grant or revoke; "
     "project members can check status."
 )
@@ -20,7 +21,8 @@ WRITE_DETAILS = (
     "add `1h` to expire after an hour.\n"
     "Each project has one destination; a new grant replaces it. Grants apply to future runs. "
     "After granting, ask Pistachio to save the desired results to that GCS folder. "
-    "Existing files cannot be overwritten or deleted. Revoking blocks further uploads; "
+    "Confirm overwrites before each run; other files stay unchanged. "
+    "Revoking blocks further uploads; "
     "an upload already completing may finish."
 )
 
@@ -55,11 +57,11 @@ Anything said about a project, in a DM or a channel, may be remembered for every
 project, and repository readers can see it.
 
 *GCS writes — DM*
-• `write grant <project> gs://bucket/folder/ [duration]` — Allow new files.
+• `write grant <project> gs://bucket/folder/ [duration]` — Allow writing files.
 • `write status <project>` — Show the destination and expiry.
 • `write revoke <project>` — Stop future uploads.
 Use `30m`, `1h`, or `7d`; omit duration for no expiry (until revoked).
-Creates new files only; existing files cannot be overwritten or deleted.
+New files need no extra confirmation. Confirm overwrites before each run; no separate grant.
 You must belong to the project. Use approved folders in that project's linked bucket.
 Only designated write admins can grant or revoke. Grants apply to future runs.
 

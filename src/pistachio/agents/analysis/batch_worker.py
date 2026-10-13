@@ -320,7 +320,9 @@ async def main(event_id: str) -> None:
             memory_context=project_memory.context(
                 memory_base, payload["event"].get("text", ""), settings
             ),
-            write_access=write_access.instructions(current_write_grant),
+            write_access=write_access.instructions(
+                current_write_grant, request.get("overwrite_paths")
+            ),
         ),
         slack,
         run_prefix=run_root(
@@ -333,6 +335,7 @@ async def main(event_id: str) -> None:
         authorized=lambda: worker_permitted(storage, request, saved, settings=settings),
         publish_gcs=publisher.publish,
         write_grant=current_write_grant,
+        overwrite_paths=request.get("overwrite_paths", []),
         before_delivery=before_delivery if compute else None,
     )
     payload["event"]["_notice_ts"] = request.get("notice_ts")

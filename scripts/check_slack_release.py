@@ -130,10 +130,11 @@ def check(source: Path, mode: str) -> None:
                     "write status",
                     "write revoke",
                     "until revoked",
-                    "new files only",
+                    "overwrites",
                     "project's linked bucket",
                 )
             )
+            assert "new files only" not in reply
         assert commands.parse("write grant test gs://test/exports/").args == (
             "test",
             "gs://test/exports/",

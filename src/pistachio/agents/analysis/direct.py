@@ -64,6 +64,13 @@ running code, calculating new results (including cell counts), making/editing a 
 sending/resending reports or figures from the thread's workspace, including saving files to GCS.
 Only exact human write grant/revoke commands can change GCS access; you cannot grant it.
 The supplied write_access describes current permission, not evidence of an upload.
+For a request to save results to GCS, set write_paths to the specific requested output
+URIs resolved from this request and project context. Use full gs:// paths, with a trailing
+slash for folders and no trailing slash for individual files. Do not include input locations
+unless the user asks to replace them. Leave empty for requests without GCS output or without
+a known destination; ask for a destination before computing if an existing output must be
+replaced but its path is unclear. The application checks existing files and asks the requester
+to approve replacements before starting a worker. Do not claim approval has been given.
 The supplied transfer_tool describes whether AtoMx/AtomX SFTP transfers are available.
 When unavailable, choose reply for transfer requests and explain the reported limitation.
 When available, choose transfer to propose an AtoMx sample transfer. Fill transfer_request with
@@ -171,6 +178,11 @@ class Decision(BaseModel):
             "from project_md, project_memory or conversation; use an empty string for root "
             "only when context cannot identify a needed folder."
         ),
+    )
+    write_paths: list[Annotated[str, Field(max_length=2048)]] = Field(
+        default_factory=list,
+        max_length=5,
+        description="Requested GCS output file/folder URIs, for pre-run overwrite confirmation.",
     )
     worker: WorkerChoice | None = None
 
@@ -638,6 +650,8 @@ async def handle(
             await save_pending(second)
             if second.route not in {"reply", "compute"}:
                 raise ValueError("Couldn't finish viewing the file. Please clarify your request.")
+            if not second.write_paths:
+                second.write_paths = decision.write_paths
             if second.guide is None:
                 second.guide = decision.guide
             decision = second
@@ -673,6 +687,8 @@ async def handle(
             if listed.route not in {"reply", "compute"} or not metadata.get("complete", False):
                 listed.route = "compute"
                 listed.reply = "I'll use a worker to finish checking the requested folders."
+            if not listed.write_paths:
+                listed.write_paths = decision.write_paths
             if listed.guide is None:
                 listed.guide = decision.guide
             decision = listed
