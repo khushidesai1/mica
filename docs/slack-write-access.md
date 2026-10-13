@@ -142,6 +142,8 @@ that broader data write access. See the deployment record for the current live I
 Validate the rollout with an approved test prefix: create a new object, refuse an existing
 object and a sibling prefix, revoke/expire a grant, and verify the dedicated writer cannot
 delete objects. Local tests mock cloud I/O; they do not establish live IAM conformance.
+See [result-store staging verification](gcs-result-stores-staging.md) for the deployed
+release, unit-test scope, and the successful 287-object live publish check.
 
 References: [Cloud Storage IAM conditions](https://docs.cloud.google.com/storage/docs/access-control/iam)
 and [credential access boundaries](https://docs.cloud.google.com/iam/docs/downscoping-short-lived-credentials).
