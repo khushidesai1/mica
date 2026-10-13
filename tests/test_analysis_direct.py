@@ -840,3 +840,39 @@ async def test_failure_keeps_pending_decision_but_retry_does_not_reuse_it(chat, 
     await direct.handle(chat, event, record, chat.store)
     assert chat.decision.await_count == 3
     assert not record["direct_decision_pending"]
+
+
+@pytest.mark.parametrize(
+    "complete,stop,extra",
+    [
+        (True, "end_turn", False),
+        (False, "end_turn", False),
+        (True, "max_tokens", False),
+        (True, "end_turn", True),
+    ],
+)
+async def test_plain_complete_inventory_answer_is_a_read_only_reply(
+    monkeypatch, complete, stop, extra
+):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        content = [{"type": "text", "text": "raw/ and processed/ both lack samples 3 and 7."}]
+        if extra:
+            content.append({"type": "tool_use", "name": "unexpected", "input": {}})
+        return httpx.Response(200, json={"stop_reason": stop, "content": content})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(direct.httpx, "AsyncClient", lambda **kw: client)
+    if not complete:
+        answer = await direct.decide("fake", "model", {"data_inventory": {"complete": False}})
+        assert answer.route == "compute"
+    elif stop == "end_turn" and not extra:
+        answer = await direct.decide("fake", "model", {"data_inventory": {"complete": complete}})
+        assert answer.route == "reply" and "samples 3 and 7" in answer.reply
+        assert answer.guide is None and answer.worker is None and answer.transfer_request is None
+    else:
+        with pytest.raises(ValueError):
+            await direct.decide("fake", "model", {"data_inventory": {"complete": complete}})
+    assert len(calls) == 2

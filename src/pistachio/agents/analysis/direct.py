@@ -265,6 +265,30 @@ async def decide(
                     body.get("stop_reason"),
                     [b.get("type") for b in body.get("content", [])],
                 )
+                metadata = context.get("data_inventory", {})
+                if not calls and isinstance(metadata, dict) and metadata.get("complete") is False:
+                    return Decision(
+                        route="compute", reply="I'll finish checking the folders with a worker."
+                    )
+                text = "\n".join(
+                    str(block.get("text", ""))
+                    for block in body.get("content", [])
+                    if block.get("type") == "text"
+                ).strip()
+                if (
+                    not calls
+                    and body.get("stop_reason") == "end_turn"
+                    and isinstance(metadata, dict)
+                    and metadata.get("complete") is True
+                    and all(
+                        block.get("type") in {"text", "thinking", "redacted_thinking"}
+                        for block in body.get("content", [])
+                    )
+                    and 0 < len(text) <= 3500
+                ):
+                    # Complete metadata can yield a plain final answer with auto tool choice.
+                    # Normalize only this read-only reply; it cannot edit a guide or run tools.
+                    return Decision(route="reply", reply=text)
                 if has_archive:
                     return Decision(route="compute", reply="Checking the earlier results.")
             if body.get("stop_reason") == "max_tokens":
