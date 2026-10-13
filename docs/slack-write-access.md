@@ -159,6 +159,8 @@ sibling, and verify grant revocation and expiry. Check exact-object credential b
 Local tests mock cloud I/O; they do not establish live IAM conformance.
 See [result-store staging verification](gcs-result-stores-staging.md) for the deployed
 release, unit-test scope, and the successful 287-object live publish check.
+See [overwrite staging verification](gcs-overwrites-staging.md) for the live approval,
+replacement, unchanged-sibling, and cleanup checks.
 
 References: [Cloud Storage IAM conditions](https://docs.cloud.google.com/storage/docs/access-control/iam)
 and [credential access boundaries](https://docs.cloud.google.com/iam/docs/downscoping-short-lived-credentials).
