@@ -53,8 +53,9 @@ Saved to GCS: gs://alchemy-breast-cancer/resegmentation/_publish_smoke/20261013-
 Both per-publication and aggregate audit manifests were verified. The first live copy found
 that workers cannot write the controller audit prefix. Workers now stage reports in their
 existing event transport area; the controller archives them during polling. No worker IAM
-expansion was needed. The original `20261013-summary/` copy and successful retry copy remain
-for Khushi to delete. Source data was unchanged.
+expansion was needed. The original `20261013-summary/` copy and successful retry copy were deleted after
+verification. Separate CLI listings confirmed both exact prefixes absent. The earlier
+`20261013-764fabc0/` smoke prefix was already absent. Source data was unchanged.
 
 Event `50924c0ecdbaa306a018c2c13fc2c347` used a worker explicitly pinned to
 `AGENT_MAX_TURNS=3`. Its eight-step workspace check stopped after three steps, then produced

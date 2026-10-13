@@ -47,7 +47,7 @@ Source: `gs://alchemy-breast-cancer/resegmentation/TMA1/tables/` (287 objects,
 61,900,890 bytes). Destination:
 `gs://alchemy-breast-cancer/resegmentation/_publish_smoke/20261013-764fabc0/tables/`.
 The existing grant is `b6631f95…`, scoped to the project bucket. Source data is unchanged.
-The smoke copy is left for Khushi to delete after verification.
+The smoke prefix was confirmed absent during the subsequent release cleanup on October 13.
 
 - Worker provenance records `mcp__pistachio__publish_gcs` at 17:44:04 UTC with folder
   `outputs/gcs/resegmentation/_publish_smoke/20261013-764fabc0`.
