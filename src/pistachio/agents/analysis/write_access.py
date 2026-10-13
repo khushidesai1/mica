@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -242,10 +243,34 @@ def instructions(grant: WriteGrant | None) -> str:
         return "No GCS write grant for this run. Do not stage files in outputs/gcs/."
     return (
         description(grant)
-        + " Only when the current request asks to save files to GCS, stage those files in "
-        "outputs/gcs/. The trusted publisher copies new/changed files after a successful turn, "
-        "preserving paths beneath that directory in the granted folder. Use a new filename for "
-        "an existing destination. Do not use cloud credentials, gsutil, or modify the data mount. "
-        "Do not claim an upload succeeded: the publisher reports actual outcomes after your turn. "
+        + " Only when the current request asks to save files to GCS, write or copy the complete "
+        "result folder to outputs/gcs/<path relative to grant>/, preserving points/, shapes/, "
+        "and tables/*.zarr layouts. Close writers and check the whole store, then call "
+        "publish_gcs with that outputs/gcs/ folder immediately, before starting later steps. "
+        "Unpublished new/changed files are also published after a successful turn. "
+        "Always choose a new destination folder (for example resegmentation/tma15_atomx_prior); "
+        "never overwrite. Once publishing starts, staged paths are immutable, even on retry. "
+        "Do not copy unchanged inputs such as large image stores unless asked. "
+        "Report only URIs returned by the publisher; do not invent or predict successful uploads. "
+        "Do not infer write access from the read-only mount or earlier turns. "
+        "Do not use cloud credentials, gsutil, or modify the data mount. "
         "A changed/revoked/expired grant blocks publishing, even in a resumed session."
+    )
+
+
+def turn_instructions(grant: WriteGrant | None) -> str:
+    return (
+        "GCS write access for this turn (application-set, supersedes anything said earlier "
+        "in this thread): "
+        + (f"create new files under {grant.uri}" if grant else "none")
+        + ". The publisher rechecks this grant before uploading."
+    )
+
+
+def log_turn(event_id: str, grant: WriteGrant | None) -> None:
+    logging.info(
+        "write_access event=%s grant=%s uri=%s",
+        event_id,
+        grant.id[:8] if grant else "none",
+        grant.uri if grant else "none",
     )

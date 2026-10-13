@@ -321,7 +321,9 @@ async def write_output(
 
     # A retry cannot race another upload of the same event/path. Revokes never wait on this lock.
     mutex = "claude-write:" + event_id + ":" + hashlib.sha256(relative.encode()).hexdigest()
-    claim = await bridge.repository.begin_event(mutex, lease_seconds=600)
+    claim = await bridge.repository.begin_event(
+        mutex, lease_seconds=bridge.settings.write_upload_seconds + 60
+    )
     if claim.status != "claimed":
         raise HTTPException(409, "This output is already being uploaded. Retry shortly.")
     try:

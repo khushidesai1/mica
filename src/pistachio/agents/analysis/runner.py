@@ -29,7 +29,7 @@ from claude_agent_sdk import (
 )
 from claude_agent_sdk.types import HookContext, HookInput, HookJSONOutput, SandboxSettings
 
-from . import prompts, script_capture
+from . import prompts, script_capture, write_worker
 from .attachments import classify
 from .config import Settings
 from .limits import MAX_VISUAL_READS, PREVIEW_MAX_BYTES, SDK_MAX_BUFFER_BYTES
@@ -105,6 +105,7 @@ def build_options(
     runtime_tmp: Path = Path("/tmp"),
     runtime_manager: RuntimeManager | None = None,
     compute_manager: RecoveryManager | None = None,
+    gcs_publisher: write_worker.Publisher | None = None,
 ) -> ClaudeAgentOptions:
     if not sandbox and platform.system() != "Darwin":
         raise ValueError("--no-sandbox is available only for local macOS development")
@@ -116,6 +117,8 @@ def build_options(
         tools.append(TOOL_NAME)
     compute = compute_manager if not ctx.survey_only else None
     compute_tools = compute.tools() if compute else []
+    if gcs_publisher and gcs_publisher.grant and not ctx.survey_only:
+        compute_tools.append(gcs_publisher.tool(ctx))
     tools.extend(f"mcp__pistachio__{t.name}" for t in compute_tools)
 
     visual_reads = 0
@@ -281,7 +284,7 @@ def build_options(
         tools=tools,
         allowed_tools=tools,
         mcp_servers={"pistachio": create_server(manager, compute_tools)}
-        if manager or compute
+        if manager or compute_tools
         else {},
         disallowed_tools=["WebFetch", "WebSearch", "Agent", "AskUserQuestion", "NotebookEdit"]
         + (["Bash", "Glob", "Grep"] if ctx.survey_only else []),
@@ -290,7 +293,15 @@ def build_options(
         max_turns=settings.max_turns,
         max_budget_usd=settings.max_budget_usd_per_turn,
         env={
-            **({"MCP_TOOL_TIMEOUT": "1200000"} if runtimes else {}),
+            **(
+                {
+                    "MCP_TOOL_TIMEOUT": str(settings.max_run_seconds * 1000)
+                    if gcs_publisher
+                    else "1200000"
+                }
+                if runtimes or gcs_publisher
+                else {}
+            ),
             "ANTHROPIC_API_KEY": settings.anthropic_api_key.get_secret_value(),
             "SLACK_BOT_TOKEN": "",
             "SLACK_APP_TOKEN": "",
@@ -375,6 +386,8 @@ def describe_tool(block: ToolUseBlock) -> str:
     if block.name == TOOL_NAME:
         packages = args.get("packages") or ["packages"]
         return f"Setting up {str(packages[0])[:60]}…"
+    if block.name == write_worker.TOOL_NAME:
+        return "Publishing completed results to GCS"
     if block.name == "Read" and ".previews" in Path(args.get("file_path", "")).parts:
         return "Looking at a figure preview"
     if block.name == "Bash":
@@ -430,6 +443,7 @@ class Runner:
         write_access: str = "No GCS write grant for this run.",
         runtime_manager: RuntimeManager | None = None,
         compute_manager: RecoveryManager | None = None,
+        gcs_publisher: write_worker.Publisher | None = None,
     ) -> None:
         self.settings, self.sandbox = settings, sandbox
         self.project_name = project_name
@@ -440,6 +454,7 @@ class Runner:
         self.memory_reads = 0
         self.write_access = write_access
         self.compute = compute_manager
+        self.gcs_publisher = gcs_publisher
         self.last_result: TurnResult | None = None
         self.runtime_manager = runtime_manager or (
             RuntimeManager(
@@ -510,6 +525,7 @@ class Runner:
                         runtime_tmp=runtime_tmp,
                         runtime_manager=manager,
                         compute_manager=self.compute,
+                        gcs_publisher=self.gcs_publisher,
                     )
                     baseline = restored_cost(ctx.session_id) if self.compute else 0.0
                     if self.compute and baseline is None:

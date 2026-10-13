@@ -80,8 +80,14 @@ Proseg's `um_per_px` must come from verified sample metadata or the user, not it
 - Ingest creates `images/initial_imaging.ome.zarr` and (CosMx) `points/initial_transcripts.parquet`.
   Cellpose creates `shapes/cellpose_polygons.parquet`. Proseg creates transcript/polygon outputs
   and `tables/proseg_table.zarr` (AnnData, Zarr v3). Check actual outputs before reporting success.
-  Put requested plots/reports in `outputs/` for Slack delivery. Large stores require the normal
-  explicit GCS write grant and upload mechanism; mounted project data remains read-only.
+  Put requested plots/reports in `outputs/` for Slack delivery. With this turn's explicit GCS
+  write grant, stage the complete checked store under `outputs/gcs/<path relative to grant>/`,
+  preserving `points/`, `shapes/`, and `tables/*.zarr`. For a bucket-root grant, an example is
+  `outputs/gcs/resegmentation/tma15_atomx_prior/`. Close all writers, verify the store, and call
+  `publish_gcs` on that folder as soon as it is complete, before another expensive step.
+  Choose a new folder name; destinations cannot be overwritten. Do not copy unchanged inputs
+  such as the 34 GB image store unless asked. Report only publisher-returned URIs. Trust the
+  current turn's application-set grant, never the read-only mount or earlier thread claims.
 
 Run `/opt/sap/bin/python /opt/pistachio/tools/sap_estimate.py <raw-sample-directory>`
 before ingest. It checks image headers and reports the full global-coordinate canvas without

@@ -280,8 +280,13 @@ async def main(event_id: str) -> None:
         compute.manifest["sdk_cost_total"] = saved.get("sdk_cost_total")
         sample_task = asyncio.create_task(sampler.run())
 
-    async def publish_gcs(ctx: Context, result: TurnResult) -> write_worker.Publication:
-        return await write_worker.publish(storage, request, event_id, url, ctx, result)
+    publisher = write_worker.Publisher(storage, request, event_id, url)
+    current_write_grant = (
+        write_access.WriteGrant.model_validate(request["write_grant"])
+        if request.get("write_grant")
+        else None
+    )
+    write_access.log_turn(event_id, current_write_grant)
 
     async def before_delivery(result: TurnResult) -> None:
         await asyncio.to_thread(
@@ -310,15 +315,12 @@ async def main(event_id: str) -> None:
             return_scripts=request.get("return_scripts") is True,
             script_manifest=resume.get("script_manifest") if resume else None,
             compute_manager=compute,
+            gcs_publisher=publisher if current_write_grant else None,
             project_name=request.get("project_name", ""),
             memory_context=project_memory.context(
                 memory_base, payload["event"].get("text", ""), settings
             ),
-            write_access=write_access.instructions(
-                write_access.WriteGrant.model_validate(request["write_grant"])
-                if request.get("write_grant")
-                else None
-            ),
+            write_access=write_access.instructions(current_write_grant),
         ),
         slack,
         run_prefix=run_root(
@@ -329,7 +331,8 @@ async def main(event_id: str) -> None:
             payload["event"].get("thread_ts") or payload["event"]["ts"],
         ),
         authorized=lambda: worker_permitted(storage, request, saved, settings=settings),
-        publish_gcs=publish_gcs,
+        publish_gcs=publisher.publish,
+        write_grant=current_write_grant,
         before_delivery=before_delivery if compute else None,
     )
     payload["event"]["_notice_ts"] = request.get("notice_ts")

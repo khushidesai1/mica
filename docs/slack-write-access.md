@@ -40,20 +40,38 @@ metadata, grants and checkpoints cannot be output targets.
 ## Saving files
 
 After granting access, ask Pistachio to save the desired results to the approved GCS folder.
-The worker stages only new/changed files under `outputs/gcs/` after a successful analysis turn.
+The worker stages requested files under `outputs/gcs/`.
 For example, `outputs/gcs/reports/summary.csv` becomes
 `gs://lab-outputs/liver/reports/summary.csv`. Other generated outputs retain normal Slack delivery.
-The user-facing Slack reply includes the actual GCS destinations after confirmed publication.
+For a complete result store, preserve its `points/`, `shapes/`, and `tables/*.zarr` layout in
+`outputs/gcs/<path relative to grant>/`. For example, with a bucket-root grant, use
+`outputs/gcs/resegmentation/tma15_atomx_prior/`. Close writers, validate the store, then call
+`publish_gcs` with that folder as soon as it is complete. The tool is available only when
+the current run has a write grant. Unchanged inputs, especially large image stores, should
+not be copied unless requested.
+
+Successful mid-turn publications survive later analysis errors. On a successful turn,
+end-of-turn delivery publishes remaining new/changed files and skips confirmed publications
+from the same event. A stopped turn does not automatically publish unfinished work.
+Both the tool and final Slack reply report confirmed GCS destinations. Partial failures list
+errors separately; a multi-object store is not an atomic upload. Verify all expected objects
+before using it. Once publication begins, staged copies are immutable for safe retry; put
+revised results at a new destination path.
 
 Grants permit **creating new objects only**. Existing objects cannot be overwritten or deleted;
 use a new filename for revised results. A retry of the same upload can recognize its completed
-object without creating another copy. The default limit is 512 MiB per file, at most 50 files
-per turn, and a bounded streaming upload duration. `AGENT_WRITE_MAX_MB` controls the file-size
-limit (1–10000 MiB). Generated files remain available when publishing fails.
+object without creating another copy. Defaults are 8192 MiB per file, 5,000 files and 100 GiB
+per run, including earlier mid-turn calls and reserved retry paths. All three limits are
+checked before staging a selected group of files; exceeding one uploads none of that group.
+Files publish with at most eight concurrent transfers. Each object's controller upload has
+an 840-second budget, below Cloud Run's 900-second request deadline; the per-object mutex
+covers this budget plus 60 seconds. Failed publication does not delete staged copies.
 
 A run captures the current grant when it is submitted. Granting access does not retroactively
 authorize a running job. Replacing or revoking that grant blocks further publishing by the
-old job; send a new request to use the new grant. Expiry, revocation, changed scope, removed
+old job; send a new request to use the new grant. Every turn includes an application-set
+grant line that supersedes earlier thread statements. The read-only input mount does not
+indicate whether output publishing is authorized. Expiry, revocation, changed scope, removed
 admin authority, project membership changes and forgotten conversation contexts are checked
 again during uploads and before committing. An upload already completing may finish;
 revocation does not delete files that were already uploaded.
@@ -69,11 +87,16 @@ Configure the control service (not the agent sandbox):
 AGENT_WRITE_ADMIN_IDS=T123:U123
 AGENT_WRITE_ALLOWED_PREFIXES=gs://lab-outputs/liver/,gs://lab-outputs/brain/
 AGENT_WRITE_SERVICE_ACCOUNT=pistachio-staging-writer@PROJECT.iam.gserviceaccount.com
-AGENT_WRITE_MAX_MB=512
+AGENT_WRITE_MAX_MB=8192
+AGENT_WRITE_MAX_FILES=5000
+AGENT_WRITE_MAX_TOTAL_GB=100
+AGENT_WRITE_UPLOAD_SECONDS=840
 ```
 
 The first three default to empty, which disables writes. Onboarding admins are not implicitly
 write admins. Changes to the admin or prefix configuration are checked against existing grants.
+File-size settings accept 1–20,000 MiB, file counts 1–20,000, total sizes 1–1,000 GiB,
+and upload budgets 1–840 seconds. Limits are copied into each run's request manifest.
 
 `infra/slack_writes.tf` provides optional configuration through
 `slack_agent_write_admin_ids` and `slack_agent_write_prefixes`. It provisions:
@@ -99,6 +122,10 @@ current project grant before each chunk, obtains a short-lived impersonated cred
 downscopes it to the single destination object. Tokens and resumable-upload URLs never leave
 the control service. The worker can stage outputs but cannot mint writer tokens or call the
 publisher from inside the model sandbox. Input mounts remain read-only.
+The trusted `publish_gcs` MCP tool invokes the existing publisher outside that sandbox.
+The GCS client retains refreshable impersonated/downscoped credentials, so chunk requests
+can refresh them during uploads beyond their 300-second lifetime; it never receives a frozen
+writer token from a worker. See [Google Auth's credential refresh contract](https://google-auth.readthedocs.io/en/latest/reference/google.auth.downscoped.html).
 
 Time expiry and revocation are enforced by the publisher. They do not revoke the writer's
 underlying IAM ceiling. This avoids giving the runtime permission to edit bucket IAM policies.
@@ -115,6 +142,8 @@ that broader data write access. See the deployment record for the current live I
 Validate the rollout with an approved test prefix: create a new object, refuse an existing
 object and a sibling prefix, revoke/expire a grant, and verify the dedicated writer cannot
 delete objects. Local tests mock cloud I/O; they do not establish live IAM conformance.
+See [result-store staging verification](gcs-result-stores-staging.md) for the deployed
+release, unit-test scope, and the successful 287-object live publish check.
 
 References: [Cloud Storage IAM conditions](https://docs.cloud.google.com/storage/docs/access-control/iam)
 and [credential access boundaries](https://docs.cloud.google.com/iam/docs/downscoping-short-lived-credentials).

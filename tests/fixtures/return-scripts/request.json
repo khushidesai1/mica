@@ -1,37 +1,40 @@
 {
-  "payload": {
-    "type": "event_callback",
-    "team_id": "T1",
-    "event_id": "E1.0",
-    "event": {
-      "type": "message",
-      "channel_type": "im",
-      "channel": "D1",
-      "user": "U1",
-      "ts": "1.0",
-      "text": "plot"
-    }
-  },
-  "thread_key": "ace053d03cd5444dca35eda312eccfea",
-  "notice_ts": "9.0",
-  "protocol": 2,
-  "write_grant": null,
-  "write_max_mb": 512,
-  "attachments": [],
-  "principal": "alice@example.com",
-  "project_id": "<project_id>",
-  "project_name": "liver",
-  "private": true,
   "access_signature": "<access_signature>",
+  "attachments": [],
   "created": 1700000000.0,
-  "run_prefix": "projects/_users/ff8d9819fc0e12bf0d24892e45987e24/runs/<project_id>/ace053d03cd5444dca35eda312eccfea",
   "memory": {
-    "head_oid": "<memory_head>",
     "files": {
       "PROJECT.md": {
         "oid": "7d5994a31c877cee415962fd5143203ed1fdbaa8",
         "text": "# Project\nSpecies: TODO"
       }
-    }
-  }
+    },
+    "head_oid": "<memory_head>"
+  },
+  "notice_ts": "9.0",
+  "payload": {
+    "event": {
+      "channel": "D1",
+      "channel_type": "im",
+      "text": "plot",
+      "ts": "1.0",
+      "type": "message",
+      "user": "U1"
+    },
+    "event_id": "E1.0",
+    "team_id": "T1",
+    "type": "event_callback"
+  },
+  "principal": "alice@example.com",
+  "private": true,
+  "project_id": "<project_id>",
+  "project_name": "liver",
+  "protocol": 2,
+  "run_prefix": "projects/_users/ff8d9819fc0e12bf0d24892e45987e24/runs/<project_id>/ace053d03cd5444dca35eda312eccfea",
+  "thread_key": "ace053d03cd5444dca35eda312eccfea",
+  "write_grant": null,
+  "write_max_files": 5000,
+  "write_max_mb": 8192,
+  "write_max_total_gb": 100,
+  "write_upload_seconds": 840
 }
