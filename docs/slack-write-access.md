@@ -147,3 +147,18 @@ release, unit-test scope, and the successful 287-object live publish check.
 
 References: [Cloud Storage IAM conditions](https://docs.cloud.google.com/storage/docs/access-control/iam)
 and [credential access boundaries](https://docs.cloud.google.com/iam/docs/downscoping-short-lived-credentials).
+
+## Publication receipts and manifests
+
+The agent describes saved folders and what they contain. The tool returns per-folder confirmed
+file counts and bytes, failure counts, and at most five error examples. Slack appends one
+`Saved to GCS` line per destination folder and at most three error examples, keeping the
+agent's summary first even when delivery fails. A store with thousands of objects does not
+produce thousands of reply lines.
+
+Each publish writes its full confirmed URI list and errors to `logs/gcs-publish-<id>.json`
+in the workspace; these logs are not Slack attachments. The artifact bucket retains immutable
+`write-access/uploads/<event>/publications/<id>/manifest.json` records. The event's
+`manifest.json` indexes these records and aggregates confirmed uploads. Existing controller
+per-object receipts remain the authority for upload confirmation. Explicit folder groups
+survive retries and worker replacement; automatic-only exports group by their top-level folder.

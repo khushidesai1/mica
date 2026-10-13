@@ -204,7 +204,7 @@ def test_inspection_never_reads_matrix(tmp_path, monkeypatch):
     assert info["obsm"]["spatial"]["shape"] == [6000, 2]
 
 
-async def test_budget_error_is_preserved_without_retry(setup, monkeypatch):
+async def test_budget_error_is_preserved_when_the_reserve_is_already_exhausted(setup, monkeypatch):
     ctx, settings = setup
     count = 0
 
@@ -409,3 +409,125 @@ async def test_mislabeled_visual_read_cannot_bypass_preview_guard(setup):
         None,
     )
     assert "preview.py" in decision["hookSpecificOutput"]["permissionDecisionReason"]
+
+
+def test_default_turn_cap_is_only_a_sanity_bound():
+    assert Settings(_env_file=None).max_turns == 500
+
+
+@pytest.mark.parametrize("error", ["error_max_turns", "error_max_budget_usd"])
+async def test_limit_resumes_once_for_tool_free_summary_with_reserved_budget(
+    setup, monkeypatch, error
+):
+    ctx, settings = setup
+    calls = []
+
+    async def query(**kwargs):
+        options = kwargs["options"]
+        calls.append(options)
+        if len(calls) == 1:
+            yield AssistantMessage(content=[TextBlock(text="Checking another file…")], model="test")
+            yield ResultMessage(
+                subtype=error,
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=True,
+                num_turns=40,
+                session_id="session-1",
+                total_cost_usd=4.5,
+            )
+        else:
+            assert options.resume == "session-1" and options.max_turns == 1
+            assert not options.tools and not options.allowed_tools and not options.mcp_servers
+            assert options.sandbox == calls[0].sandbox and options.env == calls[0].env
+            assert "Stop working" in kwargs["prompt"]
+            denied = await options.hooks["PreToolUse"][0].hooks[0](
+                {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {}}, None, None
+            )
+            assert denied["hookSpecificOutput"]["permissionDecision"] == "deny"
+            yield result(
+                result="Saved the checked table. The optional extra check remains.",
+                total_cost_usd=4.6,
+            )
+
+    monkeypatch.setattr(runner, "query", query)
+    output = await Runner(settings).run_turn(ctx, "Analyze", AsyncMock())
+    assert len(calls) == 2 and output.summary_generated
+    assert output.text == "Saved the checked table. The optional extra check remains."
+    assert output.error == error and output.session_id == "session-1"
+    assert calls[0].max_budget_usd + calls[1].max_budget_usd == settings.max_budget_usd_per_turn
+    assert calls[1].max_budget_usd == 0.5 and output.cost == pytest.approx(4.6)
+
+
+@pytest.mark.parametrize("failure", ["exception", "empty", "limit"])
+async def test_closing_summary_failure_preserves_partial_text_and_error(
+    setup, monkeypatch, failure
+):
+    ctx, settings = setup
+    calls = []
+
+    async def query(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            yield AssistantMessage(content=[TextBlock(text="Last checked step.")], model="test")
+            yield ResultMessage(
+                subtype="error_max_turns",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=True,
+                num_turns=40,
+                session_id="session-1",
+                total_cost_usd=0.1,
+            )
+        elif failure == "exception":
+            raise RuntimeError("summary unavailable")
+        elif failure == "empty":
+            yield result(result="")
+        else:
+            yield ResultMessage(
+                subtype="error_max_turns",
+                duration_ms=1,
+                duration_api_ms=1,
+                is_error=True,
+                num_turns=1,
+                session_id="session-1",
+                total_cost_usd=0.1,
+            )
+
+    monkeypatch.setattr(runner, "query", query)
+    output = await Runner(settings).run_turn(ctx, "Analyze", AsyncMock())
+    assert len(calls) == 2 and not output.summary_generated
+    assert output.text == "Last checked step." and output.error == "error_max_turns"
+
+
+async def test_closing_summary_accounts_only_new_spend_for_recovered_session(setup, monkeypatch):
+    from types import SimpleNamespace
+
+    ctx, settings = setup
+    agent = Runner(settings)
+    agent.compute = SimpleNamespace(sdk_cost_total=3.0, model_cost=0.5)
+    output = runner.TurnResult(session_id="session-1", cost=0.5, error="error_max_turns")
+
+    async def query(**kwargs):
+        yield result(result="Finished the table, not the plot.", total_cost_usd=3.1)
+
+    monkeypatch.setattr(runner, "query", query)
+    await agent._closing_summary(output, build_options(ctx, settings), 60, 0.5)
+    assert output.cost == pytest.approx(0.6) and agent.compute.model_cost == output.cost
+    assert agent.compute.sdk_cost_total == 3.1 and output.error == "error_max_turns"
+
+
+async def test_closing_summary_timeout_keeps_fallback(setup, monkeypatch):
+    ctx, settings = setup
+    output = runner.TurnResult(
+        session_id="session-1", text="Partial work", cost=0.2, error="error_max_turns"
+    )
+
+    async def query(**kwargs):
+        await asyncio.sleep(10)
+        yield result(result="Too late")
+
+    monkeypatch.setattr(runner, "query", query)
+    await Runner(settings)._closing_summary(output, build_options(ctx, settings), 0.001, 0.5)
+    assert output.text == "Partial work" and not output.summary_generated
+    assert output.error == "error_max_turns"

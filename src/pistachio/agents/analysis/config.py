@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     attachment_max_files: int = Field(default=10, ge=1, le=20)
     attachment_max_mb: int = Field(default=100, ge=1, le=500)
     attachment_max_message_mb: int = Field(default=250, ge=1, le=1000)
-    max_turns: int = Field(default=40, ge=1)
+    max_turns: int = Field(default=500, ge=1)
     max_budget_usd_per_turn: float = Field(default=5, gt=0)
     max_concurrent_runs: int = Field(default=3, ge=1)
     launch_heavy_tier: Literal["standard", "large", "xlarge"] = "large"

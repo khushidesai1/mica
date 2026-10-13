@@ -146,7 +146,7 @@ def worker(tmp_path, monkeypatch):
         request=httpx.Request("POST", "https://control/write"),
     )
     monkeypatch.setattr(write_worker.httpx, "AsyncClient", lambda **kwargs: client)
-    request = {"write_grant": {"id": "b" * 32}}
+    request = {"write_grant": {"id": "b" * 32, "uri": "gs://lab-data/"}}
     return SimpleNamespace(
         store=store, ctx=ctx, result=result, request=request, client=client, token=token, path=path
     )
@@ -203,9 +203,12 @@ async def test_slack_uses_confirmed_publication_outcome_over_model_claim(bot):  
     )
     await send(bot, event("Save the plot to GCS"))
     assert "GCS write revoked" in bot.last_reply and bot.last_error
-    bot.publish_gcs.return_value = write_worker.Publication(uploaded=["gs://lab-data/result.csv"])
+    bot.publish_gcs.return_value = write_worker.Publication(
+        uploaded=["gs://lab-data/result.csv"],
+        destinations=[write_worker.Destination("gs://lab-data/", files=1, bytes=8)],
+    )
     await send(bot, event("Save it now", ts="2.0", thread="1.0"))
-    assert "Saved to GCS" in bot.last_reply and "gs://lab-data/result.csv" in bot.last_reply
+    assert "Saved to GCS" in bot.last_reply and "gs://lab-data/" in bot.last_reply
     assert not bot.last_error
 
 
@@ -286,7 +289,7 @@ async def test_mid_turn_publish_survives_error_and_end_turn_skips_confirmed_path
     service = publisher(worker)
     response = await service.tool(worker.ctx).handler({"folder": "outputs/gcs/first"})
     assert not response["isError"]
-    assert json.loads(response["content"][0]["text"])["uploaded"]
+    assert json.loads(response["content"][0]["text"])["files"] == 1
     failed = await service.publish(worker.ctx, TurnResult(files=first + second, error="late error"))
     assert failed.uploaded and failed.errors and worker.client.post.call_count == 1
     result = await service.publish(worker.ctx, TurnResult(files=first + second))
@@ -455,3 +458,74 @@ async def test_limited_manifest_carries_all_publication_limits(writable):
         "write_max_total_gb": 100,
         "write_upload_seconds": 840,
     }
+
+
+async def test_large_publish_has_compact_tool_and_slack_receipts_and_full_manifests(worker, bot):  # noqa: F811
+    paths = add_store(worker, "resegmentation/tma15_atomx_prior/tables/proseg.zarr", 1073)
+
+    async def uploaded(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={"uri": "gs://lab-data/" + kwargs["json"]["relative_path"]},
+            request=httpx.Request("POST", url),
+        )
+
+    worker.client.post.side_effect = uploaded
+    service = publisher(worker)
+    response = await service.tool(worker.ctx).handler(
+        {"folder": "outputs/gcs/resegmentation/tma15_atomx_prior"}
+    )
+    text = response["content"][0]["text"]
+    assert len(text) < 2000 and not response["isError"]
+    summary = json.loads(text)
+    assert summary["files"] == 1073 and summary["bytes"] == 1073 * 5 and summary["failed"] == 0
+    assert summary["destinations"] == [
+        {
+            "uri": "gs://lab-data/resegmentation/tma15_atomx_prior/",
+            "files": 1073,
+            "bytes": 5365,
+            "errors": 0,
+        }
+    ]
+    manifest = json.loads((worker.ctx.workdir / summary["manifest"]).read_text())
+    assert len(manifest["uploaded"]) == 1073
+    final = await publisher(worker).publish(worker.ctx, TurnResult(files=paths))
+    assert worker.client.post.call_count == 1073  # Final receipt does not re-upload the store.
+    assert final.destinations == [
+        write_worker.Destination(
+            "gs://lab-data/resegmentation/tma15_atomx_prior/", files=1073, bytes=5365
+        )
+    ]
+    index = json.loads(worker.store.get("write-access/uploads/" + "a" * 32 + "/manifest.json")[0])
+    assert len(index["uploaded"]) == 1073 and len(index["publications"]) == 2
+    assert all(
+        len(json.loads(worker.store.get(k)[0])["uploaded"]) == 1073 for k in index["publications"]
+    )
+    bot.publish_gcs = AsyncMock(return_value=final)
+    await send(bot, event("Save checked result store"))
+    assert bot.last_reply.startswith("Data: fixture.h5ad")
+    assert bot.last_reply.count("Saved to GCS:") == 1 and "1,073 files" in bot.last_reply
+    assert "proseg.zarr/" not in bot.last_reply and len(bot.last_reply) < 500
+    assert all(
+        "logs/" not in f["file"]
+        for f in bot.client.files_upload_v2.call_args.kwargs["file_uploads"]
+    )
+
+
+async def test_failed_files_have_counts_and_bounded_examples(worker, bot):  # noqa: F811
+    worker.result.files = add_store(worker, "result", 10)
+    worker.client.post.return_value = httpx.Response(409, json={"detail": "Destination exists."})
+    service = publisher(worker)
+    response = await service.tool(worker.ctx).handler({"folder": "outputs/gcs/result"})
+    summary = json.loads(response["content"][0]["text"])
+    assert response["isError"] and summary["failed"] == 10
+    assert len(summary["error_examples"]) == 5
+    assert summary["destinations"][0]["errors"] == 10
+    manifest = json.loads((worker.ctx.workdir / summary["manifest"]).read_text())
+    assert len(manifest["errors"]) == 10
+    outcome = await service.publish(worker.ctx, worker.result)
+    bot.publish_gcs = AsyncMock(return_value=outcome)
+    await send(bot, event("Save the results"))
+    assert bot.last_reply.startswith("Data: fixture.h5ad")
+    assert "10 failed" in bot.last_reply and bot.last_reply.count("Destination exists.") == 3
+    assert "Saved to GCS" not in bot.last_reply and bot.last_error

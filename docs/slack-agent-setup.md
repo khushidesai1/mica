@@ -515,3 +515,16 @@ bypasses an earlier running request in the same thread. Stored outputs, old Slac
 audit records remain; clearing controls future active context rather than deleting historical
 artifacts. Routine summary updates do not reset working sessions. Uploads retain their existing
 30-day lifecycle. No new database, embeddings, or infrastructure permissions are required.
+
+## Long-run limits and closing summaries
+
+`AGENT_MAX_TURNS` defaults to 500 as a sanity limit. Execution time and the existing model
+budget remain the primary bounds. Each attempt reserves 10% of its model allowance, up to
+$0.50, for one closing call if the SDK reports a turn or model-budget limit.
+
+The closing call resumes the same session with all tools and MCP servers disabled,
+`max_turns=1`, and at most 60 seconds within the remaining execution deadline. It summarizes
+completed work, saved results, unfinished work, and the next step. Its spend is counted in
+normal accounting. The original error remains, so Slack still displays `Stopped` and appends
+a short limit notice. A failed or empty closing call preserves the previous partial reply
+and retry message. Other errors do not trigger a summary call.
