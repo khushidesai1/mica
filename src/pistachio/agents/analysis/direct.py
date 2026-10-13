@@ -190,6 +190,20 @@ async def decide(
     async with httpx.AsyncClient(timeout=65) as client:
         # One media fallback and one retry of an invalid routing response, at most.
         for _ in range(3):
+            content = [{"type": "text", "text": json.dumps(context)}, *media]
+            if invalid_calls:
+                content.append(
+                    {
+                        "type": "text",
+                        "text": (
+                            "Your previous response did not call route_request exactly once. "
+                            "Correct that now: put your answer in the reply field of a single "
+                            "route_request tool call. Do not answer in plain text "
+                            "outside the tool. "
+                            "Use only the supplied evidence and routing rules."
+                        ),
+                    }
+                )
             response = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
@@ -200,7 +214,7 @@ async def decide(
                     "messages": [
                         {
                             "role": "user",
-                            "content": [{"type": "text", "text": json.dumps(context)}, *media],
+                            "content": content,
                         }
                     ],
                     "tools": [

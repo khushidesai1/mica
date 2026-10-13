@@ -617,7 +617,12 @@ async def test_router_retries_missing_tool_and_logs_only_metadata(monkeypatch, c
     else:
         with pytest.raises(ValueError, match="Couldn't determine the next step"):
             await direct.decide("fake", "model", {}, event_id="event-test")
-    assert len(requests) == 2 and requests[0] == requests[1]
+    assert len(requests) == 2
+    first = requests[0]["messages"][0]["content"]
+    second = requests[1]["messages"][0]["content"]
+    assert second[:-1] == first
+    assert "single route_request tool call" in second[-1]["text"]
+    assert "private patient text" not in json.dumps(requests[1])
     assert requests[0]["tool_choice"] == {
         "type": "auto",
         "disable_parallel_tool_use": True,
