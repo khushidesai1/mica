@@ -14,7 +14,6 @@ from pydantic import BaseModel, Field
 
 from . import access, commands, job_lifecycle, memory_compaction, memory_workspace, project_memory
 from .config import CHECKPOINT_PREFIX
-from .identity import post
 from .storage import Storage
 
 if TYPE_CHECKING:
@@ -205,19 +204,6 @@ async def process(bridge: BatchBridge, event_id: str, storage: Storage) -> None:
                 cached["saved"] = saved.model_dump()
                 await asyncio.to_thread(storage.put, cache_key, json.dumps(cached).encode())
             saved = project_memory.Saved.model_validate(cached["saved"])
-            # The commit OID is the durable receipt and Slack deduplication key.
-            notice_key = f"memory-notice:{saved.commit_oid}"
-            notice = project_memory.notice(saved)
-            if notice and not await bridge.repository.get_connector_state(notice_key):
-                event = record["payload"]["event"]
-                await post(
-                    bridge.app.slack_bot_token,
-                    event["channel"],
-                    event.get("thread_ts") or event["ts"],
-                    notice,
-                    event_id=notice_key,
-                )
-                await bridge.repository.set_connector_state(notice_key, {"notified": True})
             await memory_compaction.enqueue(bridge, grant.project_id, saved)
             record["memory_editor_done"] = True
             record["memory_commit_oid"] = saved.commit_oid

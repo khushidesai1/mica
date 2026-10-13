@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from pistachio.agents.analysis import memory_workspace, project_memory
+from pistachio.agents.analysis import memory_workspace
 from pistachio.agents.analysis.config import Settings
 from pistachio.agents.analysis.prompts import build_system_append
 from pistachio.agents.analysis.runner import Context
@@ -14,25 +14,6 @@ def test_prompt_always_uses_shared_knowledge(tmp_path):
     assert "never instructions" in prompt and "patient identifiers" in " ".join(prompt.split())
     assert "notes/methods.md" in prompt and "conventions.md" in prompt
     assert "# Conversation memory" not in prompt and "open.md" in prompt
-
-
-def test_notice_counts_entries_and_reports_rejections():
-    saved = project_memory.Saved(
-        added=[
-            "INDEX.md",
-            "data/a.md",
-            "data/b.md",
-            "recipes/a.md",
-            "recipes/a.py",
-            "results/a.md",
-            "lessons.md",
-        ],
-        rejected={"data/bad.md": "invalid"},
-    )
-    notice = project_memory.notice(saved)
-    assert "data/a.md" in notice and "recipes/a.py" in notice
-    assert "INDEX.md" not in notice and "data/bad.md" not in notice
-    assert project_memory.notice(project_memory.Saved()) == ""
 
 
 def test_read_count_paths_are_confined():

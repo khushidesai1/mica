@@ -44,7 +44,7 @@ not reset SDK sessions, messages, attachments, or saved working directories.
 Use `memory` for the index and active work (or a file listing until an index exists), `memory conventions.md` for a file, or `brief`
 for the guide. Correct mistakes in plain language. The old `remember`, `forget`, `knowledge`,
 `save brief`, and `clean brief` commands explain this change without editing memory.
-A single notice lists changed files, excluding index-only or active-work-only edits.
+Memory saves run silently; use `memory` or `brief` when you want to inspect saved content.
 
 ## Compaction and operations
 

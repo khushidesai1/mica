@@ -674,16 +674,6 @@ async def handle(
 
             await memory_compaction.enqueue(bridge, grant.project_id, saved_guide)
             record["memory_init_saved"] = saved_guide.model_dump()
-            notice = project_memory.notice(saved_guide)
-            if notice and not record.get("guide_notified"):
-                await post(
-                    bridge.app.slack_bot_token,
-                    event["channel"],
-                    event.get("thread_ts") or event["ts"],
-                    notice,
-                    event_id=f"memory-notice:{saved_guide.commit_oid}",
-                )
-                record["guide_notified"] = True
         ctx["project_md"] = decision.guide
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
     if decision.route == "reply":

@@ -100,11 +100,6 @@ def context(snapshot: Snapshot | None, request: str, settings: Settings) -> str:
     )[: settings.memory_router_chars]
 
 
-def notice(saved: Saved) -> str:
-    paths = sorted(set(saved.added + saved.changed + saved.removed) - {"open.md", "INDEX.md"})
-    return "Remembered for this project: " + ", ".join(paths) + "." if paths else ""
-
-
 class File(BaseModel):
     text: str
     oid: str
