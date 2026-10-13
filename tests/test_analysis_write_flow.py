@@ -9,7 +9,7 @@ from starlette.requests import Request
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_slack import bot, event, send  # noqa: F401
 
-from pistachio.agents.analysis import write_access, write_worker
+from pistachio.agents.analysis import write_access, write_broker, write_worker
 from pistachio.agents.analysis.runner import Context, TurnResult
 from pistachio.agents.analysis.storage import LocalStorage
 from pistachio.api import slack_analysis
@@ -496,6 +496,8 @@ async def test_large_publish_has_compact_tool_and_slack_receipts_and_full_manife
             "gs://lab-data/resegmentation/tma15_atomx_prior/", files=1073, bytes=5365
         )
     ]
+    assert not worker.store.keys("write-access/uploads")
+    write_broker.archive_manifests(worker.store, "a" * 32, "gs://lab-data/")
     index = json.loads(worker.store.get("write-access/uploads/" + "a" * 32 + "/manifest.json")[0])
     assert len(index["uploaded"]) == 1073 and len(index["publications"]) == 2
     assert all(
@@ -529,3 +531,64 @@ async def test_failed_files_have_counts_and_bounded_examples(worker, bot):  # no
     assert bot.last_reply.startswith("Data: fixture.h5ad")
     assert "10 failed" in bot.last_reply and bot.last_reply.count("Destination exists.") == 3
     assert "Saved to GCS" not in bot.last_reply and bot.last_error
+
+
+async def test_worker_manifest_uses_only_event_transport_permissions(worker, monkeypatch):
+    put, put_if = worker.store.put, worker.store.put_if
+
+    def worker_put(key, *args):
+        if key.startswith("write-access/"):
+            raise PermissionError("Controller only")
+        return put(key, *args)
+
+    def worker_put_if(key, *args):
+        if key.startswith("write-access/"):
+            raise PermissionError("Controller only")
+        return put_if(key, *args)
+
+    monkeypatch.setattr(worker.store, "put", worker_put)
+    monkeypatch.setattr(worker.store, "put_if", worker_put_if)
+    report = await publish(worker)
+    assert not report.errors and report.uploaded
+    index = json.loads(worker.store.get(write_broker.manifest_stage("a" * 32))[0])
+    assert len(index["publications"]) == 1
+
+
+async def test_controller_archives_reports_during_poll(writable):
+    await allow(writable)
+    event_id = await writable.accept(payload("3.0"))
+    await writable.process(event_id, 0)
+    identifier = "c" * 32
+    prefix = f"write-access/uploads/{event_id}/"
+    key = prefix + f"publications/{identifier}/manifest.json"
+    report = {"event_id": event_id, "uploaded": ["gs://lab-data/liver/output/report.csv"]}
+    writable.store.put(
+        write_broker.manifest_stage(event_id, identifier), json.dumps(report).encode()
+    )
+    index = {**report, "publications": [key]}
+    writable.store.put(write_broker.manifest_stage(event_id), json.dumps(index).encode())
+    assert await writable.process(event_id, 1) == "running"
+    assert json.loads(writable.store.get(key)[0]) == report
+    assert json.loads(writable.store.get(prefix + "manifest.json")[0]) == index
+    assert await writable.process(event_id, 2) == "running"  # Idempotent next poll.
+
+
+@pytest.mark.parametrize("problem", ["foreign-event", "foreign-object", "foreign-key", "mutation"])
+def test_controller_manifest_archive_rejects_invalid_reports(worker, problem):
+    event_id, identifier = "a" * 32, "c" * 32
+    key = f"write-access/uploads/{event_id}/publications/{identifier}/manifest.json"
+    report = {"event_id": event_id, "uploaded": ["gs://lab-data/result.csv"]}
+    index = {**report, "publications": [key]}
+    if problem == "foreign-event":
+        report["event_id"] = "b" * 32
+    elif problem == "foreign-object":
+        report["uploaded"] = ["gs://other-bucket/private.csv"]
+    elif problem == "foreign-key":
+        index["publications"] = ["write-access/projects/private.json"]
+    else:
+        worker.store.put(key, b"earlier immutable report")
+    worker.store.put(write_broker.manifest_stage(event_id, identifier), json.dumps(report).encode())
+    worker.store.put(write_broker.manifest_stage(event_id), json.dumps(index).encode())
+    with pytest.raises(ValueError):
+        write_broker.archive_manifests(worker.store, event_id, "gs://lab-data/")
+    assert not worker.store.path(f"write-access/uploads/{event_id}/manifest.json").exists()

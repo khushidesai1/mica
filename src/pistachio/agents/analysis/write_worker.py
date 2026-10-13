@@ -19,7 +19,7 @@ from google.oauth2 import id_token
 from .config import CHECKPOINT_PREFIX, Settings
 from .outputs import files_under
 from .storage import Conflict, Storage
-from .write_broker import relative_path, staged_key
+from .write_broker import manifest_stage, relative_path, staged_key
 
 if TYPE_CHECKING:
     from .runner import Context, TurnResult
@@ -260,12 +260,15 @@ class Publisher:
             stream.write(data)
         if self.grant:
             key = f"write-access/uploads/{self.event_id}/publications/{identifier}/manifest.json"
-            await asyncio.to_thread(self.storage.put_if, key, data, None)
+            # Workers can write their event transport area, never controller audit records.
+            await asyncio.to_thread(
+                self.storage.put_if, manifest_stage(self.event_id, identifier), data, None
+            )
             self.manifests.append(key)
             await self.save()
             await asyncio.to_thread(
                 self.storage.put,
-                f"write-access/uploads/{self.event_id}/manifest.json",
+                manifest_stage(self.event_id),
                 json.dumps(
                     {
                         "event_id": self.event_id,

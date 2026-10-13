@@ -162,3 +162,9 @@ in the workspace; these logs are not Slack attachments. The artifact bucket reta
 `manifest.json` indexes these records and aggregates confirmed uploads. Existing controller
 per-object receipts remain the authority for upload confirmation. Explicit folder groups
 survive retries and worker replacement; automatic-only exports group by their top-level folder.
+
+Workers stage manifest reports under their existing event transport prefix. The controller
+archives them during normal job polling and before terminal reconciliation; workers have no
+write permission to the protected audit prefix. Archive paths and reported destinations are
+checked against the event and captured grant, and earlier publication reports are immutable.
+The manifests are worker reports; controller per-object receipts confirm actual uploads.
