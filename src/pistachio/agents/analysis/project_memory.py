@@ -64,7 +64,9 @@ PRIVACY = (
     "using that project, and repository readers can see it."
 )
 GUIDE_POLICY = """PROJECT.md is a concise project and data guide. Record the project purpose,
-data location, important files and verified column meanings and units. Put preferences in
+data location, important files and verified column meanings and units. Verified folder layout
+(which top-level/data folders hold which inputs or results) belongs in PROJECT.md's Data section,
+not open.md, where it could be compacted away. Put preferences in
 conventions.md, results in results/, and current work, decisions and labeled hypotheses in
 open.md. Leave unknown details out. Preserve unrelated valid guide content; edit only when
 requested or when a durable fact fills a relevant gap. Never inspect data just to maintain
@@ -408,7 +410,7 @@ class GitHubMemory:
         valid_project(pid)
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", event_id):
             raise ValueError("Invalid memory event ID")
-        if source not in {"editor", "worker", "init", "compaction"}:
+        if source not in {"editor", "worker", "init", "import", "compaction"}:
             raise ValueError("Invalid memory source")
         message = f"memory({pid}): {source} {event_id}"
         saved, outcome = Saved(), "failed:CancelledError"

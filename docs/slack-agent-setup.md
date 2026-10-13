@@ -218,24 +218,25 @@ the Socket Mode entrypoint has been removed. Live testing requires explicit
 and [gcsfuse flags](https://docs.cloud.google.com/storage/docs/cloud-storage-fuse/cli-options).
 
 
-## Bounded initialization and file listings
+## Initialization and file listings
 
-`init` prepares a metadata-only sample through the trusted Google Cloud Storage API: at most
-4 one-page listings, 80 entries per page, 200 retained entries, 2 levels below the requested
-folder, and a 15-second listing budget with each request capped at 5 seconds and no retries.
-Zarr/N5 stores are opaque entries; hidden/output folders are skipped. An unavailable/partial
-listing still produces an explicitly incomplete saved guide rather than an unbounded scan.
+`init` lists the data folder's immediate visible children through the trusted Google Cloud
+Storage API. Pagination follows every page within a shared 20-second budget, without retries
+or descending into subfolders. Zarr/N5 stores remain opaque; hidden/output paths are excluded.
+Each folder reports `complete`; a timeout or listing error makes it false. No file contents,
+schemas, cell counts, or biological facts are inferred from names.
 
-Ordinary chat can request the same inventory for the project's root or a narrower relative
-folder. The service verifies project access and bucket admission before listing, supplies the
-metadata to a second conversation call, and allows either a listing reply or computation for
-the requested analysis once inputs are sufficiently sized. Unavailable listings do not trigger
-compute just to retry the listing; an unlisted file is not evidence that it is absent.
-Absolute paths, traversal, other buckets, and array-store internals cannot be requested.
+For ordinary chat, the router resolves descriptive names from the project guide, project
+memory, and conversation. It requests all relevant relative folders in one step (at most 50),
+listing the root only when context cannot resolve a needed folder. Every path is checked
+against project access, bucket admission, traversal, and array-store restrictions before listing.
+The reply names the folders used. Incomplete listings and requests for another listing route
+to a worker that can finish the work; missing entries in partial results never prove absence.
 
-The control-plane model saves the initial guide from bounded metadata without a worker.
-Reading file contents is a separate computation request. The guide omits unknown schemas,
-counts and filename-based guesses; detailed file inspection is deferred until needed.
+One `inventory event=<id> paths=<n> entries=<n> complete=<bool> ms=<n>` log records each step
+without names. Intermediate routing decisions are saved for failure diagnosis and marked pending
+until a final reply or compute decision is ready. Delivery retries reuse the final decision.
+The initial guide is generated without a worker even if the listing is unavailable.
 
 Retrying the same project/folder binding preserves its identity and saved brief. Init automatically
 selects the project in your DM; no `--force` is needed. The flag remains accepted for compatibility.

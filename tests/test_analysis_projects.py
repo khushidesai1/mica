@@ -209,7 +209,7 @@ async def test_switch_in_channel_keeps_publication_and_force_requirements(chat):
 
 @pytest.mark.parametrize("suffix", ["", " --force"])
 async def test_init_selects_new_project_and_offers_switch_back(chat, monkeypatch, suffix):  # noqa: F811
-    monkeypatch.setattr(direct, "inventory", lambda *a: {"entries": []})
+    monkeypatch.setattr(direct, "inventory", lambda *a, **kw: {"entries": []})
     old_thread = await message(chat, "Describe this project", "10.0")
     original_brief = (await chat.memory_backend.read(chat.pid)).files["PROJECT.md"]
     checkpoint = checkpoint_key(old_thread["thread_key"])
@@ -240,7 +240,7 @@ async def test_init_switch_back_survives_interrupted_binding_write(
     monkeypatch,
     switch_during_retry,
 ):
-    monkeypatch.setattr(direct, "inventory", lambda *a: {"entries": []})
+    monkeypatch.setattr(direct, "inventory", lambda *a, **kw: {"entries": []})
     original = Registry.update
     failed = False
 
@@ -274,7 +274,7 @@ async def test_init_switch_back_survives_interrupted_binding_write(
 
 
 async def test_init_switch_back_uses_id_when_new_project_shadows_shared_name(chat, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(direct, "inventory", lambda *a: {"entries": []})
+    monkeypatch.setattr(direct, "inventory", lambda *a, **kw: {"entries": []})
     await message(chat, "share liver <@U2>", "10.0")
     await message(chat, "switch liver", "11.0", user="U2", channel="D2")
     reply = await message(chat, "init liver gs://lab-data/bob/", "12.0", user="U2", channel="D2")
@@ -284,7 +284,7 @@ async def test_init_switch_back_uses_id_when_new_project_shadows_shared_name(cha
 
 
 async def test_init_reuses_selected_project_without_spurious_switch_back(chat, monkeypatch):  # noqa: F811
-    monkeypatch.setattr(direct, "inventory", lambda *a: {"entries": []})
+    monkeypatch.setattr(direct, "inventory", lambda *a, **kw: {"entries": []})
     reply = await message(chat, "init liver gs://lab-data/liver/", "10.0")
     assert reply["status"] == "complete"
     assert "Active project: liver." in reply["notice_text"]

@@ -136,7 +136,7 @@ async def test_edits_other_init_and_share_keep_older_thread_state(memory_chat, m
     monkeypatch.setattr(
         memory_tasks, "edit", AsyncMock(return_value={"conventions.md": CONVENTION})
     )
-    monkeypatch.setattr(direct, "inventory", lambda *args: {"entries": []})
+    monkeypatch.setattr(direct, "inventory", lambda *args, **kwargs: {"entries": []})
     output = await seed_earlier_output(chat)
     first = next(
         k.split(":", 1)[1] for k in chat.repository.connector_state if k.startswith("claude-event:")

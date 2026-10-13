@@ -11,7 +11,7 @@ from pistachio.agents.analysis.config import Settings
 
 
 async def test_init_saves_guide_and_legacy_commands_explain_autosave(chat, monkeypatch):
-    monkeypatch.setattr(direct, "inventory", lambda *args: {"entries": []})
+    monkeypatch.setattr(direct, "inventory", lambda *args, **kwargs: {"entries": []})
     chat.decision.return_value = direct.Decision(route="reply", reply="Ready.", guide="# New guide")
     await message(chat, "init new gs://lab-data/new/ --force", "1.0")
     from pistachio.agents.analysis.registry import Registry
