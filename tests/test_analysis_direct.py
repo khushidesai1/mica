@@ -83,7 +83,9 @@ async def test_compute_uses_direct_brief_and_cached_routing(chat, monkeypatch):
 
 
 async def test_direct_init_and_invalid_bucket(chat, monkeypatch):
-    monkeypatch.setattr(direct, "inventory", lambda *a: {"entries": [], "content_inspected": False})
+    monkeypatch.setattr(
+        direct, "inventory", lambda *a, **kw: {"entries": [], "content_inspected": False}
+    )
     init = await chat.accept(payload(text="init liver gs://lab-data/liver/"))
     assert await chat.process(init, 0) == "complete"
     assert "init_inventory" in chat.decision.call_args.args[2]
@@ -107,20 +109,20 @@ async def test_file_listing_uses_project_metadata_without_worker_and_caches_repl
 ):
     metadata = {
         "entries": [{"path": "liver/raw/sample.csv.gz", "kind": "file", "size_bytes": 4096}],
-        "coverage": "bounded metadata sample, not a complete inventory",
+        "complete": True,
         "content_inspected": False,
     }
     listing = Mock(return_value=metadata)
     monkeypatch.setattr(direct, "inventory", listing)
     chat.decision.side_effect = [
-        direct.Decision(route="inventory", reply="Checking.", inventory_path="raw/"),
+        direct.Decision(route="inventory", reply="Checking.", inventory_paths=["raw/"]),
         direct.Decision(route="reply", reply="I found sample.csv.gz (4 KB) in the sampled list."),
     ]
     event = await chat.accept(payload(text="What files are in raw, and how big are they?"))
     assert await chat.process(event, 0) == "complete"
     assert await chat.process(event, 0) == "complete"
     listing.assert_called_once()
-    assert listing.call_args.args[0] == "gs://lab-data/liver/raw/"
+    assert listing.call_args.args[0] == ["gs://lab-data/liver/raw/"]
     assert chat.decision.await_count == 2
     supplied = chat.decision.call_args.args[2]
     assert supplied["data_inventory"] == metadata
@@ -133,22 +135,23 @@ async def test_file_listing_uses_project_metadata_without_worker_and_caches_repl
 
 
 @pytest.mark.parametrize("route", ["reply", "compute", "inventory"])
-async def test_unavailable_listing_never_falls_back_to_worker(chat, monkeypatch, route):
+async def test_unavailable_listing_uses_worker_without_dead_end(chat, monkeypatch, route):
     monkeypatch.setattr(
-        direct, "inventory", Mock(return_value={"entries": [], "stopped": "time budget"})
+        direct,
+        "inventory",
+        Mock(return_value={"entries": [], "complete": False, "stopped": "time budget"}),
     )
     chat.decision.side_effect = [
         direct.Decision(route="inventory", reply="Checking."),
         direct.Decision(route=route, reply="The file listing timed out. Please try again."),
     ]
     event = await chat.accept(payload(text="What files are in the bucket?"))
-    expected = "complete" if route == "reply" else "failed"
-    assert await chat.process(event, 0) == expected
-    chat.test_client.create_job.assert_not_called()
+    assert await chat.process(event, 0) == "running"
+    chat.test_client.create_job.assert_called_once()
 
 
 async def test_inventory_reply_failure_never_falls_back_to_worker(chat, monkeypatch):
-    monkeypatch.setattr(direct, "inventory", Mock(return_value={"entries": []}))
+    monkeypatch.setattr(direct, "inventory", Mock(return_value={"entries": [], "complete": True}))
     chat.decision.side_effect = [
         direct.Decision(route="inventory", reply="Checking."),
         httpx.ReadTimeout("timeout"),
@@ -158,15 +161,20 @@ async def test_inventory_reply_failure_never_falls_back_to_worker(chat, monkeypa
     chat.test_client.create_job.assert_not_called()
 
 
-@pytest.mark.parametrize("path", ["../other/", "gs://other-bucket/", "/liver/"])
+@pytest.mark.parametrize(
+    "path", ["../other/", "gs://other-bucket/", "/liver/", "outputs/", "data.zarr/", "data.n5/"]
+)
 async def test_inventory_cannot_escape_project(chat, monkeypatch, path):
     listing = Mock()
     monkeypatch.setattr(direct, "inventory", listing)
     chat.decision.return_value = direct.Decision(
-        route="inventory", reply="Checking.", inventory_path=path
+        route="inventory", reply="Checking.", inventory_paths=["raw/", path]
     )
     event = await chat.accept(payload(text="List files"))
     assert await chat.process(event, 0) == "failed"
+    record = await chat.repository.get_connector_state("claude-event:" + event)
+    assert record["direct_decision"]["route"] == "inventory"
+    assert record["direct_decision_pending"]
     listing.assert_not_called()
     chat.test_client.create_job.assert_not_called()
 
@@ -178,6 +186,9 @@ async def test_inventory_checks_bucket_admission_before_listing(chat, monkeypatc
     chat.decision.return_value = direct.Decision(route="inventory", reply="Checking.")
     event = await chat.accept(payload(text="List files"))
     assert await chat.process(event, 0) == "failed"
+    record = await chat.repository.get_connector_state("claude-event:" + event)
+    assert record["direct_decision"]["route"] == "inventory"
+    assert record["direct_decision_pending"]
     listing.assert_not_called()
     chat.test_client.create_job.assert_not_called()
 
@@ -207,7 +218,7 @@ async def test_inventory_rechecks_project_access_before_listing(chat, monkeypatc
 
 
 async def test_inventory_delivery_retry_reuses_saved_result(chat, monkeypatch):
-    listing = Mock(return_value={"entries": []})
+    listing = Mock(return_value={"entries": [], "complete": True})
     monkeypatch.setattr(direct, "inventory", listing)
     chat.decision.side_effect = [
         direct.Decision(route="inventory", reply="Checking.", guide="Revised draft"),
@@ -606,7 +617,12 @@ async def test_router_retries_missing_tool_and_logs_only_metadata(monkeypatch, c
     else:
         with pytest.raises(ValueError, match="Couldn't determine the next step"):
             await direct.decide("fake", "model", {}, event_id="event-test")
-    assert len(requests) == 2 and requests[0] == requests[1]
+    assert len(requests) == 2
+    first = requests[0]["messages"][0]["content"]
+    second = requests[1]["messages"][0]["content"]
+    assert second[:-1] == first
+    assert "single route_request tool call" in second[-1]["text"]
+    assert "private patient text" not in json.dumps(requests[1])
     assert requests[0]["tool_choice"] == {
         "type": "auto",
         "disable_parallel_tool_use": True,
@@ -687,3 +703,176 @@ def test_followup_and_methods_prompt_rules():
     assert "earlier reply or its methods note" in direct.SYSTEM
     assert "ask instead of guessing or launching a worker" not in direct.SYSTEM
     assert "notes/methods.md" in prompts.SYSTEM
+
+
+async def test_incident_lists_both_context_folders_in_one_step(chat, monkeypatch, caplog):
+    from fake_inventory import fake_gcs
+
+    from pistachio.agents.analysis.config import Settings
+
+    fact = "type: open\nsource: verified analysis, 2026-10-11\nstatus: current\n\n"
+    base = await chat.memory_backend.read(chat.pid)
+    await chat.memory_backend.commit(
+        chat.pid,
+        base,
+        {
+            "open.md": fact
+            + "AtoMx raw: raw_outputs/raw/<TMA>/; re-segmented: resegmentation/<TMA>/"
+        },
+        source="editor",
+        event_id="incident-memory",
+    )
+    requests = fake_gcs(
+        monkeypatch,
+        {
+            "liver/": [
+                "metadata/",
+                "models/",
+                "processed/",
+                "raw_outputs/",
+                "reference/",
+                "resegmentation/",
+            ],
+            "liver/raw_outputs/raw/": [f"TMA{i}/" for i in range(1, 41)],
+            "liver/resegmentation/": [f"tma{i}/" for i in range(1, 36)]
+            + ["TMA14rpt/", "AdipokinesRO1TMA101/"],
+        },
+    )
+    monkeypatch.setattr(
+        chat, "resolve_data", lambda *a, **kw: (Settings(_env_file=None), {"lab-data"})
+    )
+    chat.decision.side_effect = [
+        direct.Decision(
+            route="inventory",
+            reply="Checking.",
+            inventory_paths=["raw_outputs/raw/", "resegmentation/"],
+        ),
+        direct.Decision(
+            route="reply", reply="raw_outputs/raw/: missing 41–56. resegmentation/: missing 36–56."
+        ),
+    ]
+    event = await chat.accept(
+        payload(
+            text="We are supposed to have TMAs up until TMA56, which numbers are missing "
+            "sorted in order from our raw / re-segmented bucket folders?"
+        )
+    )
+    assert await chat.process(event, 0) == "complete"
+    first = chat.decision.call_args_list[0].args[2]
+    assert "raw_outputs/raw/" in first["project_memory"]
+    assert first["project_md"] == first["brief"]
+    metadata = chat.decision.call_args.args[2]["data_inventory"]
+    assert metadata["complete"] and metadata["entry_count"] == 77
+    assert [len(f["entries"]) for f in metadata["folders"]] == [40, 37]
+    assert all(f["complete"] for f in metadata["folders"])
+    assert len(requests) == 2
+    assert f"inventory event={event} paths=2 entries=77 complete=true ms=" in caplog.text
+    inventory_logs = [r.message for r in caplog.records if r.name == "pistachio.inventory"]
+    assert len(inventory_logs) == 1 and "resegmentation" not in inventory_logs[0]
+    chat.test_client.create_job.assert_not_called()
+
+
+async def test_second_inventory_routes_to_compute_without_another_listing(chat, monkeypatch):
+    listing = Mock(return_value={"complete": True, "folders": []})
+    monkeypatch.setattr(direct, "inventory", listing)
+    chat.decision.return_value = direct.Decision(route="inventory", reply="Checking.")
+    event = await chat.accept(payload(text="List the raw and processed folders"))
+    assert await chat.process(event, 0) == "running"
+    listing.assert_called_once()
+    chat.test_client.create_job.assert_called_once()
+    record = await chat.repository.get_connector_state("claude-event:" + event)
+    assert record["direct_decision"]["route"] == "compute"
+    assert not record["direct_decision_pending"]
+
+
+def test_inventory_paths_have_sanity_bounds():
+    from pydantic import ValidationError
+
+    for paths in [["a"] * 51, ["a" * 2049]]:
+        with pytest.raises(ValidationError):
+            direct.Decision(route="inventory", reply="Checking.", inventory_paths=paths)
+
+
+async def test_imported_layout_is_supplied_in_router_context(chat):
+    from tools.memory_import import layout_from_memory
+
+    base = await chat.memory_backend.read(chat.pid)
+    await chat.memory_backend.commit(
+        chat.pid,
+        base,
+        {
+            "PROJECT.md": None,
+            "open.md": "type: open\nsource: analysis, 2026-10-11\nstatus: current\n\n"
+            "AtoMx raw: `raw_outputs/raw/<TMA>/`",
+        },
+        source="editor",
+        event_id="prepare-import",
+    )
+    await layout_from_memory(
+        chat.store,
+        chat.memory_backend,
+        chat.pid,
+        ["open.md::AtoMx raw: `raw_outputs/raw/<TMA>/`"],
+        apply=True,
+    )
+    event = await chat.accept(payload(text="Where are the raw data?"))
+    assert await chat.process(event, 0) == "complete"
+    context = chat.decision.call_args.args[2]
+    assert "## Data" in context["project_md"]
+    assert "raw_outputs/raw/<TMA>/" in context["project_md"]
+
+
+async def test_failure_keeps_pending_decision_but_retry_does_not_reuse_it(chat, monkeypatch):
+    listing = Mock(return_value={"complete": True, "folders": []})
+    monkeypatch.setattr(direct, "inventory", listing)
+    chat.decision.side_effect = [
+        direct.Decision(route="inventory", reply="Checking.", inventory_paths=["raw/"]),
+        httpx.ReadTimeout("model unavailable"),
+    ]
+    event = await chat.accept(payload(text="List raw files"))
+    assert await chat.process(event, 0) == "failed"
+    record = await chat.repository.get_connector_state("claude-event:" + event)
+    assert record["direct_decision"]["inventory_paths"] == ["raw/"]
+    assert record["direct_decision_pending"]
+    chat.decision.side_effect = None
+    chat.decision.return_value = direct.Decision(route="reply", reply="The folder is empty.")
+    # Exercise routing directly: event lifecycle does not automatically retry terminal failures.
+    await direct.handle(chat, event, record, chat.store)
+    assert chat.decision.await_count == 3
+    assert not record["direct_decision_pending"]
+
+
+@pytest.mark.parametrize(
+    "complete,stop,extra",
+    [
+        (True, "end_turn", False),
+        (False, "end_turn", False),
+        (True, "max_tokens", False),
+        (True, "end_turn", True),
+    ],
+)
+async def test_plain_complete_inventory_answer_is_a_read_only_reply(
+    monkeypatch, complete, stop, extra
+):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        content = [{"type": "text", "text": "raw/ and processed/ both lack samples 3 and 7."}]
+        if extra:
+            content.append({"type": "tool_use", "name": "unexpected", "input": {}})
+        return httpx.Response(200, json={"stop_reason": stop, "content": content})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(direct.httpx, "AsyncClient", lambda **kw: client)
+    if not complete:
+        answer = await direct.decide("fake", "model", {"data_inventory": {"complete": False}})
+        assert answer.route == "compute"
+    elif stop == "end_turn" and not extra:
+        answer = await direct.decide("fake", "model", {"data_inventory": {"complete": complete}})
+        assert answer.route == "reply" and "samples 3 and 7" in answer.reply
+        assert answer.guide is None and answer.worker is None and answer.transfer_request is None
+    else:
+        with pytest.raises(ValueError):
+            await direct.decide("fake", "model", {"data_inventory": {"complete": complete}})
+    assert len(calls) == 2

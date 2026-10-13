@@ -11,13 +11,17 @@ from pistachio.agents.analysis.config import Settings
 
 
 async def test_init_saves_guide_and_legacy_commands_explain_autosave(chat, monkeypatch):
-    monkeypatch.setattr(direct, "inventory", lambda *args: {"entries": []})
+    monkeypatch.setattr(direct, "inventory", lambda *args, **kwargs: {"entries": []})
     chat.decision.return_value = direct.Decision(route="reply", reply="Ready.", guide="# New guide")
     await message(chat, "init new gs://lab-data/new/ --force", "1.0")
     from pistachio.agents.analysis.registry import Registry
 
     pid = Registry(chat.store).load().bound("T1", "D1")
     assert (await chat.memory_backend.read(pid)).files["PROJECT.md"].text == "# New guide"
+    assert not any(
+        "Remembered for this project" in call.kwargs.get("text", "")
+        for call in chat.test_slack.chat_postMessage.call_args_list
+    )
     count = chat.decision.await_count
     for i, cmd in enumerate(("save brief", "clean brief", "remember hi", "knowledge"), 2):
         result = await message(chat, cmd, f"{i}.0", thread="1.0")

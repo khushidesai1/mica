@@ -397,7 +397,7 @@ class SlackAgent:
             except Exception:
                 log.exception("GCS publishing failed: %s", key)
                 gcs.errors.append("GCS delivery could not be confirmed. Generated files are saved.")
-            delivery_issues.extend(gcs.errors)
+
         for path in result.files:
             if ".previews" in path.relative_to(ctx.workdir).parts:
                 continue
@@ -448,16 +448,27 @@ class SlackAgent:
                 )
         # Preserve the workspace checkpoint after an upload failure so a resend can reuse
         # the reports. Record what the user actually received, not the model's success claim.
-        reply = "\n\n".join(delivery_issues) if delivery_issues else result.text
+        reply = result.text
+        if delivery_issues:
+            reply += "\n\n" + "\n\n".join(delivery_issues)
         if script_notes:
             reply += "\n\n" + "\n".join(script_notes)
-        if gcs.uploaded:
-            reply += "\n\nSaved to GCS:\n" + "\n".join(f"- {uri}" for uri in gcs.uploaded)
+        if receipt := gcs.receipt():
+            reply += "\n\n" + receipt
+        if gcs.errors:
+            delivery_issues.append("GCS delivery incomplete")
         notices = [event.notice() for event in result.runtimes if event.notice()]
         if notices:
             reply += "\n\n" + "\n".join(notices)
         if result.error:
-            reply += f"\n\nThat run stopped early (`{result.error}`). Want me to try again?"
+            if result.summary_generated:
+                reason = "turn limit" if result.error == "error_max_turns" else "model budget"
+                reply += (
+                    f"\n\nStopped before finishing ({reason}); "
+                    "the summary above covers what's done."
+                )
+            else:
+                reply += f"\n\nThat run stopped early (`{result.error}`). Want me to try again?"
         self.last_reply = reply
         self.last_error = result.error or ("File delivery incomplete" if delivery_issues else None)
         try:

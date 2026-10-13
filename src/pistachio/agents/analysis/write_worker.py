@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -18,7 +19,7 @@ from google.oauth2 import id_token
 from .config import CHECKPOINT_PREFIX, Settings
 from .outputs import files_under
 from .storage import Conflict, Storage
-from .write_broker import relative_path, staged_key
+from .write_broker import manifest_stage, relative_path, staged_key
 
 if TYPE_CHECKING:
     from .runner import Context, TurnResult
@@ -33,9 +34,51 @@ def file_sizes(paths: dict[str, Path]) -> dict[str, int]:
 
 
 @dataclass
+class Destination:
+    uri: str
+    files: int = 0
+    bytes: int = 0
+    errors: int = 0
+
+
+@dataclass
 class Publication:
     uploaded: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    destinations: list[Destination] = field(default_factory=list)
+    manifest: str = ""
+
+    @property
+    def failed_count(self) -> int:
+        return max(len(self.errors), sum(item.errors for item in self.destinations))
+
+    def tool_result(self) -> dict[str, Any]:
+        return {
+            "destinations": [asdict(item) for item in self.destinations],
+            "files": len(self.uploaded),
+            "bytes": sum(item.bytes for item in self.destinations),
+            "failed": self.failed_count,
+            "error_examples": [error[:500] for error in self.errors[:5]],
+            "manifest": self.manifest,
+        }
+
+    def receipt(self) -> str:
+        lines = [
+            f"Saved to GCS: `{item.uri}` — {item.files:,} files, {format_bytes(item.bytes)}."
+            for item in self.destinations
+            if item.files
+        ]
+        if self.failed_count:
+            examples = "; ".join(error[:300] for error in self.errors[:3])
+            lines.append(f"GCS publishing: {self.failed_count:,} failed. " + examples)
+        return "\n".join(lines)
+
+
+def format_bytes(size: int) -> str:
+    for suffix, unit in (("GB", 10**9), ("MB", 10**6), ("KB", 10**3)):
+        if size >= unit:
+            return f"{size / unit:.1f} {suffix}"
+    return f"{size:,} bytes"
 
 
 class Publisher:
@@ -61,6 +104,8 @@ class Publisher:
         self.lock = asyncio.Lock()
         self.sizes: dict[str, int] = {}
         self.uploaded: dict[str, str] = {}
+        self.destinations: dict[str, str] = {}
+        self.manifests: list[str] = []
         self.loaded = False
         self.denied = False
         # Transport state, not authority. The broker still checks the grant on every chunk
@@ -71,7 +116,14 @@ class Publisher:
         await asyncio.to_thread(
             self.storage.put,
             self.key,
-            json.dumps({"sizes": self.sizes, "uploaded": self.uploaded}).encode(),
+            json.dumps(
+                {
+                    "sizes": self.sizes,
+                    "uploaded": self.uploaded,
+                    "destinations": self.destinations,
+                    "manifests": self.manifests,
+                }
+            ).encode(),
         )
 
     def select(self, ctx: Context, result: TurnResult, folder: str | None) -> list[Path]:
@@ -101,17 +153,27 @@ class Publisher:
         # concurrently, retaining the controller's per-object mutex.
         async with self.lock:
             outcome = Publication()
+            selected: dict[str, Path] = {}
             try:
                 if not self.loaded:
                     try:
                         state = json.loads((await asyncio.to_thread(self.storage.get, self.key))[0])
                         self.sizes, self.uploaded = state["sizes"], state["uploaded"]
+                        self.destinations = state.get("destinations", {})
+                        self.manifests = state.get("manifests", [])
                     except FileNotFoundError:
                         pass
                     self.loaded = True
                 paths = self.select(ctx, result, folder)
                 root = ctx.workdir / "outputs/gcs"
                 selected = {relative_path(p.relative_to(root).as_posix()): p for p in paths}
+                for path in selected:
+                    group = (
+                        folder.removeprefix("outputs/gcs/").rstrip("/") + "/"
+                        if folder
+                        else (path.split("/", 1)[0] + "/" if "/" in path else "")
+                    )
+                    self.destinations.setdefault(path, group)
                 pending = {p: file for p, file in selected.items() if p not in self.uploaded}
                 if pending:
                     if result.error:
@@ -143,11 +205,6 @@ class Publisher:
                     await self.save()  # Count unfinished attempts too, including after restart.
                     await self.transfer(pending, outcome)
                     await self.save()
-                outcome.uploaded = [
-                    uri
-                    for p, uri in sorted(self.uploaded.items())
-                    if folder is None or p in selected
-                ]
             except (ValueError, OSError) as exc:
                 outcome.errors.append(str(exc))
             except Exception:
@@ -155,10 +212,74 @@ class Publisher:
                 outcome.errors.append(
                     "GCS delivery could not be confirmed; staged files are preserved."
                 )
-            if folder is None:
-                # A later failure cannot undo a successful mid-turn publish.
-                outcome.uploaded = sorted(self.uploaded.values())
+            # A later failure cannot undo any controller-confirmed publication.
+            outcome.uploaded = [
+                uri
+                for path, uri in sorted(self.uploaded.items())
+                if folder is None or path in selected
+            ]
+            scope = set(selected) | (set(self.uploaded) if folder is None else set())
+            outcome.destinations = self.summarize(scope)
+            if scope or outcome.errors:
+                try:
+                    await self.write_manifest(ctx, outcome)
+                except Exception:
+                    log.exception("GCS manifest could not be saved for %s", self.event_id)
+                    outcome.errors.append("Full GCS publication manifest could not be saved.")
             return outcome
+
+    def summarize(self, scope: set[str]) -> list[Destination]:
+        groups: dict[str, Destination] = {}
+        for path in sorted(scope):
+            prefix = self.destinations.get(path, path.split("/", 1)[0] + "/" if "/" in path else "")
+            root = str((self.grant or {}).get("uri", ""))
+            if not root and path in self.uploaded:
+                root = self.uploaded[path].rsplit("/", len(Path(path).parts))[0] + "/"
+            if not root:
+                continue
+            uri = root.rstrip("/") + "/" + prefix
+            item = groups.setdefault(uri, Destination(uri))
+            if path in self.uploaded:
+                item.files += 1
+                item.bytes += self.sizes.get(path, 0)
+            else:
+                item.errors += 1
+        return list(groups.values())
+
+    async def write_manifest(self, ctx: Context, outcome: Publication) -> None:
+        identifier = uuid.uuid4().hex
+        relative = f"logs/gcs-publish-{identifier}.json"
+        logs = ctx.workdir / "logs"
+        if logs.is_symlink() or not logs.resolve().is_relative_to(ctx.workdir.resolve()):
+            raise ValueError("Publication logs must remain inside the workspace")
+        logs.mkdir(exist_ok=True)
+        outcome.manifest = relative
+        data = json.dumps({"event_id": self.event_id, **asdict(outcome)}).encode()
+        # Unique manifests never replace a prior call or follow a pre-existing file symlink.
+        with (ctx.workdir / relative).open("xb") as stream:
+            stream.write(data)
+        if self.grant:
+            key = f"write-access/uploads/{self.event_id}/publications/{identifier}/manifest.json"
+            # Workers can write their event transport area, never controller audit records.
+            await asyncio.to_thread(
+                self.storage.put_if, manifest_stage(self.event_id, identifier), data, None
+            )
+            self.manifests.append(key)
+            await self.save()
+            await asyncio.to_thread(
+                self.storage.put,
+                manifest_stage(self.event_id),
+                json.dumps(
+                    {
+                        "event_id": self.event_id,
+                        "publications": self.manifests,
+                        "uploaded": sorted(self.uploaded.values()),
+                        "destinations": [
+                            asdict(item) for item in self.summarize(set(self.uploaded))
+                        ],
+                    }
+                ).encode(),
+            )
 
     async def transfer(self, paths: dict[str, Path], outcome: Publication) -> None:
         pending = iter(paths.items())
@@ -213,7 +334,8 @@ class Publisher:
         @tool(
             "publish_gcs",
             "Publish a completed, checked folder under outputs/gcs/ to this turn's GCS grant. "
-            "Preserves paths and creates new objects only. Returns confirmed URIs and errors.",
+            "Preserves paths and creates new objects only. Returns folder totals and errors; "
+            "full URIs are in the workspace manifest.",
             {
                 "type": "object",
                 "properties": {"folder": {"type": "string"}},
@@ -228,7 +350,7 @@ class Publisher:
             else:
                 result = await self.publish(ctx, TurnResult(), folder=folder)
             return {
-                "content": [{"type": "text", "text": json.dumps(asdict(result))}],
+                "content": [{"type": "text", "text": json.dumps(result.tool_result())}],
                 "isError": bool(result.errors),
             }
 

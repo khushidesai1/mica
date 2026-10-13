@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from collections.abc import Callable
 from typing import Any
@@ -13,9 +14,71 @@ from google.api_core.exceptions import NotFound, PreconditionFailed
 
 from . import write_access
 from .config import CHECKPOINT_PREFIX, Settings
-from .storage import GCSStorage
+from .storage import Conflict, GCSStorage, Storage
 
 CHUNK_SIZE = 8 * 1024 * 1024
+MAX_MANIFEST_BYTES = 64 * 1024 * 1024
+
+
+def manifest_stage(event_id: str, publication_id: str = "") -> str:
+    if not re.fullmatch(r"[a-f0-9]{32}", event_id) or (
+        publication_id and not re.fullmatch(r"[a-f0-9]{32}", publication_id)
+    ):
+        raise ValueError("Invalid publication identifier")
+    suffix = f"{publication_id}/manifest.json" if publication_id else "manifest.json"
+    return f"{CHECKPOINT_PREFIX}/events/{event_id}/write-manifests/{suffix}"
+
+
+def archive_manifests(storage: Storage, event_id: str, grant_uri: str) -> None:
+    """Archive worker reports through the controller; per-object receipts remain authority."""
+
+    def read(key: str) -> tuple[bytes, dict[str, Any]]:
+        raw = storage.read_prefix(key, MAX_MANIFEST_BYTES + 1)
+        if len(raw) > MAX_MANIFEST_BYTES:
+            raise ValueError("Publication manifest exceeds the archive limit")
+        doc = json.loads(raw)
+        if doc.get("event_id") != event_id or not all(
+            isinstance(uri, str) and uri.startswith(grant_uri) for uri in doc.get("uploaded", [])
+        ):
+            raise ValueError("Publication manifest does not match this run")
+        return raw, doc
+
+    try:
+        raw, index = read(manifest_stage(event_id))
+    except FileNotFoundError:
+        return
+    prefix = f"write-access/uploads/{event_id}/"
+    keys = index.get("publications", [])
+    if (
+        not isinstance(keys, list)
+        or len(keys) > 5000
+        or any(
+            not isinstance(key, str)
+            or not re.fullmatch(re.escape(prefix) + r"publications/[a-f0-9]{32}/manifest.json", key)
+            for key in keys
+        )
+    ):
+        raise ValueError("Invalid publication archive paths")
+    try:
+        previous_raw = storage.get(prefix + "manifest.json")[0]
+        if previous_raw == raw:
+            return
+        previous = set(json.loads(previous_raw).get("publications", []))
+    except FileNotFoundError:
+        previous = set()
+    if not previous.issubset(keys):
+        raise ValueError("Publication index cannot discard earlier reports")
+    for key in keys:
+        if key in previous:
+            continue
+        identifier = key.removeprefix(prefix + "publications/").split("/")[0]
+        report, _ = read(manifest_stage(event_id, identifier))
+        try:
+            storage.put_if(key, report, None)
+        except Conflict:
+            if storage.get(key)[0] != report:
+                raise ValueError("An archived publication cannot change") from None
+    storage.put(prefix + "manifest.json", raw)
 
 
 def relative_path(raw: str) -> str:

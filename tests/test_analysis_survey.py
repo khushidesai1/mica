@@ -8,39 +8,69 @@ from pistachio.agents.analysis.config import Settings
 from pistachio.agents.analysis.runner import Context, build_options
 
 
-def test_inventory_does_not_paginate_or_expand_stores(monkeypatch):
-    from google.cloud import storage
+def test_inventory_paginates_all_children_without_recursing(monkeypatch):
+    from fake_inventory import fake_gcs
 
-    calls = []
-
-    def listing(bucket, **kwargs):
-        calls.append(kwargs)
-        assert kwargs["delimiter"] == "/" and kwargs["retry"] is None
-        assert kwargs["max_results"] == 80 and kwargs["timeout"] <= 5
-        prefix = kwargs["prefix"]
-        assert ".zarr" not in prefix and ".n5" not in prefix
-
-        def pages():
-            yield [SimpleNamespace(name=f"{prefix}sample-{i}.h5ad", size=10**11) for i in range(60)]
-            raise AssertionError("Must never load another page")
-
-        return SimpleNamespace(pages=pages(), prefixes={"big.zarr/", "other.n5/", "data/", "more/"})
-
-    monkeypatch.setattr(storage, "Client", lambda: SimpleNamespace(list_blobs=listing))
+    requests = fake_gcs(
+        monkeypatch,
+        {
+            "": [f"sample-{i}.h5ad" for i in range(300)]
+            + [
+                "big.zarr/",
+                "other.n5/",
+                "data/",
+                "outputs/",
+                ".hidden/",
+            ]
+        },
+    )
     result = survey.inventory("gs://lab-data/", Settings(_env_file=None))
-    assert len(result["entries"]) <= 200 and len(calls) <= 4
+    assert result["complete"] and result["entry_count"] == 303
+    assert len(result["folders"][0]["entries"]) == 303
+    assert len(requests) == 4
+    assert all(r["query_params"]["prefix"] == "" for r in requests)
+    assert all(r["query_params"]["delimiter"] == "/" for r in requests)
+    assert all(r["retry"] is None and r["timeout"] <= 20 for r in requests)
     assert not result["content_inspected"]
-    assert any("array store" in e["kind"] for e in result["entries"])
+    assert sum("array store" in e["kind"] for e in result["folders"][0]["entries"]) == 2
 
 
 def test_inventory_stops_on_timeout_without_retry(monkeypatch):
     from google.cloud import storage
 
-    listing = Mock(side_effect=TimeoutError("slow API"))
+    listing = Mock(side_effect=TimeoutError("secret folder name"))
     monkeypatch.setattr(storage, "Client", lambda: SimpleNamespace(list_blobs=listing))
     result = survey.inventory("gs://lab-data/", Settings(_env_file=None))
-    assert result["listings"] == 1 and "TimeoutError" in result["stopped"]
+    assert not result["complete"]
+    assert "timeout" in result["folders"][0]["stopped"]
+    assert "secret" not in str(result)
     assert listing.call_count == 1
+
+
+def test_inventory_shares_deadline_across_pages_and_folders(monkeypatch, caplog):
+    from fake_inventory import fake_gcs
+
+    requests = fake_gcs(monkeypatch, {"raw/": [f"{i}/" for i in range(300)]})
+    monkeypatch.setattr(survey.time, "monotonic", lambda: 21 if requests else 0)
+    result = survey.inventory(
+        ["gs://lab-data/raw/", "gs://lab-data/other/"],
+        Settings(_env_file=None),
+        event_id="timeout-event",
+    )
+    assert not result["complete"]
+    assert all(not f["complete"] for f in result["folders"])
+    assert len(requests) == 1
+    assert "paths=2 entries=0 complete=false ms=21000" in caplog.text
+    assert "raw/" not in caplog.text and "other/" not in caplog.text
+
+
+def test_inventory_preserves_first_page_on_later_error(monkeypatch):
+    from fake_inventory import fake_gcs
+
+    fake_gcs(monkeypatch, {"raw/": [f"{i}/" for i in range(300)]}, fail_page=2)
+    result = survey.inventory("gs://lab-data/raw/", Settings(_env_file=None))
+    assert not result["complete"] and result["entry_count"] == 100
+    assert "RuntimeError" in result["folders"][0]["stopped"]
 
 
 @pytest.mark.parametrize("path", ["", "raw_outputs/raw/TMA1/", "raw data"])
@@ -84,7 +114,9 @@ def test_local_inventory_does_not_follow_symlinks_or_read_file_contents(tmp_path
         survey.inventory_uri("gs://lab-data/liver/", "link", settings)
     monkeypatch.setattr("builtins.open", lambda *a, **kw: pytest.fail("No data-file reads"))
     result = survey.inventory("gs://lab-data/liver/", settings)
-    assert result["entries"] == [{"path": "liver/sample.csv", "kind": "file", "size_bytes": 9}]
+    assert result["folders"][0]["entries"] == [
+        {"path": "liver/sample.csv", "kind": "file", "size_bytes": 9}
+    ]
     assert not result["content_inspected"]
 
 

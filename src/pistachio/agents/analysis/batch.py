@@ -21,7 +21,7 @@ from google.cloud import batch_v1
 from pistachio.config import Settings as AppSettings
 from pistachio.storage.base import Repository
 
-from . import access, memory_tasks, project_memory, write_access
+from . import access, memory_tasks, project_memory, write_access, write_broker
 from .attachments import AttachmentError
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
@@ -661,6 +661,13 @@ class BatchBridge:
             state = job.status.state.name
         except NotFound:
             state = "FAILED"
+        if record.get("write_grant"):
+            await asyncio.to_thread(
+                write_broker.archive_manifests,
+                GCSStorage(self.app.gcs_bucket),
+                event_id,
+                record["write_grant"]["uri"],
+            )
         if (
             record.get("recovery_version")
             and time.time() >= record["request_deadline"]

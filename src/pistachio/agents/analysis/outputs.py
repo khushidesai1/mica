@@ -83,6 +83,8 @@ def publish(
         datasets_touched=touched,
         attachments=[{k: f[k] for k in ("id", "name", "sha256", "key")} for f in attachments],
     )
+    if result.error in {"error_max_turns", "error_max_budget_usd"}:
+        meta["closing_summary"] = result.summary_generated
     if result.runtimes:
         meta["runtimes"] = [asdict(event) for event in result.runtimes]
     storage.put(f"{prefix}/meta.json", json.dumps(meta, indent=2).encode())

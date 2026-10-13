@@ -1,10 +1,11 @@
-"""Bounded metadata-only inventories for setup and chat; no data-file reads."""
+"""Complete immediate-child metadata listings within a shared time budget."""
 
 from __future__ import annotations
 
+import logging
 import os
 import time
-from collections import deque
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -12,10 +13,9 @@ from urllib.parse import urlsplit
 from .config import Settings
 from .data_links import data_uri
 
-MAX_ENTRIES = 200
-MAX_LISTINGS = 4
-MAX_DEPTH = 2
-BUDGET_SECONDS = 15
+BUDGET_SECONDS = 20
+_LOG = logging.getLogger("pistachio.inventory")
+_LOG.setLevel(logging.INFO)
 
 
 def inventory_uri(project_uri: str, relative_path: str, settings: Settings) -> str:
@@ -38,69 +38,81 @@ def inventory_uri(project_uri: str, relative_path: str, settings: Settings) -> s
     return uri
 
 
-def inventory(uri: str, settings: Settings) -> dict[str, Any]:
-    parsed = urlsplit(uri)
-    root = parsed.path.lstrip("/")
-    if root and not root.endswith("/"):
-        root += "/"
-    result: dict[str, Any] = {
-        "data_uri": uri,
-        "coverage": "bounded metadata sample, not a complete inventory",
-        "limits": {
-            "entries": MAX_ENTRIES,
-            "listings": MAX_LISTINGS,
-            "depth": MAX_DEPTH,
-            "seconds": BUDGET_SECONDS,
-        },
-        "entries": [],
-        "listings": 0,
-        "content_inspected": False,
-        "note": "File contents, schemas, sample counts and cell counts were not inspected.",
-    }
-    started = time.monotonic()
-    pending = deque([(root, 0)])
-    client = None
-    if settings.storage == "gcs":
-        from google.cloud import storage
+def _add(folder: dict[str, Any], entry: dict[str, Any]) -> None:
+    parts = Path(entry["path"]).parts
+    if any(p.startswith(".") or p == "outputs" for p in parts):
+        return
+    if any(p.lower().endswith((".zarr", ".n5")) for p in parts):
+        entry["kind"] = "array store (contents not listed)"
+    folder["entries"].append(entry)
 
-        client = storage.Client()
-    while pending and result["listings"] < MAX_LISTINGS and len(result["entries"]) < MAX_ENTRIES:
-        prefix, depth = pending.popleft()
-        remaining = BUDGET_SECONDS - (time.monotonic() - started)
-        if remaining <= 0:
-            result["stopped"] = "time budget"
-            break
+
+def inventory(
+    uris: str | Sequence[str], settings: Settings, *, event_id: str = ""
+) -> dict[str, Any]:
+    """List each folder once, without recursion; an incomplete listing proves no absence."""
+    started = time.monotonic()
+    deadline = started + BUDGET_SECONDS
+    folders: list[dict[str, Any]] = []
+    client = None
+
+    def remaining() -> float:
+        seconds = deadline - time.monotonic()
+        if seconds <= 0:
+            raise TimeoutError("time budget")
+        return seconds
+
+    for uri in dict.fromkeys([uris] if isinstance(uris, str) else uris):
+        parsed = urlsplit(uri)
+        prefix = parsed.path.lstrip("/").rstrip("/")
+        prefix = prefix + "/" if prefix else ""
+        folder: dict[str, Any] = {"data_uri": uri, "entries": [], "complete": False}
+        folders.append(folder)
+
         try:
-            result["listings"] += 1
-            if client is not None:
-                iterator = client.list_blobs(
-                    parsed.netloc,
-                    prefix=prefix,
-                    delimiter="/",
-                    max_results=80,
-                    page_size=80,
-                    timeout=min(5, remaining),
-                    retry=None,
-                )
-                page = next(iterator.pages, None)
-                objects = list(page) if page is not None else []
-                entries = [
-                    {"path": blob.name, "kind": "file", "size_bytes": blob.size}
-                    for blob in objects
-                    if blob.name != prefix
-                ]
-                entries += [{"path": p, "kind": "folder"} for p in sorted(iterator.prefixes)]
+            remaining()
+            if settings.storage == "gcs":
+                if client is None:
+                    from google.cloud import storage
+
+                    client = storage.Client()
+                token = None
+                while True:
+                    # Fetch one page at a time so every RPC uses the remaining shared budget.
+                    iterator = client.list_blobs(
+                        parsed.netloc,
+                        prefix=prefix,
+                        delimiter="/",
+                        page_size=1000,
+                        page_token=token,
+                        timeout=remaining(),
+                        retry=None,
+                    )
+                    page = next(iterator.pages, None)
+                    if page is not None:
+                        for blob in page:
+                            remaining()
+                            if blob.name != prefix:
+                                _add(
+                                    folder,
+                                    {"path": blob.name, "kind": "file", "size_bytes": blob.size},
+                                )
+                        for path in page.prefixes:
+                            remaining()
+                            _add(folder, {"path": path, "kind": "folder"})
+                    token = iterator.next_page_token
+                    if not token:
+                        break
             else:
-                entries = []
                 path = settings.data_mount_root / parsed.netloc / prefix
                 with os.scandir(path) as scan:
-                    for index, item in enumerate(scan):
-                        if index >= 80:
-                            break
+                    for item in scan:
+                        remaining()
                         if item.is_symlink():
                             continue
                         is_dir = item.is_dir(follow_symlinks=False)
-                        entries.append(
+                        _add(
+                            folder,
                             {
                                 "path": prefix + item.name + ("/" if is_dir else ""),
                                 "kind": "folder" if is_dir else "file",
@@ -109,21 +121,34 @@ def inventory(uri: str, settings: Settings) -> dict[str, Any]:
                                     if is_dir
                                     else {"size_bytes": item.stat(follow_symlinks=False).st_size}
                                 ),
-                            }
+                            },
                         )
-            for entry in entries:
-                parts = Path(entry["path"]).parts
-                if any(x.startswith(".") or x == "outputs" for x in parts):
-                    continue
-                if any(x.lower().endswith((".zarr", ".n5")) for x in parts):
-                    entry["kind"] = "array store (contents not listed)"
-                result["entries"].append(entry)
-                if len(result["entries"]) >= MAX_ENTRIES:
-                    break
-                if entry["kind"] == "folder" and depth < MAX_DEPTH:
-                    pending.append((entry["path"], depth + 1))
+            remaining()
+            folder["complete"] = True
+        except TimeoutError:
+            folder["stopped"] = "time budget or listing timeout"
         except Exception as exc:
-            result["stopped"] = f"metadata listing unavailable ({type(exc).__name__})"
-            break
-    result["elapsed_seconds"] = round(time.monotonic() - started, 2)
-    return result
+            folder["stopped"] = f"metadata listing unavailable ({type(exc).__name__})"
+        folder["entries"].sort(key=lambda entry: entry["path"])
+    complete = all(folder["complete"] for folder in folders)
+    elapsed = time.monotonic() - started
+    count = sum(len(folder["entries"]) for folder in folders)
+    logging.basicConfig()
+    _LOG.info(
+        "inventory event=%s paths=%d entries=%d complete=%s ms=%d",
+        event_id,
+        len(folders),
+        count,
+        str(complete).lower(),
+        round(elapsed * 1000),
+    )
+    return {
+        "folders": folders,
+        "complete": complete,
+        "entry_count": count,
+        "coverage": "immediate visible children only; hidden paths and outputs excluded",
+        "limits": {"seconds": BUDGET_SECONDS},
+        "content_inspected": False,
+        "note": "File contents, schemas, sample counts and cell counts were not inspected.",
+        "elapsed_seconds": round(elapsed, 2),
+    }

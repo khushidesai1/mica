@@ -136,7 +136,7 @@ async def test_edits_other_init_and_share_keep_older_thread_state(memory_chat, m
     monkeypatch.setattr(
         memory_tasks, "edit", AsyncMock(return_value={"conventions.md": CONVENTION})
     )
-    monkeypatch.setattr(direct, "inventory", lambda *args: {"entries": []})
+    monkeypatch.setattr(direct, "inventory", lambda *args, **kwargs: {"entries": []})
     output = await seed_earlier_output(chat)
     first = next(
         k.split(":", 1)[1] for k in chat.repository.connector_state if k.startswith("claude-event:")
@@ -177,7 +177,7 @@ async def test_worker_result_materializes_in_next_workspace(memory_chat, monkeyp
     assert "Count: 12" in (tmp_path / "knowledge/results/tma101.md").read_text()
 
 
-async def test_notice_retry_keeps_commit_receipt_and_deduplicates(memory_chat, monkeypatch):
+async def test_silent_save_retry_keeps_commit_receipt_and_deduplicates(memory_chat, monkeypatch):
     chat = memory_chat
     monkeypatch.setattr(
         memory_tasks, "edit", AsyncMock(return_value={"conventions.md": CONVENTION})
@@ -206,7 +206,10 @@ async def test_notice_retry_keeps_commit_receipt_and_deduplicates(memory_chat, m
         for c in chat.test_slack.chat_postMessage.call_args_list
         if "Remembered for this project" in c.kwargs.get("text", "")
     ]
-    assert len(notices) == 1 and "conventions.md" in notices[0].kwargs["text"]
+    assert not notices
+    record = await chat.repository.get_connector_state("claude-event:" + event)
+    assert record["memory_editor_done"] and record["memory_commit_oid"]
+    assert (await chat.memory_backend.read(chat.pid)).files["conventions.md"].text == CONVENTION
 
 
 async def test_memory_lists_saved_convention_before_first_index(memory_chat, monkeypatch):

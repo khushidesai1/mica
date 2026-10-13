@@ -268,7 +268,7 @@ async def test_upload_failure_is_visible_and_preserves_reports_for_resending(bot
     reply = bot.client.chat_postMessage.call_args.kwargs["text"]
     assert "couldn't confirm their delivery to Slack" in reply
     assert bot.last_reply == reply
-    assert "Data: fixture.h5ad" not in reply
+    assert reply.startswith("Data: fixture.h5ad")
     assert bot.client.chat_update.call_args.kwargs["text"] == "Stopped"
     assert bot.completed  # The Batch worker can now checkpoint the workspace after the failure.
     ctx, turn, _ = bot.sessions.get("C123", "1.0")
@@ -464,3 +464,24 @@ async def test_project_named_output_is_an_ordinary_deliverable(bot):
     replies = str(bot.client.chat_postMessage.call_args_list)
     assert "save brief" not in replies and "draft brief" not in replies
     bot.client.files_upload_v2.assert_awaited_once()
+
+
+@pytest.mark.parametrize("summary", [True, False])
+async def test_stopped_turn_delivers_closing_summary_or_original_fallback(bot, summary):
+    bot.runner.run_turn = AsyncMock(
+        return_value=TurnResult(
+            session_id="stopped",
+            text="Saved the checked table; the optional check remains.",
+            error="error_max_turns",
+            summary_generated=summary,
+        )
+    )
+    await send(bot, event("Analyze"))
+    assert bot.last_reply.startswith("Saved the checked table")
+    assert bot.last_error == "error_max_turns"
+    assert bot.client.chat_update.call_args.kwargs["text"] == "Stopped"
+    if summary:
+        assert "Stopped before finishing (turn limit)" in bot.last_reply
+        assert "Want me to try again" not in bot.last_reply
+    else:
+        assert "That run stopped early (`error_max_turns`). Want me to try again?" in bot.last_reply

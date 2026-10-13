@@ -116,7 +116,9 @@ def test_constraints_and_one_resize_are_enforced(tmp_path):
 
 
 async def test_inventory_then_compute_in_one_request(chat, monkeypatch):
-    monkeypatch.setattr(direct, "inventory", lambda *args: {"entries": [{"size_bytes": 123}]})
+    monkeypatch.setattr(
+        direct, "inventory", lambda *args, **kwargs: {"entries": [{"size_bytes": 123}]}
+    )
     chat.decision.side_effect = [
         direct.Decision(route="inventory", reply="Checking input size"),
         direct.Decision(

@@ -44,7 +44,7 @@ not reset SDK sessions, messages, attachments, or saved working directories.
 Use `memory` for the index and active work (or a file listing until an index exists), `memory conventions.md` for a file, or `brief`
 for the guide. Correct mistakes in plain language. The old `remember`, `forget`, `knowledge`,
 `save brief`, and `clean brief` commands explain this change without editing memory.
-A single notice lists changed files, excluding index-only or active-work-only edits.
+Memory saves run silently; use `memory` or `brief` when you want to inspect saved content.
 
 ## Compaction and operations
 
@@ -61,6 +61,21 @@ For migration, set the memory environment variables and run
 `--apply` once. Only existing GCS project guides are imported; GitHub guides are never
 replaced. Repeating the import is safe. Legacy GCS objects can remain for rollback but are
 no longer read during turns.
+
+Verified folder layout belongs in the guide's `Data` section, where the router sees it on every
+turn, rather than in compactable `open.md`. To create a missing guide from existing memory,
+select reviewed, verbatim layout excerpts explicitly:
+
+```bash
+.venv/bin/python tools/memory_import.py --bucket <artifact-bucket> \
+  --layout-from-memory <project-id> \
+  --layout-fact 'open.md::Raw exports: `raw_outputs/raw/<TMA>/`'
+```
+
+Repeat `--layout-fact` for additional facts and add `--apply` after reviewing the preview.
+Excerpts must occur in the current memory snapshot. The importer preserves the source files,
+skips existing guides, and uses the normal conflict-preserving commit path with source `import`.
+Do not select hypotheses, results, or counts for a layout guide.
 
 Set `AGENT_MEMORY_AUTO_EDIT=false` to suspend background writes and compaction (explicit
 `init` still saves a guide). Unset `AGENT_MEMORY_REPO` to disable all GitHub memory.

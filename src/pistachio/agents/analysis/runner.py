@@ -89,6 +89,7 @@ class TurnResult:
     cost: float | None = None
     error: str | None = None
     duration: float = 0
+    summary_generated: bool = False
     runtimes: list[RuntimeEvent] = field(default_factory=list)
 
 
@@ -505,6 +506,8 @@ class Runner:
             except Exception:
                 log.warning("Could not refresh the runtime catalog", exc_info=True)
                 manager.restore_errors.append("Saved toolkit status could not be refreshed.")
+        # Keep the closing call inside the existing model allowance, including on budget stops.
+        summary_budget = min(0.50, self.settings.max_budget_usd_per_turn * 0.1)
         tasks: dict[str, TaskProgress] = {}
         previews = ctx.workdir / ".previews"
         clear_previews(previews)
@@ -527,6 +530,7 @@ class Runner:
                         compute_manager=self.compute,
                         gcs_publisher=self.gcs_publisher,
                     )
+                    options.max_budget_usd = self.settings.max_budget_usd_per_turn - summary_budget
                     baseline = restored_cost(ctx.session_id) if self.compute else 0.0
                     if self.compute and baseline is None:
                         baseline = self.compute.manifest.get("sdk_cost_total")
@@ -629,6 +633,19 @@ class Runner:
                     "(Earlier context is unavailable. Ask the user to restate anything needed.)\n"
                     + prompt
                 )
+            if result.error in {"error_max_turns", "error_max_budget_usd"} and result.session_id:
+                remaining = self.settings.max_run_seconds - (time.monotonic() - start)
+                if self.compute:
+                    remaining = min(remaining, self.compute.deadline - time.time())
+                available = (
+                    max(0, self.settings.max_budget_usd_per_turn - result.cost)
+                    if result.cost is not None
+                    else 0
+                )
+                if remaining > 0 and available > 0:
+                    await self._closing_summary(
+                        result, options, min(60, remaining), min(summary_budget, available)
+                    )
         finally:
             clear_previews(previews)
         result.files = changed_files(ctx.workdir / "outputs", before)
@@ -662,3 +679,64 @@ class Runner:
         result.duration = time.monotonic() - start
         self.last_result = result
         return result
+
+    async def _closing_summary(
+        self, result: TurnResult, options: ClaudeAgentOptions, seconds: float, budget: float
+    ) -> None:
+        """Resume once for text only; preserve the stop status and existing text on failure."""
+
+        async def deny_tools(
+            _event: HookInput, _tool_id: str | None, _context: HookContext
+        ) -> HookJSONOutput:
+            return {
+                "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "This call only summarizes completed work.",
+                }
+            }
+
+        closing = dataclasses.replace(
+            options,
+            resume=result.session_id,
+            max_turns=1,
+            max_budget_usd=budget,
+            tools=[],
+            allowed_tools=[],
+            mcp_servers={},
+            disallowed_tools=list(set(options.disallowed_tools + TOOLS)),
+            hooks={"PreToolUse": [HookMatcher(hooks=[deny_tools])]},
+        )
+        prompt = (
+            "Stop working. In a short reply, summarize what was completed, where results are "
+            "saved, what was not finished, and the next step. Use only the session's existing "
+            "evidence. Do not use tools or list individual GCS files."
+        )
+        previous_total = self.compute.sdk_cost_total if self.compute else result.cost
+        text, succeeded = "", False
+        try:
+            async with asyncio.timeout(seconds):
+                async for msg in query(prompt=prompt, options=closing):
+                    if isinstance(msg, AssistantMessage):
+                        text = "\n".join(b.text for b in msg.content if isinstance(b, TextBlock))
+                    elif isinstance(msg, ResultMessage):
+                        total = msg.total_cost_usd
+                        if total is not None:
+                            cost = (
+                                total - previous_total
+                                if previous_total is not None and total >= previous_total
+                                else total
+                            )
+                            if result.cost is not None:
+                                result.cost += cost
+                            if self.compute:
+                                self.compute.sdk_cost_total = total
+                                self.compute.model_cost = result.cost
+                        succeeded = msg.subtype == "success"
+                        text = msg.result or text
+            if succeeded and text.strip():
+                result.text, result.summary_generated = text.strip(), True
+        except Exception:
+            log.warning(
+                "Closing summary unavailable; retaining the stopped-run reply", exc_info=True
+            )
