@@ -1,4 +1,4 @@
-"""One-time GCS PROJECT.md import. Defaults to dry-run; existing GitHub guides are skipped."""
+"""Import an existing guide or selected memory layout facts; dry-run unless --apply."""
 
 from __future__ import annotations
 
@@ -46,13 +46,88 @@ async def import_guides(
     return results
 
 
+async def layout_from_memory(
+    storage: Storage,
+    backend: GitHubMemory,
+    pid: str,
+    facts: list[str],
+    *,
+    apply: bool,
+) -> dict[str, str]:
+    """Copy explicitly reviewed, verbatim layout excerpts through the normal commit path."""
+    project = Registry(storage).load().projects[pid]
+    base = await backend.read(pid, event_id="layout-import")
+    if base is None:
+        raise RuntimeError("Cannot read GitHub; import stopped")
+    if "PROJECT.md" in base.files or "PROJECT.md" in base.invalid:
+        return {"project": pid, "status": "existing-guide-skipped"}
+    if not facts:
+        raise ValueError("Select at least one verified layout fact with --layout-fact")
+    excerpts = []
+    for fact in facts:
+        path, separator, excerpt = fact.partition("::")
+        if (
+            not separator
+            or not excerpt.strip()
+            or "\n" in excerpt
+            or path not in base.files
+            or path.startswith("_unmerged/")
+            or excerpt not in base.files[path].text
+        ):
+            raise ValueError("Each layout fact must be source.md::verbatim single-line excerpt")
+        excerpts.append(f"- {excerpt.removeprefix('- ')} (source: {path}, {base.head_oid[:12]})")
+    text = validate(
+        "PROJECT.md",
+        (
+            f"# {project.name}\n\n## Data\n\nData location: `{project.data_uri}`\n\n"
+            + "\n".join(excerpts)
+            + "\n"
+        ).encode(),
+        backend.settings,
+    )
+    result = {"project": pid, "status": "would-import", "guide": text}
+    if apply:
+        saved = await backend.commit(
+            pid,
+            base,
+            {"PROJECT.md": text},
+            source="import",
+            event_id="layout-import-" + hashlib.sha256(text.encode()).hexdigest()[:16],
+            author_line=f"Verified layout excerpts from project memory at {base.head_oid}",
+        )
+        if saved.rejected or saved.unmerged:
+            raise RuntimeError("Import conflicted or was rejected; inspect project history")
+        result.update(status="imported", commit=saved.commit_oid)
+    return result
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bucket", required=True, help="Existing Pistachio artifact bucket")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--layout-from-memory", metavar="PROJECT_ID")
+    parser.add_argument(
+        "--layout-fact",
+        action="append",
+        default=[],
+        metavar="SOURCE.md::EXCERPT",
+        help="Reviewed, verbatim layout fact from existing memory (repeat for each fact)",
+    )
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO)
-    for result in asyncio.run(
-        import_guides(GCSStorage(args.bucket), GitHubMemory(Settings()), apply=args.apply)
-    ):
+    if args.layout_fact and not args.layout_from_memory:
+        parser.error("--layout-fact requires --layout-from-memory")
+    store, memory = GCSStorage(args.bucket), GitHubMemory(Settings())
+    results = (
+        [
+            asyncio.run(
+                layout_from_memory(
+                    store, memory, args.layout_from_memory, args.layout_fact, apply=args.apply
+                )
+            )
+        ]
+        if args.layout_from_memory
+        else asyncio.run(import_guides(store, memory, apply=args.apply))
+    )
+    for result in results:
         print(" ".join(f"{key}={value}" for key, value in result.items()))
