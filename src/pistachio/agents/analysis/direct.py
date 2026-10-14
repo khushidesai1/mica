@@ -132,6 +132,9 @@ definition. If the user's intent itself is unclear, ask one short question.
 
 
 WORKER_POLICY = """
+In worker_history, cancelled and stopped outcomes are not resource failures. Explain their
+recorded cause. Do not infer OOM or insufficient memory from peak RAM alone: require outcome=oom
+or oom_kills > 0. A missing cause is unknown, not evidence of a capacity failure.
 When route is compute, set worker from the actual job, data_inventory, worker_history and
 project knowledge. Whole-sample Cellpose/Proseg uses full_segmentation; whole-sample ingest uses
 full_ingest; model fitting uses training; other work including existing-result plots uses analysis.

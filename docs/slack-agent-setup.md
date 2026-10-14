@@ -543,3 +543,21 @@ application size cap. Partial snapshots remain small and exclude data outputs.
 Failed requests remain available to follow-ups in the thread. Routed failures can add concise
 pending work to shared project memory; cancelled turns and commands are excluded. See
 [project memory](project-memory.md) for retention, attribution, and compaction behavior.
+
+## Troubleshooting access checks and stopped runs
+
+Transient Slack identity errors do not revoke project access. An already verified worker can
+continue computing for `AGENT_ACCESS_UNAVAILABLE_GRACE_SECONDS` (default 1800) while checks retry.
+Publishing results and delivering replies require a successful current check. Registry unshares,
+binding changes and signature mismatches still stop work immediately.
+
+Look for `access_check_unavailable event=... reason=...` in worker logs. A prolonged outage stops
+with `access_unverifiable`; a definite access change uses `access_revoked`; the execution deadline
+uses `compute_time_allowance`. `Cancel` records `cancelled` with cause `user_cancelled`. These are
+not OOM failures; worker history reports OOM only with kernel evidence. The final notice includes
+receipt-confirmed folder counts when access can be verified. An incomplete folder must be
+republished before use.
+
+New workers cancel active publishing tools, persist the stop reason and enforce a shutdown
+deadline. Completed objects retain their receipts. Cancellation allows cooperative shutdown,
+with forced Batch deletion as a fallback; older in-flight workers keep their existing protocol.

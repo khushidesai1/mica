@@ -79,11 +79,17 @@ class RecoveryManager:
         self.stop_reason = ""
         self.stop = asyncio.Event()
         self.persist_resources: Callable[[], Awaitable[None]] | None = None
+        self.stop_tools: Callable[[], Awaitable[None]] | None = None
         self.started = time.time()
         self.job_deadline = min(
             float(manifest["request_deadline"]), self.started + settings.max_run_seconds
         )
         self.deadline = self.job_deadline
+
+    def request_stop(self, reason: str) -> None:
+        if not self.stop.is_set():
+            self.stop_reason = reason
+            self.stop.set()
 
     def prompt(self) -> str:
         shape = TIERS[self.tier]
@@ -102,6 +108,8 @@ class RecoveryManager:
             "Never deliberately start undersized, silently reduce scientific scope, or ask the "
             "user to resubmit for a larger worker. "
             "High RAM alone is not proof of insufficient capacity. "
+            "Cancelled and stopped worker_history rows are not resource failures. "
+            "Only outcome=oom or oom_kills > 0 establishes an OOM. "
             "Check per-task RAM and concurrency; fewer parallel processes may be appropriate. "
             "Save completed expensive stages under checkpoints/ with checkpoint_stage after "
             "all writers close. Include input versions, method and parameters in fingerprints; "
@@ -167,6 +175,8 @@ class RecoveryManager:
             return {"isError": True, "content": [{"type": "text", "text": str(exc)[:500]}]}
 
     def deny(self, name: str, args: dict[str, Any]) -> str:
+        if self.stop.is_set() and not self.pending:
+            return "This run has stopped; no further tools may run."
         if self.pending:
             return "This attempt is checkpointing; no further tools may run."
         remaining = self.deadline - time.time()
@@ -197,10 +207,17 @@ async def run_query(
                     break
                 with suppress(TimeoutError):
                     await asyncio.wait_for(manager.stop.wait(), timeout=min(5, remaining))
-            await client.interrupt()
+            if manager.stop_reason != "worker_continuation" and manager.stop_tools:
+                with suppress(Exception):
+                    await asyncio.wait_for(manager.stop_tools(), 5)
+            # A pending in-process MCP tool can hold the interrupt response open.
+            # Bound the interrupt itself, not only the later disconnect.
+            with suppress(Exception):
+                await asyncio.wait_for(client.interrupt(), 5)
             # Broken/unsupported interrupt must not leave paid work running indefinitely.
             await asyncio.sleep(30)
-            await client.disconnect()
+            with suppress(Exception):
+                await asyncio.wait_for(client.disconnect(), 5)
 
         stopper = asyncio.create_task(interrupt())
         try:

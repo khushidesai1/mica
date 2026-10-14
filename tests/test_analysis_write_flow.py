@@ -126,6 +126,41 @@ async def test_broker_does_not_accept_new_grant_for_old_run(writable, monkeypatc
     upload.assert_not_called()
 
 
+async def test_broker_returns_unknown_access_as_retry_without_delivering(writable, monkeypatch):
+    from pistachio.agents.analysis.identity import IdentityUnavailable
+
+    compute, request, _, body = await worker_request(writable, monkeypatch)
+    body.relative_paths = ["one", "two", "three"]
+    upload = Mock(side_effect=IdentityUnavailable("timeout"))
+    monkeypatch.setattr(slack_analysis.write_broker, "upload", upload)
+    result = await slack_analysis.write_output(compute, body, request, Response())
+    assert all(item["status"] == "in_progress" for item in result["results"])
+    assert all(item["reason"] == "identity_unavailable" for item in result["results"])
+    upload.assert_called_once()
+    assert not any(key.startswith("claude-write:") for key in writable.repository.event_claims)
+
+
+@pytest.mark.parametrize("stop", ["cancelled", "access_unverifiable"])
+async def test_inflight_broker_stops_after_stop_marker(writable, monkeypatch, stop):
+    compute, request, _, body = await worker_request(writable, monkeypatch)
+    body.relative_paths = ["one", "two", "three"]
+
+    def upload(*args, **kwargs):
+        root = f"tasks/slack-analysis/events/{compute}"
+        if stop == "cancelled":
+            writable.store.put(root + "/memory-cancelled.json", b"true")
+        else:
+            writable.store.put(root + "/attempt-a0.json", b'{"outcome":"stopped"}')
+        args[-1]()
+        raise AssertionError("Stopped attempt must not publish")
+
+    copied = Mock(side_effect=upload)
+    monkeypatch.setattr(slack_analysis.write_broker, "upload", copied)
+    result = await slack_analysis.write_output(compute, body, request, Response())
+    assert all(item["status"] == "denied" for item in result["results"])
+    copied.assert_called_once()
+
+
 @pytest.mark.parametrize(
     "kind",
     ["tls", "timeout", "unavailable", "iam_unavailable", "iam_rate_limit", "refresh_retryable"],
@@ -486,7 +521,9 @@ async def test_current_grant_is_in_each_resumed_turn_prompt(bot):  # noqa: F811
 async def test_upload_mutex_outlives_streaming_deadline(writable, monkeypatch):
     compute, request, _, body = await worker_request(writable, monkeypatch)
     monkeypatch.setattr(
-        slack_analysis.write_broker, "upload", Mock(return_value={"uri": "gs://ok"})
+        slack_analysis.write_broker,
+        "upload",
+        Mock(return_value={"uri": "gs://ok", "status": "uploaded"}),
     )
     begin = AsyncMock(wraps=writable.repository.begin_event)
     monkeypatch.setattr(writable.repository, "begin_event", begin)

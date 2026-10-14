@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
+import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -11,9 +15,49 @@ from urllib.parse import urlsplit
 
 from .config import Settings
 from .help_text import PROJECT_HELP
-from .identity import NOT_ENABLED, is_private, resolve_email, user_key
+from .identity import NOT_ENABLED, IdentityUnavailable, is_private, resolve_email, user_key
 from .registry import ProjectEntry, Registry, RegistryDoc
 from .storage import Storage
+
+
+class AccessMonitor:
+    """Grace permits existing computation, never delivery on an unknown identity."""
+
+    def __init__(self, check: Callable[[], bool], grace: int, event_id: str) -> None:
+        self.check, self.grace, self.event_id = check, grace, event_id
+        self.unavailable_since: float | None = None
+        self.verified = False
+        self.stop_reason = ""
+        self.lock = asyncio.Lock()
+
+    async def allowed(self, *, delivery: bool = False) -> bool:
+        delay = 1
+        while not self.stop_reason:
+            async with self.lock:
+                try:
+                    allowed = await asyncio.to_thread(self.check)
+                except IdentityUnavailable as exc:
+                    now = time.monotonic()
+                    if self.unavailable_since is None:
+                        self.unavailable_since = now
+                    logging.getLogger(__name__).warning(
+                        "access_check_unavailable event=%s reason=%s", self.event_id, str(exc)
+                    )
+                    remaining = self.grace - (now - self.unavailable_since)
+                    if remaining <= 0:
+                        self.stop_reason = "access_unverifiable"
+                        return False
+                    if not delivery:
+                        return self.verified
+                else:
+                    self.unavailable_since = None
+                    self.verified = allowed
+                    if not allowed:
+                        self.stop_reason = "access_revoked"
+                    return allowed
+            await asyncio.sleep(min(delay, remaining))
+            delay = min(delay * 2, 30)
+        return False
 
 
 def checkpoint_key(thread_key: str) -> str:
@@ -147,8 +191,6 @@ def worker_permitted(
     policy = ""
     if settings and settings.access_mode != "mapped":
         team = request["payload"].get("team_id", "")
-        if resolve_email(settings, settings, storage, team, event.get("user", "")) != email:
-            return False
         policy = f"{settings.access_mode}:{team}"
     grant = Grant(
         email, is_private(event), state, doc, pid, True, channel_key, identity_policy=policy
@@ -164,7 +206,14 @@ def worker_permitted(
             work = Path(str(context.get("workdir", ""))).resolve()
             if work == root or not work.is_relative_to(root):
                 return False
-    return request.get("access_signature") == grant.signature
+    if request.get("access_signature") != grant.signature:
+        return False
+    # Local revocation, binding and path checks take precedence over Slack outages.
+    if settings and settings.access_mode != "mapped":
+        return bool(
+            resolve_email(settings, settings, storage, team, event.get("user", "")) == email
+        )
+    return True
 
 
 def private_workdir(settings: Settings, email: str, pid: str, thread_key: str) -> str:

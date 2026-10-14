@@ -12,9 +12,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 from slack_sdk import WebClient
+from slack_sdk.errors import SlackApiError, SlackRequestError
 
 from .config import Settings
-from .identity import normalize
+from .identity import IdentityUnavailable, normalize
 from .storage import Storage, update_model
 
 KEY = "projects/_access/channels.json"
@@ -57,8 +58,29 @@ def cached(token: str, name: str, ttl: int, fetch: Callable[[], Any]) -> Any:
         result = fetch()
         if len(_CACHE) > 2048:
             _CACHE.clear()
-        _CACHE[key] = (monotonic() + ttl, result)
+        if result is not None:
+            _CACHE[key] = (monotonic() + ttl, result)
         return result
+
+
+def lookup(fetch: Callable[[], Any]) -> Any:
+    """Keep response bodies and credentials out of errors and stop notices."""
+    try:
+        response = fetch()
+    except SlackApiError as exc:
+        response = exc.response
+        status = getattr(response, "status_code", 0)
+        if isinstance(status, int) and (status == 429 or status >= 500):
+            raise IdentityUnavailable(f"http_{status}") from exc
+    except (OSError, SlackRequestError) as exc:
+        raise IdentityUnavailable(type(exc).__name__) from exc
+    if not response.get("ok"):
+        error = response.get("error", "invalid_response")
+        if error == "user_not_found":
+            return None
+        reason = error if re.fullmatch(r"[a-z_]{1,60}", str(error)) else "slack_error"
+        raise IdentityUnavailable(reason)
+    return response
 
 
 def client_for(app: Any) -> WebClient:
@@ -71,9 +93,11 @@ def members(client: Any, channel: str) -> set[str]:
     cursors = set()
     deadline = monotonic() + 15
     for _ in range(100):
-        response = client.conversations_members(channel=channel, cursor=cursor, limit=200)
-        if not response.get("ok") or not isinstance(response.get("members"), list):
-            raise ValueError("Slack membership verification failed.")
+        response = lookup(
+            partial(client.conversations_members, channel=channel, cursor=cursor, limit=200)
+        )
+        if not response or not isinstance(response.get("members"), list):
+            raise IdentityUnavailable("membership_response")
         result.update(response["members"])
         cursor = response.get("response_metadata", {}).get("next_cursor", "")
         if not cursor:
@@ -81,30 +105,32 @@ def members(client: Any, channel: str) -> set[str]:
         if cursor in cursors or monotonic() >= deadline:
             break
         cursors.add(cursor)
-    raise ValueError("Slack membership verification was incomplete.")
+    raise IdentityUnavailable("membership_incomplete")
 
 
 def profile(app: Any, settings: Settings, team: str, user: str) -> str | None:
     """Identity lookup is scoped to this bot's workspace and never guesses an email."""
     token, client = token_for(app), client_for(app)
-    auth = cached(token, "workspace", settings.access_cache_seconds, lambda: client.auth_test())
-    if not auth.get("ok") or auth.get("team_id") != team:
-        return None
-    response = cached(
-        token, "user:" + user, settings.access_cache_seconds, lambda: client.users_info(user=user)
+    auth = cached(
+        token, "workspace", settings.access_cache_seconds, lambda: lookup(client.auth_test)
     )
-    value = response.get("user", {})
-    if (
-        not response.get("ok")
-        or value.get("id") != user
-        or value.get("deleted")
-        or value.get("is_bot")
-        or value.get("is_app_user")
-    ):
+    if not auth or auth.get("team_id") != team:
         return None
-    email = normalize(value.get("profile", {}).get("email") or "")
 
-    return email if re.fullmatch(r"[^\s@]+@[^\s@]+", email) else None
+    def fetch() -> str | None:
+        response = lookup(lambda: client.users_info(user=user))
+        value = response.get("user", {}) if response else {}
+        if (
+            value.get("id") != user
+            or value.get("deleted")
+            or value.get("is_bot")
+            or value.get("is_app_user")
+        ):
+            return None
+        email = normalize(value.get("profile", {}).get("email") or "")
+        return email if re.fullmatch(r"[^\s@]+@[^\s@]+", email) else None
+
+    return cached(token, "user:" + user, settings.access_cache_seconds, fetch)  # type: ignore[no-any-return]
 
 
 def email_for(app: Any, settings: Settings, storage: Storage, team: str, user: str) -> str | None:
@@ -118,6 +144,7 @@ def email_for(app: Any, settings: Settings, storage: Storage, team: str, user: s
     if not enabled:
         return None
     client, token = client_for(app), token_for(app)
+    unavailable: IdentityUnavailable | None = None
     for channel in enabled:
         try:
             people = cached(
@@ -128,10 +155,12 @@ def email_for(app: Any, settings: Settings, storage: Storage, team: str, user: s
             )
             if user in people:
                 return profile(app, settings, team, user)
-        except Exception:
+        except IdentityUnavailable as exc:
             # Another enabled channel can independently establish membership. Never use
             # an expired positive after an API failure or log Slack response bodies.
-            continue
+            unavailable = exc
+    if unavailable:
+        raise unavailable
     return None
 
 
@@ -149,8 +178,10 @@ def target_email(
         if removing:
             return email  # Owners can revoke former members, including deactivated accounts.
         try:
-            response = client_for(app).users_lookupByEmail(email=email)
-            user = response["user"]["id"] if response.get("ok") else ""
+            response = lookup(lambda: client_for(app).users_lookupByEmail(email=email))
+            user = response["user"]["id"] if response else ""
+        except IdentityUnavailable:
+            raise
         except Exception:
             user = ""
     try:
@@ -163,6 +194,8 @@ def target_email(
             if user
             else None
         )
+    except IdentityUnavailable:
+        raise
     except Exception:
         result = None
     if not result:

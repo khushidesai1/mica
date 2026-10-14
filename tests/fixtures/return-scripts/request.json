@@ -34,5 +34,6 @@
   "run_prefix": "projects/_users/ff8d9819fc0e12bf0d24892e45987e24/runs/<project_id>/ace053d03cd5444dca35eda312eccfea",
   "thread_key": "ace053d03cd5444dca35eda312eccfea",
   "write_grant": null,
-  "write_upload_seconds": 840
+  "write_upload_seconds": 840,
+  "cooperative_stop": true
 }

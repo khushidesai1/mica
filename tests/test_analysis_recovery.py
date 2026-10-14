@@ -16,6 +16,38 @@ from pistachio.agents.analysis.tiers import launch_choice
 EVENT = "a" * 32
 
 
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_terminal_stop_is_not_a_success_or_resource_failure(chat, cancelled):
+    from pistachio.agents.analysis.calibration import recent
+
+    chat.decision.return_value = direct.Decision(route="compute", reply="Working")
+    initial = await message(chat, "Plot data", "1.0")
+    event = initial["job"].rsplit("claude-", 1)[-1]
+    prefix = recovery.event_prefix(event)
+    chat.store.put(
+        f"{prefix}/attempt-a0.json",
+        json.dumps(
+            {
+                "event_id": event,
+                "attempt": 0,
+                "outcome": "stopped",
+                "stop_reason": "access_unverifiable",
+            }
+        ).encode(),
+    )
+    if cancelled:
+        await message(chat, "cancel", "2.0", thread="1.0")
+    chat.test_states[initial["job"]] = "SUCCEEDED"
+    assert await chat.process(event, 1) == "failed"
+    final = await chat.repository.get_connector_state("claude-event:" + event)
+    assert ("Cancelled" if cancelled else "couldn't confirm") in final["terminal_reply"]
+    rows = recent(chat.store, final["project_id"])
+    assert rows[0]["outcome"] == ("cancelled" if cancelled else "stopped")
+    assert rows[0]["cause"] == ("user_cancelled" if cancelled else "access_unverifiable")
+    assert rows[0]["oom_kills"] == 0
+    chat.test_client.create_job.assert_called_once()
+
+
 def record(settings, *, tier="standard", mode="SPOT"):
     result = {
         "project_id": "project",
@@ -149,7 +181,10 @@ async def test_preemption_restarts_once_and_cancellation_targets_successor(chat,
     assert current["request_deadline"] == initial["request_deadline"]
     assert chat.test_client.create_job.call_count == 2
     await message(chat, "cancel", "2.0", thread="1.0")
-    assert chat.test_client.delete_job.call_args.kwargs["name"] == current["job"]
+    cancelled = await chat.repository.get_connector_state("claude-event:" + event)
+    assert cancelled["cancel_requested"] and cancelled["job"] == current["job"]
+    assert chat.store.get(f"{recovery.event_prefix(event)}/memory-cancelled.json")[0] == b"true"
+    chat.test_client.delete_job.assert_not_called()
 
 
 async def test_oom_without_final_report_recovers_but_publication_is_not_replayed(chat, monkeypatch):

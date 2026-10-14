@@ -17,7 +17,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.web.async_slack_response import AsyncSlackResponse
 
 from . import attachments, script_capture, write_access
-from .access import run_root
+from .access import AccessMonitor, run_root
 from .config import Settings
 from .data_links import message_text
 from .outputs import publish
@@ -64,6 +64,25 @@ class SlackAgent:
         self.write_grant = write_grant
         self.overwrite_paths = overwrite_paths
         self.continuing = False
+        self.access_monitor: AccessMonitor | None = None
+
+    async def permitted(self, *, delivery: bool = False) -> bool:
+        if not self.authorized:
+            return True
+        if self.access_monitor is None:
+            self.access_monitor = AccessMonitor(
+                self.authorized, self.settings.access_unavailable_grace_seconds, self.event_id
+            )
+        allowed = await self.access_monitor.allowed(delivery=delivery)
+        if (
+            not allowed
+            and self.access_monitor.stop_reason
+            and (compute := getattr(self.runner, "compute", None))
+            and not compute.stop.is_set()
+        ):
+            compute.stop_reason = self.access_monitor.stop_reason
+            compute.stop.set()
+        return allowed
 
     def record_delivered(
         self,
@@ -99,6 +118,8 @@ class SlackAgent:
         self.delivered = []
         self.thread_files = event.get("_thread_files", [])
         self.event_id = event.get("_event_id", "")
+        if not await self.permitted(delivery=True):
+            return
         saved = self.sessions.get(*key)
         if not saved:
             await self.say(key, "This thread has no saved context. Start a new request in a DM.")
@@ -158,8 +179,18 @@ class SlackAgent:
                 was_init,
                 event.get("_notice_ts"),
             )
-            self.completed = not self.continuing
+            compute = getattr(self.runner, "compute", None)
+            self.completed = not (
+                self.continuing
+                or (compute and compute.stop.is_set())
+                or (self.access_monitor and self.access_monitor.stop_reason)
+            )
         except Exception:
+            compute = getattr(self.runner, "compute", None)
+            if (compute and compute.stop.is_set()) or (
+                self.access_monitor and self.access_monitor.stop_reason
+            ):
+                return  # The controller posts the durable, specific stop notice.
             log.exception("Slack computation failed: %s", key)
             await self.say(key, "Sorry, something broke on my end. Mind trying again?")
             raise
@@ -300,7 +331,7 @@ class SlackAgent:
 
         async def update(update: ProgressUpdate) -> None:
             nonlocal version, last_activity
-            if self.authorized and not await asyncio.to_thread(self.authorized):
+            if not await self.permitted():
                 raise PermissionError("Project access changed during computation")
             if isinstance(update, TaskProgress):
                 if tasks.get(update.task_id) == update:
@@ -323,10 +354,7 @@ class SlackAgent:
         async def heartbeat() -> None:
             while True:
                 await asyncio.sleep(HEARTBEAT_SECONDS)
-                if self.authorized and not await asyncio.to_thread(self.authorized):
-                    if compute := getattr(self.runner, "compute", None):
-                        compute.stop_reason = "access_revoked"
-                        compute.stop.set()
+                if not await self.permitted():
                     return
                 await flush()
 
@@ -334,7 +362,7 @@ class SlackAgent:
         try:
             result = await self.runner.run_turn(ctx, prompt, update)
         except Exception:
-            if not self.authorized or await asyncio.to_thread(self.authorized):
+            if not getattr(getattr(self.runner, "compute", None), "stop_reason", ""):
                 try:
                     async with status_lock:
                         await render(
@@ -351,8 +379,11 @@ class SlackAgent:
             pulse.cancel()
             with suppress(asyncio.CancelledError):
                 await pulse
-        if self.authorized and not await asyncio.to_thread(self.authorized):
-            raise PermissionError("Project access changed during computation")
+        compute = getattr(self.runner, "compute", None)
+        if compute and compute.stop.is_set() and not compute.pending:
+            return
+        if not await self.permitted(delivery=True):
+            return
         ctx.session_id = result.session_id
         self.sessions.save(key[0], ctx, turn, is_init)
         compute = getattr(self.runner, "compute", None)
@@ -388,7 +419,7 @@ class SlackAgent:
                 "The run finished, but saving its provenance failed. "
                 "Please check the service logs.",
             )
-        if self.authorized and not await asyncio.to_thread(self.authorized):
+        if not await self.permitted(delivery=True):
             raise PermissionError("Project access changed before delivery")
         uploads = []
         delivery_issues = []
@@ -432,7 +463,7 @@ class SlackAgent:
                 except Exception:
                     log.warning("Could not archive a returned script")
             uploads.extend(extra)
-        if uploads and self.authorized and not await asyncio.to_thread(self.authorized):
+        if uploads and not await self.permitted(delivery=True):
             raise PermissionError("Project access changed before file delivery")
         if uploads:
             try:
@@ -483,7 +514,7 @@ class SlackAgent:
             )
         except Exception:
             log.warning("Final status update failed: %s", key, exc_info=True)
-        if self.authorized and not await asyncio.to_thread(self.authorized):
+        if not await self.permitted(delivery=True):
             raise PermissionError("Project access changed before reply delivery")
         for chunk in chunks(to_mrkdwn(reply)):
             await self.say(key, chunk)

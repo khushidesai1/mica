@@ -83,14 +83,20 @@ async def running_heavy(chat):
     return event, record
 
 
-async def test_on_demand_cancel_keeps_slot_until_deletion(chat, running_heavy):
+async def test_on_demand_cancel_keeps_slot_until_deletion(chat, running_heavy, monkeypatch):
     event, record = running_heavy
     cancel = await chat.accept(payload("2.0", "1.0", "cancel"))
     assert await chat.process(cancel, 0) == "pending"
+    chat.test_client.delete_job.assert_not_called()
+    cancelled = await chat.repository.get_connector_state("claude-event:" + event)
+    from pistachio.agents.analysis import batch
+
+    monkeypatch.setattr(batch.time, "time", lambda: cancelled["cancel_requested_at"] + 56)
+    await chat.process(event, 1)
     chat.test_client.delete_job.assert_called_once_with(name=record["job"])
     assert f"claude-large-slot:{event}:0" in chat.repository.event_claims
     del chat.test_states[record["job"]]
-    assert await chat.process(event, 1) == "failed"
+    assert await chat.process(event, 2) == "failed"
     assert await chat.process(cancel, 1) == "complete"
     assert f"claude-large-slot:{event}:0" not in chat.repository.event_claims
     chat.test_client.create_job.assert_called_once()
