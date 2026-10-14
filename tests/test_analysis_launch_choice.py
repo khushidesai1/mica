@@ -88,11 +88,11 @@ async def test_on_demand_cancel_keeps_slot_until_deletion(chat, running_heavy):
     cancel = await chat.accept(payload("2.0", "1.0", "cancel"))
     assert await chat.process(cancel, 0) == "pending"
     chat.test_client.delete_job.assert_called_once_with(name=record["job"])
-    assert "claude-large-slot:0" in chat.repository.event_claims
+    assert f"claude-large-slot:{event}:0" in chat.repository.event_claims
     del chat.test_states[record["job"]]
     assert await chat.process(event, 1) == "failed"
     assert await chat.process(cancel, 1) == "complete"
-    assert "claude-large-slot:0" not in chat.repository.event_claims
+    assert f"claude-large-slot:{event}:0" not in chat.repository.event_claims
     chat.test_client.create_job.assert_called_once()
 
 
@@ -105,13 +105,13 @@ async def test_on_demand_overdue_job_is_deleted_before_slot_release(
     )
     assert await chat.process(event, 1) == "running"
     chat.test_client.delete_job.assert_called_once_with(name=record["job"])
-    assert "claude-large-slot:0" in chat.repository.event_claims
+    assert f"claude-large-slot:{event}:0" in chat.repository.event_claims
     chat.test_states[record["job"]] = "DELETION_IN_PROGRESS"
     assert await chat.process(event, 2) == "running"
-    assert "claude-large-slot:0" in chat.repository.event_claims
+    assert f"claude-large-slot:{event}:0" in chat.repository.event_claims
     del chat.test_states[record["job"]]
     assert await chat.process(event, 3) == "failed"
-    assert "claude-large-slot:0" not in chat.repository.event_claims
+    assert f"claude-large-slot:{event}:0" not in chat.repository.event_claims
     chat.test_client.create_job.assert_called_once()
 
 
@@ -126,5 +126,58 @@ async def test_finished_on_demand_job_releases_large_slot(chat, running_heavy, s
     )
     chat.test_states[record["job"]] = state
     assert await chat.process(event, 1) == status
+    assert f"claude-large-slot:{event}:0" not in chat.repository.event_claims
+    chat.test_client.create_job.assert_called_once()
+
+
+@pytest.mark.parametrize("tier", ["large", "xlarge"])
+async def test_heavy_runs_launch_without_shared_cap(chat, monkeypatch, tier):
+    # A legacy setting/lease cannot keep new independent heavy requests queued.
+    monkeypatch.setenv("AGENT_MAX_CONCURRENT_LARGE_RUNS", "1")
+    assert "max_concurrent_large_runs" not in Settings(_env_file=None).model_dump()
+    await chat.repository.begin_event("claude-large-slot:0", lease_seconds=7200)
+    chat.decision.return_value = direct.Decision(
+        route="compute",
+        reply="Training.",
+        worker=direct.WorkerChoice(category="training", tier=tier, reason="Full sample training"),
+    )
+    events = []
+    for i in range(24):
+        event = await chat.accept(payload(f"{i + 1}.0", text="Train this sample"))
+        assert await chat.process(event, 0) == "running"
+        events.append(event)
+    assert chat.test_client.create_job.call_count == 24
+    assert all(f"claude-large-slot:{event}:0" in chat.repository.event_claims for event in events)
+    # Redelivery is idempotent, and the same conversation still runs in order.
+    assert await chat.process(events[0], 1) == "running"
+    followup = await chat.accept(payload("25.0", "1.0", "Then plot the result"))
+    assert await chat.process(followup, 0) == "pending"
+    assert chat.test_client.create_job.call_count == 24
+
+
+async def test_existing_shared_heavy_lease_is_released_on_completion(chat, running_heavy):
+    event, record = running_heavy
+    await chat.repository.release_event(f"{record['slot_pool']}:0", record["slot_token"])
+    legacy = await chat.repository.begin_event("claude-large-slot:0", lease_seconds=7200)
+    record.update(slot_pool="claude-large-slot", slot_token=legacy.token)
+    await chat.repository.set_connector_state(f"claude-event:{event}", record)
+    chat.store.put(
+        f"{recovery.event_prefix(event)}/attempt-a0.json",
+        json.dumps(
+            {"event_id": event, "attempt": 0, "model_cost": 0.2, "outcome": "complete"}
+        ).encode(),
+    )
+    chat.test_states[record["job"]] = "SUCCEEDED"
+    assert await chat.process(event, 1) == "complete"
     assert "claude-large-slot:0" not in chat.repository.event_claims
+    chat.test_client.create_job.assert_called_once()
+
+
+async def test_standard_pool_retains_its_configured_limit(chat):
+    chat.settings.max_concurrent_runs = 1
+    chat.decision.return_value = direct.Decision(route="compute", reply="Plotting.")
+    first = await chat.accept(payload(text="Plot sample one"))
+    second = await chat.accept(payload("2.0", text="Plot sample two"))
+    assert await chat.process(first, 0) == "running"
+    assert await chat.process(second, 0) == "pending"
     chat.test_client.create_job.assert_called_once()

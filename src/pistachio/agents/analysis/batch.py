@@ -558,7 +558,7 @@ class BatchBridge:
                     event_id,
                     record,
                     "waiting",
-                    "Waiting for a large worker; another large run is active…"
+                    "Waiting for this worker attempt to finish…"
                     if pool != "claude-slot"
                     else "All workers are busy right now. You're in the queue…",
                 )
