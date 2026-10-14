@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -141,6 +142,20 @@ def test_copy_preserves_subpaths_and_cleans_source_after_receipt(transfer):
     assert transfer.source.data is None
     assert transfer.upload() == result and transfer.dest.writes == 1
     assert len(receipts(transfer)) == 1
+
+
+def test_rewrite_progress_is_visible_with_default_api_logging(transfer, monkeypatch, caplog):
+    # Uvicorn leaves the application root at WARNING; successful copies still
+    # need auditable progress without enabling verbose HTTP/SDK logging.
+    monkeypatch.setattr(logging.getLogger(), "level", logging.WARNING)
+    transfer.dest.iterations = 2
+    assert transfer.upload()["status"] == "uploaded"
+    messages = [r.getMessage() for r in caplog.records if r.name == write_broker.__name__]
+    assert len(messages) == 2
+    assert all("gcs_rewrite event=" + "a" * 32 in m for m in messages)
+    assert "pending=True" in messages[0] and "pending=False" in messages[1]
+    assert "total=16" in messages[1]
+    assert all("some-result-data" not in m and "result.csv" not in m for m in messages)
 
 
 def test_unapproved_existing_object_is_never_replaced(transfer):

@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from .write_approval import Approval
 
 log = logging.getLogger(__name__)
+log.setLevel(logging.INFO)
 BATCH_SIZE = 500
 
 
@@ -381,6 +382,7 @@ def upload(
                         "The destination changed since approval. Request a new run."
                     ) from None
                 break
+            logging.basicConfig()  # Install a sink without changing the root/SDK log level.
             log.info(
                 "gcs_rewrite event=%s object=%s bytes=%s total=%s pending=%s",
                 event_id,
