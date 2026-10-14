@@ -126,17 +126,32 @@ async def test_broker_does_not_accept_new_grant_for_old_run(writable, monkeypatc
     upload.assert_not_called()
 
 
-@pytest.mark.parametrize("kind", ["tls", "timeout", "unavailable"])
+@pytest.mark.parametrize(
+    "kind",
+    ["tls", "timeout", "unavailable", "iam_unavailable", "iam_rate_limit", "refresh_retryable"],
+)
 async def test_batch_preserves_successes_when_one_gcs_request_is_interrupted(
     writable, monkeypatch, kind
 ):
     from google.api_core.exceptions import ServiceUnavailable
+    from google.auth.exceptions import RefreshError
     from requests.exceptions import ReadTimeout, SSLError
 
     compute, request, _, body = await worker_request(writable, monkeypatch)
     body.relative_paths = ["first.csv", "retry.csv", "last.csv"]
     failed = False
-    errors = {"tls": SSLError, "timeout": ReadTimeout, "unavailable": ServiceUnavailable}
+    errors = {
+        "tls": SSLError("connection interrupted"),
+        "timeout": ReadTimeout("connection interrupted"),
+        "unavailable": ServiceUnavailable("connection interrupted"),
+        "iam_unavailable": RefreshError(
+            "Unable to acquire impersonated credentials", '{"error":{"code":503}}'
+        ),
+        "iam_rate_limit": RefreshError(
+            "Unable to acquire impersonated credentials", '{"error":{"code":429}}'
+        ),
+        "refresh_retryable": RefreshError("Service temporarily unavailable", retryable=True),
+    }
 
     def upload(*args, **kwargs):
         nonlocal failed
@@ -144,7 +159,7 @@ async def test_batch_preserves_successes_when_one_gcs_request_is_interrupted(
         path = args[4]
         if path == "retry.csv" and not failed:
             failed = True
-            raise errors[kind]("connection interrupted")
+            raise errors[kind]
         return {"status": "uploaded", "uri": "gs://lab-data/liver/output/" + path}
 
     copied = Mock(side_effect=upload)
@@ -163,6 +178,24 @@ async def test_batch_preserves_successes_when_one_gcs_request_is_interrupted(
         "last.csv",
         "retry.csv",
     ]
+
+
+@pytest.mark.parametrize(
+    "response",
+    ['{"error":{"code":403}}', '{"error":{"code":401}}', "503 unavailable", "[]", '{"error":{}}'],
+)
+async def test_batch_does_not_retry_permanent_or_unclassified_refresh_errors(
+    writable, monkeypatch, response
+):
+    from google.auth.exceptions import RefreshError
+
+    compute, request, _, body = await worker_request(writable, monkeypatch)
+    error = RefreshError("Unable to acquire impersonated credentials", response)
+    monkeypatch.setattr(slack_analysis.write_broker, "upload", Mock(side_effect=error))
+    with pytest.raises(RefreshError) as caught:
+        await slack_analysis.write_output(compute, body, request, Response())
+    assert caught.value is error
+    assert not any(k.startswith("claude-write:") for k in writable.repository.event_claims)
 
 
 async def uploaded_batch(url, **kwargs):

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from google.api_core.retry import if_transient_error
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 from pydantic import BaseModel, Field
@@ -262,6 +264,25 @@ class WriteUpload(BaseModel):
     grant_id: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
+def retryable_write_error(exc: Exception) -> bool:
+    if if_transient_error(exc) or isinstance(exc, Timeout):
+        return True
+    if not isinstance(exc, RefreshError):
+        return False
+    if exc.retryable:
+        return True
+    # Impersonated credentials wrap IAM responses without setting retryable.
+    # Classify only a structured transient status; never retry access denials.
+    if len(exc.args) < 2 or not isinstance(exc.args[1], (str, bytes)):
+        return False
+    try:
+        response = json.loads(exc.args[1])
+    except (ValueError, UnicodeDecodeError):
+        return False
+    error = response.get("error") if isinstance(response, dict) else None
+    return isinstance(error, dict) and error.get("code") in (429, 500, 502, 503, 504)
+
+
 @router.post("/recovery/{event_id}", include_in_schema=False)
 async def recovery_operation(event_id: str, request: Request, response: Response) -> dict[str, Any]:
     from pistachio.agents.analysis import recovery
@@ -362,7 +383,7 @@ async def write_output(
         except (FileExistsError, ValueError) as exc:
             result = {"status": "failed", "error": str(exc)}
         except Exception as exc:
-            if not (if_transient_error(exc) or isinstance(exc, Timeout)):
+            if not retryable_write_error(exc):
                 raise
             # Preserve this batch's completed receipts. The worker retries only
             # this path; rewrite tokens and generation checks reconcile lost replies.

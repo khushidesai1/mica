@@ -82,6 +82,8 @@ large-file bytes do not pass through Cloud Run. Each request has an 840-second t
 each object retains its own mutex and receipt. Unfinished rewrites persist a token and resume
 in later requests. Publication details are immutable JSONL shards; indexes and Slack replies
 contain per-folder totals instead of thousands of object URIs.
+Transient GCS transport failures retry the affected paths while preserving completed receipts
+and the other results in the batch. Permanent access and generation conflicts remain failures.
 
 After verifying destination generation, size, checksum, and publication metadata, the controller
 saves a durable receipt and deletes the corresponding staged source generation. Retries work
@@ -180,6 +182,8 @@ See [result-store staging verification](gcs-result-stores-staging.md) for the de
 release, unit-test scope, and the successful 287-object live publish check.
 See [overwrite staging verification](gcs-overwrites-staging.md) for the live approval,
 replacement, unchanged-sibling, and cleanup checks.
+See [scaled publishing verification](scaled-publishing-deployment.md) for the subsequent
+batched rewrite rollout and large-transfer checks.
 
 References: [Cloud Storage IAM conditions](https://docs.cloud.google.com/storage/docs/access-control/iam)
 and [credential access boundaries](https://docs.cloud.google.com/iam/docs/downscoping-short-lived-credentials).
@@ -208,6 +212,6 @@ The manifests are worker reports; controller per-object receipts confirm actual 
 
 Overwrite confirmations are stored under `write-access/approvals/<event>.json`, outside the
 worker's writable area. They bind the project, requester, access revision, grant, destination
-paths, and generations. Duplicate clicks cannot start another worker. Current access and grants
+paths, and inspection time. Duplicate clicks cannot start another worker. Current access and grants
 are rechecked on confirmation and during upload. Controller receipts include the replaced
 object generation. See [Cloud Storage upload permissions](https://docs.cloud.google.com/storage/docs/uploading-objects#required_roles).
