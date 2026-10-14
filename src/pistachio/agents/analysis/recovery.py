@@ -206,12 +206,10 @@ async def prepare_attempt(
     record["job"] = (
         f"projects/{bridge.app.gcp_project}/locations/{bridge.app.gcp_region}/jobs/claude-{event_id}{suffix}"
     )
-    pool = "claude-slot" if record["tier"] == "standard" else "claude-large-slot"
-    slots = (
-        bridge.settings.max_concurrent_runs
-        if pool == "claude-slot"
-        else bridge.settings.max_concurrent_large_runs
-    )
+    # Heavy runs have no shared concurrency cap. Keep an event-scoped lease for
+    # submission/recovery bookkeeping; existing records retain their original pool.
+    pool = "claude-slot" if record["tier"] == "standard" else f"claude-large-slot:{event_id}"
+    slots = bridge.settings.max_concurrent_runs if pool == "claude-slot" else 1
     from .calibration import history
 
     record["worker_history"] = await asyncio.to_thread(history, storage, record["project_id"])
