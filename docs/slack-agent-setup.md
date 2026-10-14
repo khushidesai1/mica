@@ -162,8 +162,12 @@ The local implementation was followed by the user-authorized deployment recorded
 
 ## Settings and use
 
-See `deploy/slack.env.example`. Defaults are 40 model turns, $5 per message and three concurrent
-jobs. Ordinary analysis normally starts on standard Spot (8 CPUs / 64 GiB); segmentation,
+See `deploy/slack.env.example`. Defaults are 500 model turns, $5 per message and three concurrent
+standard jobs. Large and xlarge jobs in separate threads have no application-level concurrency
+cap; GCP quota and capacity still apply. Each conversation remains ordered, and per-request time,
+model and access controls still apply. Queued requests do not allocate a worker, so parallelism
+reduces waiting time but does not inherently reduce compute cost.
+Ordinary analysis normally starts on standard Spot (8 CPUs / 64 GiB); segmentation,
 full-sample ingest and training normally start on large on-demand (32 CPUs / 256 GiB).
 Large input expansion or prior measurements can select xlarge (64 CPUs / 512 GiB).
 The seven-day `AGENT_MAX_RUN_SECONDS` limit is one absolute deadline across queueing and all

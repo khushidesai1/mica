@@ -61,7 +61,6 @@ class Settings(BaseSettings):
     max_concurrent_runs: int = Field(default=3, ge=1)
     launch_heavy_tier: Literal["standard", "large", "xlarge"] = "large"
     max_tier: Literal["standard", "large", "xlarge"] = "xlarge"
-    max_concurrent_large_runs: int = Field(default=1, ge=1, le=10)
     partial_checkpoint_seconds: int = Field(default=900, ge=60, le=3600)
     long_run_threshold_seconds: int = Field(default=600, ge=60)
     long_run_update_seconds: int = Field(default=7200, ge=60)
