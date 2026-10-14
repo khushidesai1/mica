@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from html import escape
@@ -30,7 +31,7 @@ class Approval(BaseModel):
     principal: str
     access_signature: str
     paths: list[str]
-    generations: dict[str, int]
+    inspected_at: float
     expires_at: float
     status: Literal["pending", "approved", "cancelled"] = "pending"
     approved_at: float = 0
@@ -47,6 +48,8 @@ def load(storage: Storage, event_id: str) -> tuple[Approval, str] | None:
         raw, generation = storage.get(key(event_id))
     except FileNotFoundError:
         return None
+    if "generations" in json.loads(raw):
+        raise ValueError("This overwrite request expired during an update. Send it again.")
     return Approval.model_validate_json(raw), generation
 
 
@@ -68,79 +71,40 @@ def targets(paths: list[str], grant: write_access.WriteGrant) -> list[str]:
     return result
 
 
-def inspect(paths: list[str], grant: write_access.WriteGrant, maximum: int) -> dict[str, int]:
+def inspect(paths: list[str]) -> list[str]:
+    """Probe each requested path once; approval size is independent of object count."""
     from google.cloud import storage
 
     client = storage.Client()
-    deadline = time.monotonic() + 20
-    found: dict[str, int] = {}
-
-    def remaining() -> float:
-        seconds = deadline - time.monotonic()
-        if seconds <= 0:
-            raise ValueError("Overwrite check timed out. Name a smaller output folder and retry.")
-        return seconds
-
-    def add(blob: Any, bucket: str) -> None:
-        remaining()
-        uri = f"gs://{bucket}/{blob.name}"
-        if not uri.startswith(grant.uri) or not blob.generation:
-            raise ValueError("Could not verify the existing output version.")
-        found[relative_path(uri.removeprefix(grant.uri))] = int(blob.generation)
-        if len(found) > maximum:
-            raise ValueError(
-                f"Confirm at most {maximum:,} existing files; choose a smaller folder."
-            )
-
+    found = []
     for path in paths:
         target = urlsplit(path)
         prefix = target.path.lstrip("/")
-        if not path.endswith("/"):
-            blob = client.bucket(target.netloc).blob(prefix)
+        if path.endswith("/"):
+            probe = client.list_blobs(
+                target.netloc, prefix=prefix, max_results=1, page_size=1, timeout=20, retry=None
+            )
+            if next(iter(probe), None) is not None:
+                found.append(path)
+        else:
             try:
-                blob.reload(timeout=remaining(), retry=None)
+                client.bucket(target.netloc).blob(prefix).reload(timeout=20, retry=None)
             except NotFound:
                 continue
-            add(blob, target.netloc)
-            continue
-        token = None
-        while True:
-            iterator = client.list_blobs(
-                target.netloc,
-                prefix=prefix,
-                page_size=1000,
-                page_token=token,
-                timeout=remaining(),
-                retry=None,
-            )
-            page = next(iter(iterator.pages), None)
-            if page is not None:
-                for blob in page:
-                    if not blob.name.endswith("/"):
-                        add(blob, target.netloc)
-            remaining()
-            token = iterator.next_page_token
-            if not token:
-                break
+            found.append(path)
     return found
 
 
-def expected_generation(
-    storage: Storage, event_id: str, project_id: str, grant: write_access.WriteGrant, relative: str
-) -> int:
-    saved = load(storage, event_id)
-    if not saved:
-        return 0
-    approval = saved[0]
-    if (
-        approval.event_id != event_id
-        or approval.project_id != project_id
-        or approval.grant_id != grant.id
-        or approval.status != "approved"
-        or not 0 < approval.approved_at <= approval.expires_at
+def allowed_replacement(approval: Approval | None, uri: str, blob: Any) -> int:
+    if approval is None or not any(
+        uri.startswith(path) if path.endswith("/") else uri == path for path in approval.paths
     ):
         return 0
-    return approval.generations.get(relative, 0)
+    if approval.status != "approved" or not 0 < approval.approved_at <= approval.expires_at:
+        return 0
+    if blob.time_created is None or blob.time_created.timestamp() > approval.inspected_at:
+        raise FileExistsError("The destination changed since approval. Request a new run.")
+    return int(blob.generation)
 
 
 def validate(
@@ -161,15 +125,10 @@ def validate(
 def blocks(approval: Approval, grant_uri: str) -> tuple[str, list[dict[str, Any]]]:
     lines = ["Before I start, approve overwriting matching files in:"]
     for path in approval.paths:
-        count = sum(
-            (grant_uri + name).startswith(path) if path.endswith("/") else grant_uri + name == path
-            for name in approval.generations
+        lines.append(
+            f"`{escape(path, quote=False)}` — "
+            + ("folder already has files" if path.endswith("/") else "file already exists")
         )
-        if count:
-            lines.append(
-                f"`{escape(path, quote=False)}` — {count:,} existing "
-                + ("file" if count == 1 else "files")
-            )
     lines.append("Other existing files stay unchanged. This approval applies to this run only.")
     content: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": line}} for line in lines
@@ -214,10 +173,9 @@ async def ready(
     saved = await asyncio.to_thread(load, storage, event_id)
     if saved is None:
         normalized = targets(paths, grant)
-        generations = await asyncio.to_thread(
-            inspect, normalized, grant, bridge.settings.write_max_files
-        )
-        if not generations:
+        inspected_at = time.time()
+        existing = await asyncio.to_thread(inspect, normalized)
+        if not existing:
             record["overwrite_checked"] = True
             return True
         approval = Approval(
@@ -226,8 +184,8 @@ async def ready(
             grant_id=grant.id,
             principal=record["principal"],
             access_signature=record["access_signature"],
-            paths=normalized,
-            generations=generations,
+            paths=existing,
+            inspected_at=inspected_at,
             expires_at=time.time() + 3600,
         )
         try:
@@ -246,6 +204,7 @@ async def ready(
         return True
     if approval.status == "cancelled" or time.time() >= approval.expires_at:
         record["status"] = "failed"
+        record["cancel_requested"] = approval.status == "cancelled"
         await bridge.notify(
             event_id, record, "failed", "Overwrite request cancelled or expired. Nothing started."
         )
@@ -311,6 +270,7 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
                 storage.put_if, key(event_id), approval.model_dump_json().encode(), generation
             )
         record["status"] = "pending" if approval.status == "approved" else "failed"
+        record["cancel_requested"] = approval.status == "cancelled"
         text = (
             "Overwrite approved. Starting this run…"
             if approval.status == "approved"

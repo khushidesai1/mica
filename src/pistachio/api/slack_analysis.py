@@ -254,7 +254,7 @@ async def worker_context(
 
 
 class WriteUpload(BaseModel):
-    relative_path: str = Field(min_length=1, max_length=512)
+    relative_paths: list[str] = Field(min_length=1, max_length=write_broker.BATCH_SIZE)
     grant_id: str = Field(pattern=r"^[a-f0-9]{32}$")
 
 
@@ -297,15 +297,23 @@ async def recovery_operation(event_id: str, request: Request, response: Response
 @router.post("/write/{event_id}", include_in_schema=False)
 async def write_output(
     event_id: str, body: WriteUpload, request: Request, response: Response
-) -> dict[str, str]:
+) -> dict[str, Any]:
+    import time
+
+    from pistachio.agents.analysis import write_approval
+
     bridge, storage, record = await worker_context(event_id, request)
     response.headers["Cache-Control"] = "no-store"
     frozen = record.get("write_grant")
     if not frozen or frozen.get("id") != body.grant_id:
         raise HTTPException(403, "This run has no matching write grant.")
     try:
-        relative = write_broker.relative_path(body.relative_path)
-    except ValueError as exc:
+        paths = [write_broker.relative_path(p) for p in body.relative_paths]
+        saved = await asyncio.to_thread(write_approval.load, storage, event_id)
+        approval = saved[0] if saved else None
+        if approval:
+            await asyncio.to_thread(write_approval.validate, bridge, storage, record, approval)
+    except (ValueError, PermissionError) as exc:
         raise HTTPException(422, str(exc)) from exc
 
     def authorize() -> None:
@@ -319,29 +327,37 @@ async def write_output(
             raise PermissionError("Project access changed. GCS publishing is blocked.")
         write_access.require_active(storage, grant.project_id, body.grant_id, bridge.settings)
 
-    # A retry cannot race another upload of the same event/path. Revokes never wait on this lock.
-    mutex = "claude-write:" + event_id + ":" + hashlib.sha256(relative.encode()).hexdigest()
-    claim = await bridge.repository.begin_event(
-        mutex, lease_seconds=bridge.settings.write_upload_seconds + 60
-    )
-    if claim.status != "claimed":
-        raise HTTPException(409, "This output is already being uploaded. Retry shortly.")
-    try:
-        return await asyncio.to_thread(
-            write_broker.upload,
-            storage,
-            bridge.settings,
-            record["project_id"],
-            event_id,
-            relative,
-            body.grant_id,
-            authorize,
+    deadline = time.monotonic() + bridge.settings.write_upload_seconds
+    results = []
+    for relative in dict.fromkeys(paths):
+        if deadline - time.monotonic() < min(35, bridge.settings.write_upload_seconds / 10):
+            results.append({"relative_path": relative, "status": "in_progress"})
+            continue
+        mutex = "claude-write:" + event_id + ":" + hashlib.sha256(relative.encode()).hexdigest()
+        claim = await bridge.repository.begin_event(
+            mutex, lease_seconds=bridge.settings.write_upload_seconds + 60
         )
-    except PermissionError as exc:
-        raise HTTPException(403, str(exc)) from exc
-    except FileExistsError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    finally:
-        await bridge.repository.release_event(mutex, claim.token)
+        if claim.status != "claimed":
+            results.append({"relative_path": relative, "status": "in_progress"})
+            continue
+        try:
+            result = await asyncio.to_thread(
+                write_broker.upload,
+                storage,
+                bridge.settings,
+                record["project_id"],
+                event_id,
+                relative,
+                body.grant_id,
+                authorize,
+                approval=approval,
+                deadline=deadline,
+            )
+        except PermissionError as exc:
+            result = {"status": "denied", "error": str(exc)}
+        except (FileExistsError, ValueError) as exc:
+            result = {"status": "failed", "error": str(exc)}
+        finally:
+            await bridge.repository.release_event(mutex, claim.token)
+        results.append({"relative_path": relative, **result})
+    return {"results": results}

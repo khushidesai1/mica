@@ -24,6 +24,7 @@ class Storage(Protocol):
     def upload(self, key: str, path: Path) -> None: ...
     def upload_new(self, key: str, path: Path) -> None: ...
     def open_write(self, key: str) -> AbstractContextManager[BinaryIO]: ...
+    def open_read(self, key: str) -> AbstractContextManager[BinaryIO]: ...
     def download(self, key: str, path: Path) -> None: ...
     def read_prefix(self, key: str, limit: int) -> bytes: ...
 
@@ -109,6 +110,9 @@ class LocalStorage:
         with self.path(key).open("rb") as stream:
             return stream.read(limit)
 
+    def open_read(self, key: str) -> AbstractContextManager[BinaryIO]:
+        return self.path(key).open("rb")
+
 
 class GCSStorage:
     def __init__(self, bucket: str) -> None:
@@ -130,6 +134,11 @@ class GCSStorage:
 
     def put(self, key: str, data: bytes) -> None:
         self.bucket.blob(key).upload_from_string(data)
+
+    def open_read(self, key: str) -> AbstractContextManager[BinaryIO]:
+        return cast(
+            AbstractContextManager[BinaryIO], self.bucket.blob(key).open("rb", chunk_size=1024**2)
+        )
 
     def put_if(self, key: str, data: bytes, generation: str | None) -> str:
         from google.api_core.exceptions import PreconditionFailed

@@ -8,6 +8,7 @@ import logging
 import uuid
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
+from itertools import islice
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -16,10 +17,10 @@ from claude_agent_sdk import SdkMcpTool, tool
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 
-from .config import CHECKPOINT_PREFIX, Settings
+from .config import Settings
 from .outputs import files_under
 from .storage import Conflict, Storage
-from .write_broker import manifest_stage, relative_path, staged_key
+from .write_broker import BATCH_SIZE, manifest_stage, relative_path, staged_key, valid_shard
 
 if TYPE_CHECKING:
     from .runner import Context, TurnResult
@@ -89,42 +90,70 @@ class Publisher:
         self.event_id, self.url = event_id, control_url.rstrip("/")
         self.grant = request.get("write_grant")
         self.limits = Settings(
-            _env_file=None,
-            **{
-                k: request[k]
-                for k in (
-                    "write_max_mb",
-                    "write_max_files",
-                    "write_max_total_gb",
-                    "write_upload_seconds",
-                )
-                if k in request
-            },
+            _env_file=None, write_upload_seconds=request.get("write_upload_seconds", 840)
         )
         self.lock = asyncio.Lock()
         self.sizes: dict[str, int] = {}
         self.uploaded: dict[str, str] = {}
         self.destinations: dict[str, str] = {}
         self.manifests: list[str] = []
+        self.shards: list[str] = []
+        self.state_lock = asyncio.Lock()
         self.loaded = False
         self.denied = False
-        # Transport state, not authority. The broker still checks the grant on every chunk
-        # and writes the canonical per-object receipt before acknowledging publication.
-        self.key = f"{CHECKPOINT_PREFIX}/events/{event_id}/write-publication.json"
+        self.key = manifest_stage(event_id)
+        self.shard_prefix = self.key.removesuffix("manifest.json") + "shards/"
 
-    async def save(self) -> None:
-        await asyncio.to_thread(
-            self.storage.put,
-            self.key,
-            json.dumps(
-                {
-                    "sizes": self.sizes,
-                    "uploaded": self.uploaded,
-                    "destinations": self.destinations,
-                    "manifests": self.manifests,
-                }
-            ).encode(),
-        )
+    async def save(self, rows: list[dict[str, Any]] | None = None) -> None:
+        async with self.state_lock:
+            if rows:
+                key = self.shard_prefix + uuid.uuid4().hex + ".jsonl"
+                data = b"".join(json.dumps(row).encode() + b"\n" for row in rows)
+                await asyncio.to_thread(self.storage.put_if, key, data, None)
+                self.shards.append(key)
+            index = {
+                "version": 2,
+                "event_id": self.event_id,
+                "shards": self.shards,
+                "publications": self.manifests,
+                "destinations": [asdict(item) for item in self.summarize(set(self.uploaded))],
+            }
+            await asyncio.to_thread(self.storage.put, self.key, json.dumps(index).encode())
+
+    def load(self) -> None:
+        try:
+            index = json.loads(self.storage.get(self.key)[0])
+        except FileNotFoundError:
+            return
+        self.shards = index.get("shards", [])
+        self.manifests = index.get("publications", [])
+        for key in self.shards:
+            if not valid_shard(self.event_id, key):
+                raise ValueError("Invalid publication state shard.")
+            with self.storage.open_read(key) as stream:
+                for line in stream:
+                    row = json.loads(line)
+                    path = relative_path(row["relative_path"])
+                    self.sizes[path] = row["bytes"]
+                    self.destinations[path] = row["folder"]
+                    if row["status"] == "uploaded":
+                        self.uploaded[path] = row["uri"]
+
+    def rows(self, paths: list[str], errors: dict[str, str] | None = None) -> list[dict[str, Any]]:
+        return [
+            {
+                "relative_path": p,
+                "bytes": self.sizes[p],
+                "folder": self.destinations[p],
+                "status": "uploaded" if p in self.uploaded else "pending",
+                **({"uri": self.uploaded[p]} if p in self.uploaded else {}),
+                **({"error": errors[p]} if errors and p in errors else {}),
+            }
+            for p in paths
+        ]
+
+    def published_paths(self, workdir: Path) -> set[Path]:
+        return {workdir / "outputs/gcs" / relative for relative in self.uploaded}
 
     def select(self, ctx: Context, result: TurnResult, folder: str | None) -> list[Path]:
         root = ctx.workdir / "outputs/gcs"
@@ -156,13 +185,7 @@ class Publisher:
             selected: dict[str, Path] = {}
             try:
                 if not self.loaded:
-                    try:
-                        state = json.loads((await asyncio.to_thread(self.storage.get, self.key))[0])
-                        self.sizes, self.uploaded = state["sizes"], state["uploaded"]
-                        self.destinations = state.get("destinations", {})
-                        self.manifests = state.get("manifests", [])
-                    except FileNotFoundError:
-                        pass
+                    await asyncio.to_thread(self.load)
                     self.loaded = True
                 paths = self.select(ctx, result, folder)
                 root = ctx.workdir / "outputs/gcs"
@@ -187,24 +210,10 @@ class Publisher:
                     if self.denied:
                         raise ValueError("GCS write access was revoked or changed during this run.")
                     sizes = file_sizes(pending)
-                    if any(n > self.limits.write_max_mb * 1024**2 for n in sizes.values()):
-                        raise ValueError("GCS files exceed the per-file size limit; none uploaded.")
                     if any(p in self.sizes and self.sizes[p] != n for p, n in sizes.items()):
                         raise ValueError("A staged output changed. Choose a new destination path.")
-                    reserved = self.sizes | sizes
-                    if len(reserved) > self.limits.write_max_files:
-                        raise ValueError(
-                            f"GCS publishing supports {self.limits.write_max_files} files per run; "
-                            "none uploaded."
-                        )
-                    if sum(reserved.values()) > self.limits.write_max_total_gb * 1024**3:
-                        raise ValueError(
-                            "GCS files exceed the total per-run size limit; none uploaded."
-                        )
-                    self.sizes = reserved
-                    await self.save()  # Count unfinished attempts too, including after restart.
+                    self.sizes.update(sizes)
                     await self.transfer(pending, outcome)
-                    await self.save()
             except (ValueError, OSError) as exc:
                 outcome.errors.append(str(exc))
             except Exception:
@@ -254,7 +263,13 @@ class Publisher:
             raise ValueError("Publication logs must remain inside the workspace")
         logs.mkdir(exist_ok=True)
         outcome.manifest = relative
-        data = json.dumps({"event_id": self.event_id, **asdict(outcome)}).encode()
+        data = json.dumps(
+            {
+                "event_id": self.event_id,
+                **outcome.tool_result(),
+                "shards": self.shards,
+            }
+        ).encode()
         # Unique manifests never replace a prior call or follow a pre-existing file symlink.
         with (ctx.workdir / relative).open("xb") as stream:
             stream.write(data)
@@ -266,65 +281,93 @@ class Publisher:
             )
             self.manifests.append(key)
             await self.save()
-            await asyncio.to_thread(
-                self.storage.put,
-                manifest_stage(self.event_id),
-                json.dumps(
-                    {
-                        "event_id": self.event_id,
-                        "publications": self.manifests,
-                        "uploaded": sorted(self.uploaded.values()),
-                        "destinations": [
-                            asdict(item) for item in self.summarize(set(self.uploaded))
-                        ],
-                    }
-                ).encode(),
-            )
 
     async def transfer(self, paths: dict[str, Path], outcome: Publication) -> None:
         pending = iter(paths.items())
+        staging = asyncio.Semaphore(CONCURRENCY)
         async with httpx.AsyncClient(timeout=self.limits.write_upload_seconds + 30) as client:
+
+            async def stage(relative: str, path: Path) -> None:
+                async with staging:
+                    with suppress(Conflict):
+                        await asyncio.to_thread(
+                            self.storage.upload_new, staged_key(self.event_id, relative), path
+                        )
 
             async def upload_next() -> None:
                 while not self.denied:
-                    item = next(pending, None)
-                    if item is None:
+                    batch = dict(islice(pending, BATCH_SIZE))
+                    if not batch:
                         return
-                    relative, path = item
-                    try:
-                        # Never restage on retry: a new source generation would invalidate the
-                        # destination's receipt after a lost response from the broker.
-                        with suppress(Conflict):
-                            await asyncio.to_thread(
-                                self.storage.upload_new, staged_key(self.event_id, relative), path
+                    errors: dict[str, str] = {}
+                    await self.save(self.rows(list(batch)))  # Durable reservation before staging.
+                    ready = []
+                    staged = await asyncio.gather(
+                        *(stage(p, f) for p, f in batch.items()), return_exceptions=True
+                    )
+                    for path, result in zip(batch, staged, strict=True):
+                        if isinstance(result, BaseException):
+                            errors[path] = "Could not stage output; retry publication."
+                        else:
+                            ready.append(path)
+                    attempts = 0
+                    while ready and not self.denied:
+                        try:
+                            auth_request = GoogleRequest()  # type: ignore[no-untyped-call]
+                            token = await asyncio.to_thread(
+                                id_token.fetch_id_token, auth_request, self.url
                             )
-                        if self.denied:
-                            return
-                        auth_request = GoogleRequest()  # type: ignore[no-untyped-call]
-                        token = await asyncio.to_thread(
-                            id_token.fetch_id_token, auth_request, self.url
-                        )
-                        assert self.grant is not None
-                        response = await client.post(
-                            f"{self.url}/api/v1/internal/slack-analysis/write/{self.event_id}",
-                            headers={"Authorization": f"Bearer {token}"},
-                            json={"relative_path": relative, "grant_id": self.grant["id"]},
-                        )
-                        if response.status_code in {403, 409, 413, 422}:
-                            detail = response.json().get("detail", "Upload was refused.")
-                            outcome.errors.append(f"{relative}: {detail}")
-                            if response.status_code == 403:
-                                self.denied = True
-                            continue
-                        response.raise_for_status()
-                        self.uploaded[relative] = str(response.json()["uri"])
-                    except Exception:
-                        log.exception(
-                            "GCS output publication failed for %s/%s", self.event_id, relative
-                        )
-                        outcome.errors.append(
-                            f"{relative}: delivery unconfirmed; staged copy preserved."
-                        )
+                            assert self.grant is not None
+                            response = await client.post(
+                                f"{self.url}/api/v1/internal/slack-analysis/write/{self.event_id}",
+                                headers={"Authorization": f"Bearer {token}"},
+                                json={"relative_paths": ready, "grant_id": self.grant["id"]},
+                            )
+                            if response.status_code in {403, 422}:
+                                detail = response.json().get("detail", "Upload was refused.")
+                                errors.update(dict.fromkeys(ready, detail))
+                                self.denied = response.status_code == 403
+                                break
+                            response.raise_for_status()
+                            results = response.json()["results"]
+                            if {r["relative_path"] for r in results} != set(ready):
+                                raise ValueError("Incomplete broker batch response")
+                            retry = []
+                            for item in results:
+                                path = item["relative_path"]
+                                if item["status"] == "uploaded":
+                                    uri = str(item["uri"])
+                                    if uri != self.grant["uri"] + path:
+                                        raise ValueError("Unexpected publication destination")
+                                    self.uploaded[path] = uri
+                                elif item["status"] == "in_progress":
+                                    retry.append(path)
+                                else:
+                                    errors[path] = item.get("error", "Upload was refused.")
+                                    if item["status"] == "denied":
+                                        self.denied = True
+                            await self.save(self.rows(ready, errors))
+                            ready = retry
+                            attempts = 0
+                            if ready:
+                                await asyncio.sleep(1)
+                        except (httpx.HTTPError, ValueError, KeyError):
+                            attempts += 1
+                            if attempts >= 3:
+                                errors.update(
+                                    dict.fromkeys(
+                                        ready, "Delivery unconfirmed; staged copy preserved."
+                                    )
+                                )
+                                break
+                            await asyncio.sleep(attempts)
+                    if self.denied:
+                        for p in ready:
+                            if p not in self.uploaded:
+                                errors.setdefault(p, "GCS write access changed.")
+                    await self.save(self.rows(list(batch), errors))
+                    # Details stay in shards; user-facing examples remain bounded.
+                    outcome.errors.extend(f"{p}: {e}" for p, e in list(errors.items())[:5])
 
             await asyncio.gather(*(upload_next() for _ in range(min(CONCURRENCY, len(paths)))))
 
@@ -336,7 +379,7 @@ class Publisher:
             "Publish a completed, checked folder under outputs/gcs/ to this turn's GCS grant. "
             "Preserves paths, creating files or replacing versions approved for this run. "
             "Returns folder totals and errors; "
-            "full URIs are in the workspace manifest.",
+            "the manifest links to per-batch publication details.",
             {
                 "type": "object",
                 "properties": {"folder": {"type": "string"}},

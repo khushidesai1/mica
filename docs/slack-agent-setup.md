@@ -528,3 +528,14 @@ completed work, saved results, unfinished work, and the next step. Its spend is 
 normal accounting. The original error remains, so Slack still displays `Stopped` and appends
 a short limit notice. A failed or empty closing call preserves the previous partial reply
 and retry message. Other errors do not trigger a summary call.
+
+## Large GCS publications and failed requests
+
+Output approval probes each requested folder without enumerating its files. Publishing uses
+batched, resumable GCS server-side copies and removes verified staged sources after recording
+receipts; see [write access and cleanup](slack-write-access.md). Full stage checkpoints have no
+application size cap. Partial snapshots remain small and exclude data outputs.
+
+Failed requests remain available to follow-ups in the thread. Routed failures can add concise
+pending work to shared project memory; cancelled turns and commands are excluded. See
+[project memory](project-memory.md) for retention, attribution, and compaction behavior.

@@ -1,4 +1,3 @@
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -11,7 +10,7 @@ from pistachio.agents.analysis import direct, write_access, write_approval
 
 @pytest.fixture
 def replacing(writable, monkeypatch):  # noqa: F811
-    writable.inspect = Mock(return_value={"nested/result.csv": 7})
+    writable.inspect = Mock(return_value=["gs://lab-data/liver/output/nested/"])
     monkeypatch.setattr(write_approval, "inspect", writable.inspect)
     monkeypatch.setattr(write_approval, "AsyncWebClient", lambda **kw: writable.test_slack)
     monkeypatch.setattr(
@@ -54,7 +53,7 @@ async def test_exact_requester_approval_starts_once_and_pins_manifest(replacing)
     replacing.test_client.create_job.assert_not_called()
     assert "slot" not in record
     message = replacing.test_slack.chat_update.call_args.kwargs
-    assert "nested/" in message["text"] and "1 existing file" in message["text"]
+    assert "nested/" in message["text"] and "folder already has files" in message["text"]
     assert len(message["blocks"][-1]["elements"]) == 2
     action = click(event_id, record)
     await write_approval.handle(replacing, replacing.store, action)
@@ -65,19 +64,10 @@ async def test_exact_requester_approval_starts_once_and_pins_manifest(replacing)
     assert manifest["overwrite_paths"] == ["gs://lab-data/liver/output/nested/"]
     await write_approval.handle(replacing, replacing.store, action)
     assert replacing.test_client.create_job.call_count == 1
-    grant = write_access.active(replacing.store, replacing.pid, replacing.settings)
-    assert (
-        write_approval.expected_generation(
-            replacing.store, event_id, replacing.pid, grant, "nested/result.csv"
-        )
-        == 7
-    )
-    assert (
-        write_approval.expected_generation(
-            replacing.store, event_id, replacing.pid, grant, "sibling.csv"
-        )
-        == 0
-    )
+    approval = write_approval.load(replacing.store, event_id)[0]
+    assert approval.paths == ["gs://lab-data/liver/output/nested/"]
+    assert approval.inspected_at <= approval.approved_at
+    assert "generations" not in approval.model_dump()
 
 
 @pytest.mark.parametrize("field", ["team", "user", "channel", "message"])
@@ -149,34 +139,77 @@ async def test_invalid_targets_rejected_before_listing(replacing, monkeypatch, p
     replacing.test_client.create_job.assert_not_called()
 
 
-def test_recursive_snapshot_follows_pages_and_bounds_count(monkeypatch):
-    grant = write_access.WriteGrant(
-        id="a" * 32,
-        uri="gs://lab-data/output/",
-        actor="alice",
-        admin_id="T:U",
-        created_at=write_access.now(),
-    )
+@pytest.mark.parametrize("count", [1, 25000])
+def test_folder_approval_probes_only_one_object(monkeypatch, count):
     calls = []
 
     def blobs(bucket, **kwargs):
         calls.append(kwargs)
-        number = 1 if kwargs["page_token"] is None else 2
-        return SimpleNamespace(
-            pages=iter([[SimpleNamespace(name=f"output/store/chunk{number}", generation=number)]]),
-            next_page_token="next" if number == 1 else None,
-        )
+        assert kwargs["max_results"] == 1 and kwargs["page_size"] == 1
+        yield SimpleNamespace(name="output/store/chunk0")
+        raise AssertionError(f"Must not enumerate the remaining {count - 1} objects")
 
     monkeypatch.setattr("google.cloud.storage.Client", lambda: SimpleNamespace(list_blobs=blobs))
-    result = write_approval.inspect(["gs://lab-data/output/store/"], grant, 2)
-    assert result == {"store/chunk1": 1, "store/chunk2": 2}
-    assert calls[1]["page_token"] == "next" and calls[1]["timeout"] <= calls[0]["timeout"]
-    with pytest.raises(ValueError, match="at most"):
-        write_approval.inspect(["gs://lab-data/output/store/"], grant, 1)
-    clock = iter([time.monotonic(), time.monotonic() + 21])
-    monkeypatch.setattr(write_approval.time, "monotonic", lambda: next(clock))
-    with pytest.raises(ValueError, match="timed out"):
-        write_approval.inspect(["gs://lab-data/output/store/"], grant, 2)
+    assert write_approval.inspect(["gs://lab-data/output/store/"]) == [
+        "gs://lab-data/output/store/"
+    ]
+    assert len(calls) == 1
+
+
+async def test_only_nonempty_requested_folders_are_in_constant_size_approval(
+    replacing, monkeypatch
+):
+    await allow(replacing)
+    paths = [f"gs://lab-data/liver/output/tma{n}/" for n in [17, 18, 19]]
+    monkeypatch.setattr(
+        direct,
+        "decide",
+        AsyncMock(
+            return_value=direct.Decision(
+                route="compute",
+                reply="Regenerating.",
+                write_paths=paths,
+            )
+        ),
+    )
+    replacing.inspect.return_value = paths[:2]
+    event = await replacing.accept(payload("3.0", text="Regenerate the TMAs"))
+    assert await replacing.process(event, 0) == "awaiting_approval"
+    approval = write_approval.load(replacing.store, event)[0]
+    assert approval.paths == paths[:2]
+    assert len(approval.model_dump_json()) < 1000
+    text, blocks = write_approval.blocks(approval, replacing.settings.write_allowed_prefixes)
+    assert paths[0] in text and paths[1] in text and paths[2] not in text
+    assert len(blocks[-1]["elements"]) == 2
+
+
+def test_probe_handles_empty_folders_and_exact_files(monkeypatch):
+    from google.api_core.exceptions import NotFound
+
+    file = Mock()
+    file.reload.side_effect = [None, NotFound("missing")]
+    client = Mock()
+    client.bucket.return_value.blob.return_value = file
+    client.list_blobs.return_value = iter([])
+    monkeypatch.setattr("google.cloud.storage.Client", lambda: client)
+    assert write_approval.inspect(
+        [
+            "gs://lab-data/empty/",
+            "gs://lab-data/file",
+            "gs://lab-data/missing",
+        ]
+    ) == ["gs://lab-data/file"]
+
+
+def test_legacy_approval_expires_instead_of_migrating(replacing):
+    import json
+
+    event = "a" * 32
+    replacing.store.put(
+        write_approval.key(event), json.dumps({"generations": {"file": 7}}).encode()
+    )
+    with pytest.raises(ValueError, match="expired during an update"):
+        write_approval.load(replacing.store, event)
 
 
 @pytest.mark.parametrize("signed", [False, True])

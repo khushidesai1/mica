@@ -41,11 +41,9 @@ from .slack_format import status_blocks
 from .storage import GCSStorage
 
 
-def restore(archive: Path, home: Path, *, max_bytes: int = 100 * 1024**3) -> None:
+def restore(archive: Path, home: Path) -> None:
     with tarfile.open(archive, "r:gz") as tar:
         members = tar.getmembers()
-        if len(members) > 200000 or sum(m.size for m in members) > max_bytes:
-            raise ValueError("Oversized session checkpoint")
         seen: set[str] = set()
         for member in members:
             target = home / member.name
@@ -63,13 +61,13 @@ def restore(archive: Path, home: Path, *, max_bytes: int = 100 * 1024**3) -> Non
         tar.extractall(home, filter="data")
 
 
-def snapshot(archive: Path, home: Path) -> None:
+def snapshot(archive: Path, home: Path, *, published: set[Path] | None = None) -> None:
     with tarfile.open(archive, "w:gz") as tar:
         paths = [*files_under(home / "work"), *files_under(home / ".claude/projects")]
         if (home / "state.db").is_file():
             paths.append(home / "state.db")
         for path in paths:
-            if "knowledge" in path.relative_to(home).parts:
+            if path in (published or set()) or "knowledge" in path.relative_to(home).parts:
                 continue
             # Sources expire independently; rehydrate inputs from their original objects.
             if any(part in {".previews", "inputs"} for part in path.relative_to(home).parts):
@@ -215,7 +213,6 @@ async def main(event_id: str) -> None:
             work,
             event_id,
             attempt,
-            max_bytes=settings.compute_checkpoint_max_gb * 1024**3,
         )
         if resume:
             try:
@@ -396,7 +393,7 @@ async def main(event_id: str) -> None:
                 local,
                 home,
                 partial=True,
-                max_bytes=min(settings.compute_checkpoint_max_gb * 1024**3, 256 * 1024**2),
+                max_bytes=256 * 1024**2,
             )
             key = f"{prefix}/partial-a{attempt}-{checkpoint_id}.tar.gz"
             sha = await asyncio.to_thread(digest, local)
@@ -520,7 +517,7 @@ async def main(event_id: str) -> None:
             archive,
             home,
             partial=False,
-            max_bytes=settings.compute_checkpoint_max_gb * 1024**3,
+            published=publisher.published_paths(state[0].workdir) if state else set(),
         )
         key = f"{prefix}/handoff-a{attempt}-{uuid4().hex}.tar.gz"
         await asyncio.to_thread(storage.upload_new, key, archive)
@@ -556,10 +553,10 @@ async def main(event_id: str) -> None:
             archive,
             home,
             partial=False,
-            max_bytes=settings.compute_checkpoint_max_gb * 1024**3,
+            published=publisher.published_paths(state[0].workdir) if state else set(),
         )
     else:
-        snapshot(archive, home)
+        snapshot(archive, home, published=publisher.published_paths(state[0].workdir))
     archive_key = f"{PREFIX}/events/{event_id}/checkpoint.tar.gz"
     storage.upload(archive_key, archive)
     checkpoint: dict[str, Any] = {"archive": archive_key}

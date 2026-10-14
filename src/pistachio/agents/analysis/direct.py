@@ -104,6 +104,8 @@ can be restored and sent; don't claim a file was attached based only on a saved 
 previous model reply.
 An answer to your own clarification is context, not automatically permission for computation;
 use the conversation to determine whether the user is continuing a requested analysis.
+A failed earlier request is still the user's intent: resolve "this" or "it" against it,
+carry forward its method and requested work, and explain the recorded failure when retrying.
 
 Leave guide=null except on init. Guide corrections and other durable facts are saved by the
 post-turn memory editor. On init, choose reply and provide the initial guide from the known
@@ -333,7 +335,7 @@ def record_exchange(
     messages.append(
         {
             "id": event_id,
-            "user": text[:6000],
+            "user": text if not success else text[:6000],
             "assistant": reply[:6000],
             "files": list(files),
             "outputs": list(outputs),
@@ -484,8 +486,6 @@ async def handle(
             "The original message is still in Slack.",
         )
     state = access.read_state(storage, grant)
-    backend = project_memory.GitHubMemory(bridge.settings)
-    memory = await backend.read(grant.project_id, event_id=event_id)
     ctx = state.get("context")
     if not ctx:
         uri = urlsplit(grant.project.data_uri)
@@ -511,6 +511,12 @@ async def handle(
             survey_only=False,
         )
         state.update(context=ctx, turn=0, is_init=is_init, messages=[])
+        # Bind the thread before a router/memory failure can end its first turn.
+        await asyncio.to_thread(
+            storage.put, access.checkpoint_key(record["thread_key"]), json.dumps(state).encode()
+        )
+    backend = project_memory.GitHubMemory(bridge.settings)
+    memory = await backend.read(grant.project_id, event_id=event_id)
     guide = memory.files.get("PROJECT.md") if memory else None
     ctx["project_md"] = guide.text if guide else project_memory.NO_GUIDE
     if is_init and "memory_init_base" not in record and memory is not None:
@@ -730,7 +736,7 @@ async def handle(
             record["memory_init_saved"] = saved_guide.model_dump()
         ctx["project_md"] = decision.guide
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
-    if decision.route == "reply":
+    if decision.route == "reply" and not cmd:
         record_exchange(
             state,
             event_id,

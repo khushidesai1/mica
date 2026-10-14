@@ -48,14 +48,17 @@ def utilization(snapshot: project_memory.Snapshot, settings: Settings) -> float:
     return max(ratios)
 
 
-async def enqueue(bridge: BatchBridge, pid: str, saved: project_memory.Saved) -> None:
+async def enqueue(
+    bridge: BatchBridge, pid: str, saved: project_memory.Saved, *, force: bool = False
+) -> None:
     if not bridge.settings.memory_repo or not bridge.settings.memory_auto_edit:
         return
     snapshot = await project_memory.GitHubMemory(bridge.settings).read(pid)
     if snapshot is None:
         raise RuntimeError("Cannot check memory compaction; retry")
     if not (
-        saved.rejected
+        force
+        or saved.rejected
         or snapshot.invalid
         or utilization(snapshot, bridge.settings) > 0.8
         or any(p.startswith("_unmerged/") for p in snapshot.files)

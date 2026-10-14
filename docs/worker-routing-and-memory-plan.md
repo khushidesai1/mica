@@ -508,8 +508,8 @@ Changes:
   `on_demand_total_hours`, `compute_quote_only`, `compute_auto_budget_usd`,
   `compute_probe_budget_usd`, `compute_probe_seconds` and `max_preemption_relaunches`.
   The two recovery counts become fixed controller policy. Keep `launch_heavy_tier`, `max_tier`,
-  concurrency guards, `partial_checkpoint_seconds` and `compute_checkpoint_max_gb` (a byte
-  storage bound, not a dollar budget). Move authoritative tier/attempt into the worker manifest;
+  concurrency guards and `partial_checkpoint_seconds`. Stage checkpoint byte caps were
+  subsequently retired to support large datasets. Move authoritative tier/attempt into the worker manifest;
   remove the old settings only after all readers use that manifest. Add no pricing flags.
 - **`api/slack_analysis.py`.** Replace authenticated quote/request operations with the narrow
   recovery request schema. Retain worker identity, attempt, access and cancellation checks;
