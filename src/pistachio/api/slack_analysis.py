@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
+from google.api_core.retry import if_transient_error
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 from pydantic import BaseModel, Field
+from requests.exceptions import Timeout
 
 from pistachio.agents.analysis import (
     access,
@@ -26,6 +29,7 @@ from pistachio.api.auth import get_principal
 from pistachio.api.dependencies import Services
 
 router = APIRouter(prefix="/api/v1/internal/slack-analysis", tags=["internal"])
+log = logging.getLogger(__name__)
 
 
 async def receive(services: Services, payload: dict[str, Any]) -> dict[str, object]:
@@ -357,6 +361,18 @@ async def write_output(
             result = {"status": "denied", "error": str(exc)}
         except (FileExistsError, ValueError) as exc:
             result = {"status": "failed", "error": str(exc)}
+        except Exception as exc:
+            if not (if_transient_error(exc) or isinstance(exc, Timeout)):
+                raise
+            # Preserve this batch's completed receipts. The worker retries only
+            # this path; rewrite tokens and generation checks reconcile lost replies.
+            log.warning(
+                "gcs_publish_retry event=%s object=%s reason=%s",
+                event_id,
+                hashlib.sha256(relative.encode()).hexdigest()[:12],
+                type(exc).__name__,
+            )
+            result = {"status": "in_progress"}
         finally:
             await bridge.repository.release_event(mutex, claim.token)
         results.append({"relative_path": relative, **result})

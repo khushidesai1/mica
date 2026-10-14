@@ -126,6 +126,45 @@ async def test_broker_does_not_accept_new_grant_for_old_run(writable, monkeypatc
     upload.assert_not_called()
 
 
+@pytest.mark.parametrize("kind", ["tls", "timeout", "unavailable"])
+async def test_batch_preserves_successes_when_one_gcs_request_is_interrupted(
+    writable, monkeypatch, kind
+):
+    from google.api_core.exceptions import ServiceUnavailable
+    from requests.exceptions import ReadTimeout, SSLError
+
+    compute, request, _, body = await worker_request(writable, monkeypatch)
+    body.relative_paths = ["first.csv", "retry.csv", "last.csv"]
+    failed = False
+    errors = {"tls": SSLError, "timeout": ReadTimeout, "unavailable": ServiceUnavailable}
+
+    def upload(*args, **kwargs):
+        nonlocal failed
+        args[-1]()
+        path = args[4]
+        if path == "retry.csv" and not failed:
+            failed = True
+            raise errors[kind]("connection interrupted")
+        return {"status": "uploaded", "uri": "gs://lab-data/liver/output/" + path}
+
+    copied = Mock(side_effect=upload)
+    monkeypatch.setattr(slack_analysis.write_broker, "upload", copied)
+    result = await slack_analysis.write_output(compute, body, request, Response())
+    assert [r["status"] for r in result["results"]] == ["uploaded", "in_progress", "uploaded"]
+    assert not any(k.startswith("claude-write:") for k in writable.repository.event_claims)
+    body.relative_paths = [
+        r["relative_path"] for r in result["results"] if r["status"] == "in_progress"
+    ]
+    retried = await slack_analysis.write_output(compute, body, request, Response())
+    assert retried["results"][0]["status"] == "uploaded"
+    assert [call.args[4] for call in copied.call_args_list] == [
+        "first.csv",
+        "retry.csv",
+        "last.csv",
+        "retry.csv",
+    ]
+
+
 async def uploaded_batch(url, **kwargs):
     return httpx.Response(
         200,
