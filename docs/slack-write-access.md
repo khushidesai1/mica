@@ -59,23 +59,40 @@ before using it. Once publication begins, staged copies are immutable for safe r
 revised results at a new destination path.
 
 The same grant permits new files and confirmed overwrites. Name the destination when asking
-to replace an existing output. Before starting the worker, Pistachio lists the affected files
-and presents a concise folder/file summary with **Approve and run** and **Cancel** buttons.
+to replace an existing output. Before starting the worker, Pistachio probes each requested path once
+and presents the nonempty folders/files in a concise summary with **Approve and run** and **Cancel** buttons.
 Only the requester can approve it in the original Slack thread. Approval expires after one
 hour if unused; a confirmed run stays bounded by its normal execution limits. There is no
 separate overwrite grant. New destinations start without this confirmation.
 
-Confirmation pins each existing object's generation. Files changed, removed, or newly created
-after that check cannot be silently replaced; request a new run to confirm the new versions.
+Confirmation records the inspection time and approved paths, without enumerating files.
+At publication, only an existing generation created before that inspection can be replaced,
+and its generation is pinned in the copy request. Later-created or changed versions are
+rejected; request a new run to confirm them. An absent destination remains create-only.
 Unknown destinations discovered later remain create-only until a new request confirms them.
 Other existing files stay unchanged, including extra keys in a result store: this is not a
 folder synchronization or delete operation. Use a fresh folder when a new store layout would
-leave obsolete keys behind. A retry recognizes its completed object without uploading again. Defaults are 8192 MiB per file, 5,000 files and 100 GiB
-per run, including earlier mid-turn calls and reserved retry paths. All three limits are
-checked before staging a selected group of files; exceeding one uploads none of that group.
-Files publish with at most eight concurrent transfers. Each object's controller upload has
-an 840-second budget, below Cloud Run's 900-second request deadline; the per-object mutex
-covers this budget plus 60 seconds. Failed publication does not delete staged copies.
+leave obsolete keys behind. A retry recognizes its completed object without copying again.
+There are no application caps on file count, individual file size, or total output size;
+GCS's 5 TiB object limit, worker disk capacity, run budget, and concurrency limits still apply.
+
+Workers publish batches of up to 500 paths, with eight concurrent batches and at most eight
+concurrent staging uploads. The controller copies directly between GCS buckets with `rewrite`;
+large-file bytes do not pass through Cloud Run. Each request has an 840-second time slice and
+each object retains its own mutex and receipt. Unfinished rewrites persist a token and resume
+in later requests. Publication details are immutable JSONL shards; indexes and Slack replies
+contain per-folder totals instead of thousands of object URIs.
+Transient GCS transport failures retry the affected paths while preserving completed receipts
+and the other results in the batch. Permanent access and generation conflicts remain failures.
+
+After verifying destination generation, size, checksum, and publication metadata, the controller
+saves a durable receipt and deletes the corresponding staged source generation. Retries work
+even after cleanup. Failed or unfinished copies retain their staging data for retry. Already
+published GCS data is excluded from subsequent workspace snapshots; small logs/manifests remain.
+The artifact bucket's existing task lifecycle is the fallback for abandoned transfers (30 days
+in staging). Staging also has seven-day soft-delete retention, so logically deleted data can
+remain billable until that expires. This release does not change those bucket policies.
+
 
 A run captures the current grant when it is submitted. Granting access does not retroactively
 authorize a running job. Replacing or revoking that grant blocks further publishing by the
@@ -97,16 +114,12 @@ Configure the control service (not the agent sandbox):
 AGENT_WRITE_ADMIN_IDS=T123:U123
 AGENT_WRITE_ALLOWED_PREFIXES=gs://lab-outputs/liver/,gs://lab-outputs/brain/
 AGENT_WRITE_SERVICE_ACCOUNT=pistachio-staging-writer@PROJECT.iam.gserviceaccount.com
-AGENT_WRITE_MAX_MB=8192
-AGENT_WRITE_MAX_FILES=5000
-AGENT_WRITE_MAX_TOTAL_GB=100
 AGENT_WRITE_UPLOAD_SECONDS=840
 ```
 
 The first three default to empty, which disables writes. Onboarding admins are not implicitly
 write admins. Changes to the admin or prefix configuration are checked against existing grants.
-File-size settings accept 1–20,000 MiB, file counts 1–20,000, total sizes 1–1,000 GiB,
-and upload budgets 1–840 seconds. Limits are copied into each run's request manifest.
+The broker time slice accepts 1–840 seconds and is copied into each run's request manifest.
 
 `infra/slack_writes.tf` provides optional configuration through
 `slack_agent_write_admin_ids` and `slack_agent_write_prefixes`. It provisions:
@@ -120,6 +133,13 @@ and upload budgets 1–840 seconds. Limits are copied into each run's request ma
 - Control-account write access to grant/audit records and project metadata, so narrowing the
   old broad grants need not break Slack registry/brief persistence.
 
+Server-side copies additionally require `storage.objects.get` for the writer on staged exports
+in the artifact bucket: `tasks/slack-analysis/events/<event_id>/write-exports/`. Grant only source
+read access, not source writes or access to other event records. Staging uses the get-only custom
+role `pistachio_staging_export_reader` with a conditional bucket binding; this prerequisite was
+applied separately with explicit authorization. The existing Terraform file does not provision
+that additional binding. The controller already has source-delete access for cleanup.
+
 Buckets must already exist. Folder-restricted bucket IAM ceilings require uniform bucket-level
 access; whole-bucket ceilings also support buckets with object ACLs. Every individual upload
 is still downscoped to its exact object. Replacement tokens use the object-admin permission
@@ -132,13 +152,14 @@ Terraform does not create data buckets or change their uniform-access setting.
 
 Grant commands update durable application policy; they do **not** edit IAM on every command.
 The dedicated writer retains the configured maximum scope. The trusted publisher checks the
-current project grant before each chunk, obtains a short-lived impersonated credential, and
-downscopes it to the single destination object. Tokens and resumable-upload URLs never leave
+current project grant between rewrite iterations, obtains a short-lived impersonated credential,
+and downscopes it to the exact destination plus read-only access to the exact staged source.
+Tokens and rewrite tokens never leave
 the control service. The worker can stage outputs but cannot mint writer tokens or call the
 publisher from inside the model sandbox. Input mounts remain read-only.
 The trusted `publish_gcs` MCP tool invokes the existing publisher outside that sandbox.
-The GCS client retains refreshable impersonated/downscoped credentials, so chunk requests
-can refresh them during uploads beyond their 300-second lifetime; it never receives a frozen
+The GCS client retains refreshable impersonated/downscoped credentials, so rewrite requests
+can refresh them during copies beyond their 300-second lifetime; it never receives a frozen
 writer token from a worker. See [Google Auth's credential refresh contract](https://google-auth.readthedocs.io/en/latest/reference/google.auth.downscoped.html).
 
 Time expiry and revocation are enforced by the publisher. They do not revoke the writer's
@@ -161,6 +182,8 @@ See [result-store staging verification](gcs-result-stores-staging.md) for the de
 release, unit-test scope, and the successful 287-object live publish check.
 See [overwrite staging verification](gcs-overwrites-staging.md) for the live approval,
 replacement, unchanged-sibling, and cleanup checks.
+See [scaled publishing verification](scaled-publishing-deployment.md) for the subsequent
+batched rewrite rollout and large-transfer checks.
 
 References: [Cloud Storage IAM conditions](https://docs.cloud.google.com/storage/docs/access-control/iam)
 and [credential access boundaries](https://docs.cloud.google.com/iam/docs/downscoping-short-lived-credentials).
@@ -173,10 +196,11 @@ file counts and bytes, failure counts, and at most five error examples. Slack ap
 agent's summary first even when delivery fails. A store with thousands of objects does not
 produce thousands of reply lines.
 
-Each publish writes its full confirmed URI list and errors to `logs/gcs-publish-<id>.json`
-in the workspace; these logs are not Slack attachments. The artifact bucket retains immutable
+Each publish writes totals and JSONL shard references to `logs/gcs-publish-<id>.json`
+in the workspace; these logs are not Slack attachments. Shards hold per-path status, size,
+destination, and errors. The controller streams them into protected audit storage. It retains immutable
 `write-access/uploads/<event>/publications/<id>/manifest.json` records. The event's
-`manifest.json` indexes these records and aggregates confirmed uploads. Existing controller
+`manifest.json` indexes these records/shards and aggregates folder totals. Existing controller
 per-object receipts remain the authority for upload confirmation. Explicit folder groups
 survive retries and worker replacement; automatic-only exports group by their top-level folder.
 
@@ -188,6 +212,6 @@ The manifests are worker reports; controller per-object receipts confirm actual 
 
 Overwrite confirmations are stored under `write-access/approvals/<event>.json`, outside the
 worker's writable area. They bind the project, requester, access revision, grant, destination
-paths, and generations. Duplicate clicks cannot start another worker. Current access and grants
+paths, and inspection time. Duplicate clicks cannot start another worker. Current access and grants
 are rechecked on confirmation and during upload. Controller receipts include the replaced
 object generation. See [Cloud Storage upload permissions](https://docs.cloud.google.com/storage/docs/uploading-objects#required_roles).

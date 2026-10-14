@@ -47,11 +47,11 @@ with tempfile.TemporaryDirectory(prefix="compute-image-check-") as temp:
     (work / "checkpoints/ingest").mkdir(parents=True)
     (work / "checkpoints/ingest/result.txt").write_text("synthetic")
     store = LocalStorage(work / "cloud")
-    stages = Stages(store, work, "a" * 32, 0, max_bytes=1024**2)
+    stages = Stages(store, work, "a" * 32, 0)
     stages.capture({"path": "checkpoints/ingest", "fingerprint": "synthetic-v1"})
     restored = work / "restored"
     restored.mkdir()
-    Stages(store, restored, "a" * 32, 1, max_bytes=1024**2).restore(stages.manifest())
+    Stages(store, restored, "a" * 32, 1).restore(stages.manifest())
     assert (restored / "checkpoints/ingest/result.txt").read_text() == "synthetic"
     now = time.time()
     settings = Settings(_env_file=None)

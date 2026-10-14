@@ -14,10 +14,10 @@ def test_stage_is_immutable_and_restores_under_checkpoint_root(tmp_path):
     stage.mkdir(parents=True)
     (stage / "data").write_text("completed")
     store = LocalStorage(tmp_path / "store")
-    saved = Stages(store, work, "a" * 32, 0, max_bytes=1000)
+    saved = Stages(store, work, "a" * 32, 0)
     result = saved.capture({"path": "checkpoints/ingest", "fingerprint": "input-v1/method-v1"})
     (stage / "data").write_text("changed after capture")
-    restored = Stages(store, tmp_path / "restored", "a" * 32, 1, max_bytes=1000)
+    restored = Stages(store, tmp_path / "restored", "a" * 32, 1)
     restored.restore(saved.manifest())
     assert (tmp_path / "restored/checkpoints/ingest/data").read_text() == "completed"
     assert result["status"] == "saved"
@@ -52,14 +52,13 @@ def test_partial_snapshot_has_consistent_db_and_complete_jsonl(tmp_path):
     db.close()
 
 
-def test_stages_reject_foreign_objects_and_oversize(tmp_path):
+def test_stages_reject_foreign_objects_without_size_caps(tmp_path):
     work = tmp_path / "work"
     stage = work / "checkpoints/big"
     stage.mkdir(parents=True)
     (stage / "data").write_bytes(b"x" * 20)
-    stages = Stages(LocalStorage(tmp_path / "store"), work, "a" * 32, 0, max_bytes=10)
-    with pytest.raises(ValueError):
-        stages.capture({"path": "checkpoints/big", "fingerprint": "big"})
+    stages = Stages(LocalStorage(tmp_path / "store"), work, "a" * 32, 0)
+    assert stages.capture({"path": "checkpoints/big", "fingerprint": "big"})["bytes"] == 20
     with pytest.raises(ValueError):
         stages.restore({"stages": [{"archive": "foreign/file.tar.gz"}], "uploaded_bytes": 0})
 
@@ -67,15 +66,38 @@ def test_stages_reject_foreign_objects_and_oversize(tmp_path):
 def test_recovery_keeps_valid_stages_and_repeats_corrupt_ones(tmp_path):
     store = LocalStorage(tmp_path / "store")
     work = tmp_path / "work"
-    saved = Stages(store, work, "a" * 32, 0, max_bytes=1000)
+    saved = Stages(store, work, "a" * 32, 0)
     for name in ("good", "bad"):
         stage = work / "checkpoints" / name
         stage.mkdir(parents=True)
         (stage / "data").write_text(name)
         saved.capture({"path": f"checkpoints/{name}", "fingerprint": "input-v1/method-v1"})
     store.put(saved.stages[1]["archive"], b"corrupt")
-    resumed = Stages(store, tmp_path / "restored", "a" * 32, 1, max_bytes=1000)
+    resumed = Stages(store, tmp_path / "restored", "a" * 32, 1)
     assert resumed.restore_available(saved.manifest()) == ["checkpoints/bad"]
     assert [s["path"] for s in resumed.stages] == ["checkpoints/good"]
     assert (resumed.work / "checkpoints/good/data").read_text() == "good"
     assert not (resumed.work / "checkpoints/bad").exists()
+
+
+def test_full_snapshot_excludes_published_data_but_keeps_unpublished_work_and_references(tmp_path):
+    from pistachio.agents.analysis.batch_worker import restore
+
+    home = tmp_path / "home"
+    root = home / "work/thread"
+    published = root / "outputs/gcs/results/large.parquet"
+    pending = published.with_name("pending.parquet")
+    published.parent.mkdir(parents=True)
+    published.write_bytes(b"published")
+    pending.write_bytes(b"not yet published")
+    notes = root / "logs/publication.json"
+    notes.parent.mkdir()
+    notes.write_text('{"destination":"gs://data/results/large.parquet"}')
+    archive = tmp_path / "full.tar.gz"
+    workspace_snapshot(archive, home, partial=False, published={published})
+    recovered = tmp_path / "recovered"
+    recovered.mkdir()
+    restore(archive, recovered)
+    assert not (recovered / published.relative_to(home)).exists()
+    assert (recovered / pending.relative_to(home)).read_bytes() == pending.read_bytes()
+    assert (recovered / notes.relative_to(home)).read_bytes() == notes.read_bytes()

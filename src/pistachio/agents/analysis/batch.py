@@ -120,7 +120,6 @@ def job_spec(
         {
             "AGENT_MAX_TIER": settings.max_tier,
             "AGENT_PARTIAL_CHECKPOINT_SECONDS": str(settings.partial_checkpoint_seconds),
-            "AGENT_COMPUTE_CHECKPOINT_MAX_GB": str(settings.compute_checkpoint_max_gb),
         }
     )
     if settings.runtimes_enabled:
@@ -209,6 +208,8 @@ class BatchBridge:
         """One durable status message per input, independent of slow Spot startup."""
         from slack_sdk.web.async_client import AsyncWebClient
 
+        if phase in {"complete", "failed", "denied", "cancelled"}:
+            record["terminal_reply"] = text
         if record.get("notice_text") == text:
             return
         event = record["payload"]["event"]
@@ -235,7 +236,8 @@ class BatchBridge:
                 )
                 record["notice_ts"] = response["ts"]
             record.update(notice_phase=phase, notice_text=text)
-            await self.repository.set_connector_state(f"claude-event:{event_id}", record)
+            if record["status"] not in {"complete", "failed"}:
+                await self.repository.set_connector_state(f"claude-event:{event_id}", record)
         except Exception:
             log.warning("Slack status delivery failed for %s", event_id, exc_info=True)
 
@@ -352,6 +354,8 @@ class BatchBridge:
             if not record:
                 raise LookupError("Unknown Slack event")
             if record["status"] in {"complete", "failed"} or tick < record["tick"]:
+                await self.record_terminal(event_id, record)
+                await self.repository.set_connector_state(key, record)
                 await memory_tasks.enqueue(self, event_id, record)
 
                 return str(record["status"])
@@ -396,12 +400,54 @@ class BatchBridge:
             if record["status"] not in {"complete", "failed"}:
                 await self.schedule(event_id, tick + 1)
                 record["tick"] = tick + 1
+            await self.record_terminal(event_id, record)
             await self.repository.set_connector_state(key, record)
             await memory_tasks.enqueue(self, event_id, record)
 
             return str(record["status"])
         finally:
             await self.repository.release_event(mutex, claim.token)
+
+    async def record_terminal(self, event_id: str, record: dict[str, Any]) -> None:
+        """Fill missing history before a terminal event releases the next turn."""
+        from .direct import record_exchange
+
+        if record["status"] not in {"complete", "failed"} or record.get("terminal_recorded"):
+            return
+        if memory_tasks.conversation_turn(record):
+            storage = self.storage
+            grant = await asyncio.to_thread(
+                access.resolve, self.app, self.settings, storage, record
+            )
+            if (
+                grant.allowed
+                and grant.has_context
+                and record.get("project_id", grant.project_id) == grant.project_id
+                and record.get("principal", grant.email) == grant.email
+            ):
+                state = grant.state
+                exchange = next(
+                    (m for m in state.get("messages", []) if m.get("id") == event_id), None
+                )
+                reply = record.get("terminal_reply") or record.get("notice_text", "")
+                if exchange is None:
+                    record_exchange(
+                        state,
+                        event_id,
+                        record["payload"]["event"].get("text", ""),
+                        reply,
+                        success=record["status"] == "complete",
+                    )
+                    await asyncio.to_thread(
+                        storage.put,
+                        access.checkpoint_key(record["thread_key"]),
+                        json.dumps(state).encode(),
+                    )
+                if record["status"] == "failed" and record.get("direct_decision"):
+                    record["memory_reply"] = reply
+                elif record["status"] == "complete" and exchange and exchange.get("success", True):
+                    record["memory_reply"] = exchange["assistant"]
+        record["terminal_recorded"] = True
 
     async def advance(self, event_id: str, record: dict[str, Any]) -> None:
         if record["status"] == "pending" and record.get("route") != "compute":
@@ -618,9 +664,6 @@ class BatchBridge:
                 "protocol": 2,
                 "write_grant": record["write_grant"],
                 "overwrite_paths": record.get("overwrite_paths", []),
-                "write_max_mb": self.settings.write_max_mb,
-                "write_max_files": self.settings.write_max_files,
-                "write_max_total_gb": self.settings.write_max_total_gb,
                 "write_upload_seconds": self.settings.write_upload_seconds,
                 "attachments": [f["id"] for f in record.get("attachments", [])],
                 "principal": record["principal"],

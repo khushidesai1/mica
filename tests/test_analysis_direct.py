@@ -201,13 +201,12 @@ async def test_inventory_rechecks_project_access_before_listing(chat, monkeypatc
 
     async def switch_project(*args, **kwargs):
         def switch(doc):
-            doc.bind("T1", "D1", "alice@example.com", other, private=True, force=True)
-            return other
+            doc.projects[chat.pid].access_revision += 1
+            return chat.pid
 
         Registry(chat.store).update("switch-project", "alice@example.com", "switch", switch)
         return direct.Decision(route="inventory", reply="Checking.")
 
-    other = seed_project(chat.store, name="other", channel="D2", uri="gs://lab-data/other/")
     chat.decision.side_effect = switch_project
     event = await chat.accept(payload(text="List files"))
     assert await chat.process(event, 0) == "complete"

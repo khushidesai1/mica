@@ -60,6 +60,14 @@ Manager resource remains tracked to avoid deleting existing credentials as part 
 Keep the separate signed-link secret: uploads and Gmail project selection still use it.
 No Terraform apply or cloud deployment is implied by these source changes.
 
+## Release validation
+
+Run Ruff, mypy and the fast automated suite, then use small, bounded live smoke checks for
+changed behavior. Prefer fakes for large file counts, large object sizes and failure injection.
+Do not run lengthy model conversations or full-scale data transfers for routine releases;
+reserve those for explicit scale validation or a specific unresolved production issue.
+Keep build, authentication and worker compatibility gates, and clean up synthetic outputs.
+
 ## Provision
 
 ```bash

@@ -28,7 +28,14 @@ def digest(path: Path) -> str:
     return h.hexdigest()
 
 
-def workspace_snapshot(archive: Path, home: Path, *, partial: bool, max_bytes: int) -> None:
+def workspace_snapshot(
+    archive: Path,
+    home: Path,
+    *,
+    partial: bool,
+    max_bytes: int | None = None,
+    published: set[Path] | None = None,
+) -> None:
     total = 0
     with tempfile.TemporaryDirectory(dir=archive.parent, prefix="snapshot-") as temporary:
         backup = Path(temporary) / "state.db"
@@ -41,7 +48,7 @@ def workspace_snapshot(archive: Path, home: Path, *, partial: bool, max_bytes: i
         with tarfile.open(archive, "w:gz") as tar:
             for path in paths:
                 relative = Path("state.db") if path == backup else path.relative_to(home)
-                if "knowledge" in relative.parts:
+                if path in (published or set()) or "knowledge" in relative.parts:
                     continue
                 if any(
                     p in {"inputs", ".previews", "scratch", "checkpoints", ".tmp", ".mpl"}
@@ -52,7 +59,7 @@ def workspace_snapshot(archive: Path, home: Path, *, partial: bool, max_bytes: i
                     continue
                 before = path.stat()
                 total += before.st_size
-                if total > max_bytes:
+                if max_bytes is not None and total > max_bytes:
                     raise ValueError("Workspace checkpoint exceeds its byte allowance.")
                 if relative.parts[0] == ".claude" and path.suffix == ".jsonl":
                     data = path.read_bytes()
@@ -70,12 +77,10 @@ def workspace_snapshot(archive: Path, home: Path, *, partial: bool, max_bytes: i
 
 
 class Stages:
-    def __init__(
-        self, storage: Storage, work: Path, event_id: str, attempt: int, *, max_bytes: int
-    ) -> None:
+    def __init__(self, storage: Storage, work: Path, event_id: str, attempt: int) -> None:
         self.storage, self.work = storage, work.resolve()
         self.prefix = event_prefix(event_id) + "/stages/"
-        self.attempt, self.max_bytes = attempt, max_bytes
+        self.attempt = attempt
         self.uploaded_bytes = 0
         self.stages: list[dict[str, Any]] = []
 
@@ -96,12 +101,10 @@ class Stages:
         if root.is_symlink() or not root.resolve().is_relative_to(self.work / "checkpoints"):
             raise ValueError("Checkpoint must remain inside the workspace.")
         files = files_under(root)
-        if not files or len(files) > 200000:
-            raise ValueError("Checkpoint is empty or has too many files.")
+        if not files:
+            raise ValueError("Checkpoint is empty.")
         sizes = {p: (p.stat().st_size, p.stat().st_mtime_ns) for p in files}
         total = sum(size for size, _ in sizes.values())
-        if self.uploaded_bytes + total > self.max_bytes:
-            raise ValueError("Completed stages exceed the request's checkpoint storage allowance.")
         with tempfile.TemporaryDirectory(prefix="pista-stage-") as temporary:
             archive = Path(temporary) / "stage.tar.gz"
             with tarfile.open(archive, "w:gz") as tar:
@@ -133,12 +136,7 @@ class Stages:
     def _restore(self, manifest: dict[str, Any], *, skip_invalid: bool) -> list[str]:
         stages = manifest.get("stages", [])
         uploaded = manifest.get("uploaded_bytes", 0)
-        if (
-            not isinstance(stages, list)
-            or len(stages) > 1000
-            or not isinstance(uploaded, int)
-            or not 0 <= uploaded <= self.max_bytes
-        ):
+        if not isinstance(stages, list) or not isinstance(uploaded, int) or uploaded < 0:
             raise ValueError("Invalid stage checkpoint manifest.")
         total = 0
         verified, missing = [], []
@@ -146,7 +144,7 @@ class Stages:
             if not isinstance(stage, dict):
                 raise ValueError("Invalid stage checkpoint entry.")
             try:
-                total += self._restore_stage(stage, self.max_bytes - total)
+                total += self._restore_stage(stage)
                 verified.append(stage)
             except (ValueError, OSError, tarfile.TarError, NotFound):
                 if not skip_invalid:
@@ -162,7 +160,7 @@ class Stages:
         self.stages, self.uploaded_bytes = verified, uploaded
         return missing
 
-    def _restore_stage(self, stage: dict[str, Any], remaining: int) -> int:
+    def _restore_stage(self, stage: dict[str, Any]) -> int:
         total = 0
         key = str(stage.get("archive", ""))
         if not re.fullmatch(re.escape(self.prefix) + r"a\d+-[a-f0-9]{32}\.tar\.gz", key):
@@ -177,8 +175,6 @@ class Stages:
                 raise ValueError("Stage checkpoint checksum mismatch.")
             with tarfile.open(archive, "r:gz") as tar:
                 members = tar.getmembers()
-                if len(members) > 200000:
-                    raise ValueError("Too many checkpoint files.")
                 seen: set[str] = set()
                 for member in members:
                     target = self.work / member.name
@@ -188,9 +184,8 @@ class Stages:
                         or member.name in seen
                         or not member.name.startswith(path + "/")
                         or not target.resolve().is_relative_to(self.work / path)
-                        or total > remaining
                     ):
-                        raise ValueError("Unsafe or oversized stage checkpoint.")
+                        raise ValueError("Unsafe stage checkpoint.")
                     seen.add(member.name)
                 tar.extractall(self.work, filter="data")
         return total

@@ -34,7 +34,7 @@ everyone using that project, and repository readers can see it.
 
 ## Turns and viewing memory
 
-Each completed turn has one writer: a forced-tool editor for chat, or the worker's
+Each eligible terminal turn has one writer: a forced-tool editor for chat, or the worker's
 workspace proposal for computation. `init` commits its guide immediately. Workers receive
 an immutable snapshot in the request, edit `knowledge/`, and return a proposal through GCS;
 they never connect to GitHub. Recovery keeps the same snapshot and any pending edits.
@@ -46,10 +46,22 @@ for the guide. Correct mistakes in plain language. The old `remember`, `forget`,
 `save brief`, and `clean brief` commands explain this change without editing memory.
 Memory saves run silently; use `memory` or `brief` when you want to inspect saved content.
 
+Failed requests remain in the thread's 12-exchange history with their original user message,
+a short failure notice, and `success: false`. Follow-ups can refer to that intent. Existing
+successful exchanges are preserved; commands and cancelled turns add no exchange or memory task.
+Access checks still prevent reading or writing a project after access is lost.
+
+A routed failure uses the background editor even if no worker proposal exists. It may update
+only `open.md`, recording one attributed, dated line about pending work and why it stopped.
+Retries update that line; a later success removes resolved work. Failures before routing stay
+in thread history but do not enqueue shared-memory edits. Partial outputs and worker logs are
+not saved as failed-turn results. Routine memory updates remain silent.
+
 ## Compaction and operations
 
 After a turn, compaction is queued once per head when any limit exceeds 80%, conflicts or
-rejections exist, or the project reaches a multiple of 20 commits. A forced-tool editor
+rejections exist, the project reaches a multiple of 20 commits, or a turn grows any accepted
+file by more than 1 KiB. The growth trigger runs after committing the valid change. A forced-tool editor
 merges duplicates and conflict copies, preserves sources and working recipes, and reaches
 70% of every limit with one index link per entry. Invalid output commits nothing. A newer
 head supersedes a pending compaction, so it cannot overwrite a concurrent conversation.

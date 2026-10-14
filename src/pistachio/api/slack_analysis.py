@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
+import logging
 import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
+from google.api_core.retry import if_transient_error
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 from pydantic import BaseModel, Field
+from requests.exceptions import Timeout
 
 from pistachio.agents.analysis import (
     access,
@@ -26,6 +31,7 @@ from pistachio.api.auth import get_principal
 from pistachio.api.dependencies import Services
 
 router = APIRouter(prefix="/api/v1/internal/slack-analysis", tags=["internal"])
+log = logging.getLogger(__name__)
 
 
 async def receive(services: Services, payload: dict[str, Any]) -> dict[str, object]:
@@ -254,8 +260,27 @@ async def worker_context(
 
 
 class WriteUpload(BaseModel):
-    relative_path: str = Field(min_length=1, max_length=512)
+    relative_paths: list[str] = Field(min_length=1, max_length=write_broker.BATCH_SIZE)
     grant_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
+def retryable_write_error(exc: Exception) -> bool:
+    if if_transient_error(exc) or isinstance(exc, Timeout):
+        return True
+    if not isinstance(exc, RefreshError):
+        return False
+    if exc.retryable:
+        return True
+    # Impersonated credentials wrap IAM responses without setting retryable.
+    # Classify only a structured transient status; never retry access denials.
+    if len(exc.args) < 2 or not isinstance(exc.args[1], (str, bytes)):
+        return False
+    try:
+        response = json.loads(exc.args[1])
+    except (ValueError, UnicodeDecodeError):
+        return False
+    error = response.get("error") if isinstance(response, dict) else None
+    return isinstance(error, dict) and error.get("code") in (429, 500, 502, 503, 504)
 
 
 @router.post("/recovery/{event_id}", include_in_schema=False)
@@ -297,15 +322,23 @@ async def recovery_operation(event_id: str, request: Request, response: Response
 @router.post("/write/{event_id}", include_in_schema=False)
 async def write_output(
     event_id: str, body: WriteUpload, request: Request, response: Response
-) -> dict[str, str]:
+) -> dict[str, Any]:
+    import time
+
+    from pistachio.agents.analysis import write_approval
+
     bridge, storage, record = await worker_context(event_id, request)
     response.headers["Cache-Control"] = "no-store"
     frozen = record.get("write_grant")
     if not frozen or frozen.get("id") != body.grant_id:
         raise HTTPException(403, "This run has no matching write grant.")
     try:
-        relative = write_broker.relative_path(body.relative_path)
-    except ValueError as exc:
+        paths = [write_broker.relative_path(p) for p in body.relative_paths]
+        saved = await asyncio.to_thread(write_approval.load, storage, event_id)
+        approval = saved[0] if saved else None
+        if approval:
+            await asyncio.to_thread(write_approval.validate, bridge, storage, record, approval)
+    except (ValueError, PermissionError) as exc:
         raise HTTPException(422, str(exc)) from exc
 
     def authorize() -> None:
@@ -319,29 +352,49 @@ async def write_output(
             raise PermissionError("Project access changed. GCS publishing is blocked.")
         write_access.require_active(storage, grant.project_id, body.grant_id, bridge.settings)
 
-    # A retry cannot race another upload of the same event/path. Revokes never wait on this lock.
-    mutex = "claude-write:" + event_id + ":" + hashlib.sha256(relative.encode()).hexdigest()
-    claim = await bridge.repository.begin_event(
-        mutex, lease_seconds=bridge.settings.write_upload_seconds + 60
-    )
-    if claim.status != "claimed":
-        raise HTTPException(409, "This output is already being uploaded. Retry shortly.")
-    try:
-        return await asyncio.to_thread(
-            write_broker.upload,
-            storage,
-            bridge.settings,
-            record["project_id"],
-            event_id,
-            relative,
-            body.grant_id,
-            authorize,
+    deadline = time.monotonic() + bridge.settings.write_upload_seconds
+    results = []
+    for relative in dict.fromkeys(paths):
+        if deadline - time.monotonic() < min(35, bridge.settings.write_upload_seconds / 10):
+            results.append({"relative_path": relative, "status": "in_progress"})
+            continue
+        mutex = "claude-write:" + event_id + ":" + hashlib.sha256(relative.encode()).hexdigest()
+        claim = await bridge.repository.begin_event(
+            mutex, lease_seconds=bridge.settings.write_upload_seconds + 60
         )
-    except PermissionError as exc:
-        raise HTTPException(403, str(exc)) from exc
-    except FileExistsError as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ValueError as exc:
-        raise HTTPException(422, str(exc)) from exc
-    finally:
-        await bridge.repository.release_event(mutex, claim.token)
+        if claim.status != "claimed":
+            results.append({"relative_path": relative, "status": "in_progress"})
+            continue
+        try:
+            result = await asyncio.to_thread(
+                write_broker.upload,
+                storage,
+                bridge.settings,
+                record["project_id"],
+                event_id,
+                relative,
+                body.grant_id,
+                authorize,
+                approval=approval,
+                deadline=deadline,
+            )
+        except PermissionError as exc:
+            result = {"status": "denied", "error": str(exc)}
+        except (FileExistsError, ValueError) as exc:
+            result = {"status": "failed", "error": str(exc)}
+        except Exception as exc:
+            if not retryable_write_error(exc):
+                raise
+            # Preserve this batch's completed receipts. The worker retries only
+            # this path; rewrite tokens and generation checks reconcile lost replies.
+            log.warning(
+                "gcs_publish_retry event=%s object=%s reason=%s",
+                event_id,
+                hashlib.sha256(relative.encode()).hexdigest()[:12],
+                type(exc).__name__,
+            )
+            result = {"status": "in_progress"}
+        finally:
+            await bridge.repository.release_event(mutex, claim.token)
+        results.append({"relative_path": relative, **result})
+    return {"results": results}

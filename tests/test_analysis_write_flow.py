@@ -85,21 +85,21 @@ async def worker_request(writable, monkeypatch):
     )
     monkeypatch.setattr(slack_analysis.id_token, "verify_oauth2_token", verify)
     grant = write_access.active(writable.store, writable.pid, writable.settings)
-    body = slack_analysis.WriteUpload(relative_path="report.csv", grant_id=grant.id)
+    body = slack_analysis.WriteUpload(relative_paths=["report.csv"], grant_id=grant.id)
     return compute, request, verify, body
 
 
 async def test_broker_endpoint_checks_worker_event_and_current_grant(writable, monkeypatch):
     compute, request, verify, body = await worker_request(writable, monkeypatch)
 
-    def upload(*args):
+    def upload(*args, **kwargs):
         args[-1]()  # Execute the endpoint's per-chunk authorization callback.
         return {"uri": "gs://lab-data/liver/output/report.csv", "status": "uploaded"}
 
     uploaded = Mock(side_effect=upload)
     monkeypatch.setattr(slack_analysis.write_broker, "upload", uploaded)
     response = Response()
-    assert (await slack_analysis.write_output(compute, body, request, response))[
+    assert (await slack_analysis.write_output(compute, body, request, response))["results"][0][
         "status"
     ] == "uploaded"
     assert response.headers["Cache-Control"] == "no-store"
@@ -110,9 +110,8 @@ async def test_broker_endpoint_checks_worker_event_and_current_grant(writable, m
     verify.return_value["email"] = writable.app.batch_service_account
     revoke = await writable.accept(payload("4.0", "3.0", "write revoke liver"))
     await writable.process(revoke, 0)
-    with pytest.raises(HTTPException) as error:
-        await slack_analysis.write_output(compute, body, request, Response())
-    assert error.value.status_code == 403
+    denied = await slack_analysis.write_output(compute, body, request, Response())
+    assert denied["results"][0]["status"] == "denied"
 
 
 async def test_broker_does_not_accept_new_grant_for_old_run(writable, monkeypatch):
@@ -125,6 +124,91 @@ async def test_broker_does_not_accept_new_grant_for_old_run(writable, monkeypatc
         await slack_analysis.write_output(compute, body, request, Response())
     assert error.value.status_code == 403
     upload.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ["tls", "timeout", "unavailable", "iam_unavailable", "iam_rate_limit", "refresh_retryable"],
+)
+async def test_batch_preserves_successes_when_one_gcs_request_is_interrupted(
+    writable, monkeypatch, kind
+):
+    from google.api_core.exceptions import ServiceUnavailable
+    from google.auth.exceptions import RefreshError
+    from requests.exceptions import ReadTimeout, SSLError
+
+    compute, request, _, body = await worker_request(writable, monkeypatch)
+    body.relative_paths = ["first.csv", "retry.csv", "last.csv"]
+    failed = False
+    errors = {
+        "tls": SSLError("connection interrupted"),
+        "timeout": ReadTimeout("connection interrupted"),
+        "unavailable": ServiceUnavailable("connection interrupted"),
+        "iam_unavailable": RefreshError(
+            "Unable to acquire impersonated credentials", '{"error":{"code":503}}'
+        ),
+        "iam_rate_limit": RefreshError(
+            "Unable to acquire impersonated credentials", '{"error":{"code":429}}'
+        ),
+        "refresh_retryable": RefreshError("Service temporarily unavailable", retryable=True),
+    }
+
+    def upload(*args, **kwargs):
+        nonlocal failed
+        args[-1]()
+        path = args[4]
+        if path == "retry.csv" and not failed:
+            failed = True
+            raise errors[kind]
+        return {"status": "uploaded", "uri": "gs://lab-data/liver/output/" + path}
+
+    copied = Mock(side_effect=upload)
+    monkeypatch.setattr(slack_analysis.write_broker, "upload", copied)
+    result = await slack_analysis.write_output(compute, body, request, Response())
+    assert [r["status"] for r in result["results"]] == ["uploaded", "in_progress", "uploaded"]
+    assert not any(k.startswith("claude-write:") for k in writable.repository.event_claims)
+    body.relative_paths = [
+        r["relative_path"] for r in result["results"] if r["status"] == "in_progress"
+    ]
+    retried = await slack_analysis.write_output(compute, body, request, Response())
+    assert retried["results"][0]["status"] == "uploaded"
+    assert [call.args[4] for call in copied.call_args_list] == [
+        "first.csv",
+        "retry.csv",
+        "last.csv",
+        "retry.csv",
+    ]
+
+
+@pytest.mark.parametrize(
+    "response",
+    ['{"error":{"code":403}}', '{"error":{"code":401}}', "503 unavailable", "[]", '{"error":{}}'],
+)
+async def test_batch_does_not_retry_permanent_or_unclassified_refresh_errors(
+    writable, monkeypatch, response
+):
+    from google.auth.exceptions import RefreshError
+
+    compute, request, _, body = await worker_request(writable, monkeypatch)
+    error = RefreshError("Unable to acquire impersonated credentials", response)
+    monkeypatch.setattr(slack_analysis.write_broker, "upload", Mock(side_effect=error))
+    with pytest.raises(RefreshError) as caught:
+        await slack_analysis.write_output(compute, body, request, Response())
+    assert caught.value is error
+    assert not any(k.startswith("claude-write:") for k in writable.repository.event_claims)
+
+
+async def uploaded_batch(url, **kwargs):
+    return httpx.Response(
+        200,
+        json={
+            "results": [
+                {"relative_path": p, "status": "uploaded", "uri": "gs://lab-data/" + p}
+                for p in kwargs["json"]["relative_paths"]
+            ]
+        },
+        request=httpx.Request("POST", url),
+    )
 
 
 @pytest.fixture
@@ -140,11 +224,7 @@ def worker(tmp_path, monkeypatch):
     monkeypatch.setattr(write_worker.id_token, "fetch_id_token", token)
     client = AsyncMock()
     client.__aenter__.return_value = client
-    client.post.return_value = httpx.Response(
-        200,
-        json={"uri": "gs://lab-data/result.csv"},
-        request=httpx.Request("POST", "https://control/write"),
-    )
+    client.post.side_effect = uploaded_batch
     monkeypatch.setattr(write_worker.httpx, "AsyncClient", lambda **kwargs: client)
     request = {"write_grant": {"id": "b" * 32, "uri": "gs://lab-data/"}}
     return SimpleNamespace(
@@ -160,9 +240,9 @@ async def publish(worker):
 
 async def test_worker_stages_changed_exports_and_sends_no_cloud_credential(worker):
     report = await publish(worker)
-    assert report.uploaded == ["gs://lab-data/result.csv"] and not report.errors
+    assert report.uploaded == ["gs://lab-data/report.csv"] and not report.errors
     call = worker.client.post.call_args.kwargs
-    assert call["json"] == {"relative_path": "report.csv", "grant_id": "b" * 32}
+    assert call["json"] == {"relative_paths": ["report.csv"], "grant_id": "b" * 32}
     assert (
         worker.store.get("tasks/slack-analysis/events/" + "a" * 32 + "/write-exports/report.csv")[0]
         == worker.path.read_bytes()
@@ -191,6 +271,7 @@ async def test_worker_reports_denial_and_stops_after_revocation(worker):
     second = worker.path.with_name("second.csv")
     second.write_text("second")
     worker.result.files.append(second)
+    worker.client.post.side_effect = None
     worker.client.post.return_value = httpx.Response(403, json={"detail": "Write access expired."})
     report = await publish(worker)
     assert not report.uploaded and "expired" in report.errors[0]
@@ -247,41 +328,41 @@ async def test_result_store_preserves_601_paths_with_bounded_concurrency(worker,
         maximum = max(active, maximum)
         await asyncio.sleep(0.001)
         active -= 1
-        return httpx.Response(
-            200,
-            json={"uri": "gs://lab-data/" + kwargs["json"]["relative_path"]},
-            request=httpx.Request("POST", url),
-        )
+        return await uploaded_batch(url, **kwargs)
 
     worker.client.post.side_effect = post
     result = await publish(worker)
     assert not result.errors and len(result.uploaded) == 601
-    assert 1 < maximum <= write_worker.CONCURRENCY
+    assert 1 <= maximum <= write_worker.CONCURRENCY
+    assert worker.client.post.call_count == 2
     assert set(result.uploaded) == {
         "gs://lab-data/" + p.relative_to(worker.ctx.workdir / "outputs/gcs").as_posix()
         for p in paths
     }
 
 
-@pytest.mark.parametrize("limit", ["files", "total", "file"])
-async def test_all_limits_are_preflighted_before_any_staging(worker, monkeypatch, limit):
-    paths = add_store(worker, "result", 5001 if limit == "files" else 2)
-    worker.result.files = paths
-    if limit != "files":
-        worker.request["write_max_total_gb"] = 1
-        monkeypatch.setattr(
-            write_worker,
-            "file_sizes",
-            lambda selected: {
-                p: (600 * 1024**2 if limit == "total" else 9 * 1024**3) for p in selected
-            },
-        )
-    worker.store.upload_new = Mock(wraps=worker.store.upload_new)
+@pytest.mark.parametrize("count,size", [(25000, 5), (1, 10 * 1024**3)])
+async def test_large_runs_and_large_files_have_sharded_state_without_scale_caps(
+    worker, monkeypatch, count, size
+):
+    worker.result.files = add_store(worker, "result", count)
+    monkeypatch.setattr(write_worker, "file_sizes", lambda selected: {p: size for p in selected})
     result = await publish(worker)
-    assert result.errors and not result.uploaded
-    worker.store.upload_new.assert_not_called()
-    worker.client.post.assert_not_called()
-    worker.token.assert_not_called()
+    assert not result.errors and len(result.uploaded) == count
+    assert (
+        worker.client.post.call_count
+        == (count + write_broker.BATCH_SIZE - 1) // write_broker.BATCH_SIZE
+    )
+    index = json.loads(worker.store.get(write_broker.manifest_stage("a" * 32))[0])
+    assert "uploaded" not in index and "sizes" not in index
+    assert len(index["shards"]) <= 3 * worker.client.post.call_count
+    recovered = publisher(worker)
+    recovered.load()
+    assert len(recovered.uploaded) == count and sum(recovered.sizes.values()) == count * size
+    write_broker.archive_manifests(worker.store, "a" * 32, "gs://lab-data/")
+    archive = json.loads(worker.store.get("write-access/uploads/" + "a" * 32 + "/manifest.json")[0])
+    assert archive["destinations"][0]["files"] == count
+    assert all(worker.store.get(key)[0] for key in archive["shards"])
 
 
 async def test_mid_turn_publish_survives_error_and_end_turn_skips_confirmed_paths(worker):
@@ -300,38 +381,41 @@ async def test_mid_turn_publish_survives_error_and_end_turn_skips_confirmed_path
     assert len(result.uploaded) == 2 and worker.client.post.call_count == 2
 
 
-@pytest.mark.parametrize("limit", ["files", "total"])
-async def test_cumulative_budget_cannot_be_evaded_by_separate_tool_calls(
-    worker, monkeypatch, limit
-):
-    add_store(worker, "first")
-    add_store(worker, "second")
-    if limit == "files":
-        worker.request["write_max_files"] = 1
-    else:
-        worker.request["write_max_total_gb"] = 1
-        monkeypatch.setattr(
-            write_worker, "file_sizes", lambda selected: {p: 600 * 1024**2 for p in selected}
-        )
-    result = await publisher(worker).publish(worker.ctx, TurnResult(), folder="outputs/gcs/first")
-    assert result.uploaded and not result.errors
-    worker.store.upload_new = Mock(wraps=worker.store.upload_new)
-    result = await publisher(worker).publish(worker.ctx, TurnResult(), folder="outputs/gcs/second")
-    assert result.errors and not result.uploaded
-    worker.store.upload_new.assert_not_called()
-    assert worker.client.post.call_count == 1
-
-
 async def test_lost_broker_response_reuses_immutable_stage(worker):
-    successful = worker.client.post.return_value
-    worker.client.post.side_effect = [httpx.ReadTimeout("lost acknowledgement"), successful]
-    first = await publish(worker)
-    assert first.errors and not first.uploaded
-    key = "tasks/slack-analysis/events/" + "a" * 32 + "/write-exports/report.csv"
-    modified = worker.store.path(key).stat().st_mtime_ns
-    second = await publish(worker)
-    assert second.uploaded and not second.errors
-    assert worker.store.path(key).stat().st_mtime_ns == modified
+    calls = 0
+
+    async def lost_once(url, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadTimeout("lost acknowledgement")
+        return await uploaded_batch(url, **kwargs)
+
+    worker.client.post.side_effect = lost_once
+    worker.store.upload_new = Mock(wraps=worker.store.upload_new)
+    result = await publish(worker)
+    assert result.uploaded and not result.errors and calls == 2
+    staged = [c for c in worker.store.upload_new.call_args_list if "/write-exports/" in c.args[0]]
+    assert len(staged) == 1
+
+
+async def test_in_progress_batch_retries_only_unfinished_paths(worker):
+    worker.result.files = add_store(worker, "result", 2)
+    calls = []
+
+    async def resumable(url, **kwargs):
+        paths = kwargs["json"]["relative_paths"]
+        calls.append(paths)
+        response = await uploaded_batch(url, **kwargs)
+        body = response.json()
+        if len(calls) == 1:
+            body["results"][0] = {"relative_path": paths[0], "status": "in_progress"}
+        return httpx.Response(200, json=body, request=httpx.Request("POST", url))
+
+    worker.client.post.side_effect = resumable
+    result = await publish(worker)
+    assert len(result.uploaded) == 2 and not result.errors
+    assert calls == [["result/0", "result/1"], ["result/0"]]
 
 
 @pytest.mark.parametrize(
@@ -426,7 +510,10 @@ async def test_revocation_stops_remaining_store_files(worker):
     outcome = await publish(worker)
     assert not outcome.uploaded and outcome.errors
     assert 1 <= started <= write_worker.CONCURRENCY
-    assert len(worker.store.keys("tasks/slack-analysis/events/" + "a" * 32 + "/write-exports")) < 32
+    assert (
+        len(worker.store.keys("tasks/slack-analysis/events/" + "a" * 32 + "/write-exports"))
+        <= write_broker.BATCH_SIZE
+    )
 
 
 async def test_complete_folder_rejects_symlinks_before_publishing_any_part(worker):
@@ -437,38 +524,22 @@ async def test_complete_folder_rejects_symlinks_before_publishing_any_part(worke
     worker.client.post.assert_not_called()
 
 
-async def test_limited_manifest_carries_all_publication_limits(writable):
+async def test_worker_manifest_carries_only_broker_request_time_slice(writable):
     await allow(writable)
     compute = await writable.accept(payload("3.0"))
     await writable.process(compute, 0)
     manifest = json.loads(
         writable.store.get(f"tasks/slack-analysis/events/{compute}/request.json")[0]
     )
-    assert {
-        name: manifest[name]
-        for name in [
-            "write_max_mb",
-            "write_max_files",
-            "write_max_total_gb",
-            "write_upload_seconds",
-        ]
-    } == {
-        "write_max_mb": 8192,
-        "write_max_files": 5000,
-        "write_max_total_gb": 100,
-        "write_upload_seconds": 840,
-    }
+    assert manifest["write_upload_seconds"] == 840
+    assert not any(k.startswith("write_max_") for k in manifest)
 
 
 async def test_large_publish_has_compact_tool_and_slack_receipts_and_full_manifests(worker, bot):  # noqa: F811
     paths = add_store(worker, "resegmentation/tma15_atomx_prior/tables/proseg.zarr", 1073)
 
     async def uploaded(url, **kwargs):
-        return httpx.Response(
-            200,
-            json={"uri": "gs://lab-data/" + kwargs["json"]["relative_path"]},
-            request=httpx.Request("POST", url),
-        )
+        return await uploaded_batch(url, **kwargs)
 
     worker.client.post.side_effect = uploaded
     service = publisher(worker)
@@ -488,9 +559,9 @@ async def test_large_publish_has_compact_tool_and_slack_receipts_and_full_manife
         }
     ]
     manifest = json.loads((worker.ctx.workdir / summary["manifest"]).read_text())
-    assert len(manifest["uploaded"]) == 1073
+    assert manifest["files"] == 1073 and manifest["shards"]
     final = await publisher(worker).publish(worker.ctx, TurnResult(files=paths))
-    assert worker.client.post.call_count == 1073  # Final receipt does not re-upload the store.
+    assert worker.client.post.call_count == 3  # Final receipt does not re-upload the store.
     assert final.destinations == [
         write_worker.Destination(
             "gs://lab-data/resegmentation/tma15_atomx_prior/", files=1073, bytes=5365
@@ -499,10 +570,8 @@ async def test_large_publish_has_compact_tool_and_slack_receipts_and_full_manife
     assert not worker.store.keys("write-access/uploads")
     write_broker.archive_manifests(worker.store, "a" * 32, "gs://lab-data/")
     index = json.loads(worker.store.get("write-access/uploads/" + "a" * 32 + "/manifest.json")[0])
-    assert len(index["uploaded"]) == 1073 and len(index["publications"]) == 2
-    assert all(
-        len(json.loads(worker.store.get(k)[0])["uploaded"]) == 1073 for k in index["publications"]
-    )
+    assert index["destinations"][0]["files"] == 1073 and len(index["publications"]) == 2
+    assert all(json.loads(worker.store.get(k)[0])["files"] == 1073 for k in index["publications"])
     bot.publish_gcs = AsyncMock(return_value=final)
     await send(bot, event("Save checked result store"))
     assert bot.last_reply.startswith("Data: fixture.h5ad")
@@ -516,7 +585,20 @@ async def test_large_publish_has_compact_tool_and_slack_receipts_and_full_manife
 
 async def test_failed_files_have_counts_and_bounded_examples(worker, bot):  # noqa: F811
     worker.result.files = add_store(worker, "result", 10)
-    worker.client.post.return_value = httpx.Response(409, json={"detail": "Destination exists."})
+
+    async def refused(url, **kwargs):
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"relative_path": p, "status": "failed", "error": "Destination exists."}
+                    for p in kwargs["json"]["relative_paths"]
+                ]
+            },
+            request=httpx.Request("POST", url),
+        )
+
+    worker.client.post.side_effect = refused
     service = publisher(worker)
     response = await service.tool(worker.ctx).handler({"folder": "outputs/gcs/result"})
     summary = json.loads(response["content"][0]["text"])
@@ -524,7 +606,7 @@ async def test_failed_files_have_counts_and_bounded_examples(worker, bot):  # no
     assert len(summary["error_examples"]) == 5
     assert summary["destinations"][0]["errors"] == 10
     manifest = json.loads((worker.ctx.workdir / summary["manifest"]).read_text())
-    assert len(manifest["errors"]) == 10
+    assert manifest["failed"] == 10 and len(manifest["error_examples"]) == 5
     outcome = await service.publish(worker.ctx, worker.result)
     bot.publish_gcs = AsyncMock(return_value=outcome)
     await send(bot, event("Save the results"))

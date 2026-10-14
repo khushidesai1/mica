@@ -12,6 +12,7 @@
     "head_oid": "<memory_head>"
   },
   "notice_ts": "9.0",
+  "overwrite_paths": [],
   "payload": {
     "event": {
       "channel": "D1",
@@ -33,9 +34,5 @@
   "run_prefix": "projects/_users/ff8d9819fc0e12bf0d24892e45987e24/runs/<project_id>/ace053d03cd5444dca35eda312eccfea",
   "thread_key": "ace053d03cd5444dca35eda312eccfea",
   "write_grant": null,
-  "write_max_files": 5000,
-  "write_max_mb": 8192,
-  "write_max_total_gb": 100,
-  "write_upload_seconds": 840,
-  "overwrite_paths": []
+  "write_upload_seconds": 840
 }
