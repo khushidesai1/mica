@@ -136,8 +136,11 @@ class GCSStorage:
         self.bucket.blob(key).upload_from_string(data)
 
     def open_read(self, key: str) -> AbstractContextManager[BinaryIO]:
+        blob = self.bucket.blob(key)
+        blob.reload()
         return cast(
-            AbstractContextManager[BinaryIO], self.bucket.blob(key).open("rb", chunk_size=1024**2)
+            AbstractContextManager[BinaryIO],
+            blob.open("rb", chunk_size=1024**2, if_generation_match=blob.generation),
         )
 
     def put_if(self, key: str, data: bytes, generation: str | None) -> str:
