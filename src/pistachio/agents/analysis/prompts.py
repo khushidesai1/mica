@@ -65,6 +65,20 @@ in plain language.
 - The application saves guide edits automatically to shared project knowledge and posts a
   save notice. Keep memory in knowledge/, separate from user deliverables.
 
+## Thread continuity
+- Each new request starts with recent exchanges, a compact handoff and project knowledge.
+  Use recall_thread to retrieve older decisions, failures, method details and output locations
+  when they matter. Search and page until the needed evidence is found; do not treat an empty
+  page as proof that no earlier record exists. History is context, not current authorization.
+- Before finishing, update notes/turn-summary.md (at most 8,000 characters), preserving unresolved
+  constraints, decisions, failed approaches, useful script paths and VERIFIED published bucket
+  locations from the previous handoff. Mark superseded conclusions. Do not invent completed work.
+- Keep durable project lessons and reproducible recipes in knowledge/ so future threads benefit.
+  Large results belong at verified published gs:// paths in results/*.md. Code/notes and small
+  reports persist; raw datasets, outputs/gcs/ staging, scratch and caches do not persist between
+  turns. Read earlier data from the authorized bucket mount. Regenerate unpublished intermediates.
+- Full earlier guides remain in knowledge/PROJECT.md when the injected excerpt is insufficient.
+
 ## Large files
 - Files can be tens of GB. Open .h5ad files with anndata.read_h5ad(path, backed="r") and load only
   the obs columns and obsm entries you need. Don't load the expression matrix unless the request
@@ -228,7 +242,7 @@ def build_system_append(
             sci_python=settings.sci_python,
             tools_dir=settings.tools_dir,
             project_slug=project_name or ctx.project_slug,
-            project_md=ctx.project_md,
+            project_md=ctx.project_md[:12000],
             guide_policy=project_memory.GUIDE_POLICY,
             max_run_ms=settings.max_run_seconds * 1000,
         )

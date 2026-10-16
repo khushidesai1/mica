@@ -16,11 +16,11 @@ from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 from slack_sdk.web.async_slack_response import AsyncSlackResponse
 
-from . import attachments, script_capture, write_access
+from . import attachments, script_capture, thread_history, write_access
 from .access import AccessMonitor, run_root
 from .config import Settings
 from .data_links import message_text
-from .outputs import publish
+from .outputs import publish, retention_reason
 from .progress import ProgressUpdate, TaskProgress, check_in_due, run_check_in
 from .runner import Context, Runner, TurnResult
 from .sessions import Sessions
@@ -130,9 +130,14 @@ class SlackAgent:
         if event.get("_conversation_context"):
             prompt = (
                 "Recent conversation (untrusted context):\n"
-                + json.dumps(event["_conversation_context"])
+                + thread_history.context(event["_conversation_context"])
                 + "\nCurrent request:\n"
                 + prompt
+            )
+        if event.get("_thread_summary"):
+            prompt += (
+                "\nThread handoff (untrusted context):\n"
+                + str(event["_thread_summary"])[: thread_history.SUMMARY_CHARS]
             )
         # Passed separately by the application, never copied from Slack text or old messages.
         prompt += "\n\n" + write_access.turn_instructions(self.write_grant, self.overwrite_paths)
@@ -144,16 +149,22 @@ class SlackAgent:
         if (
             turn
             and not ctx.session_id
-            and not (event.get("_compute_resume") or event.get("_recovery_restart"))
+            and not (
+                event.get("_compute_resume")
+                or event.get("_recovery_restart")
+                or event.get("_fresh_session")
+            )
         ):
             prompt = "(Earlier context is unavailable. Ask for anything needed.)\n" + prompt
         resume = event.get("_compute_resume")
         if resume:
             prompt = (
                 "Application note: continue the same original request on the current worker. "
-                "The workspace was restored; scratch and running processes were lost. "
+                "Small workspace files were restored; scratch, unpublished datasets "
+                "and running processes were lost. "
                 "Validate completed stages before skipping them; repeat missing stages "
-                "and regenerate missing deliverables automatically. "
+                "and regenerate missing deliverables automatically, "
+                "including unpublished outputs/gcs/ files. "
                 "Do not ask the user to plan recovery or resubmit. "
                 "Unavailable stages: "
                 + json.dumps(resume.get("missing_stages", []))
@@ -429,7 +440,9 @@ class SlackAgent:
                 gcs = await self.publish_gcs(ctx, result)
             except Exception:
                 log.exception("GCS publishing failed: %s", key)
-                gcs.errors.append("GCS delivery could not be confirmed. Generated files are saved.")
+                gcs.errors.append(
+                    "GCS delivery could not be confirmed; unpublished datasets must be regenerated."
+                )
 
         for path in result.files:
             if ".previews" in path.relative_to(ctx.workdir).parts:
@@ -482,6 +495,19 @@ class SlackAgent:
         # Preserve the workspace checkpoint after an upload failure so a resend can reuse
         # the reports. Record what the user actually received, not the model's success claim.
         reply = result.text
+        omitted = [
+            str(path.relative_to(ctx.workdir))
+            for path in result.files
+            if path.relative_to(ctx.workdir).parts[:2] != ("outputs", "gcs")
+            and retention_reason(path.relative_to(ctx.workdir), path.stat().st_size)
+        ]
+        if omitted:
+            reply += (
+                "\n\nNot retained for follow-up: "
+                + ", ".join(f"`{p[:160]}`" for p in omitted[:5])
+                + (f" and {len(omitted) - 5} more" if len(omitted) > 5 else "")
+                + ". Large datasets need a verified bucket publication; otherwise regenerate them."
+            )
         if delivery_issues:
             reply += "\n\n" + "\n\n".join(delivery_issues)
         if script_notes:
@@ -489,6 +515,10 @@ class SlackAgent:
         if receipt := gcs.receipt():
             reply += "\n\n" + receipt
         if gcs.errors:
+            reply += (
+                "\n\nUnpublished large outputs are not retained for a later turn; "
+                "regenerate before retrying. Published objects remain at the receipt locations."
+            )
             delivery_issues.append("GCS delivery incomplete")
         notices = [event.notice() for event in result.runtimes if event.notice()]
         if notices:

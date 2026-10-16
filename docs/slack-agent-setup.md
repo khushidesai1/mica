@@ -141,7 +141,7 @@ Keep this flag false by default and rerun the isolation gate before changing the
    Terraform is not installed in the implementation environment, so validate this plan before use.
    The current rollout uses scoped gcloud updates; see `slack-agent-deployment.md` for live state.
 5. Review the artifact bucket lifecycle change: existing task/input/incoming/paused prefixes
-   still expire after 30 days, including workspace archives. New `projects/` objects preserve
+   still expire after 30 days, including legacy workspace archives. New `projects/` objects preserve
    briefs, provenance and frozen thread metadata. This increases retention/storage use. Keep
    the image configured during a rollback so the old blanket lifecycle rule is not restored.
 6. Check existing Slack scopes and subscriptions against `deploy/slack-app-manifest.yaml`.
@@ -538,7 +538,49 @@ and retry message. Other errors do not trigger a summary call.
 Output approval probes each requested folder without enumerating its files. Publishing uses
 batched, resumable GCS server-side copies and removes verified staged sources after recording
 receipts; see [write access and cleanup](slack-write-access.md). Full stage checkpoints have no
-application size cap. Partial snapshots remain small and exclude data outputs.
+application size cap. New-protocol stage archives and leftover write exports are deleted only
+after the logical request is terminal and Batch confirms worker exit. Recovery attempts retain
+them. Cleanup retries independently of Slack delivery; receipts and manifests remain. Historical
+events are not swept.
+
+### Durable memory and lean workspaces
+
+Project knowledge remains versioned in GitHub. Each new human turn starts a fresh SDK session
+with bounded recent exchanges, an 8,000-character cumulative handoff, and selected project
+knowledge. The `recall_thread` tool searches paginated full exchanges from the same thread,
+including failed requests; `event_id` retrieves a record in character-offset pages. Older
+decisions remain retrievable after they leave the 12-exchange prompt window. The full project
+guide is available in `knowledge/PROJECT.md`; its injected excerpt is bounded.
+
+Full exchanges and final small workspace archives are retained under
+`projects/_threads/<thread>/history/` and `archives/`, outside the temporary `tasks/` lifecycle.
+Code, notes, text logs and small supported reports are retained. Dataset formats, array stores,
+`outputs/gcs/`, inputs, scratch and caches are excluded from both checkpoints and provenance
+uploads. Code/notes allow text files up to 2 MiB, logs up to 8 MiB, reports up to 200 MB.
+Optional logs/reports are trimmed toward a 1 GiB total; required recovery state and retained
+code/notes take priority. `logs/checkpoint-excluded.json` reports counts, bytes and bounded
+examples. Published datasets are read from their bucket locations; unpublished datasets must
+be regenerated. Verified publication locations also enter the worker's project-memory proposal.
+
+Within the same request, recovery preserves the active SDK session and cost records, a consistent
+SQLite backup, executed-script copies and immutable completed stages. Worker calls use the
+pinned CLI's one-hour cache and 12,000-character inline Bash output setting. Full SDK tool-result
+text files are copied into `logs/bash/` up to 8 MiB each. One-hour caching does not cover commands
+longer than its TTL, and its cache writes cost more than five-minute writes.
+
+Existing checkpoints are never bulk-deleted by this change. Their existing 30-day lifecycle
+still applies until migration. Before expiry, an operator can stream a legacy archive into a
+verified durable replacement without deleting its source:
+
+```bash
+.venv/bin/python scripts/migrate_thread_checkpoint.py --bucket ARTIFACT_BUCKET --thread THREAD_KEY
+```
+
+Migration checks the uploaded archive checksum and updates the thread pointer only if it has
+not changed. A failed migration preserves the original pointer and archive. Run large migrations
+as separate maintenance in GCP: gzip archives must be streamed once even when most members are
+excluded. Legacy worker restore also filters datasets while streaming to avoid expanding them
+onto the worker disk. No Terraform, IAM or lifecycle changes are required.
 
 Failed requests remain available to follow-ups in the thread. Routed failures can add concise
 pending work to shared project memory; cancelled turns and commands are excluded. See

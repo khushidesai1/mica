@@ -23,13 +23,19 @@ from google.auth.transport.requests import Request as GoogleRequest
 from google.oauth2 import id_token
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import attachments, memory_workspace, project_memory, write_access, write_worker
+from . import (
+    attachments,
+    memory_workspace,
+    project_memory,
+    thread_history,
+    write_access,
+    write_worker,
+)
 from .access import AccessMonitor, run_root, worker_permitted
-from .checkpoints import Stages, digest, workspace_snapshot
+from .checkpoints import Stages, digest, restore_workspace, workspace_snapshot
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .direct import record_exchange
-from .outputs import files_under
 from .preflight import check
 from .recovery import event_prefix
 from .recovery_tools import RecoveryManager
@@ -49,38 +55,15 @@ def arm_stop_deadline() -> None:
     timer.start()
 
 
-def restore(archive: Path, home: Path) -> None:
-    with tarfile.open(archive, "r:gz") as tar:
-        members = tar.getmembers()
-        seen: set[str] = set()
-        for member in members:
-            target = home / member.name
-            if (
-                not target.resolve().is_relative_to(home.resolve())
-                or member.name in seen
-                or not (member.isfile() or member.isdir())
-                or not (
-                    member.name.startswith(("work/", ".claude/projects/"))
-                    or member.name == "state.db"
-                )
-            ):
-                raise ValueError("Unsafe session checkpoint")
-            seen.add(member.name)
-        tar.extractall(home, filter="data")
+def restore(archive: Path, home: Path, *, work: Path | None = None) -> None:
+    with archive.open("rb") as stream:
+        restore_workspace(stream, home, work=work)
 
 
-def snapshot(archive: Path, home: Path, *, published: set[Path] | None = None) -> None:
-    with tarfile.open(archive, "w:gz") as tar:
-        paths = [*files_under(home / "work"), *files_under(home / ".claude/projects")]
-        if (home / "state.db").is_file():
-            paths.append(home / "state.db")
-        for path in paths:
-            if path in (published or set()) or "knowledge" in path.relative_to(home).parts:
-                continue
-            # Sources expire independently; rehydrate inputs from their original objects.
-            if any(part in {".previews", "inputs"} for part in path.relative_to(home).parts):
-                continue
-            tar.add(path, arcname=str(path.relative_to(home)), recursive=False)
+def snapshot(
+    archive: Path, home: Path, *, published: set[Path] | None = None, work: Path | None = None
+) -> None:
+    workspace_snapshot(archive, home, partial=False, published=published, recovery=False, work=work)
 
 
 async def main(event_id: str, *, hard_stop: bool = False) -> None:
@@ -174,7 +157,12 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
     pending_memory: bytes | None = None
     if saved.get("archive"):
         try:
-            storage.bucket.blob(saved["archive"]).download_to_filename(str(archive))
+            if resume:
+                storage.download(saved["archive"], archive)
+            else:
+                # Streaming avoids a second on-disk copy of legacy giant checkpoints.
+                with storage.open_read(saved["archive"]) as stream:
+                    restore_workspace(stream, home, work=Path(saved["context"]["workdir"]))
             if resume and digest(archive) != resume["sha256"]:
                 raise ValueError("Continuation checksum mismatch")
             if resume and resume.get("pending_memory"):
@@ -188,7 +176,8 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                 if hashlib.sha256(pending_memory).hexdigest() != ref["sha256"]:
                     raise ValueError("Knowledge checkpoint checksum mismatch")
                 memory_workspace.decode_pending(pending_memory, settings)
-            restore(archive, home)
+            if resume:
+                restore(archive, home, work=Path(saved["context"]["workdir"]))
             restored = True
         except (NotFound, FileNotFoundError, ValueError, tarfile.TarError):
             if resume:
@@ -215,7 +204,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
     if saved.get("context"):
         data = saved["context"]
         data["workdir"], data["data_path"] = Path(data["workdir"]), Path(data["data_path"])
-        if not restored:
+        if not restored or not resume:
             data["session_id"] = None
         sessions.save(payload["event"]["channel"], Context(**data), saved["turn"], saved["is_init"])
         files = await asyncio.to_thread(
@@ -356,6 +345,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         Runner(
             settings,
             runtime_manager=runtimes,
+            history=thread_history.History(storage, thread_key, request["project_id"]),
             return_scripts=request.get("return_scripts") is True,
             script_manifest=resume.get("script_manifest") if resume else None,
             compute_manager=compute,
@@ -394,6 +384,16 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
     agent.access_monitor = monitor
     payload["event"]["_notice_ts"] = request.get("notice_ts")
     payload["event"]["_conversation_context"] = saved.get("messages", [])
+    payload["event"]["_thread_summary"] = saved.get("thread_summary", {}).get("text", "")
+    payload["event"]["_fresh_session"] = not bool(resume)
+    summary_path = Path(saved["context"]["workdir"]) / "notes/turn-summary.md"
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    if summary_path.is_symlink() or not summary_path.resolve().is_relative_to(
+        Path(saved["context"]["workdir"]).resolve()
+    ):
+        raise ValueError("Unsafe thread summary path")
+    summary_path.write_text(payload["event"]["_thread_summary"])
+    previous_summary = summary_path.read_bytes()
     current_ids = set(request.get("attachments", []))
     payload["event"]["_event_id"] = event_id
     if resume:
@@ -444,13 +444,21 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             pending = await asyncio.to_thread(memory_workspace.pending, work, memory_base, settings)
             pending_key = f"{prefix}/memory-a{attempt}-{checkpoint_id}.json"
             await asyncio.to_thread(storage.put_if, pending_key, pending, None)
+            script_record = (
+                {"script_manifest": agent.runner.script_capture.checkpoint()}
+                if agent.runner.script_capture
+                else {}
+            )
             local = home / f"partial-{checkpoint_id}.tar.gz"
             await asyncio.to_thread(
                 workspace_snapshot,
                 local,
                 home,
                 partial=True,
-                max_bytes=256 * 1024**2,
+                work=work,
+                recovery=True,
+                session_id=compute.session_id,
+                event_id=event_id,
             )
             key = f"{prefix}/partial-a{attempt}-{checkpoint_id}.tar.gz"
             sha = await asyncio.to_thread(digest, local)
@@ -477,11 +485,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                     "is_init": current_state[2],
                 },
                 "runtimes": sorted(runtimes.thread_ids) if runtimes else saved.get("runtimes", []),
-                **(
-                    {"script_manifest": agent.runner.script_capture.checkpoint()}
-                    if agent.runner.script_capture
-                    else {}
-                ),
+                **script_record,
             }
             await asyncio.to_thread(
                 storage.put,
@@ -606,6 +610,12 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         proposal = await asyncio.to_thread(
             memory_workspace.pending, state[0].workdir, memory_base, settings
         )
+        receipt = write_worker.Publication(
+            destinations=publisher.summarize(set(publisher.uploaded))
+        ).receipt()
+        proposal = memory_workspace.publication_proposal(
+            proposal, memory_base, event_id, receipt, settings
+        )
         proposal_key = (
             f"{prefix}/memory-proposal.json"
             if agent.completed
@@ -627,6 +637,10 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             home,
             partial=False,
             published=publisher.published_paths(state[0].workdir) if state else set(),
+            work=state[0].workdir,
+            recovery=True,
+            session_id=compute.session_id,
+            event_id=event_id,
         )
         key = f"{prefix}/handoff-a{attempt}-{uuid4().hex}.tar.gz"
         await asyncio.to_thread(storage.upload_new, key, archive)
@@ -657,18 +671,22 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         or not await asyncio.to_thread(worker_permitted, storage, request, saved, settings=settings)
     ):
         return
-    if compute:
-        workspace_snapshot(
-            archive,
-            home,
-            partial=False,
-            published=publisher.published_paths(state[0].workdir) if state else set(),
-        )
-    else:
-        snapshot(archive, home, published=publisher.published_paths(state[0].workdir))
-    archive_key = f"{PREFIX}/events/{event_id}/checkpoint.tar.gz"
+    workspace_snapshot(
+        archive,
+        home,
+        partial=False,
+        work=state[0].workdir,
+        published=publisher.published_paths(state[0].workdir),
+        recovery=False,
+        event_id=event_id,
+    )
+    archive_key = f"projects/_threads/{thread_key}/archives/{event_id}.tar.gz"
     storage.upload(archive_key, archive)
-    checkpoint: dict[str, Any] = {"archive": archive_key}
+    checkpoint: dict[str, Any] = {
+        "archive": archive_key,
+        "retention_version": 1,
+        "thread_summary": saved.get("thread_summary", {}),
+    }
     if compute:
         checkpoint["sdk_cost_total"] = compute.sdk_cost_total
     if state:
@@ -688,6 +706,8 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         outputs=[f["name"] for f in agent.delivered],
         success=agent.last_error is None,
         methods=read_methods(state[0].workdir, previous_methods),
+        history=thread_history.History(storage, thread_key, request["project_id"]),
+        summary=thread_history.read_summary(state[0].workdir, previous_summary),
     )
     storage.put(pointer, json.dumps(checkpoint, default=str).encode())
     storage.put(

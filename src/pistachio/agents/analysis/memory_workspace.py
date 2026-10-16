@@ -104,6 +104,42 @@ def pending(work: Path, base: Snapshot, settings: Settings) -> bytes:
     return proposal(work, base, settings).model_dump_json().encode()
 
 
+def publication_proposal(
+    data: bytes, base: Snapshot, event_id: str, receipts: str, settings: Settings
+) -> bytes:
+    """Retain controller-confirmed destinations even when final auto-publish follows the model."""
+    if not receipts:
+        return data
+    import re
+
+    if not re.fullmatch(r"[a-f0-9]{32}", event_id):
+        raise ValueError("Invalid publication event")
+    result = decode_pending(data, settings)
+    path = f"results/published-{event_id}.md"
+    text = (
+        f"type: result\nsource: verified publication receipts, event {event_id}\n"
+        "status: current\n\n" + receipts + "\nOnly confirmed files are counted. "
+        "This is publication evidence, not scientific validation.\n"
+    )
+    previous = (
+        result.changes.get(
+            "INDEX.md", base.files["INDEX.md"].text if "INDEX.md" in base.files else ""
+        )
+        or ""
+    )
+    index = previous.rstrip() + f"\n- [Published outputs {event_id[:8]}]({path})\n"
+    try:
+        validate(path, text.encode(), settings)
+        validate("INDEX.md", index.encode(), settings)
+    except ValueError:
+        result.rejected[path] = (
+            "Publication locations exceed memory limits; retained in thread history."
+        )
+    else:
+        result.changes.update({path: text, "INDEX.md": index})
+    return result.model_dump_json().encode()
+
+
 def pending_limit(settings: Settings) -> int:
     return 6 * settings.memory_total_kb * 1024 + settings.memory_max_files * 1024
 

@@ -1,6 +1,7 @@
 {
   "access_signature": "<access_signature>",
   "attachments": [],
+  "cooperative_stop": true,
   "created": 1700000000.0,
   "memory": {
     "files": {
@@ -31,9 +32,9 @@
   "project_id": "<project_id>",
   "project_name": "liver",
   "protocol": 2,
+  "retention_version": 1,
   "run_prefix": "projects/_users/ff8d9819fc0e12bf0d24892e45987e24/runs/<project_id>/ace053d03cd5444dca35eda312eccfea",
   "thread_key": "ace053d03cd5444dca35eda312eccfea",
   "write_grant": null,
-  "write_upload_seconds": 840,
-  "cooperative_stop": true
+  "write_upload_seconds": 840
 }
