@@ -269,7 +269,7 @@ async def test_cancel_bypasses_queue_and_releases_slot_only_after_job_ends(chat)
     queued = await chat.accept(payload("2.0", "1.0", "Change the plot colors"))
     cancel = await chat.accept(payload("3.0", "1.0", "cancel"))
     assert await chat.process(cancel, 0) == "pending"
-    chat.test_client.delete_job.assert_called_once()
+    chat.test_client.delete_job.assert_not_called()
     assert (await chat.repository.get_connector_state("claude-event:" + queued))[
         "status"
     ] == "failed"

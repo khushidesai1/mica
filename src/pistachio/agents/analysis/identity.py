@@ -10,6 +10,10 @@ from uuid import NAMESPACE_URL, uuid5
 NOT_ENABLED = "Your account is not enabled for Pistachio. Ask the administrator to enable it."
 
 
+class IdentityUnavailable(Exception):
+    """Slack could not verify identity; this is not a negative access decision."""
+
+
 def normalize(email: str) -> str:
     return email.strip().lower()
 
@@ -71,10 +75,7 @@ def resolve_email(app: Any, settings: Any, storage: Any, team: str, user: str) -
     if settings.access_mode == "workspace":
         from .channel_access import profile
 
-        try:
-            return profile(app, settings, team, user)
-        except Exception:
-            return None
+        return profile(app, settings, team, user)
     if settings.access_mode == "channel":
         from .channel_access import email_for as channel_email
 

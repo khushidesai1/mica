@@ -26,6 +26,7 @@ from .attachments import AttachmentError
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .data_links import init_args
+from .identity import IdentityUnavailable
 from .slack_format import status_blocks
 from .storage import GCSStorage, Storage
 from .tiers import Provisioning
@@ -97,6 +98,7 @@ def job_spec(
         "AGENT_DATA_BUCKETS": ",".join(sorted(buckets)),
         "AGENT_ACCESS_MODE": settings.access_mode,
         "AGENT_ACCESS_CACHE_SECONDS": str(settings.access_cache_seconds),
+        "AGENT_ACCESS_UNAVAILABLE_GRACE_SECONDS": str(settings.access_unavailable_grace_seconds),
         "AGENT_MODEL": settings.model,
         "AGENT_LOADING_EMOJI": settings.loading_emoji,
         "AGENT_FALLBACK_MODEL": settings.fallback_model,
@@ -354,6 +356,10 @@ class BatchBridge:
             if not record:
                 raise LookupError("Unknown Slack event")
             if record["status"] in {"complete", "failed"} or tick < record["tick"]:
+                if record["status"] == "failed" and (
+                    record.get("stop_reason") or record.get("cancel_requested")
+                ):
+                    await self.notify_stop(event_id, record)
                 await self.record_terminal(event_id, record)
                 await self.repository.set_connector_state(key, record)
                 await memory_tasks.enqueue(self, event_id, record)
@@ -400,11 +406,24 @@ class BatchBridge:
             if record["status"] not in {"complete", "failed"}:
                 await self.schedule(event_id, tick + 1)
                 record["tick"] = tick + 1
+            record.pop("identity_unavailable_since", None)
             await self.record_terminal(event_id, record)
             await self.repository.set_connector_state(key, record)
             await memory_tasks.enqueue(self, event_id, record)
 
             return str(record["status"])
+        except IdentityUnavailable:
+            # Preserve routing/submission progress and let Cloud Tasks retry admission.
+            if record:
+                since = record.setdefault("identity_unavailable_since", time.time())
+                if (
+                    record["status"] not in {"complete", "failed"}
+                    and time.time() - since >= self.settings.access_unavailable_grace_seconds
+                ):
+                    record.update(status="failed", stop_reason="access_unverifiable")
+                    await self.notify_stop(event_id, record)
+                await self.repository.set_connector_state(key, record)
+            raise
         finally:
             await self.repository.release_event(mutex, claim.token)
 
@@ -662,6 +681,7 @@ class BatchBridge:
                 "thread_key": record["thread_key"],
                 "notice_ts": record.get("notice_ts"),
                 "protocol": 2,
+                "cooperative_stop": True,
                 "write_grant": record["write_grant"],
                 "overwrite_paths": record.get("overwrite_paths", []),
                 "write_upload_seconds": self.settings.write_upload_seconds,
@@ -694,6 +714,8 @@ class BatchBridge:
                 f"{PREFIX}/events/{event_id}/request.json",
                 json.dumps(manifest).encode(),
             )
+            record["cooperative_stop"] = True
+            await self.repository.set_connector_state(f"claude-event:{event_id}", record)
             with suppress(AlreadyExists):
                 await asyncio.to_thread(
                     client.create_job,
@@ -731,6 +753,14 @@ class BatchBridge:
             state = job.status.state.name
         except NotFound:
             state = "FAILED"
+        if (
+            record.get("cancel_requested")
+            and record.get("cooperative_stop")
+            and time.time() - record.get("cancel_requested_at", 0) >= 55
+            and state not in {"SUCCEEDED", "FAILED", "DELETION_IN_PROGRESS"}
+        ):
+            await asyncio.to_thread(client.delete_job, name=name)
+            return
         if record.get("write_grant"):
             await asyncio.to_thread(
                 write_broker.archive_manifests,
@@ -782,12 +812,14 @@ class BatchBridge:
                     )
             record["status"] = (
                 "complete"
-                if state == "SUCCEEDED" and not record.get("cancel_requested")
+                if state == "SUCCEEDED"
+                and not record.get("cancel_requested")
+                and record.get("attempt_outcome", "complete") == "complete"
                 else "failed"
             )
-            if record.get("cancel_requested"):
-                await self.notify(event_id, record, "cancelled", "Cancelled this computation.")
-            elif state != "SUCCEEDED":
+            if record.get("cancel_requested") or record.get("stop_reason"):
+                await self.notify_stop(event_id, record)
+            elif record["status"] == "failed":
                 await self.notify(
                     event_id,
                     record,
@@ -809,6 +841,44 @@ class BatchBridge:
             await self.repository.release_event(
                 f"{record.get('slot_pool', 'claude-slot')}:{record['slot']}", record["slot_token"]
             )
+
+    async def notify_stop(self, event_id: str, record: dict[str, Any]) -> None:
+        reason = (
+            "cancelled" if record.get("cancel_requested") else str(record.get("stop_reason", ""))
+        )
+        text = {
+            "cancelled": "Cancelled this computation.",
+            "access_revoked": "Stopped: your project access was revoked or changed.",
+            "access_unverifiable": (
+                "Stopped: couldn't confirm your project access with Slack for "
+                f"{self.settings.access_unavailable_grace_seconds / 60:g} min."
+            ),
+            "compute_time_allowance": "Stopped: this request reached its time allowance.",
+        }.get(reason, "Stopped before finishing.")
+        # A generic stop notice is safe; project paths require a verified current grant.
+        try:
+            grant = await asyncio.to_thread(
+                access.resolve, self.app, self.settings, self.storage, record
+            )
+            if (
+                grant.allowed
+                and grant.project_id == record.get("project_id")
+                and record.get("write_grant")
+            ):
+                summary = await asyncio.to_thread(
+                    write_broker.stopped_summary,
+                    self.storage,
+                    event_id,
+                    record["write_grant"]["uri"],
+                )
+                if summary:
+                    text += "\n" + summary
+        except IdentityUnavailable:
+            pass
+        text += "\nSend another message to retry unfinished work."
+        await self.notify(
+            event_id, record, "cancelled" if reason == "cancelled" else "failed", text
+        )
 
     async def cancel(self, event_id: str, record: dict[str, Any]) -> None:
         """Cancel earlier queued/running work without submitting a job for the command."""
@@ -853,9 +923,11 @@ class BatchBridge:
                                     f"{PREFIX}/events/{cursor}/memory-cancelled.json",
                                     b"true",
                                 )
-                                with suppress(NotFound):
-                                    await asyncio.to_thread(client.delete_job, name=name)
+                                if not prior.get("cooperative_stop"):
+                                    with suppress(NotFound):
+                                        await asyncio.to_thread(client.delete_job, name=name)
                                 prior["cancel_requested"] = True
+                                prior["cancel_requested_at"] = time.time()
                             waiting = True  # Normal polling releases the slot after termination.
                         await self.repository.set_connector_state(key, prior)
                     finally:

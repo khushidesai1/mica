@@ -9,6 +9,7 @@ import logging
 import os
 import sys
 import tarfile
+import threading
 import time
 from contextlib import suppress
 from dataclasses import asdict
@@ -23,7 +24,7 @@ from google.oauth2 import id_token
 from slack_sdk.web.async_client import AsyncWebClient
 
 from . import attachments, memory_workspace, project_memory, write_access, write_worker
-from .access import run_root, worker_permitted
+from .access import AccessMonitor, run_root, worker_permitted
 from .checkpoints import Stages, digest, workspace_snapshot
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
@@ -39,6 +40,13 @@ from .sessions import Sessions
 from .slack_app import SlackAgent
 from .slack_format import status_blocks
 from .storage import GCSStorage
+
+
+def arm_stop_deadline() -> None:
+    """Bound process exit even if an SDK or executor thread ignores cancellation."""
+    timer = threading.Timer(45, os._exit, args=(0,))
+    timer.daemon = True
+    timer.start()
 
 
 def restore(archive: Path, home: Path) -> None:
@@ -75,7 +83,7 @@ def snapshot(archive: Path, home: Path, *, published: set[Path] | None = None) -
             tar.add(path, arcname=str(path.relative_to(home)), recursive=False)
 
 
-async def main(event_id: str) -> None:
+async def main(event_id: str, *, hard_stop: bool = False) -> None:
     settings = Settings()
     storage = GCSStorage(settings.bucket)
     request = json.loads(storage.get(f"{PREFIX}/events/{event_id}/request.json")[0])
@@ -106,19 +114,55 @@ async def main(event_id: str) -> None:
     url = os.environ["PISTACHIO_CONTROL_PLANE_URL"].rstrip("/")
     token = await asyncio.to_thread(id_token.fetch_id_token, GoogleRequest(), url)  # type: ignore[no-untyped-call]
     async with httpx.AsyncClient(timeout=30) as client:
-        response = await client.get(
-            f"{url}/api/v1/internal/slack-analysis/credentials/{event_id}",
-            headers={"Authorization": f"Bearer {token}"},
-        )
-        response.raise_for_status()
-        keys = response.json()
+        deadline = time.monotonic() + settings.access_unavailable_grace_seconds
+        delay = 1
+        while True:
+            response = await client.get(
+                f"{url}/api/v1/internal/slack-analysis/credentials/{event_id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if response.status_code != 503 or "identity verification" not in response.text:
+                response.raise_for_status()
+                keys = response.json()
+                break
+            if time.monotonic() >= deadline:
+                storage.put(
+                    f"{PREFIX}/events/{event_id}/attempt-a{attempt}.json",
+                    json.dumps(
+                        {
+                            "event_id": event_id,
+                            "attempt": attempt,
+                            "outcome": "stopped",
+                            "stop_reason": "access_unverifiable",
+                        }
+                    ).encode(),
+                )
+                return
+            await asyncio.sleep(min(delay, deadline - time.monotonic()))
+            delay = min(delay * 2, 30)
     settings = Settings(**keys)
     settings.require_credentials()
     if not settings.slack_bot_token.get_secret_value():
         raise ValueError("Slack credential has not been configured")
     check(settings)
     slack = AsyncWebClient(token=settings.slack_bot_token.get_secret_value())
-    if not await asyncio.to_thread(worker_permitted, storage, request, saved, settings=settings):
+    monitor = AccessMonitor(
+        lambda: worker_permitted(storage, request, saved, settings=settings),
+        settings.access_unavailable_grace_seconds,
+        event_id,
+    )
+    if not await monitor.allowed(delivery=True):
+        storage.put(
+            f"{PREFIX}/events/{event_id}/attempt-a{attempt}.json",
+            json.dumps(
+                {
+                    "event_id": event_id,
+                    "attempt": attempt,
+                    "outcome": "stopped",
+                    "stop_reason": monitor.stop_reason,
+                }
+            ).encode(),
+        )
         if request.get("notice_ts"):
             await slack.chat_update(
                 channel=request["payload"]["event"]["channel"],
@@ -278,6 +322,9 @@ async def main(event_id: str) -> None:
         sample_task = asyncio.create_task(sampler.run())
 
     publisher = write_worker.Publisher(storage, request, event_id, url)
+    if compute:
+        compute.stop_tools = publisher.cancel
+        publisher.on_stop = compute.request_stop
     current_write_grant = (
         write_access.WriteGrant.model_validate(request["write_grant"])
         if request.get("write_grant")
@@ -335,6 +382,16 @@ async def main(event_id: str) -> None:
         overwrite_paths=request.get("overwrite_paths", []),
         before_delivery=before_delivery if compute else None,
     )
+
+    def authorized() -> bool:
+        if compute and memory_workspace.cancelled(storage, event_id):
+            compute.stop_reason = "cancelled"
+            compute.stop.set()
+            return False
+        return worker_permitted(storage, request, saved, settings=settings)
+
+    monitor.check = authorized
+    agent.access_monitor = monitor
     payload["event"]["_notice_ts"] = request.get("notice_ts")
     payload["event"]["_conversation_context"] = saved.get("messages", [])
     current_ids = set(request.get("attachments", []))
@@ -456,18 +513,63 @@ async def main(event_id: str) -> None:
     previous_methods = (
         methods_stamp(Path(saved["context"]["workdir"])) if saved.get("context") else None
     )
+    state = None
+    handle_task: asyncio.Task[None] | None = None
+
+    async def stop_attempt() -> None:
+        assert compute is not None
+        # This stays active during final publication, after the model heartbeat ends.
+        while not compute.stop.is_set():
+            if await asyncio.to_thread(memory_workspace.cancelled, storage, event_id):
+                compute.request_stop("cancelled")
+                break
+            with suppress(TimeoutError):
+                await asyncio.wait_for(compute.stop.wait(), 5)
+        if compute.stop_reason == "worker_continuation":
+            return
+        logging.info("worker_stopping event=%s reason=%s", event_id, compute.stop_reason)
+        if hard_stop:
+            arm_stop_deadline()
+        stopped = {
+            "event_id": event_id,
+            "attempt": attempt,
+            "outcome": "stopped",
+            "stop_reason": compute.stop_reason,
+            "model_cost": compute.model_cost,
+        }
+        # Persist the outcome before waiting for tools or the SDK to unwind.
+        await asyncio.to_thread(
+            storage.put, f"{prefix}/attempt-a{attempt}.json", json.dumps(stopped).encode()
+        )
+        with suppress(Exception):
+            await asyncio.wait_for(publisher.cancel(), 5)
+        await asyncio.sleep(35)
+        if handle_task and not handle_task.done():
+            handle_task.cancel()
+
+    stop_task = asyncio.create_task(stop_attempt()) if compute else None
     try:
         event = payload["event"]
-        await agent.handle(event, (event["channel"], event.get("thread_ts") or event["ts"]))
+        handle_task = asyncio.create_task(
+            agent.handle(event, (event["channel"], event.get("thread_ts") or event["ts"]))
+        )
+        try:
+            await handle_task
+        except asyncio.CancelledError:
+            if not compute or not compute.stop.is_set():
+                raise
         state = sessions.get(event["channel"], event.get("thread_ts") or event["ts"])
     finally:
         # Cancelling to_thread does not stop its thread. Let an active snapshot finish
         # before closing SQLite or taking the final handoff snapshot.
         partial_stop.set()
-        if partial_task:
-            await partial_task
-        if telemetry_task:
-            await telemetry_task
+        stopping = bool(compute and compute.stop.is_set() and not compute.pending)
+        for background in (partial_task, telemetry_task):
+            if background:
+                if stopping:
+                    background.cancel()
+                with suppress(asyncio.CancelledError):
+                    await background
         for background in (sample_task,):
             if background:
                 background.cancel()
@@ -484,10 +586,17 @@ async def main(event_id: str) -> None:
                         "event_id": event_id,
                         "attempt": attempt,
                         "model_cost": compute.model_cost,
-                        "outcome": "prepared",
+                        "outcome": "stopped" if stopping else "prepared",
+                        **({"stop_reason": compute.stop_reason} if stopping else {}),
                     }
                 ).encode(),
             )
+        if stop_task:
+            stop_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await stop_task
+    if compute and compute.stop.is_set() and not compute.pending:
+        return
     if (
         not memory_workspace.cancelled(storage, event_id)
         and state
@@ -619,4 +728,4 @@ def read_methods(workdir: Path, previous: tuple[int, int, int] | None) -> str:
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(main(sys.argv[1]))
+    asyncio.run(main(sys.argv[1], hard_stop=True))

@@ -98,9 +98,14 @@ async def receive(services: Services, payload: dict[str, Any]) -> dict[str, obje
         finally:
             await services.repository.release_event(key, claim.token)
         return {"ok": True}
-    principal = await asyncio.to_thread(
-        identity.resolve_email, services.settings, bridge.settings, storage, team, user
-    )
+    try:
+        principal = await asyncio.to_thread(
+            identity.resolve_email, services.settings, bridge.settings, storage, team, user
+        )
+    except identity.IdentityUnavailable:
+        raise HTTPException(
+            503, "Slack identity verification is temporarily unavailable; retry"
+        ) from None
     if principal is None:
         if identity.is_private(event) or event["type"] == "app_mention":
             key = "claude-denial:" + digest(f"{team}:{channel}:{timestamp}")
@@ -135,7 +140,12 @@ async def process(event_id: str, tick: int, request: Request) -> dict[str, str]:
         raise HTTPException(403, "Untrusted task dispatcher")
     if not re.fullmatch(r"[a-f0-9]{32}", event_id) or tick < 0:
         raise HTTPException(400, "Invalid event")
-    status = await BatchBridge(services.settings, services.repository).process(event_id, tick)
+    try:
+        status = await BatchBridge(services.settings, services.repository).process(event_id, tick)
+    except identity.IdentityUnavailable:
+        raise HTTPException(
+            503, "Slack identity verification is temporarily unavailable; retry"
+        ) from None
     return {"status": status}
 
 
@@ -246,9 +256,14 @@ async def worker_context(
         raise HTTPException(403, "This worker grant is inactive")
     bridge = BatchBridge(services.settings, services.repository)
     storage = GCSStorage(services.settings.gcs_bucket)
-    grant = await asyncio.to_thread(
-        access.resolve, services.settings, bridge.settings, storage, record
-    )
+    try:
+        grant = await asyncio.to_thread(
+            access.resolve, services.settings, bridge.settings, storage, record
+        )
+    except identity.IdentityUnavailable:
+        raise HTTPException(
+            503, "Slack identity verification is temporarily unavailable; retry"
+        ) from None
     if (
         not grant.allowed
         or record.get("cancel_requested")
@@ -265,6 +280,8 @@ class WriteUpload(BaseModel):
 
 
 def retryable_write_error(exc: Exception) -> bool:
+    if isinstance(exc, identity.IdentityUnavailable):
+        return True
     if if_transient_error(exc) or isinstance(exc, Timeout):
         return True
     if not isinstance(exc, RefreshError):
@@ -338,10 +355,26 @@ async def write_output(
         approval = saved[0] if saved else None
         if approval:
             await asyncio.to_thread(write_approval.validate, bridge, storage, record, approval)
+    except identity.IdentityUnavailable:
+        raise HTTPException(
+            503, "Slack identity verification is temporarily unavailable; retry"
+        ) from None
     except (ValueError, PermissionError) as exc:
         raise HTTPException(422, str(exc)) from exc
 
     def authorize() -> None:
+        # In-flight batches must observe cancellation too, not just new HTTP requests.
+        from pistachio.agents.analysis.memory_workspace import cancelled
+
+        if cancelled(storage, event_id):
+            raise PermissionError("This run was cancelled. GCS publishing is stopped.")
+        from pistachio.agents.analysis.recovery import event_prefix, read_json
+
+        attempt = read_json(
+            storage, f"{event_prefix(event_id)}/attempt-a{record.get('attempt', 0)}.json"
+        )
+        if attempt and attempt.get("outcome") == "stopped":
+            raise PermissionError("This run has stopped. GCS publishing is stopped.")
         grant = access.resolve(bridge.app, bridge.settings, storage, record)
         if (
             not grant.allowed
@@ -354,7 +387,8 @@ async def write_output(
 
     deadline = time.monotonic() + bridge.settings.write_upload_seconds
     results = []
-    for relative in dict.fromkeys(paths):
+    unique_paths = list(dict.fromkeys(paths))
+    for index, relative in enumerate(unique_paths):
         if deadline - time.monotonic() < min(35, bridge.settings.write_upload_seconds / 10):
             results.append({"relative_path": relative, "status": "in_progress"})
             continue
@@ -394,7 +428,13 @@ async def write_output(
                 type(exc).__name__,
             )
             result = {"status": "in_progress"}
+            if isinstance(exc, identity.IdentityUnavailable):
+                result["reason"] = "identity_unavailable"
         finally:
             await bridge.repository.release_event(mutex, claim.token)
         results.append({"relative_path": relative, **result})
+        if result.get("reason") == "identity_unavailable" or result["status"] == "denied":
+            # No need to repeat the same failed access lookup for every path in a batch.
+            results.extend({"relative_path": path, **result} for path in unique_paths[index + 1 :])
+            break
     return {"results": results}

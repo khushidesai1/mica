@@ -24,13 +24,14 @@ class Row(Record):
     category: Literal["analysis", "training", "full_segmentation", "full_ingest"]
     tier: TierName
     provisioning: Provisioning
-    outcome: Literal["complete", "failed", "oom", "preempted", "resized"]
+    outcome: Literal["complete", "failed", "oom", "preempted", "resized", "cancelled", "stopped"]
     cause: str = ""
     workload: str = ""
     hours: float | None = Field(default=None, ge=0)
     longest_step_minutes: float | None = Field(default=None, ge=0)
     peak_gib: float | None = Field(default=None, ge=0)
     telemetry_complete: bool = False
+    oom_kills: int = Field(default=0, ge=0)
     started: float = 0
 
 
@@ -48,7 +49,8 @@ def capture(storage: Storage, event_id: str, record: dict[str, Any], outcome: st
         tier=record["tier"],
         provisioning=record.get("provisioning", "SPOT"),
         outcome=outcome,
-        cause=record.get("recovery_pending", {}).get("cause", record.get("recovery_cause", "")),
+        cause=("user_cancelled" if record.get("cancel_requested") else record.get("stop_reason"))
+        or record.get("recovery_pending", {}).get("cause", record.get("recovery_cause", "")),
         workload=record.get("launch", {}).get("workload", ""),
         hours=wall / 3600 if isinstance(wall, (int, float)) else None,
         longest_step_minutes=max((c["wall_s"] for c in observed.get("commands", [])), default=0)
@@ -57,6 +59,7 @@ def capture(storage: Storage, event_id: str, record: dict[str, Any], outcome: st
         else None,
         peak_gib=observed.get("peak_gib"),
         telemetry_complete=bool(observed.get("finished_at")),
+        oom_kills=observed.get("oom_kills", 0),
         started=record.get("started", 0),
     )
     with suppress(Conflict):

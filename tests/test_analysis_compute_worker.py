@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
+import pytest
 from test_analysis_runner import result
 
 from pistachio.agents.analysis import batch_worker, runner
@@ -18,8 +19,11 @@ from pistachio.agents.analysis.runner import Context
 from pistachio.agents.analysis.storage import LocalStorage
 
 
+@pytest.mark.parametrize(
+    "stop_reason", [None, "access_unverifiable", "access_revoked", "cancelled"]
+)
 async def test_cold_resize_suppresses_intermediate_delivery_and_preserves_outputs(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, stop_reason
 ):
     home = tmp_path / "worker"
     home.mkdir()
@@ -98,6 +102,10 @@ async def test_cold_resize_suppresses_intermediate_delivery_and_preserves_output
 
     async def stream(prompt, options, manager):
         prompts.append(prompt)
+        if stop_reason:
+            manager.request_stop(stop_reason)
+            yield result(total_cost_usd=0.1, result="Interrupted; not a completed result")
+            return
         work = Path(options.cwd)
         if manager.attempt == 0:
             (work / "outputs/first.txt").write_text("first result")
@@ -132,6 +140,11 @@ async def test_cold_resize_suppresses_intermediate_delivery_and_preserves_output
     slack.files_upload_v2.assert_not_called()
     slack.chat_postMessage.assert_not_called()
     handoff = json.loads(store.get(f"{prefix}/attempt-a0.json")[0])
+    if stop_reason:
+        assert handoff["outcome"] == "stopped"
+        assert handoff["stop_reason"] == stop_reason
+        assert not list(store.keys("projects/test/knowledge/"))
+        return
     pending = json.loads(store.get(handoff["pending_memory"]["key"])[0])
     assert pending["changes"] == {"PROJECT.md": "# Verified shared guide"}
     assert not list(store.keys("projects/test/knowledge/"))

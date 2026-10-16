@@ -277,7 +277,9 @@ async def script_runner(bot, *, continue_run=False):
             executed(capture, "python " + name)
         path = write(ctx.workdir, "outputs/plot.png", b"figure")
         if continue_run:
-            bot.runner.compute = type("Compute", (), {"pending": True})()
+            import asyncio
+
+            bot.runner.compute = type("Compute", (), {"pending": True, "stop": asyncio.Event()})()
         return TurnResult("session", "The figure is ready.", [path])
 
     bot.runner.run_turn = run
@@ -314,8 +316,8 @@ async def test_delivery_failure_still_cleans_captures(bot):
 async def test_cancelled_request_sends_no_scripts(bot):
     await script_runner(bot)
     bot.authorized = lambda: False
-    with pytest.raises(PermissionError):
-        await send(bot, event("plot"))
+    await send(bot, event("plot"))
+    assert not bot.completed
     bot.client.files_upload_v2.assert_not_called()
     work = bot.sessions.get("C123", "1.0")[0].workdir
     assert not (work / script_capture.CACHE).exists()

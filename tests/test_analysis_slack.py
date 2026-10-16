@@ -26,6 +26,51 @@ from pistachio.agents.analysis.slack_format import (
 from pistachio.agents.analysis.storage import LocalStorage
 
 
+async def test_heartbeat_tolerates_three_unavailable_checks(bot, monkeypatch, caplog):
+    from pistachio.agents.analysis.identity import IdentityUnavailable
+
+    monkeypatch.setattr(slack_app, "HEARTBEAT_SECONDS", 0.001)
+    calls = 0
+
+    def authorized():
+        nonlocal calls
+        calls += 1
+        if 2 <= calls <= 4:
+            raise IdentityUnavailable("timeout")
+        return True
+
+    async def run(ctx, prompt, status):
+        while calls < 4:
+            await asyncio.sleep(0.001)
+        return TurnResult("session", "Finished normally")
+
+    bot.authorized = authorized
+    bot.runner.run_turn = run
+    await asyncio.wait_for(send(bot, event("run", _notice_ts="9.0")), 1)
+    assert bot.completed and bot.last_reply == "Finished normally"
+    assert caplog.text.count("access_check_unavailable") == 3
+
+
+async def test_heartbeat_revocation_interrupts_and_suppresses_delivery(bot, monkeypatch):
+    monkeypatch.setattr(slack_app, "HEARTBEAT_SECONDS", 0.001)
+    permitted = [True]
+    compute = SimpleNamespace(stop=asyncio.Event(), stop_reason="", pending=False)
+    bot.runner.compute = compute
+    bot.authorized = lambda: permitted[0]
+
+    async def run(ctx, prompt, status):
+        permitted[0] = False
+        await asyncio.wait_for(compute.stop.wait(), 1)
+        return TurnResult("session", "Must not deliver this result")
+
+    bot.runner.run_turn = run
+    await send(bot, event("run", _notice_ts="9.0"))
+    assert compute.stop_reason == "access_revoked"
+    assert not bot.completed
+    bot.client.chat_postMessage.assert_not_called()
+    bot.client.files_upload_v2.assert_not_called()
+
+
 class FakeRunner:
     knowledge_reads = 0
 

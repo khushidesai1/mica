@@ -40,6 +40,37 @@ def valid_shard(event_id: str, key: str) -> bool:
     return bool(re.fullmatch(re.escape(prefix) + r"[a-f0-9]{32}\.jsonl", key))
 
 
+def stopped_summary(storage: Storage, event_id: str, grant_uri: str) -> str:
+    """Count only controller receipts, including copies whose response was lost."""
+    try:
+        index = json.loads(storage.get(manifest_stage(event_id))[0])
+    except FileNotFoundError:
+        return ""
+    paths: dict[str, str] = {}
+    for key in index.get("shards", []):
+        if not valid_shard(event_id, key):
+            raise ValueError("Invalid publication state shard")
+        with storage.open_read(key) as stream:
+            for line in stream:
+                row = json.loads(line)
+                path = relative_path(row["relative_path"])
+                folder = relative_path(row["folder"].rstrip("/")) + "/" if row["folder"] else ""
+                if not path.startswith(folder):
+                    raise ValueError("Publication folder does not contain its object")
+                paths[path] = folder
+    receipts = set(storage.keys(f"write-access/uploads/{event_id}/"))
+    folders: dict[str, list[int]] = {}
+    for path, folder in paths.items():
+        counts = folders.setdefault(folder, [0, 0])
+        counts[1] += 1
+        counts[0] += receipt_key(event_id, path) in receipts
+    return "\n".join(
+        f"`{grant_uri}{folder}`: {done:,} of {total:,} files published"
+        + ("; republish before use." if done < total else ".")
+        for folder, (done, total) in sorted(folders.items())
+    )
+
+
 def archive_manifests(storage: Storage, event_id: str, grant_uri: str) -> None:
     """Stream immutable worker shards into controller-owned audit storage."""
     import tempfile

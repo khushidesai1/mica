@@ -297,19 +297,26 @@ async def terminal(
     observed = measurements(storage, event_id, attempt)
     code = await asyncio.to_thread(exit_code, client, record["job"]) if state == "FAILED" else None
     outcome = (
-        "resized"
+        "cancelled"
+        if record.get("cancel_requested")
+        else "stopped"
+        if result.get("outcome") == "stopped"
+        else "resized"
         if pending
         else "complete"
         if state == "SUCCEEDED" and result.get("outcome") == "complete"
         else classify(code, observed)
     )
+    if outcome == "stopped":
+        record["stop_reason"] = result.get("stop_reason", "interrupted")
+    record["attempt_outcome"] = outcome
     from .calibration import capture
 
     try:
         await asyncio.to_thread(capture, storage, event_id, record, outcome)
     except Exception:
         log.warning("Worker history could not be saved; request outcome is unchanged.")
-    if record.get("cancel_requested") or outcome == "complete":
+    if outcome in {"cancelled", "stopped", "complete"}:
         return False
     # A killed worker may already have published results. Never replay uncertain side effects.
     if read_json(storage, f"{prefix}/finalizing-a{attempt}.json") is not None:

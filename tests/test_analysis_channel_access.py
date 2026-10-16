@@ -127,8 +127,9 @@ async def test_member_cache_expires_fails_closed_and_disable_bypasses_cache(chan
     clock[0] = 129
     assert check() == "bob@example.com"
     clock[0] = 131
-    channels.member_api.conversations_members.side_effect = RuntimeError("Slack unavailable")
-    assert check() is None
+    channels.member_api.conversations_members.side_effect = TimeoutError("Slack unavailable")
+    with pytest.raises(identity.IdentityUnavailable):
+        check()
     channels.member_api.conversations_members.side_effect = lambda **kwargs: {
         "ok": True,
         "members": ["U2"],
@@ -238,7 +239,7 @@ def test_membership_pagination_is_complete_and_repeating_cursors_fail_closed():
         "members": ["U1"],
         "response_metadata": {"next_cursor": "same"},
     }
-    with pytest.raises(ValueError, match="incomplete"):
+    with pytest.raises(identity.IdentityUnavailable, match="incomplete"):
         ca.members(api, "C1")
 
 
@@ -258,7 +259,7 @@ async def test_unavailable_channel_does_not_override_membership_in_another(chann
 
     def fetch(channel, **kwargs):
         if channel == "CACCESS1":
-            raise RuntimeError("not_in_channel")
+            raise identity.IdentityUnavailable("not_in_channel")
         return {"ok": True, "members": ["U2"]}
 
     channels.member_api.conversations_members.side_effect = fetch
@@ -266,7 +267,8 @@ async def test_unavailable_channel_does_not_override_membership_in_another(chann
         ca.email_for(channels.app, channels.settings, channels.store, "T1", "U2")
         == "bob@example.com"
     )
-    assert ca.email_for(channels.app, channels.settings, channels.store, "T1", "U3") is None
+    with pytest.raises(identity.IdentityUnavailable):
+        ca.email_for(channels.app, channels.settings, channels.store, "T1", "U3")
 
 
 async def test_onboarding_verifies_bot_invitation_email_permissions_and_admin_listing(channels):
@@ -290,12 +292,14 @@ async def test_workspace_mode_keeps_private_dms_without_enabled_channels(channel
     channels.app.slack_user_map = {}
     channels.app.allowed_emails = ("unrelated@example.com",)
     assert not ca.load(channels.store).channels
-    assert identity.resolve_email(
-        channels.app, channels.settings, channels.store, "T1", "U1"
-    ) == "alice@example.com"
-    assert identity.resolve_email(
-        channels.app, channels.settings, channels.store, "T1", "U2"
-    ) == "bob@example.com"
+    assert (
+        identity.resolve_email(channels.app, channels.settings, channels.store, "T1", "U1")
+        == "alice@example.com"
+    )
+    assert (
+        identity.resolve_email(channels.app, channels.settings, channels.store, "T1", "U2")
+        == "bob@example.com"
+    )
     intake = await receive(channels, payload(text="Describe my project"))
     assert await channels.process(intake["event_id"], 0) == "complete"
     channels.decision.assert_awaited_once()
@@ -304,9 +308,10 @@ async def test_workspace_mode_keeps_private_dms_without_enabled_channels(channel
     record = await channels.repository.get_connector_state("claude-event:" + other["event_id"])
     assert "liver" not in record["notice_text"]
     channels.member_api.conversations_members.assert_not_called()
-    assert ca.target_email(
-        channels.app, channels.settings, channels.store, "T1", "<@U2>"
-    ) == "bob@example.com"
+    assert (
+        ca.target_email(channels.app, channels.settings, channels.store, "T1", "<@U2>")
+        == "bob@example.com"
+    )
 
 
 async def test_workspace_mode_rechecks_identity_and_requires_channel_publication(channels):
@@ -323,14 +328,38 @@ async def test_workspace_mode_rechecks_identity_and_requires_channel_publication
     grant = access.resolve(channels.app, channels.settings, channels.store, record)
     import json
 
-    request = json.loads(channels.store.get(
-        f"tasks/slack-analysis/events/{event['event_id']}/request.json"
-    )[0])
+    request = json.loads(
+        channels.store.get(f"tasks/slack-analysis/events/{event['event_id']}/request.json")[0]
+    )
     assert access.worker_permitted(channels.store, request, grant.state, settings=channels.settings)
-    channels.member_api.users_info.side_effect = RuntimeError("Slack unavailable")
+    channels.member_api.users_info.side_effect = TimeoutError("Slack unavailable")
+    with pytest.raises(identity.IdentityUnavailable):
+        access.worker_permitted(channels.store, request, grant.state, settings=channels.settings)
+    with pytest.raises(identity.IdentityUnavailable):
+        identity.resolve_email(channels.app, channels.settings, channels.store, "T1", "U1")
+    request["access_signature"] = "changed"
     assert not access.worker_permitted(
         channels.store, request, grant.state, settings=channels.settings
     )
-    assert identity.resolve_email(
-        channels.app, channels.settings, channels.store, "T1", "U1"
-    ) is None
+
+
+async def test_admission_outage_retries_without_denial_or_losing_queued_request(channels):
+    from fastapi import HTTPException
+
+    await onboard(channels)
+    profiles = channels.member_api.users_info.side_effect
+    channels.member_api.users_info.side_effect = TimeoutError("Slack unavailable")
+    with pytest.raises(HTTPException) as error:
+        await receive(channels, payload("2.0"))
+    assert error.value.status_code == 503
+    channels.member_api.users_info.side_effect = profiles
+    channels.decision.return_value = direct.Decision(route="compute", reply="Computing")
+    event = await receive(channels, payload("2.0"))
+    channels.member_api.users_info.side_effect = TimeoutError("Slack unavailable")
+    with pytest.raises(identity.IdentityUnavailable):
+        await channels.process(event["event_id"], 0)
+    record = await channels.repository.get_connector_state("claude-event:" + event["event_id"])
+    assert record["status"] == "pending"
+    channels.test_client.create_job.assert_not_called()
+    channels.member_api.users_info.side_effect = profiles
+    assert await channels.process(event["event_id"], 0) == "running"

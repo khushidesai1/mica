@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import asdict, dataclass, field
 from itertools import islice
@@ -101,8 +103,22 @@ class Publisher:
         self.state_lock = asyncio.Lock()
         self.loaded = False
         self.denied = False
+        self.stopped = False
+        self.active: set[asyncio.Task[Any]] = set()
+        self.on_stop: Callable[[str], None] | None = None
+        self.identity_unavailable_since: float | None = None
         self.key = manifest_stage(event_id)
         self.shard_prefix = self.key.removesuffix("manifest.json") + "shards/"
+
+    def identity_retry(self) -> None:
+        now = time.monotonic()
+        if self.identity_unavailable_since is None:
+            self.identity_unavailable_since = now
+        if now - self.identity_unavailable_since >= self.limits.access_unavailable_grace_seconds:
+            self.stopped = True
+            if self.on_stop:
+                self.on_stop("access_unverifiable")
+            raise PermissionError("Slack access could not be verified; publication stopped.")
 
     async def save(self, rows: list[dict[str, Any]] | None = None) -> None:
         async with self.state_lock:
@@ -116,7 +132,7 @@ class Publisher:
                 "event_id": self.event_id,
                 "shards": self.shards,
                 "publications": self.manifests,
-                "destinations": [asdict(item) for item in self.summarize(set(self.uploaded))],
+                "destinations": [asdict(item) for item in self.summarize(set(self.sizes))],
             }
             await asyncio.to_thread(self.storage.put, self.key, json.dumps(index).encode())
 
@@ -178,6 +194,29 @@ class Publisher:
     async def publish(
         self, ctx: Context, result: TurnResult, *, folder: str | None = None
     ) -> Publication:
+        if self.stopped:
+            return Publication(errors=["This run has stopped; publication was cancelled."])
+        task = asyncio.current_task()
+        assert task is not None
+        self.active.add(task)
+        try:
+            return await self._publish(ctx, result, folder=folder)
+        finally:
+            self.active.discard(task)
+
+    async def cancel(self) -> None:
+        """Cancel HTTP/tool waits without acquiring the lock held by publication."""
+        self.stopped = True
+        active = list(self.active)
+        for task in active:
+            task.cancel()
+        if active:
+            await asyncio.gather(*active, return_exceptions=True)
+        await self.save()
+
+    async def _publish(
+        self, ctx: Context, result: TurnResult, *, folder: str | None = None
+    ) -> Publication:
         # Parallel tool calls share one preflight transaction; individual objects transfer
         # concurrently, retaining the controller's per-object mutex.
         async with self.lock:
@@ -213,6 +252,11 @@ class Publisher:
                     if any(p in self.sizes and self.sizes[p] != n for p, n in sizes.items()):
                         raise ValueError("A staged output changed. Choose a new destination path.")
                     self.sizes.update(sizes)
+                    # Reserve the whole folder so a stop reports the intended total, even
+                    # when only the first batch reached the controller.
+                    names = list(pending)
+                    for offset in range(0, len(names), BATCH_SIZE):
+                        await self.save(self.rows(names[offset : offset + BATCH_SIZE]))
                     await self.transfer(pending, outcome)
             except (ValueError, OSError) as exc:
                 outcome.errors.append(str(exc))
@@ -300,7 +344,6 @@ class Publisher:
                     if not batch:
                         return
                     errors: dict[str, str] = {}
-                    await self.save(self.rows(list(batch)))  # Durable reservation before staging.
                     ready = []
                     staged = await asyncio.gather(
                         *(stage(p, f) for p, f in batch.items()), return_exceptions=True
@@ -323,6 +366,13 @@ class Publisher:
                                 headers={"Authorization": f"Bearer {token}"},
                                 json={"relative_paths": ready, "grant_id": self.grant["id"]},
                             )
+                            if (
+                                response.status_code == 503
+                                and "identity verification" in response.text
+                            ):
+                                self.identity_retry()
+                                await asyncio.sleep(2)
+                                continue
                             if response.status_code in {403, 422}:
                                 detail = response.json().get("detail", "Upload was refused.")
                                 errors.update(dict.fromkeys(ready, detail))
@@ -330,6 +380,12 @@ class Publisher:
                                 break
                             response.raise_for_status()
                             results = response.json()["results"]
+                            if any(
+                                item.get("reason") == "identity_unavailable" for item in results
+                            ):
+                                self.identity_retry()
+                            else:
+                                self.identity_unavailable_since = None
                             if {r["relative_path"] for r in results} != set(ready):
                                 raise ValueError("Incomplete broker batch response")
                             retry = []

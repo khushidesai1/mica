@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     write_service_account: str = ""  # Dedicated output writer identity; control plane only.
     write_upload_seconds: int = Field(default=840, ge=1, le=840)
     access_cache_seconds: int = Field(default=30, ge=0, le=60)
+    access_unavailable_grace_seconds: int = Field(default=1800, ge=1, le=3600)
     allowed_user_ids: str = ""  # Legacy mapped mode only.
     # Separate staging-only approval for Docker's proc masking exception.
     batch_proc_mount_opt_in: bool = False
