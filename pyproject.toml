@@ -3,7 +3,7 @@ requires = ["hatchling==1.27.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "pistachio-agent"
+name = "mica-agent"
 version = "0.1.0"
 description = "Elastic, approval-gated bioinformatics agent system with project memory."
 readme = "README.md"
@@ -45,18 +45,21 @@ dev = [
 ]
 
 [project.scripts]
-pistachio-analyze = "pistachio.agents.analysis.cli:run"
-pistachio-api = "pistachio.api.app:run"
-pistachio-worker = "pistachio.worker.main:run"
+mica-analyze = "mica.agents.analysis.cli:run"
+mica-api = "mica.api.app:run"
+mica-worker = "mica.worker.main:run"
+pistachio-analyze = "mica.agents.analysis.cli:run"
+pistachio-api = "mica.api.app:run"
+pistachio-worker = "mica.worker.main:run"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/pistachio"]
+packages = ["src/mica", "src/pistachio"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
-markers = ["live: paid Claude checks; require PISTACHIO_RUN_LIVE_TESTS=1 and ANTHROPIC_API_KEY"]
+markers = ["live: paid Claude checks; require MICA_RUN_LIVE_TESTS=1 and ANTHROPIC_API_KEY"]
 
 [tool.ruff]
 line-length = 100

@@ -7,11 +7,11 @@ planning and orchestration. It produced 12 source revisions. This is one trace, 
 
 ## Workflow
 
-New sessions opt in with `PISTACHIO_DEVELOPMENT_LATENCY_ENABLED=true`. The persisted version,
+New sessions opt in with `MICA_DEVELOPMENT_LATENCY_ENABLED=true`. The persisted version,
 acceptance checklist and worker reuse choice survive restarts; existing versions 0/1 retain
 their original transitions. The paired API and worker must pass `check_worker_compatibility.py`.
 Old pinned workers receive their original execution wire format; the operator must keep their
-digests in `PISTACHIO_BATCH_COMPATIBLE_IMAGES` until old sessions drain.
+digests in `MICA_BATCH_COMPATIBLE_IMAGES` until old sessions drain.
 
 A probe supplies structured input representations, installed signatures and sandbox capabilities.
 This evidence has its own field, so truncating logs cannot erase it. One high-effort author call
@@ -33,7 +33,7 @@ changed paths against the same checklist; speculative extra coverage is not a bl
 
 ## Worker lifetime and recovery
 
-`PISTACHIO_WORKER_SESSIONS_ENABLED=true` selects one supervisor per task/runtime. The control
+`MICA_WORKER_SESSIONS_ENABLED=true` selects one supervisor per task/runtime. The control
 plane writes a generation-conditioned command manifest. Epoch and sequence checks reject old
 commands; cancellation is sticky within an epoch. Workers poll every two seconds, emit active
 heartbeats every 30 seconds, cancel superseded operations, and exit after ten idle minutes or
@@ -69,7 +69,7 @@ before validation. A superseded untested first draft is not reported as a succes
 
 - Run pytest, Ruff and mypy; keep old workflow tests enabled.
 - Run the paired build in `cloudbuild/build-latency.yaml` and the scientific namespace conformance
-  module `pistachio.execution.smoke` on the candidate worker.
+  module `mica.execution.smoke` on the candidate worker.
 - Run `scripts/run_latency_canary.py` against the retained authorized spatial task. It creates an
   isolated in-memory task and distinct artifact prefix, uses the real input and model, and stops
   after validated preparation. It never submits full analysis or edits the original task.

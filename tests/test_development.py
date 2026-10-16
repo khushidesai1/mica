@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 from agents import AgentOutputSchema
 
-from pistachio.execution.backends import LocalExecutor
-from pistachio.execution.checks import verify_outputs
-from pistachio.execution.workspace import WorkspaceStore, digest, validate_sources
-from pistachio.models import (
+from mica.execution.backends import LocalExecutor
+from mica.execution.checks import verify_outputs
+from mica.execution.workspace import WorkspaceStore, digest, validate_sources
+from mica.models import (
     AttachmentRef,
     CandidateReview,
     DecisionSet,
@@ -29,7 +29,7 @@ from pistachio.models import (
     TaskStatus,
     ToolPlan,
 )
-from pistachio.services.development import DevelopmentService
+from mica.services.development import DevelopmentService
 
 ANALYSIS = '''"""Sum the supplied numbers using the authorized multiplier."""
 import argparse
@@ -76,11 +76,11 @@ def configuration(settings):
 
 
 def test_development_flags_load_from_environment(monkeypatch):
-    from pistachio.config import Settings
+    from mica.config import Settings
 
-    monkeypatch.setenv("PISTACHIO_BUILDER_PROTOCOL_VERSION", "2")
-    monkeypatch.setenv("PISTACHIO_DEVELOPMENT_ENABLED", "true")
-    monkeypatch.setenv("PISTACHIO_DOCKER_ARTIFACT_ROOT", "")
+    monkeypatch.setenv("MICA_BUILDER_PROTOCOL_VERSION", "2")
+    monkeypatch.setenv("MICA_DEVELOPMENT_ENABLED", "true")
+    monkeypatch.setenv("MICA_DOCKER_ARTIFACT_ROOT", "")
     settings = Settings(_env_file=None)
     assert settings.builder_protocol_version == 2
     assert settings.development_enabled
@@ -411,8 +411,8 @@ async def test_cas_rejects_stale_worker_and_cancellation(repository):
 
 
 def test_checkpoint_keys_follow_producer_dependencies():
-    from pistachio.execution.checkpoints import checkpoint_key
-    from pistachio.models import CheckpointSpec
+    from mica.execution.checkpoints import checkpoint_key
+    from mica.models import CheckpointSpec
 
     files = {
         "composition.py": "import helper\ndef compose(): return helper.value\n",
@@ -437,7 +437,7 @@ def test_checkpoint_keys_follow_producer_dependencies():
 
 @pytest.mark.asyncio
 async def test_downstream_repair_reuses_private_checkpoint(settings, tmp_path):
-    from pistachio.models import CheckpointSpec
+    from mica.models import CheckpointSpec
 
     settings = configuration(settings)
     source = ANALYSIS.replace(
@@ -502,8 +502,8 @@ async def test_downstream_repair_reuses_private_checkpoint(settings, tmp_path):
 async def test_task_service_routes_new_protocol_and_preserves_legacy_default(repository, settings):
     from conftest import task_service
 
-    from pistachio.agents.harness import AgentHarness
-    from pistachio.models import ApprovalDecision, ApprovalStatus, Project
+    from mica.agents.harness import AgentHarness
+    from mica.models import ApprovalDecision, ApprovalStatus, Project
 
     settings = configuration(settings).model_copy(update={"planner_version": 2})
 

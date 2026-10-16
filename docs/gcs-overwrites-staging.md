@@ -2,10 +2,10 @@
 
 Source `52033ddec6676d4195cba07af8c07922ae7f90f2` was deployed on October 13,
 2026 as `pistachio-staging-overwrite-52033ddec667`, serving 100% of staging traffic.
-[PR #5](https://github.com/khushidesai1/pistachio/pull/5) contains the implementation.
+[PR #5](https://github.com/khushidesai1/mica/pull/5) contains the implementation.
 
 Ruff and strict mypy passed; **787 tests passed, 6 skipped**.
-[GitHub CI](https://github.com/khushidesai1/pistachio/actions/runs/38481726142)
+[GitHub CI](https://github.com/khushidesai1/mica/actions/runs/38481726142)
 passed. Cloud Build `710a3771-af7e-45ca-87bf-7051ecaf8d41` passed all ten gates,
 including source checks, attachments, worker compatibility, and spatial runtime checks.
 Preview and live health returned 200; unsigned Slack events/actions and unauthenticated
@@ -14,7 +14,7 @@ and the task queue was resumed. Other settings and secret mappings were preserve
 
 ## Existing grant and cloud permissions
 
-The dedicated `pistachio_staging_output_writer` custom role contains exactly
+The dedicated `mica_staging_output_writer` custom role contains exactly
 `storage.objects.create`, `storage.objects.get`, and `storage.objects.delete`.
 The sole added permission is required by Cloud Storage to replace an object. Both existing
 bucket policies matched their saved originals; grant scopes, bindings, and worker permissions

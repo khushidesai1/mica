@@ -3,7 +3,7 @@
 > Source behavior update, 10 October 2026: [the routing and memory implementation plan](worker-routing-and-memory-plan.md) supersedes the pricing/quote gates, thread-draft guide flow, knowledge feature flag, and per-thread channel summaries described below. Those passages remain historical design/deployment evidence. This local implementation has not been deployed or validated in staging.
 
 Written 3 October 2026 for an AI coding assistant (Codex) to implement. It covers three small
-changes to the Slack analysis agent in `src/pistachio/agents/analysis/`:
+changes to the Slack analysis agent in `src/mica/agents/analysis/`:
 
 1. **Voice:** replies are relaxed and conversational, and short (a sentence or two plus a few
    bullets) instead of long blocks of text.
@@ -25,7 +25,7 @@ changes to the Slack analysis agent in `src/pistachio/agents/analysis/`:
    (Bash `description`), so render them as `plain_text`. That way `<!channel>`, links and
    formatting in them are never interpreted.
 4. Finish with the CI commands passing:
-   `ruff check src tests`, `mypy src/pistachio`, `pytest`, `python -m compileall -q src`.
+   `ruff check src tests`, `mypy src/mica`, `pytest`, `python -m compileall -q src`.
 
 ---
 
@@ -34,9 +34,9 @@ changes to the Slack analysis agent in `src/pistachio/agents/analysis/`:
 **Before (compute request):**
 
 ```
-Pistachio: Run spatial plotting script — working (2m 30s)…       ← edited in place
+Mica: Run spatial plotting script — working (2m 30s)…       ← edited in place
            ...later: Done in 3m 2s
-Pistachio: Data: `processed/liver_B_qc.h5ad` (sample B, 612,408 cells)
+Mica: Data: `processed/liver_B_qc.h5ad` (sample B, 612,408 cells)
            I loaded the backed AnnData object and extracted the obs columns ... (15 lines)
            Choices: ... (paragraph)  Caveats: ... (paragraph)
            Reply with more details or corrections and I'll revise this draft. Reply `save brief`
@@ -46,11 +46,11 @@ Pistachio: Data: `processed/liver_B_qc.h5ad` (sample B, 612,408 cells)
 **After:**
 
 ```
-Pistachio: ⏳ Run spatial plotting script                         ← small grey, edited in place
+Mica: ⏳ Run spatial plotting script                         ← small grey, edited in place
            Reading PROJECT.md · Inspecting liver_B_qc.h5ad       ← smaller grey, recent steps
            ...when finished, this same message becomes one grey line:
            ✓ Inspecting liver_B_qc.h5ad · Writing spatial.py · Run spatial plotting script
-Pistachio: Here's sample B by cell type. Hepatocytes dominate the periportal zone and Kupffer
+Mica: Here's sample B by cell type. Hepatocytes dominate the periportal zone and Kupffer
            cells are pretty evenly spread.
            • Used `processed/liver_B_qc.h5ad` (612,408 cells)
            • 0.2 px points, rasterized
@@ -76,7 +76,7 @@ shared save. They should just be written more briefly.
 
 - **Opening line:** replace `You are the lab's data analysis assistant, working in a Slack
   thread for the project described in the project brief below.` with:
-  `You are Pistachio, the lab's friendly data analysis helper, working in a Slack thread for the
+  `You are Mica, the lab's friendly data analysis helper, working in a Slack thread for the
   project described in the project brief below.`
 - **"Choosing data", last bullet:** replace the `Start analysis replies with the data you used,
   for example: "Data: ..."` bullet with:
@@ -115,8 +115,8 @@ shared save. They should just be written more briefly.
 
 ### 2.2 `direct.py` (conversation/route system prompt, `SYSTEM`)
 
-- Line 25: `You are Pistachio, a lab assistant in Slack.` →
-  `You are Pistachio, a friendly, laid-back lab assistant in Slack.`
+- Line 25: `You are Mica, a lab assistant in Slack.` →
+  `You are Mica, a friendly, laid-back lab assistant in Slack.`
 - Lines 44-46: replace `Tell users they can keep replying with details or use save brief;
   never claim a shared save occurred.` with `After a brief edit, end with one short line such
   as "Keep the details coming, or say save brief to share it." Never claim a shared save
@@ -269,14 +269,14 @@ label, so shell commands never show up in Slack, and cap labels at 80 characters
 
 Sections 3.4 step 4 and step 5 cover this. Afterwards, the only time shown in Slack is
 the Spot startup minute count. Check with:
-`grep -rn "Done in\|// 60}m\|working (" src/pistachio/agents/analysis` should return nothing.
+`grep -rn "Done in\|// 60}m\|working (" src/mica/agents/analysis` should return nothing.
 
 ### 4.1 Loading icon (deployment, no code)
 
 - Default `:hourglass_flowing_sand:` (⏳) works everywhere but doesn't animate.
 - For a real spinner, a workspace admin uploads an animated GIF as a custom emoji, for example
-  `pistachio-loading` (Slack → *Customize workspace* → *Add emoji*). Then set
-  `AGENT_LOADING_EMOJI=:pistachio-loading:` on the control-plane Cloud Run service, in the same
+  `mica-loading` (Slack → *Customize workspace* → *Add emoji*). Then set
+  `AGENT_LOADING_EMOJI=:mica-loading:` on the control-plane Cloud Run service, in the same
   place as `AGENT_MODEL`. `job_spec` forwards it to Spot workers.
 
 ---

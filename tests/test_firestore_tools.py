@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from pistachio.models import ToolProposal, ToolRecord, ToolStatus
-from pistachio.storage.firestore import deserialize_tool
+from mica.models import ToolProposal, ToolRecord, ToolStatus
+from mica.storage.firestore import deserialize_tool
 
 
 def test_deserialize_tool_record() -> None:

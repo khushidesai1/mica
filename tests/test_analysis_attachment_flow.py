@@ -18,8 +18,8 @@ from test_analysis_direct import (  # noqa: F401
     upload_http,
 )
 
-from pistachio.agents.analysis import batch_worker, direct
-from pistachio.agents.analysis.runner import TurnResult
+from mica.agents.analysis import batch_worker, direct
+from mica.agents.analysis.runner import TurnResult
 
 
 @pytest.mark.parametrize("expired", [False, True])
@@ -90,7 +90,7 @@ async def test_direct_compute_direct_files_survive(
     monkeypatch.setattr(batch_worker, "AsyncWebClient", lambda **kwargs: chat.test_slack)
     monkeypatch.setattr(batch_worker.id_token, "fetch_id_token", lambda *args: "identity")
     monkeypatch.setattr(batch_worker.httpx, "AsyncClient", lambda **kwargs: http)
-    monkeypatch.setenv("PISTACHIO_CONTROL_PLANE_URL", "https://test")
+    monkeypatch.setenv("MICA_CONTROL_PLANE_URL", "https://test")
     await batch_worker.main(compute)
     assert calls
     _, saved = await thread_state(chat, compute)
@@ -104,7 +104,7 @@ async def test_direct_compute_direct_files_survive(
     if expired:
         chat.store.path(saved["archive"]).unlink()
         shutil.rmtree(home)
-        from pistachio.agents.analysis.attachments import materialize
+        from mica.agents.analysis.attachments import materialize
 
         files = materialize(chat.store, Path(saved["context"]["workdir"]), saved["thread_files"])
         assert len(files) == 2

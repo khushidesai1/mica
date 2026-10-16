@@ -4,8 +4,8 @@ import os
 
 import pytest
 
-from pistachio.agents.analysis import memory_workspace, project_memory
-from pistachio.agents.analysis.config import Settings
+from mica.agents.analysis import memory_workspace, project_memory
+from mica.agents.analysis.config import Settings
 
 NOTE = "type: fact\nsource: Alice\nstatus: current\n\nA fact"
 

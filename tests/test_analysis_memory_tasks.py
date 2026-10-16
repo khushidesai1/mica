@@ -10,7 +10,7 @@ import pytest
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from pistachio.agents.analysis import job_lifecycle, memory_tasks
+from mica.agents.analysis import job_lifecycle, memory_tasks
 
 
 async def test_delivery_queues_but_does_not_run_editor(chat, monkeypatch):
@@ -71,7 +71,7 @@ async def test_editor_has_time_for_45_second_response(chat, monkeypatch):
 async def test_worker_slot_released_before_memory_enqueue(bridge, monkeypatch):
     import json
 
-    from pistachio.agents.analysis import access
+    from mica.agents.analysis import access
 
     bridge.settings.memory_auto_edit = True
     editor = AsyncMock()

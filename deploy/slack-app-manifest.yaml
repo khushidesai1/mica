@@ -1,10 +1,10 @@
 # Reference delta for the EXISTING Slack app. Keep its current request URL and
 # unrelated settings; do not import as a new app. Reinstall only for scope changes.
 display_information:
-  name: Pistachio
+  name: Mica
 features:
   bot_user:
-    display_name: Pistachio
+    display_name: Mica
     always_online: false
 oauth_config:
   scopes:

@@ -1,6 +1,10 @@
-# Pistachio
+# Mica
 
-Pistachio is a **Slack agent with a headless backend**. The Slack agent follows the
+Previously named Pistachio. The Python package and CLI now use `mica` and `mica-*`;
+existing `pistachio` imports, commands and `PISTACHIO_*` settings remain compatible.
+New configuration uses `MICA_*`. See [rename compatibility](docs/mica-rename.md).
+
+Mica is a **Slack agent with a headless backend**. The Slack agent follows the
 [single-session Claude design](docs/slack-agent-plan.md) and reuses the existing Slack app,
 HTTP webhook, Cloud Run service, connections, and GCP Batch Spot jobs. See
 [Slack setup and rollout](docs/slack-agent-setup.md) for configuration.
@@ -10,7 +14,7 @@ to switch back to the previous one; `switch` lists your
 projects; `switch <name or ID>` selects one for new threads. Existing threads keep their project.
 Send `help` for this quick guide or `help all` for every command.
 
-Attach images, PDFs, tables, or text directly in a project thread. Pistachio can answer visual
+Attach images, PDFs, tables, or text directly in a project thread. Mica can answer visual
 questions about supported images/PDFs in chat and use a compute worker for analysis or editing.
 It can also inspect the figures it creates and answer follow-ups about files it delivered.
 The defaults are 10 files per message, 100 MB per file, and 250 MB total. Uploaded originals
@@ -45,7 +49,7 @@ with stored records and worker schemas.
 python3.12 -m venv .venv
 .venv/bin/pip install -e '.[dev]'
 cp .env.example .env
-.venv/bin/uvicorn pistachio.api.app:app --reload --port 8080
+.venv/bin/uvicorn mica.api.app:app --reload --port 8080
 ```
 
 Check service health with `curl http://localhost:8080/api/v1/healthz`. Use Slack for conversations;
@@ -56,24 +60,24 @@ tests. It is not a scientific model substitute. See the Slack setup guide for Cl
 For the Docker isolation fixture, build the science image, start Compose, and run the smoke client:
 
 ```bash
-docker build -f docker/Dockerfile.science -t pistachio-science:local .
+docker build -f docker/Dockerfile.science -t mica-science:local .
 docker compose up --build -d
 .venv/bin/python scripts/local_fixture.py
 ```
 
 ```bash
 .venv/bin/ruff check src tests
-.venv/bin/mypy src/pistachio
+.venv/bin/mypy src/mica
 .venv/bin/pytest
 ```
 
 ## Repository map
 
-- `src/pistachio/agents`: Agents SDK harness, session adapter, context builder, and memory manager.
-- `src/pistachio/api`: headless versioned API, OIDC authentication, and Slack worker callbacks.
-- `src/pistachio/connectors`: Slack, Gmail, notifications, and read-only GitHub catalog.
-- `src/pistachio/execution`: validation plus local, Docker, and Batch backends.
-- `src/pistachio/worker`: credential-separated Batch bootstrap/collector entry point.
+- `src/mica/agents`: Agents SDK harness, session adapter, context builder, and memory manager.
+- `src/mica/api`: headless versioned API, OIDC authentication, and Slack worker callbacks.
+- `src/mica/connectors`: Slack, Gmail, notifications, and read-only GitHub catalog.
+- `src/mica/execution`: validation plus local, Docker, and Batch backends.
+- `src/mica/worker`: credential-separated Batch bootstrap/collector entry point.
 - `config/tools.yaml`: pinned Azizilab and external tool metadata.
 - `infra`: staging/production Terraform.
 

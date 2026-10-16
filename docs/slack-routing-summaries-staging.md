@@ -9,7 +9,7 @@ coordinated release. Final staging revision: `pistachio-staging-summary-8c7b5d62
 serving 100% of traffic on October 13, 2026.
 
 Ruff and strict mypy passed; **760 tests passed, 6 skipped**.
-[Final source CI](https://github.com/khushidesai1/pistachio/actions/runs/38477066111)
+[Final source CI](https://github.com/khushidesai1/mica/actions/runs/38477066111)
 passed. Preview and live health returned 200; removed UI routes returned 404; unsigned
 Slack ingress and unauthenticated internal endpoints returned 401. Promotions used idle
 boundaries and resumed the task queue. IAM, secrets, grants, and other settings were preserved.
@@ -27,7 +27,7 @@ inventory event=5b17e29fe1c4e3280f84613817b36c16 paths=2 entries=74 complete=tru
 
 The imported project guide was present in router context. Its two verified layout facts
 were committed through the normal memory backend as source `import`, commit
-`b4c585ffe57495442030488043a6cee112ba8b42` in `khushidesai1/pistachio-memory`.
+`b4c585ffe57495442030488043a6cee112ba8b42` in `khushidesai1/mica-memory`.
 The import preserved the existing working notes.
 
 Live testing exposed a model returning plain text instead of its routing tool. The bounded

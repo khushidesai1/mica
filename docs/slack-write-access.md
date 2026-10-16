@@ -6,7 +6,7 @@ administrators. See [deployment status](slack-agent-deployment.md) for the live 
 
 ## Commands
 
-Send these in a DM with Pistachio. The project argument is a Pistachio project name or ID,
+Send these in a DM with Mica. The project argument is a Mica project name or ID,
 not a Google Cloud project ID. Write administrators must also have access to that project.
 The destination must be in that project's linked data bucket. Both the user's membership
 and the bucket association are checked when granting and again during publishing; losing
@@ -34,12 +34,12 @@ artifact bucket. This prefix is excluded from the Slack deployment's temporary-d
 
 The destination can be a whole bucket or a folder prefix, but it must be within the configured
 ceiling. Prefixes end in `/`, so permission for `project-a/` does not include `project-a-backup/`.
-Inside Pistachio's own artifact bucket, only `exports/` destinations are allowed; runtime
+Inside Mica's own artifact bucket, only `exports/` destinations are allowed; runtime
 metadata, grants and checkpoints cannot be output targets.
 
 ## Saving files
 
-After granting access, ask Pistachio to save the desired results to the approved GCS folder.
+After granting access, ask Mica to save the desired results to the approved GCS folder.
 The worker stages requested files under `outputs/gcs/`.
 For example, `outputs/gcs/reports/summary.csv` becomes
 `gs://lab-outputs/liver/reports/summary.csv`. Other generated outputs retain normal Slack delivery.
@@ -59,7 +59,7 @@ before using it. Once publication begins, staged copies are immutable for safe r
 revised results at a new destination path.
 
 The same grant permits new files and confirmed overwrites. Name the destination when asking
-to replace an existing output. Before starting the worker, Pistachio probes each requested path once
+to replace an existing output. Before starting the worker, Mica probes each requested path once
 and presents the nonempty folders/files in a concise summary with **Approve and run** and **Cancel** buttons.
 Only the requester can approve it in the original Slack thread. Approval expires after one
 hour if unused; a confirmed run stays bounded by its normal execution limits. There is no
@@ -136,7 +136,7 @@ The broker time slice accepts 1–840 seconds and is copied into each run's requ
 Server-side copies additionally require `storage.objects.get` for the writer on staged exports
 in the artifact bucket: `tasks/slack-analysis/events/<event_id>/write-exports/`. Grant only source
 read access, not source writes or access to other event records. Staging uses the get-only custom
-role `pistachio_staging_export_reader` with a conditional bucket binding; this prerequisite was
+role `mica_staging_export_reader` with a conditional bucket binding; this prerequisite was
 applied separately with explicit authorization. The existing Terraform file does not provision
 that additional binding. The controller already has source-delete access for cleanup.
 

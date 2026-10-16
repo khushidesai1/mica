@@ -9,11 +9,11 @@ import pytest
 from test_development import ANALYSIS, REGRESSION, configuration, make_bundle
 from test_technical_autonomy import development_task
 
-from pistachio.agents.harness import AgentHarness
-from pistachio.execution.backends import LocalExecutor
-from pistachio.execution.checks import api_capabilities, runtime_probe
-from pistachio.execution.workspace import WorkspaceStore
-from pistachio.models import (
+from mica.agents.harness import AgentHarness
+from mica.execution.backends import LocalExecutor
+from mica.execution.checks import api_capabilities, runtime_probe
+from mica.execution.workspace import WorkspaceStore
+from mica.models import (
     CandidateReview,
     DecisionSet,
     DevelopmentAction,
@@ -28,7 +28,7 @@ from pistachio.models import (
     TaskStatus,
     VerificationReport,
 )
-from pistachio.services.development import DevelopmentService
+from mica.services.development import DevelopmentService
 
 
 def plan(probe_id="probe"):

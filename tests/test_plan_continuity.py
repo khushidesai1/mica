@@ -6,8 +6,8 @@ import pytest
 from conftest import task_service
 from test_planner_v2 import StagedHarness
 
-from pistachio.agents.harness import AgentHarness
-from pistachio.models import (
+from mica.agents.harness import AgentHarness
+from mica.models import (
     AnalysisStep,
     ConversationMessage,
     DecisionScope,
@@ -28,7 +28,7 @@ from pistachio.models import (
     TaskSource,
     TaskStatus,
 )
-from pistachio.services.amendments import (
+from mica.services.amendments import (
     AMENDMENT_FAILURE_MESSAGE,
     AmendmentNeedsInput,
     apply_plan_amendment,
@@ -445,7 +445,7 @@ async def test_handoff_is_protected_when_advisory_memory_exceeds_budget(reposito
 async def test_conversation_agent_receives_question_and_effective_values(monkeypatch, settings):
     import json
 
-    from pistachio.connectors.presentation import TaskConversationAgent, UserFacingMessage
+    from mica.connectors.presentation import TaskConversationAgent, UserFacingMessage
 
     baseline = handoff()
     plan = apply_plan_amendment(baseline, sample_edit())
@@ -467,5 +467,5 @@ async def test_conversation_agent_receives_question_and_effective_values(monkeyp
         }
         return SimpleNamespace(final_output=UserFacingMessage(text=plan.amendment_explanation))
 
-    monkeypatch.setattr("pistachio.connectors.presentation.Runner.run", run)
+    monkeypatch.setattr("mica.connectors.presentation.Runner.run", run)
     assert await agent.render_replan(task) == plan.amendment_explanation

@@ -4,8 +4,8 @@ import tarfile
 
 import pytest
 
-from pistachio.agents.analysis.checkpoints import Stages, workspace_snapshot
-from pistachio.agents.analysis.storage import LocalStorage
+from mica.agents.analysis.checkpoints import Stages, workspace_snapshot
+from mica.agents.analysis.storage import LocalStorage
 
 
 def test_stage_is_immutable_and_restores_under_checkpoint_root(tmp_path):
@@ -84,7 +84,7 @@ def test_recovery_keeps_valid_stages_and_repeats_corrupt_ones(tmp_path):
 
 
 def test_full_snapshot_excludes_all_datasets_and_keeps_references(tmp_path):
-    from pistachio.agents.analysis.batch_worker import restore
+    from mica.agents.analysis.batch_worker import restore
 
     home = tmp_path / "home"
     root = home / "work/thread"

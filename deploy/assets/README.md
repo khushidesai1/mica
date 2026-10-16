@@ -1,7 +1,7 @@
 # Slack loading circle
 
-Upload `pistachio-loading.gif` as the workspace emoji `pistachio-loading`, then
-set `AGENT_LOADING_EMOJI=:pistachio-loading:` on the existing Cloud Run service.
+Upload `mica-loading.gif` as the workspace emoji `mica-loading`, then
+set `AGENT_LOADING_EMOJI=:mica-loading:` on the existing Cloud Run service.
 The API forwards this setting to new Slack workers.
 
 The GIF has 24 frames, a transparent background, and a 128×128 canvas. It is

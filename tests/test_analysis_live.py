@@ -7,16 +7,16 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.runner import Context, Runner
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.runner import Context, Runner
 
 
 @pytest.mark.live
 async def test_real_plot_and_resume(tmp_path):
     from make_fixture import make_fixture
 
-    if os.environ.get("PISTACHIO_RUN_LIVE_TESTS") != "1" or not os.environ.get("ANTHROPIC_API_KEY"):
-        pytest.skip("Requires PISTACHIO_RUN_LIVE_TESTS=1 and ANTHROPIC_API_KEY; uses API credits")
+    if os.environ.get("MICA_RUN_LIVE_TESTS") != "1" or not os.environ.get("ANTHROPIC_API_KEY"):
+        pytest.skip("Requires MICA_RUN_LIVE_TESTS=1 and ANTHROPIC_API_KEY; uses API credits")
     make_fixture(tmp_path / "data")
     settings = Settings(
         _env_file=None,
@@ -44,7 +44,7 @@ async def test_real_plot_and_resume(tmp_path):
 
 @pytest.mark.live
 async def test_agent_looks_at_its_figure(tmp_path):
-    if os.environ.get("PISTACHIO_RUN_LIVE_TESTS") != "1" or not os.environ.get("ANTHROPIC_API_KEY"):
+    if os.environ.get("MICA_RUN_LIVE_TESTS") != "1" or not os.environ.get("ANTHROPIC_API_KEY"):
         pytest.skip("Requires explicit approval and live API credits")
     settings = Settings(
         _env_file=None,
@@ -74,9 +74,9 @@ async def test_agent_looks_at_its_figure(tmp_path):
 
 @pytest.mark.live
 async def test_observations_stay_out_of_project_guide():
-    from pistachio.agents.analysis import direct, memory_tasks
+    from mica.agents.analysis import direct, memory_tasks
 
-    if os.environ.get("PISTACHIO_RUN_LIVE_TESTS") != "1" or not os.environ.get("ANTHROPIC_API_KEY"):
+    if os.environ.get("MICA_RUN_LIVE_TESTS") != "1" or not os.environ.get("ANTHROPIC_API_KEY"):
         pytest.skip("Requires explicit approval and live API credits")
     settings = Settings(_env_file=None)
     key = os.environ["ANTHROPIC_API_KEY"]

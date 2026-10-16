@@ -1,6 +1,6 @@
 """Offline registry fixtures shared by Slack integration tests."""
 
-from pistachio.agents.analysis.registry import Registry
+from mica.agents.analysis.registry import Registry
 
 
 def seed_project(
@@ -36,9 +36,9 @@ async def memory_message(chat, *args, **kwargs):
 
     from test_analysis_isolation import message
 
-    from pistachio.agents.analysis import memory_tasks
+    from mica.agents.analysis import memory_tasks
 
-    with patch("pistachio.agents.analysis.job_lifecycle.enqueue", AsyncMock()) as enqueue:
+    with patch("mica.agents.analysis.job_lifecycle.enqueue", AsyncMock()) as enqueue:
         record = await message(chat, *args, **kwargs)
     for call in enqueue.call_args_list:
         path = call.args[2]

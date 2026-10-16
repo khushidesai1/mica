@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from pistachio.agents.analysis.limits import PREVIEW_MAX_BYTES, PREVIEW_MAX_EDGE
+from mica.agents.analysis.limits import PREVIEW_MAX_BYTES, PREVIEW_MAX_EDGE
 
 Image.MAX_IMAGE_PIXELS = 250_000_000
 

@@ -8,10 +8,10 @@ from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 from test_analysis_isolation import message
 
-from pistachio.agents.analysis import direct
-from pistachio.agents.analysis.access import checkpoint_key
-from pistachio.agents.analysis.commands import Command, parse
-from pistachio.agents.analysis.registry import Registry
+from mica.agents.analysis import direct
+from mica.agents.analysis.access import checkpoint_key
+from mica.agents.analysis.commands import Command, parse
+from mica.agents.analysis.registry import Registry
 
 
 @pytest.mark.parametrize(

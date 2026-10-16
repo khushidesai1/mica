@@ -63,7 +63,7 @@ task-scoped approval. Cosmetic presentation and routine implementation settings 
 their effective values and sources are retained. Parameter sweeps and automatic tuning require
 explicit authorization.
 
-`PISTACHIO_PLANNER_VERSION=2` enables the staged pipeline for newly created tasks. Existing tasks
+`MICA_PLANNER_VERSION=2` enables the staged pipeline for newly created tasks. Existing tasks
 retain the planner version stored on their record and continue through the legacy workflow.
 
 The local executor exists only for tests/development. The Docker executor applies a read-only root,

@@ -203,8 +203,8 @@ Obtain human approval before **each** cloud build, configuration change, deploy,
 Do not infer permission from completion of local tests. The rollout sequence is:
 
 1. Run `.venv/bin/pytest -q`, `.venv/bin/ruff check src tests tools`, and
-   `.venv/bin/mypy src/pistachio`. The opt-in `test_agent_looks_at_its_figure` remains skipped
-   unless `PISTACHIO_RUN_LIVE_TESTS=1` is explicitly approved.
+   `.venv/bin/mypy src/mica`. The opt-in `test_agent_looks_at_its_figure` remains skipped
+   unless `MICA_RUN_LIVE_TESTS=1` is explicitly approved.
 2. Build API and worker images **from one commit**. For a deployment onto the existing pinned
    runtime, use `cloudbuild/build-slack-release.yaml`: it preserves the API dependencies, adds the
    pinned PDF renderer to the worker, and verifies installed source, attachment transport, real
@@ -214,7 +214,7 @@ Do not infer permission from completion of local tests. The rollout sequence is:
 3. Drain queued/running work before promotion. Old workers write checkpoints without
    `thread_files` and would discard references for an active thread during a mixed rollout.
 4. Deploy a tagged API revision with no traffic, pairing the API image with the new worker
-   digest in `PISTACHIO_SLACK_AGENT_IMAGE`. Preserve all existing environment and secret mappings.
+   digest in `MICA_SLACK_AGENT_IMAGE`. Preserve all existing environment and secret mappings.
    Upload caps default to 10 / 100 MB / 250 MB; merge overrides only if requested.
 5. Check health and authenticated worker callbacks. With approval, test in a staging DM:
    screenshot question without compute; CSV → plot → larger points; a follow-up asking about
@@ -325,7 +325,7 @@ workspace to be checkpointed so the next request can resend the same reports.
 - Local suite: 394 passed, 4 skipped; Ruff and strict mypy passed. After adding the exact
   nested-file case, all 18 Slack tests passed. In-image checks covered nested PDF/PNG uploads,
   resends, upload failures, source synchronization, worker contracts, and private socket paths.
-- Synthetic live canary `pistachio-delivery-canary-20261005` succeeded in 43.93 seconds of
+- Synthetic live canary `mica-delivery-canary-20261005` succeeded in 43.93 seconds of
   worker runtime. The live model chose inventory/reply for a metadata listing and compute for
   resending files; its casual response was prose. It generated a nested PDF and PNG, resent
   the unchanged files, reported a simulated upload failure, and preserved both through a GCS
@@ -358,7 +358,7 @@ and duplicate notification handling are covered by regression tests.
 - Local verification: 362 tests passed, 4 skipped; Ruff, strict mypy, and diff checks passed.
   In-image checks covered source synchronization, worker contracts, headless endpoints,
   project controls, socket paths, cwd settings, and deployment-build callback handling.
-- Real worker `pistachio-cwd-canary-20261005-v4` reproduced the persisted data-directory cwd
+- Real worker `mica-cwd-canary-20261005-v4` reproduced the persisted data-directory cwd
   with the old setting, resumed that same SDK session with the fix, and verified Python
   started in the writable workspace after a separate compound directory-change command.
   The synthetic fixture did not reproduce the exact metadata-creation error; the test
@@ -395,7 +395,7 @@ remain enforced; no additional container privileges or IAM grants were added.
 - Shared science worker: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/science@sha256:a0196cae8d00d9ba722794ed68431c8b3fac4ab03cc5e2394f7993bb3cac1287`.
 - 358 tests passed, 4 skipped; Ruff and strict mypy passed. Real Unix socket creation and scratch
   cleanup are covered by regression tests and by the Linux worker-image build gate.
-- Live canary `pistachio-socket-canary-20261005` succeeded before promotion, with a 129-byte
+- Live canary `mica-socket-canary-20261005` succeeded before promotion, with a 129-byte
   private workspace path, synthetic plotting, GCS session restoration, and a successful resumed
   turn. All eight isolation probes passed. Worker runtime was 71.19 seconds; model cost was
   $0.236102 excluding cloud resources. The temporary credential grant was deactivated.
@@ -446,7 +446,7 @@ Release evidence is in `.pistachio/deployments/full-sync-20261005/`, including s
 digest pins, endpoint checks, migration checks, and backup object generations. No test Slack
 message or upload is sent by the deployment checks.
 
-Live synthetic acceptance job `pistachio-full-sync-canary-20261005` succeeded in 62.72 seconds
+Live synthetic acceptance job `mica-full-sync-canary-20261005` succeeded in 62.72 seconds
 of worker runtime. It authenticated to the new ACL-enforced credential endpoint, verified Slack
 scopes, generated a synthetic-data plot, round-tripped the session archive through GCS, and
 resumed the same session to edit and rerun its script. All eight isolation probes passed:
@@ -493,7 +493,7 @@ The original rollout used `pistachio-staging-00073-ruj`; subsequent selective ov
 
 ## Live acceptance
 
-Canary job: `pistachio-slack-canary-20261001-d` in `us-central1`, one n2-highmem-8 Spot instance.
+Canary job: `mica-slack-canary-20261001-d` in `us-central1`, one n2-highmem-8 Spot instance.
 Each Claude test turn is capped at $3. The canary does not post Slack messages. It checks the
 existing Slack token with auth.test, uses the worker-authenticated preview endpoint for keys,
 reads only synthetic fixture data, and tests sandbox isolation, plotting and session restoration.
@@ -546,7 +546,7 @@ retention policy. No user data is migrated or deleted by this rollout.
 ## First use and remaining acceptance
 
 The existing app receives DMs via `message.im`; optional channel-mention scopes/subscriptions
-were not added. In the existing Pistachio agent DM, send `help`, then
+were not added. In the existing Mica agent DM, send `help`, then
 `init <project-slug> gs://bucket/prefix/` and approve its draft with `save brief`.
 The synthetic test folder is `gs://pistachio-staging-artifacts-5304c19c/inputs/slack-fixture/`.
 The follow-up enables automatic buckets in `azizilab-aml`, including the user-selected real bucket
@@ -721,7 +721,7 @@ The completed task list remains expandable after the answer is delivered. Tasks 
 short public tool descriptions, not raw commands, tool output, or model reasoning.
 
 Startup and compact fallback statuses use the installed workspace emoji
-`:pistachio-loading:`. Native plan cards supply their own circular progress indicator.
+`:mica-loading:`. Native plan cards supply their own circular progress indicator.
 If Slack rejects plan blocks, the run falls back to the existing compact status.
 Updates remain throttled and failed updates are retried by the heartbeat.
 

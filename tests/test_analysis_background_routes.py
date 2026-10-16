@@ -7,8 +7,8 @@ from fastapi import HTTPException
 from starlette.requests import Request
 from test_analysis_batch import bridge  # noqa: F401
 
-from pistachio.agents.analysis import memory_compaction, memory_tasks
-from pistachio.api import slack_analysis
+from mica.agents.analysis import memory_compaction, memory_tasks
+from mica.api import slack_analysis
 
 
 def request(bridge):

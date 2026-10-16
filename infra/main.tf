@@ -75,12 +75,12 @@ resource "google_artifact_registry_repository" "images" {
 
 resource "google_service_account" "control" {
   account_id   = "${local.name}-control"
-  display_name = "Pistachio control plane"
+  display_name = "Mica control plane"
 }
 
 resource "google_service_account" "worker" {
   account_id   = "${local.name}-worker"
-  display_name = "Pistachio Batch collector"
+  display_name = "Mica Batch collector"
 }
 
 # Runtime identities receive object access only on the deployment-managed buckets. They cannot
@@ -236,123 +236,123 @@ resource "google_cloud_run_v2_service" "api" {
         limits = { cpu = "1", memory = "1Gi" }
       }
       env {
-        name  = "PISTACHIO_ENV"
+        name  = "MICA_ENV"
         value = var.environment
       }
       env {
-        name  = "PISTACHIO_STORE_BACKEND"
+        name  = "MICA_STORE_BACKEND"
         value = "firestore"
       }
       env {
-        name  = "PISTACHIO_EXECUTION_BACKEND"
+        name  = "MICA_EXECUTION_BACKEND"
         value = "gcp_batch"
       }
       env {
-        name  = "PISTACHIO_AUTH_MODE"
+        name  = "MICA_AUTH_MODE"
         value = "oidc"
       }
       env {
-        name  = "PISTACHIO_PLANNER_VERSION"
+        name  = "MICA_PLANNER_VERSION"
         value = tostring(var.planner_version)
       }
       env {
-        name  = "PISTACHIO_MASTER_PLANNER_MODEL"
+        name  = "MICA_MASTER_PLANNER_MODEL"
         value = "gpt-5.6-sol"
       }
       env {
-        name  = "PISTACHIO_WORKER_MODEL"
+        name  = "MICA_WORKER_MODEL"
         value = "gpt-6-luna"
       }
       env {
-        name  = "PISTACHIO_WORKER_FALLBACK_MODEL"
+        name  = "MICA_WORKER_FALLBACK_MODEL"
         value = "gpt-5.6-sol"
       }
       env {
-        name  = "PISTACHIO_WORKER_REASONING_EFFORT"
+        name  = "MICA_WORKER_REASONING_EFFORT"
         value = "low"
       }
       env {
-        name  = "PISTACHIO_MASTER_PLANNER_TIMEOUT_SECONDS"
+        name  = "MICA_MASTER_PLANNER_TIMEOUT_SECONDS"
         value = "180"
       }
       env {
-        name  = "PISTACHIO_WORKER_TIMEOUT_SECONDS"
+        name  = "MICA_WORKER_TIMEOUT_SECONDS"
         value = "150"
       }
       env {
-        name  = "PISTACHIO_ALLOWED_EMAILS"
+        name  = "MICA_ALLOWED_EMAILS"
         value = var.allowed_emails
       }
       env {
-        name  = "PISTACHIO_GCP_PROJECT"
+        name  = "MICA_GCP_PROJECT"
         value = var.project_id
       }
       env {
-        name  = "PISTACHIO_GCP_REGION"
+        name  = "MICA_GCP_REGION"
         value = var.region
       }
       env {
-        name  = "PISTACHIO_GCS_BUCKET"
+        name  = "MICA_GCS_BUCKET"
         value = google_storage_bucket.artifacts.name
       }
       env {
-        name  = "PISTACHIO_GCS_QUARANTINE_BUCKET"
+        name  = "MICA_GCS_QUARANTINE_BUCKET"
         value = google_storage_bucket.artifacts.name
       }
       env {
-        name  = "PISTACHIO_ARTIFACT_ROOT"
-        value = "/tmp/pistachio"
+        name  = "MICA_ARTIFACT_ROOT"
+        value = "/tmp/mica"
       }
       env {
-        name  = "PISTACHIO_BATCH_SERVICE_ACCOUNT"
+        name  = "MICA_BATCH_SERVICE_ACCOUNT"
         value = google_service_account.worker.email
       }
       env {
-        name  = "PISTACHIO_DEVELOPMENT_LATENCY_ENABLED"
+        name  = "MICA_DEVELOPMENT_LATENCY_ENABLED"
         value = tostring(var.development_latency_enabled)
       }
       env {
-        name  = "PISTACHIO_WORKER_SESSIONS_ENABLED"
+        name  = "MICA_WORKER_SESSIONS_ENABLED"
         value = tostring(var.worker_sessions_enabled)
       }
       env {
-        name  = "PISTACHIO_BATCH_IMAGE"
+        name  = "MICA_BATCH_IMAGE"
         value = var.science_image
       }
       env {
-        name  = "PISTACHIO_BATCH_NETWORK"
+        name  = "MICA_BATCH_NETWORK"
         value = var.batch_network
       }
       env {
-        name  = "PISTACHIO_BATCH_SUBNETWORK"
+        name  = "MICA_BATCH_SUBNETWORK"
         value = var.batch_subnetwork
       }
       env {
-        name  = "PISTACHIO_CLOUD_TASKS_QUEUE"
+        name  = "MICA_CLOUD_TASKS_QUEUE"
         value = google_cloud_tasks_queue.tasks.name
       }
       env {
-        name  = "PISTACHIO_CLOUD_TASKS_SERVICE_ACCOUNT"
+        name  = "MICA_CLOUD_TASKS_SERVICE_ACCOUNT"
         value = google_service_account.control.email
       }
       env {
-        name  = "PISTACHIO_CONTROL_PLANE_URL"
+        name  = "MICA_CONTROL_PLANE_URL"
         value = var.control_plane_url
       }
       env {
-        name  = "PISTACHIO_OIDC_AUDIENCE"
+        name  = "MICA_OIDC_AUDIENCE"
         value = var.control_plane_url
       }
       env {
-        name  = "PISTACHIO_SLACK_USER_MAP"
+        name  = "MICA_SLACK_USER_MAP"
         value = var.slack_user_map
       }
       env {
-        name  = "PISTACHIO_SLACK_AGENT_BACKEND"
+        name  = "MICA_SLACK_AGENT_BACKEND"
         value = var.slack_agent_enabled ? "claude_batch" : "existing"
       }
       env {
-        name  = "PISTACHIO_SLACK_AGENT_IMAGE"
+        name  = "MICA_SLACK_AGENT_IMAGE"
         value = var.slack_agent_image
       }
       env {
@@ -400,23 +400,23 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
       env {
-        name  = "PISTACHIO_COMPLETION_TOPIC"
+        name  = "MICA_COMPLETION_TOPIC"
         value = google_pubsub_topic.completion.name
       }
       env {
-        name  = "PISTACHIO_GMAIL_ACCOUNT"
+        name  = "MICA_GMAIL_ACCOUNT"
         value = var.gmail_account
       }
       env {
-        name  = "PISTACHIO_GMAIL_PUBSUB_TOPIC"
+        name  = "MICA_GMAIL_PUBSUB_TOPIC"
         value = google_pubsub_topic.gmail.id
       }
       env {
-        name  = "PISTACHIO_TOOL_BUILD_TRIGGER"
+        name  = "MICA_TOOL_BUILD_TRIGGER"
         value = var.tool_build_trigger
       }
       env {
-        name  = "PISTACHIO_TOOL_IMAGE_REPOSITORY"
+        name  = "MICA_TOOL_IMAGE_REPOSITORY"
         value = "${var.region}-docker.pkg.dev/${var.project_id}/${google_artifact_registry_repository.images.repository_id}/tools"
       }
       env {
@@ -429,7 +429,7 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
       env {
-        name = "PISTACHIO_SLACK_BOT_TOKEN"
+        name = "MICA_SLACK_BOT_TOKEN"
         value_source {
           secret_key_ref {
             secret  = google_secret_manager_secret.secrets["slack-bot-token"].secret_id
@@ -438,7 +438,7 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
       env {
-        name = "PISTACHIO_SLACK_SIGNING_SECRET"
+        name = "MICA_SLACK_SIGNING_SECRET"
         value_source {
           secret_key_ref {
             secret  = google_secret_manager_secret.secrets["slack-signing-secret"].secret_id
@@ -447,7 +447,7 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
       env {
-        name = "PISTACHIO_GITHUB_APP_TOKEN"
+        name = "MICA_GITHUB_APP_TOKEN"
         value_source {
           secret_key_ref {
             secret  = google_secret_manager_secret.secrets["github-app-token"].secret_id
@@ -456,7 +456,7 @@ resource "google_cloud_run_v2_service" "api" {
         }
       }
       env {
-        name = "PISTACHIO_SIGNED_LINK_SECRET"
+        name = "MICA_SIGNED_LINK_SECRET"
         value_source {
           secret_key_ref {
             secret  = google_secret_manager_secret.secrets["signed-link-secret"].secret_id

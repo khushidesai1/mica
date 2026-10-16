@@ -6,15 +6,15 @@ from analysis_helpers import memory_message as message
 from test_analysis_batch import bridge  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from pistachio.agents.analysis import direct, memory_workspace, project_memory
-from pistachio.agents.analysis.config import Settings
+from mica.agents.analysis import direct, memory_workspace, project_memory
+from mica.agents.analysis.config import Settings
 
 
 async def test_init_saves_guide_and_legacy_commands_explain_autosave(chat, monkeypatch):
     monkeypatch.setattr(direct, "inventory", lambda *args, **kwargs: {"entries": []})
     chat.decision.return_value = direct.Decision(route="reply", reply="Ready.", guide="# New guide")
     await message(chat, "init new gs://lab-data/new/ --force", "1.0")
-    from pistachio.agents.analysis.registry import Registry
+    from mica.agents.analysis.registry import Registry
 
     pid = Registry(chat.store).load().bound("T1", "D1")
     assert (await chat.memory_backend.read(pid)).files["PROJECT.md"].text == "# New guide"

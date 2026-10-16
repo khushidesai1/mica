@@ -6,9 +6,9 @@ import pytest
 from conftest import task_service
 from test_planner_v2 import StagedHarness
 
-from pistachio.execution.backends import LocalExecutor
-from pistachio.execution.workspace import WorkspaceStore, digest
-from pistachio.models import (
+from mica.execution.backends import LocalExecutor
+from mica.execution.workspace import WorkspaceStore, digest
+from mica.models import (
     ApprovalKind,
     ApprovalRequest,
     ApprovalStatus,
@@ -29,7 +29,7 @@ from pistachio.models import (
     ToolRecord,
     ToolStatus,
 )
-from pistachio.services.development import DevelopmentConflict, DevelopmentService
+from mica.services.development import DevelopmentConflict, DevelopmentService
 
 
 async def development_task(repository, settings):
@@ -251,7 +251,7 @@ async def test_package_build_is_automatic_or_technical_failure(repository, setti
 
 
 def test_compute_reuse_ignores_prose_but_not_increased_resources():
-    from pistachio.services.tasks import TaskService
+    from mica.services.tasks import TaskService
 
     old = ApprovalRequest(
         task_id="t",

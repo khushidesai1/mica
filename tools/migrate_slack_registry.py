@@ -8,15 +8,15 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
-from pistachio.agents.analysis.identity import normalize
-from pistachio.agents.analysis.registry import (
+from mica.agents.analysis.identity import normalize
+from mica.agents.analysis.registry import (
     REGISTRY_KEY,
     Binding,
     ProjectEntry,
     Registry,
     RegistryDoc,
 )
-from pistachio.agents.analysis.storage import GCSStorage, LocalStorage, Storage, update_model
+from mica.agents.analysis.storage import GCSStorage, LocalStorage, Storage, update_model
 
 
 def report(storage: Storage, user_map: dict[str, str], team: str) -> list[dict[str, object]]:

@@ -52,9 +52,9 @@ steps:
         import asyncio
         import tempfile
         from pathlib import Path
-        from pistachio.config import Settings
-        from pistachio.execution.backends import LocalExecutor
-        from pistachio.models import ExecutionBundle, ResourcePlan, TaskContract, ToolPlan
+        from mica.config import Settings
+        from mica.execution.backends import LocalExecutor
+        from mica.models import ExecutionBundle, ResourcePlan, TaskContract, ToolPlan
 
         script = '''"""Smoke-test the isolated Matplotlib runtime."""
         import argparse
@@ -68,7 +68,7 @@ steps:
         args.output_dir.mkdir(parents=True, exist_ok=True)
         (args.output_dir / "matplotlib-version.txt").write_text(matplotlib.__version__)
         '''
-        with tempfile.TemporaryDirectory(prefix="pistachio-smoke-") as workdir:
+        with tempfile.TemporaryDirectory(prefix="mica-smoke-") as workdir:
             bundle = ExecutionBundle(
                 task_id="task_runtime_smoke",
                 script=script,
@@ -98,7 +98,7 @@ steps:
           --region="${_REGION}" \
           --platform=managed \
           --image="$${api_repository}@$${api_digest}" \
-          --update-env-vars="PISTACHIO_BATCH_IMAGE=$${science_repository}@$${science_digest}"
+          --update-env-vars="MICA_BATCH_IMAGE=$${science_repository}@$${science_digest}"
 timeout: 1800s
 options:
   logging: CLOUD_LOGGING_ONLY

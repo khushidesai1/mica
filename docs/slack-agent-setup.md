@@ -1,6 +1,6 @@
-# Slack-first agent rollout inside Pistachio
+# Slack-first agent rollout inside Mica
 
-The Claude agent runs inside the existing Pistachio app. Slack is the conversational interface;
+The Claude agent runs inside the existing Mica app. Slack is the conversational interface;
 the web application has been removed. The shared task service and all connection, memory, and
 execution capabilities remain behind the headless HTTP service. Nothing is moved into `legacy/`.
 
@@ -23,7 +23,7 @@ request a project-scoped metadata listing, or request isolated computation. API 
 a visible retry message, never a worker fallback. Cancellation bypasses queued work and stops
 the active job without starting a new one.
 
-The new worker calls the Claude Agent SDK directly. It does not invoke Pistachio's shared task planners,
+The new worker calls the Claude Agent SDK directly. It does not invoke Mica's shared task planners,
 TaskContract generation, approval stages, or multi-stage execution pipeline. Each Slack thread
 has one resumed Claude compute session, a workspace, and the current shared `knowledge/PROJECT.md` guide.
 The brief stays unchanged by default. It is revised only when requested or when user-provided
@@ -65,7 +65,7 @@ a fresh Claude context starts from the authorized brief. Arbitrary Slack history
 - Artifact bucket: `pistachio-staging-artifacts-5304c19c`.
 - Control identity: `pistachio-staging-control@azizilab-aml.iam.gserviceaccount.com`.
 - Worker identity: `pistachio-staging-worker@azizilab-aml.iam.gserviceaccount.com`.
-- Existing Slack bot token and signing secret. The old `PISTACHIO_SLACK_USER_MAP` is used only by the legacy mapped mode and migration.
+- Existing Slack bot token and signing secret. The old `MICA_SLACK_USER_MAP` is used only by the legacy mapped mode and migration.
 - Existing Batch worker network/subnetwork: `default`; private workers have no external IPs.
 
 Deployment verification found existing `nat-router` / `nat-config` covering all subnets on
@@ -75,16 +75,16 @@ access to Slack, Claude and Google APIs.
 
 ## Prepared code and rollout controls
 
-- `src/pistachio/agents/analysis/`: single-session agent, briefs, provenance and Spot adapter.
+- `src/mica/agents/analysis/`: single-session agent, briefs, provenance and Spot adapter.
 - `docker/Dockerfile.slack-agent`: extends the existing pinned science image with the SDK,
   `socat`, and metadata inspection tools. The shared task worker keeps its compatible image.
 - `cloudbuild/build-slack-agent.yaml`: builds the new image only.
 - `infra/slack_agent.tf` and optional variables: project-prefix write access, selected data bucket
   readers and optional NAT. No runtime Secret Manager permission is added to the worker.
-- `PISTACHIO_SLACK_AGENT_BACKEND=existing` is the default. Set `claude_batch` only at cutover.
-- `PISTACHIO_SLACK_AGENT_IMAGE` must be a digest-pinned image.
+- `MICA_SLACK_AGENT_BACKEND=existing` is the default. Set `claude_batch` only at cutover.
+- `MICA_SLACK_AGENT_IMAGE` must be a digest-pinned image.
 
-The existing worker identity already has project-wide objectAdmin access from Pistachio's current
+The existing worker identity already has project-wide objectAdmin access from Mica's current
 infrastructure (verified during the follow-up rollout). This change reuses it rather than claiming the plan's dedicated least-privilege
 identity. Only configured buckets are mounted, mounts are read-only, and tools are restricted
 to the current project's data path. The current staging deployment has already opted into the
@@ -132,8 +132,8 @@ Keep this flag false by default and rerun the isolation gate before changing the
      --substitutions=_SCIENCE_IMAGE=EXISTING_SCIENCE_DIGEST,_SLACK_IMAGE=NEW_WORKER_TAG
    ```
 
-   Resolve the resulting worker image digest. Build/deploy the updated API through Pistachio's
-   existing release path, initially with `PISTACHIO_SLACK_AGENT_BACKEND=existing`.
+   Resolve the resulting worker image digest. Build/deploy the updated API through Mica's
+   existing release path, initially with `MICA_SLACK_AGENT_BACKEND=existing`.
 4. Prepare a Terraform plan against the **existing state**, preserving all existing values:
    `slack_agent_image`, `slack_agent_data_buckets`, `slack_agent_anthropic_secret`, `slack_agent_data_project`, and optionally
    `slack_agent_nat_enabled=true`. Leave `slack_agent_enabled=false` while preparing. Review
@@ -150,7 +150,7 @@ Keep this flag false by default and rerun the isolation gate before changing the
    existing bot DM is sufficient. Do not enable Socket Mode or import a new app.
 7. Run the Linux isolation and live fixture checks in `docs/acceptance.md` with the pinned worker
    image and real private data mounts. Then cut over Slack only using
-   `PISTACHIO_SLACK_AGENT_BACKEND=claude_batch` (Terraform: `slack_agent_enabled=true`).
+   `MICA_SLACK_AGENT_BACKEND=claude_batch` (Terraform: `slack_agent_enabled=true`).
 8. In the existing bot DM, send `init project-slug gs://bucket/prefix/` and review the saved guide. A mention is unnecessary in the DM. New top-level messages start threads;
    reply in the bot's thread to continue an analysis. In a channel, mention the bot on the initial
    message and commands. Reply with missing details or corrections in ordinary language to revise
@@ -208,15 +208,15 @@ Retain the registry, private memory, and lifecycle rules; legacy files do not ma
 ```bash
 .venv/bin/pip install -e '.[dev,slack,analysis-test]'
 .venv/bin/python tests/make_fixture.py ./fixture_data
-.venv/bin/python -m pistachio.agents.analysis.cli --help
+.venv/bin/python -m mica.agents.analysis.cli --help
 .venv/bin/pytest -q
 .venv/bin/ruff check src tests tools
-.venv/bin/mypy src/pistachio
+.venv/bin/mypy src/mica
 ```
 
 The local CLI can use `--no-sandbox` on macOS only. Slack commands use the HTTP control plane;
 the Socket Mode entrypoint has been removed. Live testing requires explicit
-`PISTACHIO_RUN_LIVE_TESTS=1` and an API key. See the
+`MICA_RUN_LIVE_TESTS=1` and an API key. See the
 [Claude SDK reference](https://code.claude.com/docs/en/agent-sdk/python),
 [Batch volume reference](https://docs.cloud.google.com/batch/docs/reference/rest/v1/projects.locations.jobs#Volume),
 and [gcsfuse flags](https://docs.cloud.google.com/storage/docs/cloud-storage-fuse/cli-options).
@@ -254,7 +254,7 @@ Attach images, PDFs, tables (`.csv`, `.tsv`, `.xlsx`, `.parquet`, `.json`, `.h5a
 in a project thread and say what you want to do. File-only messages get a short clarification.
 Questions about a supported image or PDF can be answered directly; data analysis, re-plotting,
 large images and full-table inspection use a compute worker. The worker sees read-only copies
-under `inputs/`. Follow-ups can refer to uploads or files Pistachio delivered earlier.
+under `inputs/`. Follow-ups can refer to uploads or files Mica delivered earlier.
 
 Default upload caps are **10 files per message, 100 MB per file, and 250 MB per message**,
 configurable with `AGENT_ATTACHMENT_MAX_FILES`, `AGENT_ATTACHMENT_MAX_MB`, and
@@ -304,7 +304,7 @@ they do not establish scientific correctness. SVG and HEIC require a PNG alterna
 
 The live bot uses `AGENT_ACCESS_MODE=workspace`: active human members of its Slack workspace
 can use their own private agent DM without joining an access channel. Slack must expose a valid
-email for the member. Projects and personal memory stay private; adding Pistachio to a channel
+email for the member. Projects and personal memory stay private; adding Mica to a channel
 does not publish any DM content. Invite the bot, explicitly `publish <project> #channel` from
 the owner's DM, then mention it with `switch <project>` in that channel. Other people need
 explicit project sharing to invoke it; channel viewers can read replies posted there.
@@ -318,7 +318,7 @@ The bot obtains each human member's normalized email from Slack. That retains th
 per-email project/memory identity, provided the previous manual mapping matched their Slack email.
 A bot, deleted user, wrong-workspace request, or missing readable email is denied. Review mismatched
 legacy mappings during migration; never automatically merge different identities. In workspace or channel mode,
-`PISTACHIO_SLACK_USER_MAP`, `PISTACHIO_ALLOWED_EMAILS`, and `AGENT_ALLOWED_USER_IDS` do not restrict
+`MICA_SLACK_USER_MAP`, `MICA_ALLOWED_EMAILS`, and `AGENT_ALLOWED_USER_IDS` do not restrict
 Slack admission. The task API keeps its existing email allowlist and OIDC authentication.
 `AGENT_ACCESS_MODE=mapped` explicitly retains the previous manual Slack mapping/allowlist behavior.
 
@@ -346,7 +346,7 @@ The live workspace mode does not need this onboarding:
    `app_mentions:read`, and chat permissions; subscribe to `app_mention`. Apply the delta in
    `deploy/slack-app-manifest.yaml` to the existing app and reinstall if Slack requires it.
    The existing signed HTTP webhook is retained. No Socket Mode or new bot is needed.
-3. Invite Pistachio to a channel. A designated admin sends `@Pistachio enable this channel`.
+3. Invite Mica to a channel. A designated admin sends `@Mica enable this channel`.
    The bot checks workspace identity, channel visibility, membership-read and email permissions,
    then records approval. This works for public and private channels. Inviting the bot alone does
    not authorize access, and an ordinary member cannot enable a new channel.
@@ -354,7 +354,7 @@ The live workspace mode does not need this onboarding:
    configuration or redeployment per channel. Members can then initialize their own projects
    in DMs. Use explicit project `publish` and `use` commands when a project should reply in a
    channel; enabling an access channel does not expose a project there.
-5. An admin can send `@Pistachio disable this channel` to remove that channel from admission,
+5. An admin can send `@Mica disable this channel` to remove that channel from admission,
    or `agent channels` in a DM to list enabled channels. These admin commands work before the
    admin has ordinary agent access, allowing the first channel to be enabled. Disable the channel
    before removing the bot; removing the bot alone is not the command to revoke approval. Any
@@ -479,7 +479,7 @@ paired image digests, and migration verification in `slack-agent-deployment.md`.
 6. Roll back only to a known ACL-compatible pair after draining. If none exists, keep Slack
    ingress disabled until repaired. Never route private-project traffic to the old slug backend.
 
-For local rehearsal, replace `--bucket` with `--local-root /tmp/pistachio-migration-fixture`.
+For local rehearsal, replace `--bucket` with `--local-root /tmp/mica-migration-fixture`.
 Keep owner maps, real configuration, Terraform state, and credentials out of Git. On another
 laptop, clone the repository, select the implementation branch, recreate the virtualenv and local
 configuration, and authenticate to the existing cloud resources. The deployed runtime and its

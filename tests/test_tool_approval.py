@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from conftest import task_service
 
-from pistachio.models import (
+from mica.models import (
     AgentTaskPlan,
     ApprovalDecision,
     ApprovalKind,

@@ -29,7 +29,7 @@ metadata snapshot: equal remote sizes alone cannot detect same-size source edits
 or checksum verification appropriate to the source to establish content equality.
 
 The proposed marker schema is in `schema/marker-v1.json`; offline fixtures and tests are in
-Pistachio's `tests/fixtures/atomx_markers/`, `tests/test_atomx_engine.py`, and
+Mica's `tests/fixtures/atomx_markers/`, `tests/test_atomx_engine.py`, and
 `tests/test_analysis_transfers.py`. The fixtures are synthetic, not a verified real lab sample.
 An independently verified host key, scratch-bucket canary, and live IAM/NAT checks are still
-required before lab rollout. See `docs/slack-agent-setup.md#transfers` in the Pistachio repository.
+required before lab rollout. See `docs/slack-agent-setup.md#transfers` in the Mica repository.

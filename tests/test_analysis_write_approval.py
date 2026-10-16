@@ -5,7 +5,7 @@ import pytest
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_write_flow import allow, writable  # noqa: F401
 
-from pistachio.agents.analysis import direct, write_access, write_approval
+from mica.agents.analysis import direct, write_access, write_approval
 
 
 @pytest.fixture
@@ -221,8 +221,8 @@ async def test_signed_slack_action_routes_to_run_confirmation(replacing, monkeyp
     from starlette.requests import Request
     from test_slack_projects import _headers
 
-    from pistachio.agents.analysis import storage
-    from pistachio.connectors import slack
+    from mica.agents.analysis import storage
+    from mica.connectors import slack
 
     event_id, record = await start(replacing)
     replacing.app.slack_signing_secret = "test-secret"

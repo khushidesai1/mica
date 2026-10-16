@@ -5,12 +5,12 @@ api_image                = "us-central1-docker.pkg.dev/my-research-project/pista
 science_image            = "us-central1-docker.pkg.dev/my-research-project/pistachio-staging/science@sha256:REPLACE"
 batch_network            = "default"
 batch_subnetwork         = "default"
-control_plane_url        = "https://pistachio.example.org"
+control_plane_url        = "https://mica.example.org"
 tool_build_trigger       = "REPLACE_WITH_PRECONFIGURED_TRIGGER_ID"
 allowed_emails           = "[\"researcher@example.org\"]"
 openai_api_key_version       = "REPLACE_SECRET_VERSION"
 slack_user_map           = "{\"U123\":\"researcher@example.org\"}"
-gmail_account            = "pistachio@example.org"
+gmail_account            = "mica@example.org"
 monthly_budget_usd       = 200
 
 # Slack admission: initialize this admin list once, then enable channels from Slack.
@@ -18,7 +18,7 @@ slack_agent_access_mode = "channel"
 slack_agent_access_admin_ids = ["T123:U123"]
 
 # Optional GCS output writes. Leave both empty to keep the feature disabled.
-# Write admins also need access to the selected Pistachio project.
+# Write admins also need access to the selected Mica project.
 slack_agent_write_admin_ids = []
 slack_agent_write_prefixes  = []
 # Example: ["gs://my-lab-outputs/liver/", "gs://my-lab-outputs/brain/"]

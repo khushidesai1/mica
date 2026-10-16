@@ -7,8 +7,8 @@ from pathlib import Path
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_slack import bot, event, send  # noqa: F401
 
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.runner import Context, build_options
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.runner import Context, build_options
 
 FIXTURES = Path(__file__).parent / "fixtures/return-scripts"
 
@@ -47,7 +47,7 @@ async def test_off_delivery_and_provenance(bot):
 
 
 async def test_off_request_manifest(bridge, monkeypatch):
-    from pistachio.agents.analysis import batch
+    from mica.agents.analysis import batch
 
     monkeypatch.setattr(batch.time, "time", lambda: 1700000000.0)
     eid = await bridge.accept(payload())

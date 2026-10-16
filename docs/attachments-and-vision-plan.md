@@ -1,8 +1,8 @@
-# Plan: Attachments and image vision for Pistachio's Slack agent
+# Plan: Attachments and image vision for Mica's Slack agent
 
 > Source behavior update, 10 October 2026: [the routing and memory implementation plan](worker-routing-and-memory-plan.md) supersedes the pricing/quote gates, thread-draft guide flow, knowledge feature flag, and per-thread channel summaries described below. Those passages remain historical design/deployment evidence. This local implementation has not been deployed or validated in staging.
 
-**Summary.** People can attach files in Slack (images, PDFs, tables, text) and Pistachio will use
+**Summary.** People can attach files in Slack (images, PDFs, tables, text) and Mica will use
 them. The control plane downloads each attachment once, after the access check. It stores the file
 next to the thread's provenance and records it in the thread checkpoint, so later turns can still
 refer to it. The conversation router can look at images and PDFs on the current message directly,
@@ -16,8 +16,8 @@ Delivered outputs are recorded in the same per-thread file list. That lets a fol
 
 ## 0. Read first
 
-1. **Where code lives.** Put all Slack-side code in `src/pistachio/agents/analysis/`, plus
-   `src/pistachio/api/slack_analysis.py` if needed. `docker/Dockerfile.api` builds the headless API
+1. **Where code lives.** Put all Slack-side code in `src/mica/agents/analysis/`, plus
+   `src/mica/api/slack_analysis.py` if needed. `docker/Dockerfile.api` builds the headless API
    from the full source tree with a fixed `pip install` list. **Add no third-party dependency to the
    API image.**
 2. **Untrusted bytes are decoded only inside the sandbox.** The control plane (Cloud Run) and the
@@ -31,9 +31,9 @@ Delivered outputs are recorded in the same per-thread file list. That lets a fol
 4. **Don't loosen the sandbox or the tool guard** beyond the single visual-read rule in §5.2. The
    bot token never reaches the worker. The worker never downloads anything from Slack.
 5. **Each milestone ends green:** `.venv/bin/pytest -q`, `.venv/bin/ruff check src tests tools`,
-   `.venv/bin/mypy src/pistachio`. Write the milestone's failing tests first.
+   `.venv/bin/mypy src/mica`. Write the milestone's failing tests first.
 6. **Ask the human before any cloud action:** image builds, Cloud Run environment changes, deploys,
-   and paid live tests (`PISTACHIO_RUN_LIVE_TESTS=1`).
+   and paid live tests (`MICA_RUN_LIVE_TESTS=1`).
 7. **Build the API and worker images from one commit.** The request manifest and the checkpoint
    both gain fields that the two sides must agree on (§7).
 
@@ -507,7 +507,7 @@ Keep `PREVIEW_MAX_EDGE = 1568`, `PREVIEW_MAX_BYTES = 1_500_000`, `MAX_VISUAL_REA
 ## 10. Rollout (ask before every cloud step)
 
 1. **Optional early release (M1 only).** Build the worker image with `cloudbuild/build-slack-agent.yaml`.
-   Update only `PISTACHIO_SLACK_AGENT_IMAGE` on the API service. Run the M0 live check in staging.
+   Update only `MICA_SLACK_AGENT_IMAGE` on the API service. Run the M0 live check in staging.
 2. **Main release (M2–M5).** Build the API and worker from one commit. Deploy one tagged revision
    with no traffic, using the new API image and the new worker digest. Run health checks, then
    promote.
@@ -523,11 +523,11 @@ Keep `PREVIEW_MAX_EDGE = 1568`, `PREVIEW_MAX_BYTES = 1_500_000`, `MAX_VISUAL_REA
 
 ## 11. Verification
 
-- **Every milestone:** `pytest -q`, `ruff check src tests tools`, `mypy src/pistachio`.
+- **Every milestone:** `pytest -q`, `ruff check src tests tools`, `mypy src/mica`.
 - **Decoder boundary (invariant 5).** This must print nothing; the decoders live only in
   `tools/preview.py`:
   ```
-  grep -rnE "PIL|pypdfium2|pypdf" src/pistachio/agents/analysis src/pistachio/api
+  grep -rnE "PIL|pypdfium2|pypdf" src/mica/agents/analysis src/mica/api
   ```
 - **Token boundary (invariant 4).** `git diff` shows no new `slack_bot_token` use in
   `batch_worker.py`, `runner.py`, or `attachments.py`. The worker's existing use (posting

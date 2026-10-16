@@ -5,21 +5,21 @@ import tarfile
 
 import pytest
 
-from pistachio.agents.analysis.batch import BatchBridge
-from pistachio.agents.analysis.checkpoints import (
+from mica.agents.analysis.batch import BatchBridge
+from mica.agents.analysis.checkpoints import (
     cleanup_temporary,
     migrate_thread,
     restore_workspace,
     workspace_snapshot,
 )
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.direct import record_exchange
-from pistachio.agents.analysis.outputs import publish, select_artifacts
-from pistachio.agents.analysis.recovery_tools import restored_cost
-from pistachio.agents.analysis.runner import Context, TurnResult, build_options
-from pistachio.agents.analysis.script_capture import Capture, Script
-from pistachio.agents.analysis.storage import Conflict, LocalStorage
-from pistachio.agents.analysis.thread_history import History, context
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.direct import record_exchange
+from mica.agents.analysis.outputs import publish, select_artifacts
+from mica.agents.analysis.recovery_tools import restored_cost
+from mica.agents.analysis.runner import Context, TurnResult, build_options
+from mica.agents.analysis.script_capture import Capture, Script
+from mica.agents.analysis.storage import Conflict, LocalStorage
+from mica.agents.analysis.thread_history import History, context
 
 
 def file(root, name, data=b"content"):
@@ -231,7 +231,7 @@ async def test_cleanup_requires_logical_terminal_worker_exit_and_new_version(
 async def test_cleanup_retry_does_not_mark_partial_deletion_done(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
-    from pistachio.agents.analysis import checkpoints
+    from mica.agents.analysis import checkpoints
 
     store = LocalStorage(tmp_path)
     record = {"status": "complete", "worker_stopped": True, "retention_version": 1}
@@ -267,7 +267,7 @@ def test_history_does_not_cross_project_binding(tmp_path):
 
 
 def test_confirmed_publication_locations_enter_memory_proposal():
-    from pistachio.agents.analysis import memory_workspace, project_memory
+    from mica.agents.analysis import memory_workspace, project_memory
 
     settings = Settings(_env_file=None)
     base = project_memory.Snapshot(head_oid="a" * 40)

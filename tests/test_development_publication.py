@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 from google.api_core.exceptions import PreconditionFailed
 
-from pistachio.execution.publication import verify_cloud_commit
-from pistachio.models import (
+from mica.execution.publication import verify_cloud_commit
+from mica.models import (
     ArtifactRef,
     ExecutionBundle,
     ResourcePlan,
@@ -16,7 +16,7 @@ from pistachio.models import (
     TaskResult,
     ToolPlan,
 )
-from pistachio.worker.main import _publish_protocol2
+from mica.worker.main import _publish_protocol2
 
 
 class MemoryBucket:
@@ -75,9 +75,9 @@ def test_publication_recovers_snapshot_and_commits_last(monkeypatch, tmp_path):
             assert name == bucket.name
             return bucket
 
-    monkeypatch.setattr("pistachio.worker.main.StorageClient", Client)
-    monkeypatch.setenv("PISTACHIO_GCS_BUCKET", bucket.name)
-    monkeypatch.delenv("PISTACHIO_COMPLETION_TOPIC", raising=False)
+    monkeypatch.setattr("mica.worker.main.StorageClient", Client)
+    monkeypatch.setenv("MICA_GCS_BUCKET", bucket.name)
+    monkeypatch.delenv("MICA_COMPLETION_TOPIC", raising=False)
     bundle = ExecutionBundle(
         builder_protocol_version=2,
         task_id="task_test",

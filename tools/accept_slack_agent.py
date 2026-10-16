@@ -14,12 +14,12 @@ from google.auth.transport.requests import Request
 from google.oauth2 import id_token
 from slack_sdk.web.async_client import AsyncWebClient
 
-from pistachio.agents.analysis import runner as runner_module
-from pistachio.agents.analysis.batch_worker import restore, snapshot
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.preflight import check
-from pistachio.agents.analysis.runner import Context, Runner
-from pistachio.agents.analysis.storage import GCSStorage
+from mica.agents.analysis import runner as runner_module
+from mica.agents.analysis.batch_worker import restore, snapshot
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.preflight import check
+from mica.agents.analysis.runner import Context, Runner
+from mica.agents.analysis.storage import GCSStorage
 
 
 async def main():
@@ -28,7 +28,7 @@ async def main():
     report = {"passed": False, "stage": "bootstrap"}
     try:
         check(settings)
-        audience = os.environ["PISTACHIO_CONTROL_PLANE_URL"]
+        audience = os.environ["MICA_CONTROL_PLANE_URL"]
         url = os.environ["CANARY_CREDENTIALS_URL"]
         token = id_token.fetch_id_token(Request(), audience)
         async with httpx.AsyncClient(timeout=30) as http:

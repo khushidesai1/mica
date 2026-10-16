@@ -11,7 +11,7 @@ import pytest
 from google.api_core.exceptions import NotFound, PreconditionFailed
 from test_analysis_write_access import STAMP, grants, run  # noqa: F401
 
-from pistachio.agents.analysis import write_access, write_approval, write_broker
+from mica.agents.analysis import write_access, write_approval, write_broker
 
 
 class Blob:

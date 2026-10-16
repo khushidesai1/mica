@@ -4,14 +4,14 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-import pistachio
-from pistachio.api.app import create_app
-from pistachio.config import Settings
-from pistachio.storage.memory import InMemoryRepository
+import mica
+from mica.api.app import create_app
+from mica.config import Settings
+from mica.storage.memory import InMemoryRepository
 
 
 def check() -> None:
-    root = Path(pistachio.__file__).parent
+    root = Path(mica.__file__).parent
     for relative in ("api/web.py", "api/templates/index.html", "api/static/pista_logo.svg"):
         assert not (root / relative).exists(), relative
     settings = Settings(_env_file=None, env="test", auth_mode="dev")

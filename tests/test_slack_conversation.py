@@ -5,8 +5,8 @@ from types import SimpleNamespace
 import pytest
 from conftest import task_service
 
-from pistachio.connectors.notifications import ChannelNotifier
-from pistachio.models import (
+from mica.connectors.notifications import ChannelNotifier
+from mica.models import (
     ApprovalKind,
     ApprovalRequest,
     ConversationMessage,
@@ -38,7 +38,7 @@ def slack(monkeypatch, settings):
         def chat_update(self, **kwargs):
             raise AssertionError("Conversation turns must be separate posts")
 
-    monkeypatch.setattr("pistachio.connectors.notifications.WebClient", Client)
+    monkeypatch.setattr("mica.connectors.notifications.WebClient", Client)
     return sent
 
 
@@ -62,7 +62,7 @@ async def test_shared_transcript_cadence_and_worker_restart(
 ):
     service, task = await setup_task(repository, settings)
     now = task.conversation[-1].created_at
-    monkeypatch.setattr("pistachio.services.tasks.utcnow", lambda: now)
+    monkeypatch.setattr("mica.services.tasks.utcnow", lambda: now)
     task.status = TaskStatus.PLANNING
     for stage in [StageKind.DATASET_INSPECTION, StageKind.MASTER_PLAN, StageKind.TOOL_RESOLUTION]:
         task.current_stage = stage
@@ -171,7 +171,7 @@ async def test_web_only_task_records_replies_without_notifier(settings, reposito
 async def test_rejected_running_followup_is_shared_without_changing_execution(
     slack, settings, repository,
 ):
-    from pistachio.services.tasks import TaskInteractionConflict
+    from mica.services.tasks import TaskInteractionConflict
 
     service, task = await setup_task(repository, settings)
     task.status = TaskStatus.RUNNING

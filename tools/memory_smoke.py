@@ -12,8 +12,8 @@ import logging
 import subprocess
 from uuid import uuid4
 
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.project_memory import GitHubMemory, client_for, token
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.project_memory import GitHubMemory, client_for, token
 
 
 async def smoke(use_cli: bool) -> None:

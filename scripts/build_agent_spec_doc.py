@@ -11,7 +11,7 @@ from docx.oxml.ns import qn
 from docx.shared import Inches, Pt, RGBColor
 
 
-OUTPUT = Path("deliverables/Pistachio_Current_Agent_Setup_Spec.docx")
+OUTPUT = Path("deliverables/Mica_Current_Agent_Setup_Spec.docx")
 
 NAVY = "17324D"
 BLUE = "2D6A9F"
@@ -221,7 +221,7 @@ def build() -> None:
     section.right_margin = Inches(0.78)
 
     title = doc.add_paragraph(style="Title")
-    title.add_run("Pistachio Current Agent Setup Specification")
+    title.add_run("Mica Current Agent Setup Specification")
     subtitle = doc.add_paragraph(style="Subtitle")
     subtitle.add_run("Runtime status local development recommendation and prompt architecture review")
     meta = doc.add_paragraph()
@@ -232,12 +232,12 @@ def build() -> None:
 
     add_heading(doc, "Executive conclusion", 1)
     p = doc.add_paragraph()
-    p.add_run("Pistachio is not running on this MacBook right now. ").bold = True
+    p.add_run("Mica is not running on this MacBook right now. ").bold = True
     p.add_run(
         "The source tree and local Python environment are present, but no service responds on port "
         "8080, no local .env file exists, and the Docker daemon is not running. A Google Cloud "
         "staging deployment does exist and is reachable; its root endpoint redirects to the "
-        "Pistachio login flow."
+        "Mica login flow."
     )
     p = doc.add_paragraph()
     p.add_run("Recommendation ").bold = True
@@ -255,7 +255,7 @@ def build() -> None:
         ["Question", "Observed state", "Basis"],
         [
             [
-                "Is Pistachio running locally",
+                "Is Mica running locally",
                 "No",
                 "HTTP checks to localhost port 8080 failed and no listener was found",
             ],
@@ -329,8 +329,8 @@ def build() -> None:
         "services in staging, where Slack Gmail OIDC Cloud Tasks Pub Sub and Batch behavior can be "
         "tested against their real interfaces."
     )
-    add_number(doc, 1, "Install and start Docker Desktop. On macOS its Linux VM supplies the container runtime Pistachio needs.")
-    add_number(doc, 2, "Build the science image named pistachio-science:local and start the API with Docker Compose.")
+    add_number(doc, 1, "Install and start Docker Desktop. On macOS its Linux VM supplies the container runtime Mica needs.")
+    add_number(doc, 2, "Build the science image named mica-science:local and start the API with Docker Compose.")
     add_number(doc, 3, "Create a local .env from .env.example and add only the development OpenAI key and nonproduction settings.")
     add_number(doc, 4, "Use the headless API and local fixture for the normal edit test loop; interact with the agent in Slack.")
     add_number(doc, 5, "Use cloud staging for channel callbacks managed identity Batch networking and recovery tests.")
@@ -521,7 +521,7 @@ def build() -> None:
     add_number(doc, 6, "Evaluate approval count output minimality scientific fidelity and data leakage against the frozen test set.")
 
     add_heading(doc, "Questions for review", 1)
-    add_bullet(doc, "Should Pistachio ask for every interpretation changing value or may a project define reusable reviewed defaults that still require one task level confirmation")
+    add_bullet(doc, "Should Mica ask for every interpretation changing value or may a project define reusable reviewed defaults that still require one task level confirmation")
     add_bullet(doc, "Should tool parameter manifests be curated during tool approval or derived again for every task")
     add_bullet(doc, "Should the master plan produce any user prose or only typed state for the public writer")
     add_bullet(doc, "Is local persistence needed immediately or is restart loss acceptable during the current development phase")
@@ -529,16 +529,16 @@ def build() -> None:
 
     add_heading(doc, "Source map", 2)
     add_source(doc, "Runtime and cloud  README.md  docker-compose.yml  .env.example  docs/architecture.md  docs/deployment.md  infra/main.tf  infra/variables.tf")
-    add_source(doc, "Prompts and context  src/pistachio/agents/harness.py:42  src/pistachio/agents/context.py:19  src/pistachio/connectors/presentation.py:25")
-    add_source(doc, "Orchestration and planning  src/pistachio/services/tasks.py:437  src/pistachio/services/planning.py:29  src/pistachio/services/policy.py:144")
-    add_source(doc, "Execution and memory  src/pistachio/execution/backends.py  docker/Dockerfile.science  src/pistachio/agents/memory.py  docs/memory.md")
+    add_source(doc, "Prompts and context  src/mica/agents/harness.py:42  src/mica/agents/context.py:19  src/mica/connectors/presentation.py:25")
+    add_source(doc, "Orchestration and planning  src/mica/services/tasks.py:437  src/mica/services/planning.py:29  src/mica/services/policy.py:144")
+    add_source(doc, "Execution and memory  src/mica/execution/backends.py  docker/Dockerfile.science  src/mica/agents/memory.py  docs/memory.md")
     add_source(doc, "Live verification  localhost port 8080  Docker daemon  saved Cloud Run endpoint  28 September 2026")
 
     props = doc.core_properties
-    props.title = "Pistachio Current Agent Setup Specification"
+    props.title = "Mica Current Agent Setup Specification"
     props.subject = "Current runtime deployment prompt and agent architecture review"
-    props.author = "Pistachio repository review"
-    props.keywords = "Pistachio agents prompts infrastructure local cloud specification"
+    props.author = "Mica repository review"
+    props.keywords = "Mica agents prompts infrastructure local cloud specification"
     props.created = datetime(2026, 9, 28)
     doc.save(OUTPUT)
 

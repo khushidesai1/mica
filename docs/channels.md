@@ -15,7 +15,7 @@ documents the retained shared task-service Slack backend.
 
 Create a Slack app with `chat:write`, `im:history`, and `im:read`; enable Events API `message.im` and
 point it to `/integrations/slack/events`. Configure the signing secret and bot token. Map Slack user
-IDs to canonical allowlisted emails using `PISTACHIO_SLACK_USER_MAP`, for example
+IDs to canonical allowlisted emails using `MICA_SLACK_USER_MAP`, for example
 `{"U123":"researcher@example.org"}`. For installations receiving events from more than one
 workspace, prefer workspace-qualified keys such as
 `{"T123:U123":"researcher@example.org"}`; unqualified user-ID keys remain supported.

@@ -7,12 +7,12 @@ import tempfile
 import time
 from pathlib import Path
 
-from pistachio.agents.analysis import recovery, tiers
-from pistachio.agents.analysis.checkpoints import Stages
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.direct import WorkerChoice
-from pistachio.agents.analysis.resources import Sampler
-from pistachio.agents.analysis.storage import LocalStorage
+from mica.agents.analysis import recovery, tiers
+from mica.agents.analysis.checkpoints import Stages
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.direct import WorkerChoice
+from mica.agents.analysis.resources import Sampler
+from mica.agents.analysis.storage import LocalStorage
 
 with tempfile.TemporaryDirectory(prefix="compute-image-check-") as temp:
     work = Path(temp)

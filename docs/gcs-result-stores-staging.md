@@ -4,10 +4,10 @@
 
 Source `a458e3b7f965661be0a56e60695884e3a786637f` was deployed on October 13, 2026
 at 17:39 UTC as `pistachio-staging-stores-a458e3b7f965`, serving 100% of staging traffic.
-[PR #3](https://github.com/khushidesai1/pistachio/pull/3) contains the implementation.
+[PR #3](https://github.com/khushidesai1/mica/pull/3) contains the implementation.
 
 - Ruff (`src tests tools`) and strict mypy passed; **727 tests passed, 6 skipped**.
-- [GitHub CI](https://github.com/khushidesai1/pistachio/actions/runs/38439291332) passed.
+- [GitHub CI](https://github.com/khushidesai1/mica/actions/runs/38439291332) passed.
 - Cloud Build `34c06506-3463-430e-951e-c923e173ded3` passed all ten steps, including
   source/attachment checks, worker compatibility, Linux telemetry and checkpoint checks,
   and synthetic spatial estimation, ingest, and Cellpose checks.
@@ -49,7 +49,7 @@ Source: `gs://alchemy-breast-cancer/resegmentation/TMA1/tables/` (287 objects,
 The existing grant is `b6631f95…`, scoped to the project bucket. Source data is unchanged.
 The smoke prefix was confirmed absent during the subsequent release cleanup on October 13.
 
-- Worker provenance records `mcp__pistachio__publish_gcs` at 17:44:04 UTC with folder
+- Worker provenance records `mcp__mica__publish_gcs` at 17:44:04 UTC with folder
   `outputs/gcs/resegmentation/_publish_smoke/20261013-764fabc0`.
 - Recursive `gcloud storage ls -r` lists all 287 destination objects. Every object's
   size and CRC32C matches its source; no extra or missing files were found.

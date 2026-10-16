@@ -9,7 +9,7 @@ import pytest
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from pistachio.agents.analysis import (
+from mica.agents.analysis import (
     access,
     direct,
     job_lifecycle,

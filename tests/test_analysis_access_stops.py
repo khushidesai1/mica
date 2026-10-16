@@ -8,11 +8,11 @@ from unittest.mock import Mock
 import pytest
 from slack_sdk.errors import SlackApiError
 
-from pistachio.agents.analysis import access, channel_access, write_broker, write_worker
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.identity import IdentityUnavailable
-from pistachio.agents.analysis.runner import Context, TurnResult
-from pistachio.agents.analysis.storage import LocalStorage
+from mica.agents.analysis import access, channel_access, write_broker, write_worker
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.identity import IdentityUnavailable
+from mica.agents.analysis.runner import Context, TurnResult
+from mica.agents.analysis.storage import LocalStorage
 
 
 @pytest.mark.parametrize("failure", [TimeoutError(), OSError(), "internal_error", "ratelimited"])
@@ -150,7 +150,7 @@ async def test_cancel_blocked_publisher_preserves_receipts_and_partial_totals(tm
 async def test_sdk_interrupt_itself_is_bounded_and_tools_cancel_first(monkeypatch):
     from claude_agent_sdk import ClaudeAgentOptions
 
-    from pistachio.agents.analysis import recovery_tools
+    from mica.agents.analysis import recovery_tools
 
     disconnected = asyncio.Event()
     calls = []
@@ -208,7 +208,7 @@ async def test_sdk_interrupt_itself_is_bounded_and_tools_cancel_first(monkeypatc
 
 
 def test_process_backstop_is_armed_within_one_minute(monkeypatch):
-    from pistachio.agents.analysis import batch_worker
+    from mica.agents.analysis import batch_worker
 
     timer = Mock()
     constructor = Mock(return_value=timer)

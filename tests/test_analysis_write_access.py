@@ -6,11 +6,11 @@ from unittest.mock import Mock
 import pytest
 from analysis_helpers import seed_project
 
-from pistachio.agents.analysis import commands, write_access
-from pistachio.agents.analysis.access import Grant
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.registry import Registry
-from pistachio.agents.analysis.storage import LocalStorage
+from mica.agents.analysis import commands, write_access
+from mica.agents.analysis.access import Grant
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.registry import Registry
+from mica.agents.analysis.storage import LocalStorage
 
 STAMP = 2_000_000_000
 

@@ -1,6 +1,6 @@
 # Follow-up plan continuity investigation — 30 September 2026
 
-Status: deployed to [Pistachio staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app).
+Status: deployed to [Mica staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app).
 The initial correction was released as `pistachio-staging-00066-liv`. The subsequent
 [communication repair](communication-amendments.md) is now live as `pistachio-staging-00068-nih`.
 The initial investigation below describes the first correction, including the literal evidence

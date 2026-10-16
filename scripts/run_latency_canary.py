@@ -19,12 +19,12 @@ import google.auth
 from google.cloud import firestore
 from google.oauth2.credentials import Credentials
 
-from pistachio.agents.harness import AgentHarness
-from pistachio.config import Settings
-from pistachio.execution.backends import GcpBatchExecutor
-from pistachio.models import TaskRecord, TaskStatus
-from pistachio.services.development import DevelopmentService
-from pistachio.storage.memory import InMemoryRepository
+from mica.agents.harness import AgentHarness
+from mica.config import Settings
+from mica.execution.backends import GcpBatchExecutor
+from mica.models import TaskRecord, TaskStatus
+from mica.services.development import DevelopmentService
+from mica.storage.memory import InMemoryRepository
 
 
 async def benchmark(args):
@@ -97,7 +97,7 @@ async def benchmark(args):
         executor = GcpBatchExecutor(settings)
         harness = AgentHarness(repository, settings)
         service = DevelopmentService(repository, settings, harness, executor)
-        from pistachio.models import utcnow
+        from mica.models import utcnow
 
         started = time.monotonic() - (utcnow() - task.created_at).total_seconds()
         history = prior_history

@@ -13,10 +13,10 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
-from pistachio.agents.analysis import runner
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.outputs import changed_files, snapshot_outputs
-from pistachio.agents.analysis.runner import Context, Runner, build_options, describe_tool
+from mica.agents.analysis import runner
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.outputs import changed_files, snapshot_outputs
+from mica.agents.analysis.runner import Context, Runner, build_options, describe_tool
 
 
 def test_bash_status_hides_commands_and_limits_descriptions():
@@ -148,7 +148,9 @@ async def test_security_options_and_native_tool_boundaries(setup):
     opts = build_options(ctx, settings)
     assert opts.setting_sources == [] and opts.permission_mode == "dontAsk"
     assert opts.sandbox["failIfUnavailable"] and not opts.sandbox["allowUnsandboxedCommands"]
-    assert opts.env["SLACK_BOT_TOKEN"] == opts.env["PISTACHIO_SLACK_BOT_TOKEN"] == ""
+    assert opts.env["SLACK_BOT_TOKEN"] == opts.env["MICA_SLACK_BOT_TOKEN"] == ""
+    assert opts.env["PISTACHIO_SLACK_BOT_TOKEN"] == ""
+    assert opts.env["PISTACHIO_SLACK_SIGNING_SECRET"] == ""
     assert opts.max_budget_usd == 5 and "Agent" in opts.disallowed_tools
     guard = opts.hooks["PreToolUse"][0].hooks[0]
     for name, args in [
@@ -228,9 +230,9 @@ async def test_budget_error_is_preserved_when_the_reserve_is_already_exhausted(s
     assert output.cost == 5 and count == 1
 
 
-def test_existing_pistachio_configuration_is_reused(monkeypatch):
-    monkeypatch.setenv("PISTACHIO_GCS_BUCKET", "existing-bucket")
-    monkeypatch.setenv("PISTACHIO_SLACK_BOT_TOKEN", "existing-test-token")
+def test_existing_mica_configuration_is_reused(monkeypatch):
+    monkeypatch.setenv("MICA_GCS_BUCKET", "existing-bucket")
+    monkeypatch.setenv("MICA_SLACK_BOT_TOKEN", "existing-test-token")
     settings = Settings(_env_file=None)
     assert settings.bucket == "existing-bucket"
     assert settings.slack_bot_token.get_secret_value() == "existing-test-token"

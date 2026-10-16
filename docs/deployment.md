@@ -21,7 +21,7 @@ SBOMs and provenance.
 
 For application code updates, `cloudbuild/deploy-code-update.yaml` builds and explicitly pushes
 both images, runs the isolated-executor Matplotlib smoke test inside the new science image, resolves
-both tags to immutable digests, and deploys the API while updating `PISTACHIO_BATCH_IMAGE` to the
+both tags to immutable digests, and deploys the API while updating `MICA_BATCH_IMAGE` to the
 new science digest. A successful image build alone is not a deployment: Cloud Run otherwise keeps
 the prior worker digest for every newly submitted Batch job.
 
@@ -34,7 +34,7 @@ For an API-only release that changed execution models, synchronize the worker be
 tasks. `cloudbuild/refresh-worker.yaml` builds a candidate from the existing science digest and copies
 the application package from the exact deployed API digest. This preserves scientific dependencies
 and tests the API/worker contract before pushing. It does not deploy automatically: run the bounded
-protocol-2 Batch conformance check, then update `PISTACHIO_BATCH_IMAGE` to the candidate digest.
+protocol-2 Batch conformance check, then update `MICA_BATCH_IMAGE` to the candidate digest.
 Keep worker sandbox settings unchanged. Existing tasks pin their runtime and need a deliberate,
 audited recovery; changing the service variable only affects newly initialized sessions.
 

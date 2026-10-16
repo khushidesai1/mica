@@ -4,6 +4,11 @@ ARG SCIENCE_IMAGE
 FROM ${API_IMAGE} AS api
 FROM ${SCIENCE_IMAGE}
 USER root
+RUN rm -rf /usr/local/lib/python3.12/site-packages/pistachio /opt/pistachio/src/pistachio
+COPY --from=api /usr/local/lib/python3.12/site-packages/mica /usr/local/lib/python3.12/site-packages/mica
 COPY --from=api /usr/local/lib/python3.12/site-packages/pistachio /usr/local/lib/python3.12/site-packages/pistachio
 COPY --from=api /app/src /opt/pistachio/src
+RUN for name in api analyze worker; do \
+      ln -sf /usr/local/bin/pistachio-$name /usr/local/bin/mica-$name; \
+    done
 USER 65532:65532

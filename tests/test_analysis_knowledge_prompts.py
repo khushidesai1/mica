@@ -1,9 +1,9 @@
 from pathlib import Path
 
-from pistachio.agents.analysis import memory_workspace
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.prompts import build_system_append
-from pistachio.agents.analysis.runner import Context
+from mica.agents.analysis import memory_workspace
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.prompts import build_system_append
+from mica.agents.analysis.runner import Context
 
 
 def test_prompt_always_uses_shared_knowledge(tmp_path):
@@ -43,7 +43,7 @@ async def test_runner_counts_knowledge_reads_from_sdk_messages(tmp_path, monkeyp
     from claude_agent_sdk import AssistantMessage, ToolUseBlock
     from test_analysis_runner import result
 
-    from pistachio.agents.analysis import runner
+    from mica.agents.analysis import runner
 
     ctx = Context(workdir=tmp_path / "work", data_path=tmp_path / "data")
     ctx.data_path.mkdir()

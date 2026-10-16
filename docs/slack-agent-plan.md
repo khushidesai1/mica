@@ -538,7 +538,7 @@ For folders: a summary of the files inside.
 
 Output is readable plain text by default, and JSON with `--json`.
 
-(If you have access to the old Pistachio repo, `src/pistachio/services/datasets.py` contains a
+(If you have access to the old Mica repo, `src/mica/services/datasets.py` contains a
 working metadata-only `.h5ad` reader you can adapt.)
 
 ---
