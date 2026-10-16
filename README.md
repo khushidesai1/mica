@@ -1,5 +1,7 @@
 # Mica
 
+<img src="assets/mica-logo.svg" alt="Mica logo" width="96" height="96">
+
 Previously named Pistachio. The Python package and CLI now use `mica` and `mica-*`;
 existing `pistachio` imports, commands and `PISTACHIO_*` settings remain compatible.
 New configuration uses `MICA_*`. See [rename compatibility](docs/mica-rename.md).
