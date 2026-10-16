@@ -21,7 +21,15 @@ from google.cloud import batch_v1
 from pistachio.config import Settings as AppSettings
 from pistachio.storage.base import Repository
 
-from . import access, memory_tasks, project_memory, write_access, write_approval, write_broker
+from . import (
+    access,
+    memory_tasks,
+    project_memory,
+    thread_history,
+    write_access,
+    write_approval,
+    write_broker,
+)
 from .attachments import AttachmentError
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
@@ -360,6 +368,7 @@ class BatchBridge:
                     record.get("stop_reason") or record.get("cancel_requested")
                 ):
                     await self.notify_stop(event_id, record)
+                await self.cleanup_terminal(event_id, record)
                 await self.record_terminal(event_id, record)
                 await self.repository.set_connector_state(key, record)
                 await memory_tasks.enqueue(self, event_id, record)
@@ -407,6 +416,7 @@ class BatchBridge:
                 await self.schedule(event_id, tick + 1)
                 record["tick"] = tick + 1
             record.pop("identity_unavailable_since", None)
+            await self.cleanup_terminal(event_id, record)
             await self.record_terminal(event_id, record)
             await self.repository.set_connector_state(key, record)
             await memory_tasks.enqueue(self, event_id, record)
@@ -426,6 +436,20 @@ class BatchBridge:
             raise
         finally:
             await self.repository.release_event(mutex, claim.token)
+
+    async def cleanup_terminal(self, event_id: str, record: dict[str, Any]) -> None:
+        if (
+            record.get("retention_version") != 1
+            or record.get("temporary_cleaned")
+            or record["status"] not in {"complete", "failed"}
+            or not record.get("worker_stopped")
+        ):
+            return
+        from .checkpoints import cleanup_temporary
+
+        # A failure propagates to the existing Cloud Tasks retry, without repeating computation.
+        await asyncio.to_thread(cleanup_temporary, self.storage, event_id)
+        record["temporary_cleaned"] = True
 
     async def record_terminal(self, event_id: str, record: dict[str, Any]) -> None:
         """Fill missing history before a terminal event releases the next turn."""
@@ -456,6 +480,9 @@ class BatchBridge:
                         record["payload"]["event"].get("text", ""),
                         reply,
                         success=record["status"] == "complete",
+                        history=thread_history.History(
+                            storage, record["thread_key"], grant.project_id
+                        ),
                     )
                     await asyncio.to_thread(
                         storage.put,
@@ -682,6 +709,7 @@ class BatchBridge:
                 "notice_ts": record.get("notice_ts"),
                 "protocol": 2,
                 "cooperative_stop": True,
+                "retention_version": 1,
                 "write_grant": record["write_grant"],
                 "overwrite_paths": record.get("overwrite_paths", []),
                 "write_upload_seconds": self.settings.write_upload_seconds,
@@ -715,6 +743,8 @@ class BatchBridge:
                 json.dumps(manifest).encode(),
             )
             record["cooperative_stop"] = True
+            record["retention_version"] = 1
+            record.pop("worker_stopped", None)
             await self.repository.set_connector_state(f"claude-event:{event_id}", record)
             with suppress(AlreadyExists):
                 await asyncio.to_thread(
@@ -792,6 +822,7 @@ class BatchBridge:
             await asyncio.to_thread(client.delete_job, name=name)
             return  # Keep the slot until a later poll observes termination/deletion.
         if state in {"SUCCEEDED", "FAILED"}:
+            record["worker_stopped"] = True
             if record.get("recovery_version"):
                 from .recovery import terminal
 

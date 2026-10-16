@@ -3,6 +3,7 @@
 import io
 import json
 import shutil
+import sqlite3
 import tarfile
 from pathlib import Path
 from types import SimpleNamespace
@@ -315,18 +316,19 @@ def test_checkpoint_roundtrip_and_traversal(tmp_path):
     for rel in (
         "work/liver/D1-1.0/code/plot.py",
         ".claude/projects/thread/session.jsonl",
-        "state.db",
     ):
         path = home / rel
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(rel)
+    with sqlite3.connect(home / "state.db") as db:
+        db.execute("CREATE TABLE test (id INTEGER)")
     (home / "work/link").symlink_to(home / "state.db")
     (home / ".claude/credentials.json").write_text("secret")
     archive = tmp_path / "checkpoint.tar.gz"
-    snapshot(archive, home)
-    restore(archive, restored)
+    snapshot(archive, home, work=home / "work/liver/D1-1.0")
+    restore(archive, restored, work=restored / "work/liver/D1-1.0")
     assert (restored / "work/liver/D1-1.0/code/plot.py").is_file()
-    assert (restored / ".claude/projects/thread/session.jsonl").is_file()
+    assert not (restored / ".claude/projects/thread/session.jsonl").exists()
     assert not (restored / ".claude/credentials.json").exists()
     assert not (restored / "work/link").exists()
     with tarfile.open(archive, "w:gz") as tar:
@@ -531,8 +533,9 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
         home.mkdir()
         if turn == 2:
             storage.path(saved["archive"]).unlink()  # Lifecycle expiration.
-    assert [call[0] for call in runner.calls] == [None, "session", None]
-    assert "Earlier context is unavailable" in runner.calls[2][2]
+    assert [call[0] for call in runner.calls] == [None, None, None]
+    assert "Earlier context is unavailable" not in runner.calls[2][2]
+    assert "Thread handoff" in runner.calls[2][2]
     assert len({call[3] for call in runner.calls}) == 1  # Stable cwd across all jobs.
 
 
@@ -657,4 +660,8 @@ def test_checkpoint_excludes_previews_and_expiring_inputs(tmp_path):
     with tarfile.open(archive) as tar:
         names = tar.getnames()
     assert not any(".previews" in n or "/inputs/" in n for n in names)
-    assert len(names) == 2
+    assert set(names) == {
+        "work/thread/outputs/p.png",
+        "work/thread/code/p.py",
+        "work/thread/logs/checkpoint-excluded.json",
+    }

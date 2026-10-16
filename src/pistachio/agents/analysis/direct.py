@@ -19,6 +19,7 @@ from . import (
     attachments,
     commands,
     project_memory,
+    thread_history,
     write_access,
 )
 from .data_links import message_text
@@ -44,6 +45,8 @@ For a requested analysis using it, choose compute; the worker checks its dedicat
 and dependencies before use. For capability questions, explain that its runtime must be checked.
 Do not claim it is installed or that registration deployed an image.
 You have the project brief, recent conversation, and optionally a metadata inventory.
+The thread handoff summarizes older work. If an older decision or failed approach is needed
+and is absent from this context, choose compute so recall_thread can retrieve its original record.
 Use route_request exactly once. Choose reply for questions answerable from this context,
 planning, clarifications, explanations of existing results, and all brief edits.
 Choose inventory to check which files/folders exist or their object sizes in the selected
@@ -333,7 +336,24 @@ def record_exchange(
     outputs: Sequence[str] = (),
     success: bool = True,
     methods: str = "",
+    history: thread_history.History | None = None,
+    summary: str = "",
 ) -> None:
+    full = {
+        "id": event_id,
+        "user": text,
+        "assistant": reply,
+        "files": list(files),
+        "outputs": list(outputs),
+        "success": success,
+        "methods": methods,
+    }
+    if history:
+        # Backfill the bounded legacy transcript before older rows leave the prompt window.
+        for previous in state.get("messages", []):
+            history.record(previous, only_missing=True)
+        history.record(full)
+    thread_history.update_summary(state, full, summary)
     messages = [m for m in state.get("messages", []) if m.get("id") != event_id]
     messages.append(
         {
@@ -583,6 +603,7 @@ async def handle(
                 write_access.status, storage, grant.project_id, bridge.settings
             ),
             "recent_messages": state.get("messages", []),
+            "thread_handoff": state.get("thread_summary", {}),
         }
         model_context["project_memory"] = project_memory.context(memory, text, bridge.settings)
         from .calibration import history
@@ -746,6 +767,7 @@ async def handle(
             text,
             decision.reply,
             files=[f["name"] for f in record.get("attachments", [])],
+            history=thread_history.History(storage, record["thread_key"], grant.project_id),
         )
     else:
         state["direct_version"] = 1

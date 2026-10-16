@@ -381,10 +381,10 @@ def test_actual_handoff_archive_retains_trusted_execution_copies(tmp_path):
     executed(capture, "python code/first.py")
     manifest = capture.checkpoint()
     archive = tmp_path / "handoff.tar.gz"
-    workspace_snapshot(archive, home, partial=False, max_bytes=10_000_000)
+    workspace_snapshot(archive, home, partial=False, max_bytes=10_000_000, work=work)
     next_home = tmp_path / "worker1"
     next_home.mkdir()
-    restore(archive, next_home)
+    restore(archive, next_home, work=next_home / "work/project/thread")
     next_work = next_home / "work/project/thread"
     resumed = script_capture.Capture(next_work, manifest)
     write(next_work, "code/second.py", b"second attempt")

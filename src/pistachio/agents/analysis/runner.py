@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
 import logging
 import platform
 import re
@@ -33,12 +34,13 @@ from . import prompts, script_capture, write_worker
 from .attachments import classify
 from .config import Settings
 from .limits import MAX_VISUAL_READS, PREVIEW_MAX_BYTES, SDK_MAX_BUFFER_BYTES
-from .outputs import changed_files, snapshot_outputs
+from .outputs import changed_files, retain_tool_outputs, snapshot_outputs
 from .progress import ProgressUpdate, TaskProgress
 from .recovery_tools import RecoveryManager, restored_cost
 from .recovery_tools import run_query as recovery_query
 from .runtime_tools import TOOL_NAME, RuntimeEvent, RuntimeManager, create_server
 from .storage import GCSStorage, LocalStorage
+from .thread_history import History
 
 log = logging.getLogger(__name__)
 TOOLS = ["Read", "Write", "Edit", "Glob", "Grep", "Bash"]
@@ -107,6 +109,7 @@ def build_options(
     runtime_manager: RuntimeManager | None = None,
     compute_manager: RecoveryManager | None = None,
     gcs_publisher: write_worker.Publisher | None = None,
+    history: History | None = None,
 ) -> ClaudeAgentOptions:
     if not sandbox and platform.system() != "Darwin":
         raise ValueError("--no-sandbox is available only for local macOS development")
@@ -120,6 +123,8 @@ def build_options(
     compute_tools = compute.tools() if compute else []
     if gcs_publisher and gcs_publisher.grant and not ctx.survey_only:
         compute_tools.append(gcs_publisher.tool(ctx))
+    if history and not ctx.survey_only:
+        compute_tools.append(history.tool())
     tools.extend(f"mcp__pistachio__{t.name}" for t in compute_tools)
 
     visual_reads = 0
@@ -293,7 +298,9 @@ def build_options(
         max_buffer_size=SDK_MAX_BUFFER_BYTES,
         max_turns=settings.max_turns,
         max_budget_usd=settings.max_budget_usd_per_turn,
+        settings=json.dumps({"bashOutputMaxChars": 12000}) if history else None,
         env={
+            **({"CLAUDE_CODE_PROMPT_CACHE_TTL": "1h"} if history else {}),
             **(
                 {
                     "MCP_TOOL_TIMEOUT": str(settings.max_run_seconds * 1000)
@@ -445,6 +452,7 @@ class Runner:
         runtime_manager: RuntimeManager | None = None,
         compute_manager: RecoveryManager | None = None,
         gcs_publisher: write_worker.Publisher | None = None,
+        history: History | None = None,
     ) -> None:
         self.settings, self.sandbox = settings, sandbox
         self.project_name = project_name
@@ -456,6 +464,7 @@ class Runner:
         self.write_access = write_access
         self.compute = compute_manager
         self.gcs_publisher = gcs_publisher
+        self.history = history
         self.last_result: TurnResult | None = None
         self.runtime_manager = runtime_manager or (
             RuntimeManager(
@@ -529,6 +538,7 @@ class Runner:
                         runtime_manager=manager,
                         compute_manager=self.compute,
                         gcs_publisher=self.gcs_publisher,
+                        history=self.history,
                     )
                     options.max_budget_usd = self.settings.max_budget_usd_per_turn - summary_budget
                     baseline = restored_cost(ctx.session_id) if self.compute else 0.0
@@ -590,6 +600,25 @@ class Runner:
                             if isinstance(session, str):
                                 result.session_id = self.compute.session_id = session
                         elif isinstance(msg, ResultMessage):
+                            if self.history:
+                                log.info(
+                                    "worker_model_usage session=%s usage=%s",
+                                    msg.session_id,
+                                    json.dumps(
+                                        {
+                                            k: v
+                                            for k, v in (msg.usage or {}).items()
+                                            if k
+                                            in {
+                                                "input_tokens",
+                                                "output_tokens",
+                                                "cache_read_input_tokens",
+                                                "cache_creation_input_tokens",
+                                                "cache_creation",
+                                            }
+                                        }
+                                    ),
+                                )
                             got_result = True
                             result.session_id = msg.session_id
                             result.cost = (result.cost or 0) + (msg.total_cost_usd or 0)
@@ -648,6 +677,9 @@ class Runner:
                     )
         finally:
             clear_previews(previews)
+            if self.history:
+                with suppress(OSError):
+                    retain_tool_outputs(ctx.workdir, result.session_id)
         result.files = changed_files(ctx.workdir / "outputs", before)
         if self.compute:
             # Tar restore can round mtimes. Carry only this request's pending outputs,

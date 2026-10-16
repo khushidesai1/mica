@@ -30,7 +30,7 @@ def test_partial_snapshot_has_consistent_db_and_complete_jsonl(tmp_path):
     for folder in ("code", "scratch", "checkpoints", "inputs", "outputs"):
         path = home / "work/thread" / folder
         path.mkdir(parents=True)
-        (path / "data").write_text("value")
+        (path / "data.txt").write_text("value")
     session = home / ".claude/projects/session.jsonl"
     session.parent.mkdir(parents=True)
     session.write_text('{"ok":true}\n{"partial":')
@@ -43,9 +43,12 @@ def test_partial_snapshot_has_consistent_db_and_complete_jsonl(tmp_path):
     workspace_snapshot(archive, home, partial=True, max_bytes=100000)
     with tarfile.open(archive) as tar:
         names = tar.getnames()
-        assert "state.db" in names and "work/thread/code/data" in names
+        assert "state.db" in names and "work/thread/code/data.txt" in names
         assert not any(
-            "/scratch/" in n or "/checkpoints/" in n or "/inputs/" in n or "/outputs/data" in n
+            "/scratch/" in n
+            or "/checkpoints/" in n
+            or "/inputs/" in n
+            or "/outputs/data.parquet" in n
             for n in names
         )
         assert json.loads(tar.extractfile(".claude/projects/session.jsonl").read()) == {"ok": True}
@@ -80,7 +83,7 @@ def test_recovery_keeps_valid_stages_and_repeats_corrupt_ones(tmp_path):
     assert not (resumed.work / "checkpoints/bad").exists()
 
 
-def test_full_snapshot_excludes_published_data_but_keeps_unpublished_work_and_references(tmp_path):
+def test_full_snapshot_excludes_all_datasets_and_keeps_references(tmp_path):
     from pistachio.agents.analysis.batch_worker import restore
 
     home = tmp_path / "home"
@@ -99,5 +102,5 @@ def test_full_snapshot_excludes_published_data_but_keeps_unpublished_work_and_re
     recovered.mkdir()
     restore(archive, recovered)
     assert not (recovered / published.relative_to(home)).exists()
-    assert (recovered / pending.relative_to(home)).read_bytes() == pending.read_bytes()
+    assert not (recovered / pending.relative_to(home)).exists()
     assert (recovered / notes.relative_to(home)).read_bytes() == notes.read_bytes()

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
+import logging
 import re
 import shutil
 import sqlite3
@@ -15,7 +17,7 @@ from uuid import uuid4
 
 from google.api_core.exceptions import NotFound
 
-from .outputs import files_under
+from .outputs import ARTIFACT_BUDGET, files_under, retention_reason, select_artifacts
 from .recovery import event_prefix
 from .storage import Storage
 
@@ -35,33 +37,48 @@ def workspace_snapshot(
     partial: bool,
     max_bytes: int | None = None,
     published: set[Path] | None = None,
-) -> None:
-    total = 0
+    work: Path | None = None,
+    recovery: bool = True,
+    session_id: str | None = None,
+    event_id: str = "",
+) -> dict[str, Any]:
+    work = work or home / "work/thread"
+    paths = files_under(work)
+    kept, report = select_artifacts(
+        paths,
+        work,
+        budget=max_bytes if max_bytes is not None else ARTIFACT_BUDGET,
+        recovery=recovery,
+    )
+    # Published data is excluded by policy, independent of how publication was invoked.
+    kept = [p for p in kept if p not in (published or set())]
+    logs = work / "logs"
+    if logs.is_symlink() or not logs.resolve().is_relative_to(work.resolve()):
+        raise ValueError("Unsafe checkpoint log directory")
+    logs.mkdir(parents=True, exist_ok=True)
+    report_path = logs / "checkpoint-excluded.json"
+    if report_path.is_symlink():
+        raise ValueError("Unsafe checkpoint exclusion log")
+    report_path.write_text(json.dumps(report))
+    kept = sorted(set(kept) | {report_path})
     with tempfile.TemporaryDirectory(dir=archive.parent, prefix="snapshot-") as temporary:
         backup = Path(temporary) / "state.db"
         if (home / "state.db").is_file():
             with sqlite3.connect(home / "state.db") as source, sqlite3.connect(backup) as target:
                 source.backup(target)
-        paths = [*files_under(home / "work"), *files_under(home / ".claude/projects")]
+        if recovery:
+            kept += [
+                p
+                for p in files_under(home / ".claude/projects")
+                if p.suffix == ".jsonl" and (session_id is None or p.stem == session_id)
+            ]
         if backup.exists():
-            paths.append(backup)
+            kept.append(backup)
         with tarfile.open(archive, "w:gz") as tar:
-            for path in paths:
+            for path in kept:
                 relative = Path("state.db") if path == backup else path.relative_to(home)
-                if path in (published or set()) or "knowledge" in relative.parts:
-                    continue
-                if any(
-                    p in {"inputs", ".previews", "scratch", "checkpoints", ".tmp", ".mpl"}
-                    for p in relative.parts
-                ):
-                    continue
-                if partial and "outputs" in relative.parts:
-                    continue
                 before = path.stat()
-                total += before.st_size
-                if max_bytes is not None and total > max_bytes:
-                    raise ValueError("Workspace checkpoint exceeds its byte allowance.")
-                if relative.parts[0] == ".claude" and path.suffix == ".jsonl":
+                if relative.parts[0] == ".claude":
                     data = path.read_bytes()
                     data = data[: data.rfind(b"\n") + 1]
                     info = tar.gettarinfo(str(path), arcname=str(relative))
@@ -74,6 +91,112 @@ def workspace_snapshot(
                         raise ValueError(
                             "Workspace changed during checkpoint; retaining prior snapshot."
                         )
+    logging.info(
+        "checkpoint event=%s kept_bytes=%s excluded_bytes=%s excluded_paths=%s",
+        event_id,
+        report["kept_bytes"],
+        report["excluded_bytes"],
+        report["excluded_paths"],
+    )
+    return report
+
+
+def restore_workspace(stream: Any, home: Path, *, work: Path | None = None) -> None:
+    """Stream legacy and lean archives; never expand large dataset members onto disk."""
+    seen: set[str] = set()
+    with tarfile.open(fileobj=stream, mode="r|gz") as tar:
+        for member in tar:
+            target = home / member.name
+            if (
+                not target.resolve().is_relative_to(home.resolve())
+                or member.name in seen
+                or not (member.isfile() or member.isdir())
+                or not (
+                    member.name.startswith(("work/", ".claude/projects/"))
+                    or member.name == "state.db"
+                    or (member.isdir() and member.name == "work")
+                )
+            ):
+                raise ValueError("Unsafe session checkpoint")
+            seen.add(member.name)
+            if member.isdir():
+                continue
+            if member.name.startswith("work/"):
+                root = work or home / "work/thread"
+                if not target.is_relative_to(root):
+                    continue
+                if retention_reason(target.relative_to(root), member.size, recovery=True):
+                    continue
+            tar.extract(member, home, filter="data")
+
+
+def migrate_thread(storage: Storage, thread_key: str) -> dict[str, Any]:
+    """Verify a lean replacement before CAS; never delete a legacy source or race a new turn."""
+    from .thread_history import History
+
+    history = History(storage, thread_key)
+    pointer = f"{history.root}/checkpoint.json"
+    raw, generation = storage.get(pointer)
+    state = json.loads(raw)
+    history = History(storage, thread_key, state.get("context", {}).get("project_slug", ""))
+    if state.get("retention_version") == 1 or not state.get("archive"):
+        return {"status": "unchanged"}
+    parts = Path(state["context"]["workdir"]).parts
+    if "work" not in parts:
+        raise ValueError("Unrecognized legacy workspace")
+    relative = Path(*parts[parts.index("work") :])
+    if ".." in relative.parts:
+        raise ValueError("Unsafe legacy workspace")
+    with tempfile.TemporaryDirectory(prefix="pista-migrate-") as temporary:
+        home = Path(temporary).resolve()
+        work = home / relative
+        with storage.open_read(state["archive"]) as stream:
+            restore_workspace(stream, home, work=work)
+        archive = home / "lean.tar.gz"
+        report = workspace_snapshot(archive, home, work=work, partial=False, recovery=False)
+        key = f"{history.root}/archives/migrated-{uuid4().hex}.tar.gz"
+        storage.upload_new(key, archive)
+        verification = home / "verify.tar.gz"
+        storage.download(key, verification)
+        if digest(verification) != digest(archive):
+            raise ValueError("Migrated checkpoint verification failed; source retained")
+        for row in state.get("messages", []):
+            history.record(row, only_missing=True)
+        state.update(archive=key, retention_version=1, legacy_archive=state["archive"])
+        state["context"]["session_id"] = None
+        storage.put_if(pointer, json.dumps(state).encode(), generation)
+    return {
+        "status": "migrated",
+        "archive": key,
+        "source_retained": state["legacy_archive"],
+        **report,
+    }
+
+
+def cleanup_temporary(storage: Storage, event_id: str) -> int:
+    """Called only for a terminal new-protocol event whose worker is confirmed stopped."""
+    prefix = event_prefix(event_id)
+    deleted = 0
+    for folder in ("stages", "write-exports"):
+        for key in storage.keys(f"{prefix}/{folder}/"):
+            # Get only metadata for remote multi-GB objects, never download them to delete.
+            from .storage import GCSStorage
+
+            if isinstance(storage, GCSStorage):
+                blob = storage.bucket.blob(key)
+                try:
+                    blob.reload()
+                    blob.delete(if_generation_match=blob.generation)
+                except NotFound:
+                    continue
+            else:
+                try:
+                    _, generation = storage.get(key)
+                    storage.delete_if(key, generation)
+                except FileNotFoundError:
+                    continue
+            deleted += 1
+    return deleted
 
 
 class Stages:
