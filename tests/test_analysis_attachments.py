@@ -5,9 +5,9 @@ from unittest.mock import Mock
 import httpx
 import pytest
 
-from pistachio.agents.analysis import attachments as a
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.storage import LocalStorage
+from mica.agents.analysis import attachments as a
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.storage import LocalStorage
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"image"
 
@@ -255,7 +255,7 @@ def test_materialize_never_follows_workspace_links(store, tmp_path):
 
 
 def test_gcs_streaming_primitives():
-    from pistachio.agents.analysis.storage import GCSStorage
+    from mica.agents.analysis.storage import GCSStorage
 
     storage = object.__new__(GCSStorage)
     storage.bucket = Mock()
@@ -292,7 +292,7 @@ def test_thread_registry_and_combined_media_caps(store):
 def test_control_plane_and_worker_host_do_not_import_decoders():
     import ast
 
-    root = Path(__file__).resolve().parents[1] / "src/pistachio"
+    root = Path(__file__).resolve().parents[1] / "src/mica"
     paths = [*(root / "agents/analysis").glob("*.py"), *(root / "api").glob("*.py")]
     for path in paths:
         for node in ast.walk(ast.parse(path.read_text())):

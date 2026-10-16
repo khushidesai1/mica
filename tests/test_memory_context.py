@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pistachio.agents.context import ContextBuilder
-from pistachio.agents.memory import MemoryManager, MemoryPolicyViolation
-from pistachio.models import (
+from mica.agents.context import ContextBuilder
+from mica.agents.memory import MemoryManager, MemoryPolicyViolation
+from mica.models import (
     MemoryItem,
     MemoryKind,
     MemoryStatus,
@@ -179,7 +179,7 @@ async def test_secret_like_content_is_never_promoted(repository, settings) -> No
 async def test_forged_planner_memory_cannot_replace_another_project(repository, settings):
     from conftest import task_service
 
-    from pistachio.models import AgentTaskPlan, ResourcePlan, ToolPlan
+    from mica.models import AgentTaskPlan, ResourcePlan, ToolPlan
 
     protected = MemoryItem(
         id="victim-memory",

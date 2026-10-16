@@ -30,7 +30,7 @@ require no new frontend runtime or CSS dependency.
 ## Staging deployment
 
 Revision `pistachio-staging-00052-bip` serves 100% of traffic at
-[Pistachio staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app).
+[Mica staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app).
 Build `54718d11-cf47-45f3-ba1c-513f1ba6a825` succeeded. Preview and live health
 and logo checks passed; authentication still redirects to login. No ERROR-level
 logs were returned for the new revision during rollout verification. The runtime

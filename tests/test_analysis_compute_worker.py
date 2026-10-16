@@ -12,11 +12,11 @@ import httpx
 import pytest
 from test_analysis_runner import result
 
-from pistachio.agents.analysis import batch_worker, runner
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.recovery import event_prefix
-from pistachio.agents.analysis.runner import Context
-from pistachio.agents.analysis.storage import LocalStorage
+from mica.agents.analysis import batch_worker, runner
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.recovery import event_prefix
+from mica.agents.analysis.runner import Context
+from mica.agents.analysis.storage import LocalStorage
 
 
 @pytest.mark.parametrize(
@@ -64,7 +64,7 @@ async def test_cold_resize_suppresses_intermediate_delivery_and_preserves_output
     monkeypatch.setattr(batch_worker, "AsyncWebClient", lambda **kw: slack)
     monkeypatch.setattr(batch_worker.id_token, "fetch_id_token", lambda *a: "fake")
     monkeypatch.setattr(batch_worker.httpx, "AsyncClient", lambda **kw: http)
-    monkeypatch.setenv("PISTACHIO_CONTROL_PLANE_URL", "https://test")
+    monkeypatch.setenv("MICA_CONTROL_PLANE_URL", "https://test")
     ctx = Context(home / "work/test", home / "data", "test", "Brief", thread_ts="1.0")
     ctx.workdir.mkdir(parents=True)
     ctx.data_path.mkdir()

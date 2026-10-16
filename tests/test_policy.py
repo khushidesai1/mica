@@ -5,7 +5,7 @@ import json
 import pytest
 from agents.strict_schema import ensure_strict_json_schema
 
-from pistachio.models import (
+from mica.models import (
     AgentTaskPlan,
     ApprovalKind,
     HyperparameterSetting,
@@ -18,7 +18,7 @@ from pistachio.models import (
     ToolInvocation,
     ToolPlan,
 )
-from pistachio.services.policy import ExecutionPolicy, PolicyViolation
+from mica.services.policy import ExecutionPolicy, PolicyViolation
 
 
 def test_compute_and_scientific_approval_gates(settings) -> None:

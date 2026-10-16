@@ -1,6 +1,6 @@
 # Follow-up communication repair — 30 September 2026
 
-Status: deployed to [Pistachio staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app).
+Status: deployed to [Mica staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app).
 Revision `pistachio-staging-00068-nih` serves 100% of staging traffic.
 
 ## Observed incident

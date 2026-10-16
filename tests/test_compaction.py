@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from pistachio.agents.context import ContextBuilder
-from pistachio.agents.memory import MemoryManager, ProjectCompactor
-from pistachio.agents.session import session_key
-from pistachio.models import (
+from mica.agents.context import ContextBuilder
+from mica.agents.memory import MemoryManager, ProjectCompactor
+from mica.agents.session import session_key
+from mica.models import (
     MemoryItem,
     MemoryKind,
     Project,
@@ -15,7 +15,7 @@ from pistachio.models import (
     TaskStatus,
     utcnow,
 )
-from pistachio.services.tasks import TaskService
+from mica.services.tasks import TaskService
 
 
 async def test_five_tasks_compact_without_losing_durable_memory(repository, settings) -> None:

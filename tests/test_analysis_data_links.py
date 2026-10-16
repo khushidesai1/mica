@@ -1,6 +1,6 @@
 import pytest
 
-from pistachio.agents.analysis.data_links import data_uri, init_args
+from mica.agents.analysis.data_links import data_uri, init_args
 
 
 @pytest.mark.parametrize(

@@ -5,8 +5,8 @@ import logging
 import httpx
 import pytest
 
-from pistachio.agents.analysis import project_memory as memory
-from pistachio.agents.analysis.config import Settings
+from mica.agents.analysis import project_memory as memory
+from mica.agents.analysis.config import Settings
 from tests.fake_github import FakeGitHub, blob_oid
 
 FACT = "type: fact\nsource: Khushi, 2026-10-10\nstatus: current\n\nUse viridis for heatmaps.\n"

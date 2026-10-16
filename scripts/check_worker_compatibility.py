@@ -6,8 +6,8 @@ import argparse
 import json
 from pathlib import Path
 
-from pistachio.execution.development import validation_suite_hash
-from pistachio.models import ExecutionBundle, ParameterSpec, ResourcePlan, TaskContract, ToolPlan
+from mica.execution.development import validation_suite_hash
+from mica.models import ExecutionBundle, ParameterSpec, ResourcePlan, TaskContract, ToolPlan
 
 
 def contract() -> dict:

@@ -4,7 +4,7 @@
 > Web rollout/preservation instructions below are superseded by the current
 > [headless deployment guide](deployment.md#headless-api-rollout).
 
-Scope: rewrite the agent layer inside Pistachio, **Slack first**, retaining the existing bot,
+Scope: rewrite the agent layer inside Mica, **Slack first**, retaining the existing bot,
 HTTP webhook, Cloud Run control plane and Batch Spot resources. Web chat stays unchanged.
 The user subsequently authorized staging deployment and the separately gated sandbox and
 Slack upload permission changes. See `slack-agent-deployment.md` for the current cloud record.
@@ -83,7 +83,7 @@ plan's minimal dedicated identity has been implemented.
 5. Remove a sandbox dependency in a disposable test container. The SDK must fail without
    executing unsandboxed. Do not disable the sandbox or widen its network allowlist to pass.
    The existing staging-only outer container exception does not relax these inner controls.
-6. Run the opt-in live fixture test with `PISTACHIO_RUN_LIVE_TESTS=1` and `ANTHROPIC_API_KEY`.
+6. Run the opt-in live fixture test with `MICA_RUN_LIVE_TESTS=1` and `ANTHROPIC_API_KEY`.
    Verify budget and turn-limit stops, actual PNG creation and follow-up script reuse.
 7. Run two messages in one Slack thread and another thread in parallel. Replay a webhook event
    and verify one Batch job. Terminate a disposable worker mid-turn, observe the failure notice,

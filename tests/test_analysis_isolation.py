@@ -9,8 +9,8 @@ from pydantic import SecretStr
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from pistachio.agents.analysis import direct
-from pistachio.api import slack_analysis
+from mica.agents.analysis import direct
+from mica.api import slack_analysis
 
 
 def services(bridge):
@@ -20,7 +20,7 @@ def services(bridge):
 
 async def test_unmapped_channel_chatter_is_silent(bridge, monkeypatch):
     reply = AsyncMock()
-    monkeypatch.setattr("pistachio.connectors.slack._reply", reply)
+    monkeypatch.setattr("mica.connectors.slack._reply", reply)
     await slack_analysis.receive(
         services(bridge),
         payload(
@@ -34,7 +34,7 @@ async def test_unmapped_channel_chatter_is_silent(bridge, monkeypatch):
 
 async def test_unmapped_mention_and_copy_get_one_threaded_reply(bridge, monkeypatch):
     reply = AsyncMock()
-    monkeypatch.setattr("pistachio.connectors.slack._reply", reply)
+    monkeypatch.setattr("mica.connectors.slack._reply", reply)
     body = payload(
         channel="C1",
         user="UNKNOWN",
@@ -143,9 +143,9 @@ async def test_channel_publication_is_explicit_and_revocable(chat):
 async def test_worker_grant_rechecks_membership_and_protocol(chat):
     import json
 
-    from pistachio.agents.analysis.access import worker_permitted
-    from pistachio.agents.analysis.config import CHECKPOINT_PREFIX
-    from pistachio.agents.analysis.registry import Registry
+    from mica.agents.analysis.access import worker_permitted
+    from mica.agents.analysis.config import CHECKPOINT_PREFIX
+    from mica.agents.analysis.registry import Registry
 
     await message(chat, "share liver <@U2>", "10.0")
     await message(chat, "use liver", "11.0", user="U2", channel="D2")

@@ -3,9 +3,9 @@
 import pytest
 from google.cloud import batch_v1
 
-from pistachio.agents.analysis.batch import job_spec
-from pistachio.agents.analysis.config import Settings
-from pistachio.config import Settings as AppSettings
+from mica.agents.analysis.batch import job_spec
+from mica.agents.analysis.config import Settings
+from mica.config import Settings as AppSettings
 
 CASES = {
     "legacy": (False, {}),

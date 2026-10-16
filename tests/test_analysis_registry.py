@@ -3,8 +3,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from pistachio.agents.analysis.registry import Registry, RegistryDoc
-from pistachio.agents.analysis.storage import Conflict, LocalStorage
+from mica.agents.analysis.registry import Registry, RegistryDoc
+from mica.agents.analysis.storage import Conflict, LocalStorage
 from tools.migrate_slack_registry import apply, report
 
 A, B = "alice@example.com", "bob@example.com"

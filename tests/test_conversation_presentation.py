@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import re
 
-from pistachio.connectors.presentation import (
+from mica.connectors.presentation import (
     TaskCommunicationView,
     TaskConversationPresenter,
 )
-from pistachio.models import (
+from mica.models import (
     ParameterClass,
     ParameterSpec,
     TaskEnvelope,
@@ -106,8 +106,8 @@ async def test_replan_agent_receives_followup_and_grounded_decision(monkeypatch,
     import json
     from types import SimpleNamespace
 
-    from pistachio.connectors.presentation import TaskConversationAgent, UserFacingMessage
-    from pistachio.models import MasterPlan, TaskContextUpdate, TaskContract, TaskSource
+    from mica.connectors.presentation import TaskConversationAgent, UserFacingMessage
+    from mica.models import MasterPlan, TaskContextUpdate, TaskContract, TaskSource
 
     task = _task(status=TaskStatus.PLANNING)
     task.context_updates = [TaskContextUpdate(
@@ -136,19 +136,19 @@ async def test_replan_agent_receives_followup_and_grounded_decision(monkeypatch,
         assert "Approval is needed" not in prompt
         return SimpleNamespace(final_output=UserFacingMessage(text=converted))
 
-    monkeypatch.setattr("pistachio.connectors.presentation.Runner.run", run)
+    monkeypatch.setattr("mica.connectors.presentation.Runner.run", run)
     assert await agent.render_replan(task) == converted
 
     async def unavailable(*args, **kwargs):
         raise RuntimeError("model unavailable")
 
-    monkeypatch.setattr("pistachio.connectors.presentation.Runner.run", unavailable)
+    monkeypatch.setattr("mica.connectors.presentation.Runner.run", unavailable)
     assert await agent.render_replan(task) == task.master_plan.amendment_explanation
 
 
 async def test_replan_explanation_stays_visible_beside_approval_and_progress(settings):
-    from pistachio.connectors.presentation import TaskConversationAgent
-    from pistachio.models import ApprovalKind, ApprovalRequest, StageKind
+    from mica.connectors.presentation import TaskConversationAgent
+    from mica.models import ApprovalKind, ApprovalRequest, StageKind
 
     task = _task(status=TaskStatus.NEEDS_APPROVAL)
     task.followup_response = "I’ll keep the installed package because it supports approximation."
@@ -170,8 +170,8 @@ async def test_substantive_reply_preserves_paragraphs_and_grounded_objective(mon
     import json
     from types import SimpleNamespace
 
-    from pistachio.connectors.presentation import TaskConversationAgent, UserFacingMessage
-    from pistachio.models import TaskContract
+    from mica.connectors.presentation import TaskConversationAgent, UserFacingMessage
+    from mica.models import TaskContract
 
     task = _task(status=TaskStatus.SUCCEEDED)
     task.contract = TaskContract(objective="Compare spatial neighborhoods across samples.")
@@ -184,7 +184,7 @@ async def test_substantive_reply_preserves_paragraphs_and_grounded_objective(mon
             text="The analysis is complete.\n\nThe results are ready for review."
         ))
 
-    monkeypatch.setattr("pistachio.connectors.presentation.Runner.run", run)
+    monkeypatch.setattr("mica.connectors.presentation.Runner.run", run)
     assert await agent.render(task) == (
         "The analysis is complete.\n\nThe results are ready for review."
     )
@@ -196,9 +196,9 @@ async def test_internal_evidence_failure_never_becomes_a_user_reformatting_reque
     import json
     from types import SimpleNamespace
 
-    from pistachio.connectors.presentation import TaskConversationAgent, UserFacingMessage
-    from pistachio.models import ConversationMessage, TaskContextUpdate, TaskSource
-    from pistachio.services.amendments import AMENDMENT_FAILURE_MESSAGE
+    from mica.connectors.presentation import TaskConversationAgent, UserFacingMessage
+    from mica.models import ConversationMessage, TaskContextUpdate, TaskSource
+    from mica.services.amendments import AMENDMENT_FAILURE_MESSAGE
 
     task = _task(status=TaskStatus.FAILED)
     task.error = "ValueError: sample_size: amendment evidence must quote the actual exchange"
@@ -226,7 +226,7 @@ async def test_internal_evidence_failure_never_becomes_a_user_reformatting_reque
             text="Please provide evidence_refs with your reply."
         ))
 
-    monkeypatch.setattr("pistachio.connectors.presentation.Runner.run", run)
+    monkeypatch.setattr("mica.connectors.presentation.Runner.run", run)
     response = await agent.render(task)
     assert AMENDMENT_FAILURE_MESSAGE in response
     assert "evidence_refs" not in response and "ValueError" not in response
@@ -238,8 +238,8 @@ async def test_delegated_choice_reply_is_grounded_in_current_settings_and_recent
     import json
     from types import SimpleNamespace
 
-    from pistachio.connectors.presentation import TaskConversationAgent, UserFacingMessage
-    from pistachio.models import (
+    from mica.connectors.presentation import TaskConversationAgent, UserFacingMessage
+    from mica.models import (
         ConversationMessage,
         MasterPlan,
         TaskContextUpdate,
@@ -276,5 +276,5 @@ async def test_delegated_choice_reply_is_grounded_in_current_settings_and_recent
         assert payload["plan_settings"][0]["value"] == "10000"
         return SimpleNamespace(final_output=UserFacingMessage(text=confirmation))
 
-    monkeypatch.setattr("pistachio.connectors.presentation.Runner.run", run)
+    monkeypatch.setattr("mica.connectors.presentation.Runner.run", run)
     assert await agent.render_replan(task) == confirmation

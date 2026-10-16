@@ -148,13 +148,13 @@ master plan and decisions.
 For a conformance-approved local/staging environment:
 
 ```dotenv
-PISTACHIO_PLANNER_VERSION=2
-PISTACHIO_BUILDER_PROTOCOL_VERSION=2
-PISTACHIO_DEVELOPMENT_ENABLED=true
-PISTACHIO_DEVELOPMENT_MODEL=gpt-5.6-sol
-PISTACHIO_EXECUTION_BACKEND=docker
-PISTACHIO_WORKER_SANDBOX=docker
-PISTACHIO_BATCH_IMAGE=REGISTRY/SCIENCE_IMAGE@sha256:ACTUAL_DIGEST
+MICA_PLANNER_VERSION=2
+MICA_BUILDER_PROTOCOL_VERSION=2
+MICA_DEVELOPMENT_ENABLED=true
+MICA_DEVELOPMENT_MODEL=gpt-5.6-sol
+MICA_EXECUTION_BACKEND=docker
+MICA_WORKER_SANDBOX=docker
+MICA_BATCH_IMAGE=REGISTRY/SCIENCE_IMAGE@sha256:ACTUAL_DIGEST
 ```
 
 Use the actual approved image digest, not the placeholder. Local/test environments also
@@ -170,7 +170,7 @@ runs, development checks and startup allowance. Reservations are conservative an
 not refunded for short operations. Actual token counts are recorded; a model-dollar price
 ledger and empirical model comparison are not implemented.
 
-To stop new adoption, set `BUILDER_PROTOCOL_VERSION=1` with the normal `PISTACHIO_` prefix.
+To stop new adoption, set `BUILDER_PROTOCOL_VERSION=1` with the normal `MICA_` prefix.
 Leave development enabled while draining existing protocol 2 tasks. Disabling development
 also prevents their continuations; it does not translate them back to protocol 1.
 
@@ -183,7 +183,7 @@ the earlier absence of real Firestore, GCS, and bounded Batch execution checks.
 Local checks on the initial implementation:
 
 - `ruff check src tests`: passed.
-- `mypy src/pistachio`: passed for 50 source files.
+- `mypy src/mica`: passed for 50 source files.
 - `pytest -q`: 106 passed, 3 skipped. The skips are two opt-in Docker cases and the
   scientific module missing its optional packages in the host virtual environment.
 - The separate pinned Linux acceptance image ran all three scientific tests during its
@@ -210,8 +210,8 @@ failure had that cause.
 Reproduce the scientific checks separately:
 
 ```bash
-docker build -f docker/Dockerfile.development-test -t pistachio-development-test:local .
-PISTACHIO_CONFORMANCE_IMAGE="$(docker image inspect --format '{{.Id}}' pistachio-development-test:local)" \
+docker build -f docker/Dockerfile.development-test -t mica-development-test:local .
+MICA_CONFORMANCE_IMAGE="$(docker image inspect --format '{{.Id}}' mica-development-test:local)" \
   .venv/bin/pytest -q tests/test_development_docker.py
 ```
 

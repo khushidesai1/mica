@@ -5,7 +5,7 @@ import shutil
 import sqlite3
 from pathlib import Path
 
-from pistachio.agents.analysis.config import Settings
+from mica.agents.analysis.config import Settings
 
 
 def cleanup(settings):

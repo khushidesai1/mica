@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from pistachio.agents.analysis.resources import Sampler
+from mica.agents.analysis.resources import Sampler
 
 
 def put(root, name, text):

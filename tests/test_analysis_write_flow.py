@@ -9,10 +9,10 @@ from starlette.requests import Request
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_slack import bot, event, send  # noqa: F401
 
-from pistachio.agents.analysis import write_access, write_broker, write_worker
-from pistachio.agents.analysis.runner import Context, TurnResult
-from pistachio.agents.analysis.storage import LocalStorage
-from pistachio.api import slack_analysis
+from mica.agents.analysis import write_access, write_broker, write_worker
+from mica.agents.analysis.runner import Context, TurnResult
+from mica.agents.analysis.storage import LocalStorage
+from mica.api import slack_analysis
 
 
 @pytest.fixture
@@ -127,7 +127,7 @@ async def test_broker_does_not_accept_new_grant_for_old_run(writable, monkeypatc
 
 
 async def test_broker_returns_unknown_access_as_retry_without_delivering(writable, monkeypatch):
-    from pistachio.agents.analysis.identity import IdentityUnavailable
+    from mica.agents.analysis.identity import IdentityUnavailable
 
     compute, request, _, body = await worker_request(writable, monkeypatch)
     body.relative_paths = ["one", "two", "three"]
@@ -475,8 +475,8 @@ async def test_tool_rejects_escaping_missing_or_symlink_folders(worker, folder):
 
 @pytest.mark.parametrize("granted", [True, False])
 def test_publish_tool_is_registered_only_with_current_grant(worker, granted):
-    from pistachio.agents.analysis.config import Settings
-    from pistachio.agents.analysis.runner import build_options
+    from mica.agents.analysis.config import Settings
+    from mica.agents.analysis.runner import build_options
 
     if not granted:
         worker.request["write_grant"] = None

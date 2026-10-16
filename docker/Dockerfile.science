@@ -6,10 +6,10 @@ USER root
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    HOME=/tmp/pistachio-home \
-    XDG_CONFIG_HOME=/tmp/pistachio-config \
-    XDG_CACHE_HOME=/tmp/pistachio-cache \
-    MPLCONFIGDIR=/tmp/pistachio-matplotlib \
+    HOME=/tmp/mica-home \
+    XDG_CONFIG_HOME=/tmp/mica-config \
+    XDG_CACHE_HOME=/tmp/mica-cache \
+    MPLCONFIGDIR=/tmp/mica-matplotlib \
     MPLBACKEND=Agg
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -24,4 +24,4 @@ COPY src ./src
 RUN pip install --no-deps . && chown -R 65532:65532 /opt/pistachio
 
 USER 65532:65532
-CMD ["python", "-m", "pistachio.worker.main"]
+CMD ["python", "-m", "mica.worker.main"]

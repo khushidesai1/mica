@@ -2,8 +2,8 @@
 
 import json
 
-from pistachio.agents.analysis import calibration, recovery
-from pistachio.agents.analysis.storage import LocalStorage
+from mica.agents.analysis import calibration, recovery
+from mica.agents.analysis.storage import LocalStorage
 
 
 def test_history_is_idempotent_scoped_and_accepts_missing_final_metrics(tmp_path):

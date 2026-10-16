@@ -6,7 +6,7 @@ import pytest
 from analysis_helpers import seed_project
 from test_analysis_batch import bridge, payload  # noqa: F401
 
-from pistachio.agents.analysis import batch, direct
+from mica.agents.analysis import batch, direct
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ def chat(bridge, monkeypatch):  # noqa: F811
 
 
 async def test_direct_edits_save_and_followups_never_create_workers(chat, monkeypatch):
-    from pistachio.agents.analysis import job_lifecycle, memory_tasks
+    from mica.agents.analysis import job_lifecycle, memory_tasks
 
     chat.settings.memory_auto_edit = True
     monkeypatch.setattr(job_lifecycle, "enqueue", AsyncMock())
@@ -55,7 +55,7 @@ async def test_direct_edits_save_and_followups_never_create_workers(chat, monkey
 
 
 async def test_compute_uses_direct_brief_and_cached_routing(chat, monkeypatch):
-    from pistachio.agents.analysis import job_lifecycle, memory_tasks
+    from mica.agents.analysis import job_lifecycle, memory_tasks
 
     chat.settings.memory_auto_edit = True
     monkeypatch.setattr(job_lifecycle, "enqueue", AsyncMock())
@@ -194,7 +194,7 @@ async def test_inventory_checks_bucket_admission_before_listing(chat, monkeypatc
 
 
 async def test_inventory_rechecks_project_access_before_listing(chat, monkeypatch):
-    from pistachio.agents.analysis.registry import Registry
+    from mica.agents.analysis.registry import Registry
 
     listing = Mock()
     monkeypatch.setattr(direct, "inventory", listing)
@@ -405,7 +405,7 @@ async def test_csv_compute_reaches_manifest(chat, upload_http):
 
 
 async def test_denied_user_files_never_downloaded(chat, upload_http):
-    from pistachio.agents.analysis.registry import Registry
+    from mica.agents.analysis.registry import Registry
 
     def revoke(doc):
         doc.projects[chat.pid].members = set()
@@ -523,7 +523,7 @@ async def test_view_earlier_output_then_reply_without_worker(chat):
 
 
 async def test_view_ignores_foreign_and_already_shown_ids(chat, upload_http, monkeypatch):
-    from pistachio.agents.analysis import attachments
+    from mica.agents.analysis import attachments
 
     actual = attachments.router_media
     calls = []
@@ -548,13 +548,13 @@ async def test_view_ignores_foreign_and_already_shown_ids(chat, upload_http, mon
 
 async def test_view_rechecks_access(chat, monkeypatch):
     output = await seed_earlier_output(chat)
-    from pistachio.agents.analysis import attachments
+    from mica.agents.analysis import attachments
 
     media = Mock(wraps=attachments.router_media)
     monkeypatch.setattr(attachments, "router_media", media)
 
     async def forget(*args, **kwargs):
-        from pistachio.agents.analysis.registry import Registry
+        from mica.agents.analysis.registry import Registry
 
         def alter(doc):
             doc.projects[chat.pid].access_revision += 1
@@ -697,7 +697,7 @@ async def test_results_followup_uses_prior_methods_without_worker(chat):
 
 
 def test_followup_and_methods_prompt_rules():
-    from pistachio.agents.analysis import prompts
+    from mica.agents.analysis import prompts
 
     assert "earlier reply or its methods note" in direct.SYSTEM
     assert "ask instead of guessing or launching a worker" not in direct.SYSTEM
@@ -707,7 +707,7 @@ def test_followup_and_methods_prompt_rules():
 async def test_incident_lists_both_context_folders_in_one_step(chat, monkeypatch, caplog):
     from fake_inventory import fake_gcs
 
-    from pistachio.agents.analysis.config import Settings
+    from mica.agents.analysis.config import Settings
 
     fact = "type: open\nsource: verified analysis, 2026-10-11\nstatus: current\n\n"
     base = await chat.memory_backend.read(chat.pid)
@@ -766,7 +766,7 @@ async def test_incident_lists_both_context_folders_in_one_step(chat, monkeypatch
     assert all(f["complete"] for f in metadata["folders"])
     assert len(requests) == 2
     assert f"inventory event={event} paths=2 entries=77 complete=true ms=" in caplog.text
-    inventory_logs = [r.message for r in caplog.records if r.name == "pistachio.inventory"]
+    inventory_logs = [r.message for r in caplog.records if r.name == "mica.inventory"]
     assert len(inventory_logs) == 1 and "resegmentation" not in inventory_logs[0]
     chat.test_client.create_job.assert_not_called()
 

@@ -30,11 +30,11 @@ remain unchanged.
   returns retryable status only for the affected path, retaining successful receipts.
 - The compatible API correction passed all four gates in Cloud Build
   `0990a42e-acd9-413e-aa11-24c95a6b14ca`, including the unchanged science worker's execution contract.
-  [Exact-source CI](https://github.com/khushidesai1/pistachio/actions/runs/38510016108) passed.
+  [Exact-source CI](https://github.com/khushidesai1/mica/actions/runs/38510016108) passed.
 - A later IAM token-service 503 was wrapped as a non-retryable credential refresh error by
   the SDK. Source `76b15bb9bbb1` also classifies structured transient IAM responses, while
   preserving permanent permission failures. Cloud Build `1f259279-f234-4854-bc8f-75d268d388e2`
-  passed all four gates and [CI](https://github.com/khushidesai1/pistachio/actions/runs/38512292736) passed.
+  passed all four gates and [CI](https://github.com/khushidesai1/mica/actions/runs/38512292736) passed.
 - Revision `pistachio-staging-refresh-76b15bb9bbb1` serves 100% of staging traffic. Preview and
   live checks passed: health 200, removed UI/docs 404, unsigned Slack/worker requests 401.
   Environment, secret mappings and worker images were preserved, and task dispatch resumed.

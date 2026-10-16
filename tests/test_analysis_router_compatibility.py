@@ -4,8 +4,8 @@ import json
 
 import httpx
 
-from pistachio.agents.analysis import direct
-from pistachio.agents.analysis.config import Settings
+from mica.agents.analysis import direct
+from mica.agents.analysis.config import Settings
 
 
 async def test_router_works_when_provider_rejects_forced_tool_choice(monkeypatch):

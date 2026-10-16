@@ -13,8 +13,8 @@ from unittest.mock import patch
 
 import httpx
 
-import pistachio
-from pistachio.agents.analysis import (
+import mica
+from mica.agents.analysis import (
     access,
     attachments,
     commands,
@@ -23,24 +23,30 @@ from pistachio.agents.analysis import (
     project_memory,
     write_access,
 )
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.progress import TaskProgress, check_in_due
-from pistachio.agents.analysis.registry import Registry
-from pistachio.agents.analysis.slack_format import activity_blocks
-from pistachio.agents.analysis.storage import LocalStorage
-from pistachio.services.tools import BOOTSTRAP_TOOLS
-from pistachio.tool_catalog import ATOMX_TRANSFER_ID, SPATIAL_ANALYSIS_ID
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.progress import TaskProgress, check_in_due
+from mica.agents.analysis.registry import Registry
+from mica.agents.analysis.slack_format import activity_blocks
+from mica.agents.analysis.storage import LocalStorage
+from mica.services.tools import BOOTSTRAP_TOOLS
+from mica.tool_catalog import ATOMX_TRANSFER_ID, SPATIAL_ANALYSIS_ID
 
 
 def check(source: Path, mode: str) -> None:
-    installed = Path(pistachio.__file__).parent
-    files = sorted((source / "src/pistachio").rglob("*.py"))
+    installed = Path(mica.__file__).parent
+    files = sorted((source / "src/mica").rglob("*.py"))
     for file in files:
         assert (
             file.read_bytes()
-            == (installed / file.relative_to(source / "src/pistachio")).read_bytes()
+            == (installed / file.relative_to(source / "src/mica")).read_bytes()
         ), file
     print(f"SOURCE_VERIFIED: {len(files)} application files")
+    # Pinned older workers and saved scripts may still import the former package.
+    import importlib
+
+    assert importlib.import_module("pistachio.models") is importlib.import_module("mica.models")
+    legacy = importlib.import_module("pistachio")
+    assert Path(legacy.__file__).read_bytes() == (source / "src/pistachio/__init__.py").read_bytes()
     settings = Settings(_env_file=None)
     assert settings.long_run_threshold_seconds == 600
     assert settings.long_run_update_seconds == 7200
@@ -154,9 +160,11 @@ def check(source: Path, mode: str) -> None:
 
 
 def check_worker(work: Path, source: Path, settings: Settings) -> None:
+    for command in ("mica-analyze", "pistachio-analyze"):
+        assert "Local Mica agent" in subprocess.check_output([command, "--help"], text=True)
     from PIL import Image
 
-    from pistachio.agents.analysis.runner import Context, build_options
+    from mica.agents.analysis.runner import Context, build_options
 
     assert importlib.metadata.version("pypdfium2") == "5.14.0"
     assert all(shutil.which(name) for name in ("bwrap", "socat"))

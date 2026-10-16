@@ -8,12 +8,12 @@ import pytest
 from test_development import ANALYSIS, REGRESSION, configuration, make_bundle
 from test_initial_quality import Reviewer, plan
 
-from pistachio.execution.backends import LocalExecutor, parse_progress_line
-from pistachio.execution.input_cache import InputCache
-from pistachio.execution.runtime_support import parameter, positional_rows, require_memory
-from pistachio.execution.session import command_active, write_manifest
-from pistachio.execution.workspace import WorkspaceStore
-from pistachio.models import (
+from mica.execution.backends import LocalExecutor, parse_progress_line
+from mica.execution.input_cache import InputCache
+from mica.execution.runtime_support import parameter, positional_rows, require_memory
+from mica.execution.session import command_active, write_manifest
+from mica.execution.workspace import WorkspaceStore
+from mica.models import (
     CandidateReview,
     DecisionSet,
     DevelopmentAction,
@@ -24,8 +24,8 @@ from pistachio.models import (
     TaskRecord,
     utcnow,
 )
-from pistachio.services.acceptance import compact_observation
-from pistachio.services.development import DevelopmentService
+from mica.services.acceptance import compact_observation
+from mica.services.development import DevelopmentService
 
 
 async def candidate(repository, settings, tmp_path):
@@ -247,7 +247,7 @@ def test_runtime_helpers_preserve_types_and_handle_missing_proc(monkeypatch):
 
 
 def test_manifest_stale_commands_and_cancellation(monkeypatch):
-    from pistachio.execution import session
+    from mica.execution import session
 
     state = {}
 
@@ -283,7 +283,7 @@ def test_manifest_stale_commands_and_cancellation(monkeypatch):
 def test_manifest_read_retries_a_generation_race():
     from google.api_core.exceptions import PreconditionFailed
 
-    from pistachio.execution.session import read_manifest
+    from mica.execution.session import read_manifest
 
     class Blob:
         generation = 0
@@ -313,7 +313,7 @@ def test_compact_evidence_and_untrusted_progress():
     }
     assert "packages" not in compact_observation(raw, "probe")["runtime"]
     progress = parse_progress_line(
-        'PISTACHIO_PROGRESS {"status":"started","message":"hi","trusted":true}', 1
+        'MICA_PROGRESS {"status":"started","message":"hi","trusted":true}', 1
     )
     assert not progress.trusted
 
@@ -322,7 +322,7 @@ def test_compact_evidence_and_untrusted_progress():
 async def test_supervisor_shutdown_and_duplicate_command(tmp_path, monkeypatch, exit_mode):
     from types import SimpleNamespace
 
-    from pistachio.worker import session as supervisor
+    from mica.worker import session as supervisor
 
     bundle = make_bundle(tmp_path)
     bundle.runtime_image = "image"
@@ -338,8 +338,8 @@ async def test_supervisor_shutdown_and_duplicate_command(tmp_path, monkeypatch, 
     )
     if exit_mode == "expired":
         command["deadline"] = (utcnow() - timedelta(seconds=1)).isoformat()
-    monkeypatch.setenv("PISTACHIO_GCS_BUCKET", "b")
-    monkeypatch.setenv("PISTACHIO_BATCH_IMAGE", "image")
+    monkeypatch.setenv("MICA_GCS_BUCKET", "b")
+    monkeypatch.setenv("MICA_BATCH_IMAGE", "image")
     monkeypatch.setattr(supervisor, "Client", lambda: SimpleNamespace(bucket=lambda _: object()))
     monkeypatch.setattr(supervisor, "read_manifest", lambda *a: (dict(command), 1))
     monkeypatch.setattr(supervisor, "download_bundle", lambda _: bundle)
@@ -374,7 +374,7 @@ async def test_supervisor_shutdown_and_duplicate_command(tmp_path, monkeypatch, 
 
 
 async def test_changed_suite_cannot_reuse_validation(settings, tmp_path, monkeypatch):
-    from pistachio.execution import development
+    from mica.execution import development
 
     settings = configuration(settings)
     executor = LocalExecutor(settings)
@@ -400,8 +400,8 @@ async def test_changed_suite_cannot_reuse_validation(settings, tmp_path, monkeyp
 async def test_completion_during_review_is_not_acknowledged(repository, settings, monkeypatch):
     from conftest import task_service
 
-    from pistachio.models import TaskResult
-    from pistachio.services.development import DevelopmentConflict
+    from mica.models import TaskResult
+    from mica.services.development import DevelopmentConflict
 
     task = await repository.create_task(
         TaskRecord(
@@ -420,7 +420,7 @@ async def test_completion_during_review_is_not_acknowledged(repository, settings
 
 
 def test_trusted_helper_signatures_are_given_to_author():
-    from pistachio.services.acceptance import helper_contracts
+    from mica.services.acceptance import helper_contracts
 
     contracts = helper_contracts()
     assert "expected_type" in contracts["parameter"]
@@ -434,7 +434,7 @@ async def test_worker_loss_replaces_session_and_charges_elapsed_time(
 ):
     from google.api_core.exceptions import NotFound
 
-    from pistachio.execution.backends import BatchJobStatus, GcpBatchExecutor
+    from mica.execution.backends import BatchJobStatus, GcpBatchExecutor
 
     service, task, _, _ = await candidate(repository, settings, tmp_path)
     service.executor = GcpBatchExecutor(service.settings.model_copy(update={
@@ -468,7 +468,7 @@ async def test_model_timing_includes_wall_timestamps(monkeypatch):
     from datetime import datetime
     from types import SimpleNamespace
 
-    from pistachio.agents.harness import AgentHarness, Runner
+    from mica.agents.harness import AgentHarness, Runner
 
     async def run(*args, **kwargs):
         return SimpleNamespace(raw_responses=[], new_items=[])

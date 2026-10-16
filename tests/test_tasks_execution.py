@@ -7,8 +7,8 @@ import pytest
 from conftest import task_service
 from google.cloud import storage as google_storage
 
-from pistachio.execution.backends import LocalExecutor
-from pistachio.models import (
+from mica.execution.backends import LocalExecutor
+from mica.models import (
     AgentTaskPlan,
     ApprovalDecision,
     ApprovalKind,
@@ -28,8 +28,8 @@ from pistachio.models import (
     ToolInvocation,
     ToolPlan,
 )
-from pistachio.services.tasks import TaskService
-from pistachio.services.uploads import attachment_tag
+from mica.services.tasks import TaskService
+from mica.services.uploads import attachment_tag
 
 
 class SequencedHarness:

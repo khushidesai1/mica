@@ -3,15 +3,15 @@
 > See [the current deployment record](slack-agent-deployment.md) and
 > [source provenance](deployed-source-20261008.json). Terraform state remains separate.
 
-# Pistachio handoff to another Mac
+# Mica handoff to another Mac
 
-Prepared 5 October 2026. This is the setup guide for the existing Pistachio Slack agent.
+Prepared 5 October 2026. This is the setup guide for the existing Mica Slack agent.
 The developer laptop edits and operates the project; the deployed agent runs in Google Cloud
 and does not require this laptop to stay on.
 
 ## Receiving Mac verification — 5 October 2026
 
-The checkout at `/Users/khushidesai/Documents/pistachio` was fast-forwarded to
+The checkout at `/Users/khushidesai/Documents/mica` was fast-forwarded to
 `486dad1` on `codex/private-project-memory`. The existing virtual environment runs
 Python 3.12.14 natively on arm64, and all core, `dev`, `slack`, and `analysis-test`
 dependencies match the repository's pins; `pip check` passes.
@@ -46,7 +46,7 @@ Terraform apply, paid model call, or Slack message was made during these checks.
 
 ## Start here
 
-- Private GitHub repository: <https://github.com/khushidesai1/pistachio>.
+- Private GitHub repository: <https://github.com/khushidesai1/mica>.
 - Handoff branch: **`codex/private-project-memory`**. Clone this branch explicitly.
 - `main` is the older baseline (`87c4312`), not the latest development source.
 - Git contains the application, tests, pinned dependencies, infrastructure definitions,
@@ -70,8 +70,8 @@ gh auth login --hostname github.com --git-protocol https --web
 gh auth setup-git
 mkdir -p "$HOME/Documents"
 cd "$HOME/Documents"
-git clone --branch codex/private-project-memory https://github.com/khushidesai1/pistachio.git
-cd pistachio
+git clone --branch codex/private-project-memory https://github.com/khushidesai1/mica.git
+cd mica
 git status --short --branch
 git log -1 --oneline
 ```
@@ -98,7 +98,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -e '.[dev,slack,analysis-test]'
 if [ ! -e .env ]; then cp .env.example .env; fi
 .venv/bin/ruff check src tests
-.venv/bin/mypy src/pistachio
+.venv/bin/mypy src/mica
 .venv/bin/pytest -q -m 'not live'
 .venv/bin/python -m compileall -q src
 .venv/bin/python scripts/check_headless_api.py
@@ -108,7 +108,7 @@ Recreate virtual environments; do not copy `.venv` or `.venv-slack` from the old
 The old environment uses Python 3.12.14 under a Codex-managed absolute path. The source
 requires Python >=3.12; use Python 3.12 for this handoff to match CI and the verified setup.
 The `slack` extra installs the Claude SDK; `analysis-test` supplies scientific fixture dependencies.
-No API keys are required for the offline checks. Keep `PISTACHIO_RUN_LIVE_TESTS` unset.
+No API keys are required for the offline checks. Keep `MICA_RUN_LIVE_TESTS` unset.
 
 Verification on the original Mac: **335 passed, 3 skipped, 1 deselected** with the command above;
 Ruff, mypy (82 source files), compileall, and `HEADLESS_API_VERIFIED` passed. One dependency
@@ -117,7 +117,7 @@ deprecation warning was emitted. A fresh environment on the receiving Mac still 
 Optional local API smoke check, in a separate terminal:
 
 ```bash
-.venv/bin/uvicorn pistachio.api.app:app --host 127.0.0.1 --port 8080
+.venv/bin/uvicorn mica.api.app:app --host 127.0.0.1 --port 8080
 ```
 
 Then run `curl --fail http://127.0.0.1:8080/api/v1/healthz`. The development source has no web UI;
@@ -164,7 +164,7 @@ The following was verified from Cloud Run metadata on 5 October 2026:
 | Slack backend | `claude_batch` |
 | Direct conversation | `AGENT_DIRECT_CHAT_ENABLED=true` |
 | Data project | `azizilab-aml` |
-| Loading emoji | `:pistachio-loading:` (already installed in the Slack workspace) |
+| Loading emoji | `:mica-loading:` (already installed in the Slack workspace) |
 | Control service account | `pistachio-staging-control@azizilab-aml.iam.gserviceaccount.com` |
 | Worker service account | `pistachio-staging-worker@azizilab-aml.iam.gserviceaccount.com` |
 
@@ -197,10 +197,10 @@ The private archive below is a backup of local files, not an export of all cloud
 On the original Mac the transfer directory is:
 
 ```text
-/Users/khushidesai/Documents/pistachio/.pistachio/laptop-handoff/
+/Users/khushidesai/Documents/mica/.pistachio/laptop-handoff/
 ```
 
-Transfer `pistachio-private-2026-10-05.tar.gz` and its `.sha256` file using AirDrop or an
+Transfer `mica-private-2026-10-05.tar.gz` and its `.sha256` file using AirDrop or an
 encrypted storage/transfer method under your control. The archive itself is not encrypted.
 It contains sensitive local state and a Codex configuration reference; keep it out of Git,
 chat attachments, and shared/public folders. The directory is ignored by Git and excluded from
@@ -221,10 +221,10 @@ After placing the archive and checksum together in Downloads, extract to a separ
 
 ```bash
 cd "$HOME/Downloads"
-shasum -a 256 -c pistachio-private-2026-10-05.tar.gz.sha256
-mkdir -p pistachio-private-2026-10-05
-chmod 700 pistachio-private-2026-10-05
-tar -xzf pistachio-private-2026-10-05.tar.gz -C pistachio-private-2026-10-05
+shasum -a 256 -c mica-private-2026-10-05.tar.gz.sha256
+mkdir -p mica-private-2026-10-05
+chmod 700 mica-private-2026-10-05
+tar -xzf mica-private-2026-10-05.tar.gz -C mica-private-2026-10-05
 ```
 
 On a **fresh clone**, restore the three `infra/` files to the clone's `infra/` directory and
@@ -252,15 +252,15 @@ The private archive includes the old global config as a **reference**, not a fil
 wholesale. Review chosen preferences against the new Mac's existing configuration. The old config
 contains absolute paths, project entries, MCP configuration, plugin choices, and approval settings.
 Reinstall/reconnect any desired plugins through the app and adapt paths; retain the new Mac's
-appropriate permission settings. No plugin is required for Pistachio's Python test suite.
+appropriate permission settings. No plugin is required for Mica's Python test suite.
 Codex chat history, automations, and saved remote-host connections are not migrated by this repository
 or archive. This guide supplies the project handoff context for a new chat.
 
 ## Paste this into Codex on the new Mac
 
-> Set up my existing Pistachio agent development workspace on this Mac. The private repository is
-> https://github.com/khushidesai1/pistachio and the handoff branch is codex/private-project-memory.
-> Clone that branch into ~/Documents/pistachio if needed, preserving any existing local work, then
+> Set up my existing Mica agent development workspace on this Mac. The private repository is
+> https://github.com/khushidesai1/mica and the handoff branch is codex/private-project-memory.
+> Clone that branch into ~/Documents/mica if needed, preserving any existing local work, then
 > read docs/new-mac-setup.md and follow it. Install missing development tools, recreate the Python
 > 3.12 environment with dev, slack, and analysis-test extras, and run the offline checks. Help me
 > complete GitHub and Google Cloud browser sign-ins when required. If I provide the private archive,

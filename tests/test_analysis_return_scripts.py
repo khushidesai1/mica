@@ -8,10 +8,10 @@ import pytest
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_slack import bot, event, send  # noqa: F401
 
-from pistachio.agents.analysis import commands, script_capture, user_settings
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.runner import Context, TurnResult, build_options
-from pistachio.agents.analysis.storage import Conflict, LocalStorage
+from mica.agents.analysis import commands, script_capture, user_settings
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.runner import Context, TurnResult, build_options
+from mica.agents.analysis.storage import Conflict, LocalStorage
 
 
 def write(root, name, content=b'print("hello")\n'):
@@ -286,7 +286,7 @@ async def script_runner(bot, *, continue_run=False):
 
 
 async def test_delivery_names_bytes_order_registry_and_cleanup(bot):
-    from pistachio.agents.analysis.attachments import materialize
+    from mica.agents.analysis.attachments import materialize
 
     await script_runner(bot)
     await send(bot, event("plot"))
@@ -371,8 +371,8 @@ def test_modified_later_script_in_chain_is_not_misrepresented(tmp_path):
 
 
 def test_actual_handoff_archive_retains_trusted_execution_copies(tmp_path):
-    from pistachio.agents.analysis.batch_worker import restore
-    from pistachio.agents.analysis.checkpoints import workspace_snapshot
+    from mica.agents.analysis.batch_worker import restore
+    from mica.agents.analysis.checkpoints import workspace_snapshot
 
     home = tmp_path / "worker0"
     work = home / "work/project/thread"
@@ -409,7 +409,7 @@ async def test_runner_captures_through_registered_sdk_hooks(tmp_path, monkeypatc
 
     from test_analysis_runner import result
 
-    from pistachio.agents.analysis import runner
+    from mica.agents.analysis import runner
 
     write(tmp_path, "code/a.py", b"original")
 

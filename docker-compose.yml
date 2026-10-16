@@ -4,13 +4,13 @@ services:
       context: .
       dockerfile: docker/Dockerfile.api
     environment:
-      PISTACHIO_ENV: local
-      PISTACHIO_STORE_BACKEND: memory
-      PISTACHIO_EXECUTION_BACKEND: docker
-      PISTACHIO_AUTH_MODE: dev
-      PISTACHIO_BATCH_IMAGE: pistachio-science:local
-      PISTACHIO_ARTIFACT_ROOT: /app/.pistachio/artifacts
-      PISTACHIO_DOCKER_ARTIFACT_ROOT: ${PWD}/.pistachio/artifacts
+      MICA_ENV: local
+      MICA_STORE_BACKEND: memory
+      MICA_EXECUTION_BACKEND: docker
+      MICA_AUTH_MODE: dev
+      MICA_BATCH_IMAGE: mica-science:local
+      MICA_ARTIFACT_ROOT: /app/.pistachio/artifacts
+      MICA_DOCKER_ARTIFACT_ROOT: ${PWD}/.pistachio/artifacts
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     ports:
       - "8080:8080"

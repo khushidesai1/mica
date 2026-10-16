@@ -1,10 +1,10 @@
 # Plan: Background triggers, starting with automatic TMA resegmentation
 
-**Summary.** Pistachio gets a small, admin-defined trigger system. The first trigger watches
+**Summary.** Mica gets a small, admin-defined trigger system. The first trigger watches
 `gs://alchemy-breast-cancer/raw_outputs/`. When a TMA's `raw/<TMA>/` and `additional_files/<TMA>/`
-folders are both complete and have stopped changing, Pistachio starts one Batch job. That job runs
+folders are both complete and have stopped changing, Mica starts one Batch job. That job runs
 harjaisal's `sap` CosMx pipeline (ingest → Cellpose → Proseg) and writes the SAP store to
-`gs://alchemy-breast-cancer/resegmentation/<TMA>/`. When it finishes, Pistachio posts a summary and a
+`gs://alchemy-breast-cancer/resegmentation/<TMA>/`. When it finishes, Mica posts a summary and a
 per-core QC figure to the project's linked Slack channels, or emails the project's members if no
 channel is linked. Failures go to the same place. Users cannot create triggers. They are defined
 in code and change only through a reviewed deploy.
@@ -23,7 +23,7 @@ in code and change only through a reviewed deploy.
    counts disagree, or the output does not validate, then nothing is uploaded and the project gets a
    failure notice. A partial upload is reported as partial, never as success.
 4. **Each milestone ends green:** `.venv/bin/pytest -q`, `.venv/bin/ruff check src tests tools`,
-   `.venv/bin/mypy src/pistachio`. Write the milestone's failing tests first.
+   `.venv/bin/mypy src/mica`. Write the milestone's failing tests first.
 5. **Ask the human before any cloud action:** image builds, Terraform apply, creating the bucket
    notification, creating a test bucket, deploys, and any job that writes to `alchemy-breast-cancer`.
 6. **No new dependencies in the API image** (`docker/Dockerfile.api`). Email uses the stdlib
@@ -193,7 +193,7 @@ not proof, so the canary (§12) is the gate.
 - Notify the project's linked Slack channels, or the project's owner and member emails if none
   are linked. Send the QC figure on success. Failures alert the same destinations.
 - No cost cap. Triggers fire rarely.
-- Notification email comes from a dedicated Pistachio address (§8.3).
+- Notification email comes from a dedicated Mica address (§8.3).
 
 ### Deliberate simplifications
 
@@ -209,7 +209,7 @@ not proof, so the canary (§12) is the gate.
 
 ```
 GCS OBJECT_FINALIZE (prefix raw_outputs/)
-  → Pub/Sub topic pistachio-<env>-triggers
+  → Pub/Sub topic mica-<env>-triggers
   → push → POST /api/v1/internal/triggers/gcs                 (cheap; no listing)
         map object → (trigger, TMA); ignore anndatas/ & others
         enqueue named Cloud Task trig-<trigger>-<hash(TMA)>-<10-min window>, delay = quiet period
@@ -220,7 +220,7 @@ GCS OBJECT_FINALIZE (prefix raw_outputs/)
         poll every 5 min (tick+1) until job ends
         verify result.json and destination objects; notify (§8); release slot
 Hourly Cloud Scheduler → POST /api/v1/internal/triggers/sweep   (backstop for missed events)
-Admin CLI: python -m pistachio.triggers.cli status|check|run|retry|figure
+Admin CLI: python -m mica.triggers.cli status|check|run|retry|figure
 ```
 
 An upload of one TMA produces about 9,000 finalize events. The push handler must not write
@@ -232,9 +232,9 @@ set of recently enqueued names avoids most of the 409 calls.
 
 ## 3. Code layout
 
-New package `src/pistachio/triggers/`. It may import `agents/analysis/{registry,storage,identity,
-slack_format,config}`. It must not import web modules (`pistachio.services.*`,
-`pistachio.agents.{memory,context,harness,session}`).
+New package `src/mica/triggers/`. It may import `agents/analysis/{registry,storage,identity,
+slack_format,config}`. It must not import web modules (`mica.services.*`,
+`mica.agents.{memory,context,harness,session}`).
 
 | File | Purpose |
 |---|---|
@@ -305,7 +305,7 @@ Matching is case-sensitive: `tma15` is not `TMA15`.
 Two signals, in priority order:
 
 1. **Transfer status markers (§5.0)**, written by whatever did the transfer. These are
-   authoritative. Pistachio's own transfer agent (future work) will always write them, and people
+   authoritative. Mica's own transfer agent (future work) will always write them, and people
    can write them today with the CLI.
 2. **Inference (§5.1-§5.2)**, the fallback for hand uploads that have no marker.
 
@@ -509,7 +509,7 @@ Firestore connector state `trigger-run:{id}:{key}`:
   task never posts twice. Then release the slot.
 - **Failure without result.json** (OOM, preemption): use `step` from
   `tasks/triggers/{run_id}/progress.json`, which the worker writes at each step. Include a Cloud
-  Logging link filtered on the label `pistachio-trigger-run={run_id}`.
+  Logging link filtered on the label `mica-trigger-run={run_id}`.
 
 ---
 
@@ -518,8 +518,8 @@ Firestore connector state `trigger-run:{id}:{key}`:
 ### 7.1 Batch spec (`jobs.py`)
 
 - Image `AGENT_SEGMENTATION_IMAGE`, required to contain `@sha256:`. Command
-  `python -m pistachio.triggers.segment_tma {run_id}`.
-- Service account: the new `pistachio-<env>-segmentation` (§9), not the Claude worker SA.
+  `python -m mica.triggers.segment_tma {run_id}`.
+- Service account: the new `mica-<env>-segmentation` (§9), not the Claude worker SA.
 - `n2-highmem-64` (64 vCPU / 512 GB), provisioning **STANDARD** (not Spot; a preempted 3-hour run
   wastes more than Spot saves).
   - 100 GB `pd-balanced` boot disk plus a 2,000 GB `pd-ssd` attached at `/scratch`, mounted into
@@ -527,7 +527,7 @@ Firestore connector state `trigger-run:{id}:{key}`:
   - `max_run_duration = "36000s"`, `max_retry_count = 0`.
 - Network: same `batch_network`/`batch_subnetwork`, no external IP (`batch.py:56-61`, `:126-132`).
   The job has no internet need at runtime because the model weights are baked in.
-- Labels `pistachio-agent=trigger`, `pistachio-trigger-run={run_id}`. Cloud Logging enabled.
+- Labels `mica-agent=trigger`, `mica-trigger-run={run_id}`. Cloud Logging enabled.
 - No secrets in the environment or metadata. The job needs none.
 
 Size the machine to the user's script: `LocalCluster(n_workers=32, threads_per_worker=2,
@@ -641,7 +641,7 @@ segmentation is obvious at a glance.
   - Cloud Build copies it into the build context, the Dockerfile checks the sha256, unzips it and
     runs `pip install --no-deps ./spatial_analysis_pipeline-master` (not editable). No GitHub
     access is needed at build time.
-  - Do not commit this archive or `sap` source to the Pistachio repo.
+  - Do not commit this archive or `sap` source to the Mica repo.
   - **Uploaded 2026-10-05** with the human's approval, `--no-clobber`. Verified: 18,035 bytes,
     md5 `d+E/7RvBD9DlkkG0OpxoUw==`, sha256 matches. It lives at
     `gs://pistachio-staging-artifacts-5304c19c/build-inputs/spatial_analysis_pipeline-de96763.zip`.
@@ -650,8 +650,8 @@ segmentation is obvious at a glance.
     false, `matches_prefix = null` would make the rule delete *everything* older than 30 days.
     Add a test or `check` asserting the lifecycle rule always has a prefix list without
     `build-inputs/`.
-- Copy only `src/pistachio/triggers/` plus `src/pistachio/__init__.py`. Do not `pip install`
-  Pistachio's full dependency set.
+- Copy only `src/mica/triggers/` plus `src/mica/__init__.py`. Do not `pip install`
+  Mica's full dependency set.
 - Copy `cyto3` and `size_cyto3.npy` from `gs://sap-harjaisal-khushi/.cellpose/models/` into
   `/opt/cellpose-models` (`CELLPOSE_LOCAL_MODELS_PATH`). At build time, load
   `models.Cellpose(model_type="cyto3", gpu=False)` to prove no download is needed (run the build
@@ -707,15 +707,15 @@ Check the figure: every core should be filled with cells.
 • Error: MemoryError: …
 • Output: nothing written            (or: PARTIAL output at …; remove it before retrying)
 • Logs: <Cloud Logging link>
-Retry after fixing: python -m pistachio.triggers.cli retry --trigger tma-resegmentation --tma TMA26
+Retry after fixing: python -m mica.triggers.cli retry --trigger tma-resegmentation --tma TMA26
 ```
 
 Use `to_mrkdwn`/`chunks` from `slack_format.py` for Slack text. The email subject is
-`[Pistachio] TMA26 resegmentation finished` or `… FAILED`.
+`[Mica] TMA26 resegmentation finished` or `… FAILED`.
 
 ### 8.3 Email sender
 
-Use a dedicated Gmail account owned by the lab (for example `pistachio.<lab>@gmail.com`) with
+Use a dedicated Gmail account owned by the lab (for example `mica.<lab>@gmail.com`) with
 2-step verification and an **app password**. Send with `smtplib.SMTP_SSL("smtp.gmail.com", 465)`.
 
 Settings (`agents/analysis/config.py`):
@@ -770,7 +770,7 @@ will need Gmail API OAuth instead; leave that for the email-trigger plan.
   - The same role on `gs://sap-harjaisal-khushi` for the wheel and `.cellpose/models/`, unless
     the human copies those into `build-inputs/` too. That bucket is in `US-CENTRAL1`; confirm
     its project before writing the binding.
-- Secret `pistachio-<env>-notify-email-app-password` (the human sets the value). Cloud Run env:
+- Secret `mica-<env>-notify-email-app-password` (the human sets the value). Cloud Run env:
   `AGENT_TRIGGERS_ENABLED`, `AGENT_SEGMENTATION_IMAGE`, `AGENT_SEGMENTATION_SERVICE_ACCOUNT`,
   `AGENT_NOTIFY_EMAIL_ADDRESS`, and the secret reference.
 - `check "triggers_ready"`: if enabled, the image is pinned by digest and the email address or a
@@ -887,7 +887,7 @@ and the run's `result.json` as context. Skip this unless the human asks.
    - Uploaded and verified on 2026-10-05 (§7.5).
    - No deploy key is needed. `alchemy_breast_cosmx` code is ported into this repo at a pinned
      commit, so builds never fetch it.
-3. **Pistachio project: resolved.** It is `breast-alchemy` (`p_05b107ac9f31b40b`). Before go-live
+3. **Mica project: resolved.** It is `breast-alchemy` (`p_05b107ac9f31b40b`). Before go-live
    (§12 step 5), the owner should `share` it with the people who should get emails and publish it
    to the notice channel. Otherwise notices go only to the owner's email. `cli status` shows the
    resolved destinations.

@@ -16,12 +16,12 @@ from google.cloud import batch_v1
 from slack_sdk.errors import SlackApiError
 from starlette.requests import Request
 
-from pistachio.agents.analysis import batch
-from pistachio.agents.analysis.batch import BatchBridge, job_spec
-from pistachio.agents.analysis.batch_worker import restore, snapshot
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.storage import LocalStorage
-from pistachio.api import slack_analysis
+from mica.agents.analysis import batch
+from mica.agents.analysis.batch import BatchBridge, job_spec
+from mica.agents.analysis.batch_worker import restore, snapshot
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.storage import LocalStorage
+from mica.api import slack_analysis
 
 
 def payload(
@@ -76,7 +76,7 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     client.get_job.side_effect = get
     monkeypatch.setattr(batch.batch_v1, "BatchServiceClient", lambda: client)
     storage = LocalStorage(tmp_path / "storage")
-    from pistachio.agents.analysis import project_memory
+    from mica.agents.analysis import project_memory
     from tests.fake_github import FakeGitHub
 
     github = FakeGitHub()
@@ -91,7 +91,7 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     monkeypatch.setattr("slack_sdk.web.async_client.AsyncWebClient", lambda **kw: slack)
     from analysis_helpers import seed_project
 
-    from pistachio.agents.analysis import direct
+    from mica.agents.analysis import direct
 
     pid = seed_project(storage)
     monkeypatch.setattr(
@@ -109,7 +109,7 @@ def bridge(monkeypatch, settings, repository, tmp_path):
 
 def test_job_reuses_spot_resources_and_has_no_credentials(bridge):
     bridge.app.batch_nested_sandbox_opt_in = True
-    bridge.settings.loading_emoji = ":pistachio-loading:"
+    bridge.settings.loading_emoji = ":mica-loading:"
     job = job_spec(bridge.app, bridge.settings, "a" * 32)
     task = job.task_groups[0].task_spec
     assert task.max_retry_count == 0
@@ -123,7 +123,7 @@ def test_job_reuses_spot_resources_and_has_no_credentials(bridge):
     assert "ro,allow_other" in task.volumes[0].mount_options
     assert "seccomp=unconfined" in task.runnables[0].container.options
     assert not any("KEY" in x or "TOKEN" in x for x in task.runnables[0].environment.variables)
-    assert task.runnables[0].environment.variables["AGENT_LOADING_EMOJI"] == ":pistachio-loading:"
+    assert task.runnables[0].environment.variables["AGENT_LOADING_EMOJI"] == ":mica-loading:"
     bridge.app.env = "production"
     assert (
         not job_spec(bridge.app, bridge.settings, "a" * 32)
@@ -185,7 +185,7 @@ async def test_dedup_serial_order_parallel_threads_and_polling(bridge):
 
 
 async def test_checkpoint_relaunch_submits_on_demand_job(bridge, monkeypatch):
-    from pistachio.agents.analysis import recovery
+    from mica.agents.analysis import recovery
 
     event_id = await bridge.accept(payload())
     assert await bridge.process(event_id, 0) == "running"
@@ -394,9 +394,9 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
     from analysis_helpers import seed_project
     from test_analysis_slack import FakeRunner
 
-    from pistachio.agents.analysis import batch_worker
-    from pistachio.agents.analysis.config import CHECKPOINT_PREFIX
-    from pistachio.agents.analysis.runner import Context
+    from mica.agents.analysis import batch_worker
+    from mica.agents.analysis.config import CHECKPOINT_PREFIX
+    from mica.agents.analysis.runner import Context
 
     home = tmp_path / "worker"
     home.mkdir()
@@ -447,7 +447,7 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
     monkeypatch.setattr(batch_worker, "AsyncWebClient", lambda **kw: slack)
     monkeypatch.setattr(batch_worker.id_token, "fetch_id_token", lambda *args: "identity")
     monkeypatch.setattr(batch_worker.httpx, "AsyncClient", lambda **kw: http)
-    monkeypatch.setenv("PISTACHIO_CONTROL_PLANE_URL", "https://existing.run.app")
+    monkeypatch.setenv("MICA_CONTROL_PLANE_URL", "https://existing.run.app")
     pointer = "projects/_threads/thread/checkpoint.json"
     ctx = Context(
         home / f"work/{pid}/D1-1.0",
@@ -460,8 +460,8 @@ async def test_worker_cold_start_resume_and_expired_checkpoint(
         pointer,
         json.dumps({"context": asdict(ctx), "turn": 0, "is_init": False}, default=str).encode(),
     )
-    from pistachio.agents.analysis import access
-    from pistachio.agents.analysis.registry import Registry
+    from mica.agents.analysis import access
+    from mica.agents.analysis.registry import Registry
 
     grant = access.Grant(
         "alice@example.com", True, {}, Registry(storage).load(), pid, True, "T1:D1"
@@ -567,7 +567,7 @@ async def test_receipt_ack_precedes_worker_and_deduplicates(bridge):
 
 
 async def test_notify_status_blocks_are_removed_for_final_reply(bridge):
-    from pistachio.agents.analysis.slack_format import status_blocks
+    from mica.agents.analysis.slack_format import status_blocks
 
     record = {"payload": payload()}
     await bridge.notify("status-test", record, "starting", "Spinning up…")
@@ -599,7 +599,7 @@ async def test_dynamic_project_buckets_and_outside_project_rejection(bridge, mon
             )
         )
     )
-    from pistachio.agents.analysis import direct
+    from mica.agents.analysis import direct
 
     direct.decide.return_value = direct.Decision(route="reply", reply="Draft.", guide="New brief")
     assert await bridge.process(first, 0) == "complete"

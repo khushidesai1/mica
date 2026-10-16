@@ -4,7 +4,7 @@ Status: deployed and enabled for manual user testing. Revision
 `pistachio-staging-00044-soc` receives 100% of staging traffic and the normal health
 endpoint returns HTTP 200.
 
-Open [Pistachio staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app). Start a **new task** in the web app or existing Slack
+Open [Mica staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app). Start a **new task** in the web app or existing Slack
 integration to use protocol 2. Existing tasks retain their stored builder protocol.
 Authentication, secrets, channel configuration and IAM were preserved.
 
@@ -14,16 +14,16 @@ Authentication, secrets, channel configuration and IAM were preserved.
 - Image build: `8cc39622-381e-472c-9906-30a46d835a14`.
 - API image: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/api@sha256:f169b449b34ee51fc0d33477c2f0cea36a079db59db97b9f293ead07762d8586`.
 - Science image: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/science@sha256:cd2fe1d03a7c9ccc920e0bca5c74008a28ae771b6855e4415efc05aa7b9e64f0`.
-- Worker conformance job: `pistachio-protocol2-smoke-runtime-0928`; result: **SUCCEEDED**.
+- Worker conformance job: `mica-protocol2-smoke-runtime-0928`; result: **SUCCEEDED**.
 - Rollback revision: `pistachio-staging-00040-rz7`.
 
 Enabled staging flags:
 
 ```dotenv
-PISTACHIO_BUILDER_PROTOCOL_VERSION=2
-PISTACHIO_DEVELOPMENT_ENABLED=true
-PISTACHIO_DEVELOPMENT_MODEL=gpt-5.6-sol
-PISTACHIO_BATCH_NESTED_SANDBOX_OPT_IN=true
+MICA_BUILDER_PROTOCOL_VERSION=2
+MICA_DEVELOPMENT_ENABLED=true
+MICA_DEVELOPMENT_MODEL=gpt-5.6-sol
+MICA_BATCH_NESTED_SANDBOX_OPT_IN=true
 ```
 
 ## Verified
@@ -86,7 +86,7 @@ gcloud run services update-traffic pistachio-staging --project=azizilab-aml \
 
 The prior revision does not understand protocol-2 task records. Stop or drain active
 protocol-2 tasks before rollback; already-running Batch jobs are not cancelled by routing
-changes. For a gradual stop, set `PISTACHIO_BUILDER_PROTOCOL_VERSION=1` on the current code
+changes. For a gradual stop, set `MICA_BUILDER_PROTOCOL_VERSION=1` on the current code
 while leaving development enabled long enough to drain existing tasks.
 
 Keep the exception restricted to staging during manual tests. Production rollout still

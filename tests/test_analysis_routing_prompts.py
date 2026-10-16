@@ -2,10 +2,10 @@
 import json
 from pathlib import Path
 
-from pistachio.agents.analysis import direct, project_memory
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.prompts import build_system_append
-from pistachio.agents.analysis.runner import Context
+from mica.agents.analysis import direct, project_memory
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.prompts import build_system_append
+from mica.agents.analysis.runner import Context
 
 
 def prompt_snapshot():

@@ -7,7 +7,7 @@ import pytest
 from test_analysis_batch import bridge  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from pistachio.agents.analysis import job_lifecycle, memory_compaction, project_memory
+from mica.agents.analysis import job_lifecycle, memory_compaction, project_memory
 
 NOTE = "type: fact\nsource: Alice, 2026-10-10\nstatus: current\n\nUse viridis.\n"
 

@@ -7,10 +7,10 @@ import asyncio
 import hashlib
 import logging
 
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.project_memory import GitHubMemory, validate
-from pistachio.agents.analysis.registry import Registry
-from pistachio.agents.analysis.storage import GCSStorage, Storage
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.project_memory import GitHubMemory, validate
+from mica.agents.analysis.registry import Registry
+from mica.agents.analysis.storage import GCSStorage, Storage
 
 
 async def import_guides(
@@ -103,7 +103,7 @@ async def layout_from_memory(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bucket", required=True, help="Existing Pistachio artifact bucket")
+    parser.add_argument("--bucket", required=True, help="Existing Mica artifact bucket")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--layout-from-memory", metavar="PROJECT_ID")
     parser.add_argument(

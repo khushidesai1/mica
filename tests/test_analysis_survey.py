@@ -3,9 +3,9 @@ from unittest.mock import Mock
 
 import pytest
 
-from pistachio.agents.analysis import survey
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.runner import Context, build_options
+from mica.agents.analysis import survey
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.runner import Context, build_options
 
 
 def test_inventory_paginates_all_children_without_recursing(monkeypatch):

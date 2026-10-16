@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from agents import AgentOutputSchema
 
-from pistachio.agents.harness import AgentHarness
-from pistachio.models import (
+from mica.agents.harness import AgentHarness
+from mica.models import (
     AgentTaskPlan,
     CandidateReview,
     CodeBuildResult,

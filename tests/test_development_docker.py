@@ -7,14 +7,14 @@ import os
 import pytest
 from test_development import ANALYSIS, configuration, make_bundle
 
-from pistachio.execution.backends import DockerExecutor
+from mica.execution.backends import DockerExecutor
 
 
 @pytest.mark.asyncio
 async def test_real_docker_boundary(settings, tmp_path):
-    image = os.getenv("PISTACHIO_CONFORMANCE_IMAGE")
+    image = os.getenv("MICA_CONFORMANCE_IMAGE")
     if not image:
-        pytest.skip("set PISTACHIO_CONFORMANCE_IMAGE to an immutable Docker image")
+        pytest.skip("set MICA_CONFORMANCE_IMAGE to an immutable Docker image")
     script = ANALYSIS.replace(
         "    config = json.loads(args.config.read_text())",
         """    import os
@@ -27,7 +27,7 @@ async def test_real_docker_boundary(settings, tmp_path):
             pass
         else:
             raise RuntimeError('read-only boundary failed')
-    assert 'PISTACHIO_TEST_SECRET' not in os.environ
+    assert 'MICA_TEST_SECRET' not in os.environ
     sock = socket.socket()
     sock.settimeout(1)
     try:
@@ -65,9 +65,9 @@ async def test_fresh_docker_replay_preserves_rng_and_source(settings, tmp_path):
     import sys
     import zipfile
 
-    image = os.getenv("PISTACHIO_CONFORMANCE_IMAGE")
+    image = os.getenv("MICA_CONFORMANCE_IMAGE")
     if not image:
-        pytest.skip("set PISTACHIO_CONFORMANCE_IMAGE to an immutable Docker image")
+        pytest.skip("set MICA_CONFORMANCE_IMAGE to an immutable Docker image")
     script = ANALYSIS.replace(
         "    config = json.loads(args.config.read_text())",
         "    import random\n    config = json.loads(args.config.read_text())",

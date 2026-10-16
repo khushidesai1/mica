@@ -49,7 +49,7 @@ Amendments invalidate it. Persisted plan/review references survive control-plane
 
 New development sessions record `preparation_version=1`. Existing records deserialize with
 version 0 and keep their workflow. The operator can retain explicitly pinned previous workers
-in `PISTACHIO_BATCH_COMPATIBLE_IMAGES`; execution uses each session's own admitted image.
+in `MICA_BATCH_COMPATIBLE_IMAGES`; execution uses each session's own admitted image.
 Unknown worker images are rejected. This supports draining existing work without changing its
 runtime or invalidating its verification hashes.
 
@@ -76,7 +76,7 @@ validation before traffic promotion.
 Staging revision `pistachio-staging-00060-poh` serves 100% of traffic. The paired build
 `000d80fd-4146-40ac-922e-886db800dd93` passed execution-schema compatibility. Local validation
 passed 170 tests with three skips, plus lint/types; isolated rollout validation passed 50 tests.
-Batch job `pistachio-initial-quality-smoke-20260930` passed the enriched probe, clean verification,
+Batch job `mica-initial-quality-smoke-20260930` passed the enriched probe, clean verification,
 Louvain/Silhouette execution, output validation and sandbox conformance. Preview and live health
 and schema checks passed. No existing user task record was reset or amended for this rollout.
 

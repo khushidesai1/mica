@@ -9,11 +9,11 @@ import pytest
 from test_analysis_batch import bridge  # noqa: F401
 from test_analysis_direct import chat, payload  # noqa: F401
 
-from pistachio.agents.analysis import direct, recovery
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.recovery_tools import RecoveryManager
-from pistachio.agents.analysis.resources import Sampler
-from pistachio.agents.analysis.tiers import launch_choice
+from mica.agents.analysis import direct, recovery
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.recovery_tools import RecoveryManager
+from mica.agents.analysis.resources import Sampler
+from mica.agents.analysis.tiers import launch_choice
 
 
 @pytest.mark.parametrize(
@@ -89,7 +89,7 @@ async def test_on_demand_cancel_keeps_slot_until_deletion(chat, running_heavy, m
     assert await chat.process(cancel, 0) == "pending"
     chat.test_client.delete_job.assert_not_called()
     cancelled = await chat.repository.get_connector_state("claude-event:" + event)
-    from pistachio.agents.analysis import batch
+    from mica.agents.analysis import batch
 
     monkeypatch.setattr(batch.time, "time", lambda: cancelled["cancel_requested_at"] + 56)
     await chat.process(event, 1)

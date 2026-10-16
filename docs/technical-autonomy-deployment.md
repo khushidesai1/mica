@@ -1,6 +1,6 @@
 # Technical autonomy deployment — 29 September 2026
 
-[Pistachio staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app) serves revision
+[Mica staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app) serves revision
 `pistachio-staging-00048-zek` at 100% traffic.
 
 The developer handles routine installed-package/API choices and technical repairs internally.

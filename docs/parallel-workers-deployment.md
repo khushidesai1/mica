@@ -19,7 +19,7 @@ Validation:
 - Ruff and mypy passed; pytest: 791 passed, 6 skipped.
 - Regressions exercise 24 independent requests for each heavy tier, legacy lease completion,
   duplicate delivery, cancellation, same-conversation ordering and the standard-worker limit.
-- [GitHub CI](https://github.com/khushidesai1/pistachio/actions/runs/38498710062) passed.
+- [GitHub CI](https://github.com/khushidesai1/mica/actions/runs/38498710062) passed.
 - Cloud Build `4191f7ca-5db2-4ed8-b7c0-08af7940ac32` passed all four gates, including the
   execution-contract check against the unchanged science worker.
 - Preview and live checks passed: health 200, removed UI/docs 404, unsigned Slack and

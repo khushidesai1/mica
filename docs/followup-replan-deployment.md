@@ -1,6 +1,6 @@
 # Follow-up replanning deployment — 29 September 2026
 
-Deployed to [Pistachio staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app).
+Deployed to [Mica staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app).
 Revision `pistachio-staging-00046-fig` receives 100% of normal staging traffic.
 
 Follow-ups complete replanning and approvals before the retained development workspace

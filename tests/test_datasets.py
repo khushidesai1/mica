@@ -1,5 +1,5 @@
-from pistachio.models import DatasetField
-from pistachio.services.datasets import recommend_fields
+from mica.models import DatasetField
+from mica.services.datasets import recommend_fields
 
 
 def test_recommend_fields_uses_h5ad_names_and_cardinality() -> None:

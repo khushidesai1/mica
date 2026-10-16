@@ -9,9 +9,9 @@ from google.api_core.exceptions import AlreadyExists, PreconditionFailed
 from google.cloud import batch_v1
 from google.cloud import storage as google_storage
 
-from pistachio.config import Settings
-from pistachio.execution.backends import BatchJobStatus, GcpBatchExecutor
-from pistachio.models import (
+from mica.config import Settings
+from mica.execution.backends import BatchJobStatus, GcpBatchExecutor
+from mica.models import (
     ExecutionBundle,
     Project,
     ResourcePlan,
@@ -25,8 +25,8 @@ from pistachio.models import (
     TaskStatus,
     ToolPlan,
 )
-from pistachio.services.tasks import ExecutionSubmissionPending
-from pistachio.worker.main import _publish_outputs
+from mica.services.tasks import ExecutionSubmissionPending
+from mica.worker.main import _publish_outputs
 
 SCRIPT = '''"""Write one deterministic output."""
 import argparse
@@ -106,7 +106,7 @@ async def test_batch_jobs_use_private_google_access_without_external_ip(
         gcp_region="us-central1",
         gcs_bucket="artifacts",
         batch_service_account="worker@example.iam.gserviceaccount.com",
-        batch_image="us-central1-docker.pkg.dev/azizilab-aml/pistachio/science@sha256:123",
+        batch_image="us-central1-docker.pkg.dev/azizilab-aml/mica/science@sha256:123",
         batch_nested_sandbox_opt_in=nested_opt_in,
         batch_network="default",
         batch_subnetwork="default",
@@ -137,7 +137,7 @@ async def test_batch_jobs_use_private_google_access_without_external_ip(
     runnable = job.task_groups[0].task_spec.runnables[0]
     expected_image = bundle.runtime_image if builder_protocol == 2 else settings.batch_image
     assert runnable.container.image_uri == expected_image
-    assert runnable.environment.variables["PISTACHIO_BATCH_IMAGE"] == expected_image
+    assert runnable.environment.variables["MICA_BATCH_IMAGE"] == expected_image
     assert runnable.container.options == (
         "--security-opt seccomp=unconfined --security-opt apparmor=unconfined"
         if builder_protocol == 2 and nested_opt_in else ""
@@ -147,10 +147,10 @@ async def test_batch_jobs_use_private_google_access_without_external_ip(
     assert interface.network == "projects/azizilab-aml/global/networks/default"
     assert interface.subnetwork == ("projects/azizilab-aml/regions/us-central1/subnetworks/default")
     environment = job.task_groups[0].task_spec.runnables[0].environment.variables  # type: ignore[attr-defined]
-    assert environment["HOME"] == "/tmp/pistachio-home"
-    assert environment["XDG_CONFIG_HOME"] == "/tmp/pistachio-config"
-    assert environment["XDG_CACHE_HOME"] == "/tmp/pistachio-cache"
-    assert environment["MPLCONFIGDIR"] == "/tmp/pistachio-matplotlib"
+    assert environment["HOME"] == "/tmp/mica-home"
+    assert environment["XDG_CONFIG_HOME"] == "/tmp/mica-config"
+    assert environment["XDG_CACHE_HOME"] == "/tmp/mica-cache"
+    assert environment["MPLCONFIGDIR"] == "/tmp/mica-matplotlib"
     assert environment["MPLBACKEND"] == "Agg"
 
 
@@ -189,9 +189,9 @@ def test_batch_worker_publishes_only_user_outputs_and_completion_record(
     (attempt_dir / "stderr.log").write_text("internal")
     (outputs / "figure.png").write_bytes(b"figure")
     (outputs / "generated_analysis.py").write_text("print('delivered')")
-    monkeypatch.setattr("pistachio.worker.main.StorageClient", FakeStorageClient)
-    monkeypatch.setenv("PISTACHIO_GCS_BUCKET", "configured-artifacts")
-    monkeypatch.delenv("PISTACHIO_COMPLETION_TOPIC", raising=False)
+    monkeypatch.setattr("mica.worker.main.StorageClient", FakeStorageClient)
+    monkeypatch.setenv("MICA_GCS_BUCKET", "configured-artifacts")
+    monkeypatch.delenv("MICA_COMPLETION_TOPIC", raising=False)
     bundle = ExecutionBundle(
         task_id="task-scoped",
         script=SCRIPT,

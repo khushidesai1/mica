@@ -3,8 +3,8 @@
 import argparse
 import json
 
-from pistachio.agents.analysis.checkpoints import migrate_thread
-from pistachio.agents.analysis.storage import GCSStorage
+from mica.agents.analysis.checkpoints import migrate_thread
+from mica.agents.analysis.storage import GCSStorage
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

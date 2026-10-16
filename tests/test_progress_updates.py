@@ -5,8 +5,8 @@ import json
 
 from conftest import task_service
 
-from pistachio.execution.backends import LocalExecutor, parse_progress_line
-from pistachio.models import (
+from mica.execution.backends import LocalExecutor, parse_progress_line
+from mica.models import (
     AgentTaskPlan,
     AttachmentRef,
     ExecutionBundle,
@@ -66,7 +66,7 @@ parser.add_argument("--seed", type=int, default=0)
 args = parser.parse_args()
 args.output_dir.mkdir(parents=True, exist_ok=True)
 for current, sample in enumerate(("sample-a", "sample-b"), start=1):
-    print("PISTACHIO_PROGRESS " + json.dumps({
+    print("MICA_PROGRESS " + json.dumps({
         "status": "succeeded",
         "message": "Segmentation completed.",
         "item": sample,
@@ -98,7 +98,7 @@ async def test_local_executor_streams_each_structured_progress_event(settings) -
     assert [item.item for item in updates] == ["sample-a", "sample-b"]
     assert [item.current for item in updates] == [1, 2]
     assert all(item.status == ProgressStatus.SUCCEEDED for item in updates)
-    assert result.stdout.count("PISTACHIO_PROGRESS ") == 2
+    assert result.stdout.count("MICA_PROGRESS ") == 2
 
 
 async def test_local_executor_preflights_the_staged_real_input(settings, tmp_path) -> None:
@@ -171,10 +171,10 @@ async def test_real_data_preflight_blocks_full_analysis_on_shape_failure(
 
 def test_progress_parser_rejects_malformed_or_inconsistent_events() -> None:
     assert parse_progress_line("ordinary log output", 1) is None
-    assert parse_progress_line("PISTACHIO_PROGRESS not-json", 1) is None
+    assert parse_progress_line("MICA_PROGRESS not-json", 1) is None
     assert (
         parse_progress_line(
-            'PISTACHIO_PROGRESS {"status":"succeeded","message":"done",'
+            'MICA_PROGRESS {"status":"succeeded","message":"done",'
             '"current":3,"total":2}',
             1,
         )

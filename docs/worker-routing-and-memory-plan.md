@@ -36,9 +36,9 @@ Not in scope: transfers, GCS write grants, script attachments, runtimes and acce
 ## 0. Read first (rules for the implementer)
 
 1. **Go one milestone at a time (§4).** Write failing tests first. Finish each milestone with
-   `.venv/bin/pytest -q`, `.venv/bin/ruff check src tests tools` and `.venv/bin/mypy src/pistachio`
+   `.venv/bin/pytest -q`, `.venv/bin/ruff check src tests tools` and `.venv/bin/mypy src/mica`
    all passing. Tests must not use the network or GCP.
-2. **Slack-side code stays in `src/pistachio/agents/analysis/`** (deployment constraint). The
+2. **Slack-side code stays in `src/mica/agents/analysis/`** (deployment constraint). The
    only other files to touch are `api/slack_analysis.py`, `connectors/slack.py` (to remove the
    compute button hook), `tools/spatial_analysis.md`, `deploy/slack.env.example`, docs and tests.
 3. **Delete, don't flag.** Remove the price and approval code paths outright. Don't leave a flag
@@ -477,7 +477,7 @@ Changes:
 
 - **Extract before deleting.** Move bounded attempt transitions and model accounting into
   `recovery.py`, and the worker recovery tools and controlled interrupt into `recovery_tools.py`,
-  both inside `src/pistachio/agents/analysis/`. Move price-independent shared types such as
+  both inside `src/mica/agents/analysis/`. Move price-independent shared types such as
   `Provisioning` and record validation bases out of `compute_quotes.py`. Move `event_prefix`
   to the recovery module so checkpoints do not depend on a deleted `compute_batch.py`.
 - **Delete** `pricing.py`, `compute_quotes.py`, `compute_control.py`, `compute_batch.py`,
@@ -625,7 +625,7 @@ unfilled until an authorized staging evaluation.
 | M5: prompts/help/docs and final recovery edge cases | 856 passed, 9 skipped |
 
 Final checks: `.venv/bin/pytest -q` (54.89 seconds), `.venv/bin/ruff check src tests tools`,
-`.venv/bin/mypy src/pistachio`, and `git diff --check` pass. Test-count reductions remove obsolete
+`.venv/bin/mypy src/mica`, and `git diff --check` pass. Test-count reductions remove obsolete
 pricing, approval, disabled-knowledge and draft-publication behavior; recovery and isolation tests
 remain and were extended. The final suite includes cold resize with one final delivery, verified
 stage reuse, corrupt-stage recomputation, pending guide edits with their original CAS versions,

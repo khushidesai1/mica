@@ -8,7 +8,7 @@ import pytest
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from pistachio.agents.analysis import direct, job_lifecycle, memory_tasks, project_memory
+from mica.agents.analysis import direct, job_lifecycle, memory_tasks, project_memory
 
 CONVENTION = (
     "type: user\nsource: alice@example.com, 2026-10-10\nstatus: current\n\n"
@@ -89,8 +89,8 @@ async def test_github_outage_keeps_reply_but_retries_memory_task(memory_chat):
 
 
 async def test_worker_workspace_round_trip(tmp_path):
-    from pistachio.agents.analysis import memory_workspace
-    from pistachio.agents.analysis.config import Settings
+    from mica.agents.analysis import memory_workspace
+    from mica.agents.analysis.config import Settings
 
     base = project_memory.Snapshot(
         head_oid="a" * 40,
@@ -170,7 +170,7 @@ async def test_edits_other_init_and_share_keep_older_thread_state(memory_chat, m
 
 async def test_worker_result_materializes_in_next_workspace(memory_chat, monkeypatch, tmp_path):
     await test_worker_proposal_is_the_only_writer(memory_chat, monkeypatch)
-    from pistachio.agents.analysis import memory_workspace
+    from mica.agents.analysis import memory_workspace
 
     saved = await memory_chat.memory_backend.read(memory_chat.pid)
     memory_workspace.materialize(tmp_path, saved, memory_chat.settings)

@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-from pistachio.connectors.slack import verify_slack_request
-from pistachio.execution.validation import ScriptRejected, validate_script
+from mica.connectors.slack import verify_slack_request
+from mica.execution.validation import ScriptRejected, validate_script
 
 
 @pytest.mark.parametrize(

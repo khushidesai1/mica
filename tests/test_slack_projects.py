@@ -12,11 +12,11 @@ from urllib.parse import urlencode
 
 from fastapi.testclient import TestClient
 
-from pistachio.api.app import create_app
-from pistachio.config import Settings
-from pistachio.connectors.notifications import ChannelNotifier
-from pistachio.connectors.routing import bind_delivery_route, task_delivery_route
-from pistachio.models import (
+from mica.api.app import create_app
+from mica.config import Settings
+from mica.connectors.notifications import ChannelNotifier
+from mica.connectors.routing import bind_delivery_route, task_delivery_route
+from mica.models import (
     ApprovalKind,
     ApprovalRequest,
     ArtifactRef,
@@ -29,7 +29,7 @@ from pistachio.models import (
     TaskSource,
     TaskStatus,
 )
-from pistachio.storage.memory import InMemoryRepository
+from mica.storage.memory import InMemoryRepository
 
 
 class FakeWebClient:
@@ -80,8 +80,8 @@ def _client(tmp_path, monkeypatch, slack_user_map=None) -> TestClient:
     FakeWebClient.messages.clear()
     FakeWebClient.views.clear()
     FakeWebClient.uploads.clear()
-    monkeypatch.setattr("pistachio.connectors.slack.WebClient", FakeWebClient)
-    monkeypatch.setattr("pistachio.connectors.notifications.WebClient", FakeWebClient)
+    monkeypatch.setattr("mica.connectors.slack.WebClient", FakeWebClient)
+    monkeypatch.setattr("mica.connectors.notifications.WebClient", FakeWebClient)
     settings = Settings(
         env="test",
         auth_mode="dev",
@@ -512,12 +512,12 @@ def test_slack_hyperparameter_approval_modal_edits_and_confirms(tmp_path, monkey
 
 def test_slack_approval_notification_stays_in_task_thread(tmp_path, monkeypatch) -> None:
     FakeWebClient.messages.clear()
-    monkeypatch.setattr("pistachio.connectors.notifications.WebClient", FakeWebClient)
+    monkeypatch.setattr("mica.connectors.notifications.WebClient", FakeWebClient)
     settings = Settings(
         env="test",
         artifact_root=tmp_path,
         slack_bot_token="test-token",
-        control_plane_url="https://pistachio.example",
+        control_plane_url="https://mica.example",
     )
     approval = ApprovalRequest(
         task_id="task-1",
@@ -561,7 +561,7 @@ def test_slack_delivers_four_artifacts_individually_and_bundles_five(
 ) -> None:
     FakeWebClient.messages.clear()
     FakeWebClient.uploads.clear()
-    monkeypatch.setattr("pistachio.connectors.notifications.WebClient", FakeWebClient)
+    monkeypatch.setattr("mica.connectors.notifications.WebClient", FakeWebClient)
     settings = Settings(
         env="test",
         artifact_root=tmp_path,
@@ -639,7 +639,7 @@ def test_slack_compute_approval_button_confirms_and_enqueues(tmp_path, monkeypat
         repository = client.app.state.services.repository
         asyncio.run(repository.create_task(task))
 
-        monkeypatch.setattr("pistachio.connectors.notifications.WebClient", FakeWebClient)
+        monkeypatch.setattr("mica.connectors.notifications.WebClient", FakeWebClient)
         asyncio.run(client.app.state.services.tasks._notify(task))
         approval_message = FakeWebClient.messages[-1]
         actions = approval_message["blocks"][2]["elements"]  # type: ignore[index]
@@ -677,7 +677,7 @@ def test_slack_compute_approval_button_confirms_and_enqueues(tmp_path, monkeypat
 
 def test_web_task_updates_use_bound_slack_route(tmp_path, monkeypatch) -> None:
     FakeWebClient.messages.clear()
-    monkeypatch.setattr("pistachio.connectors.notifications.WebClient", FakeWebClient)
+    monkeypatch.setattr("mica.connectors.notifications.WebClient", FakeWebClient)
     settings = Settings(
         env="test",
         artifact_root=tmp_path,
@@ -873,7 +873,7 @@ def test_large_slack_approval_rejects_stale_or_incomplete_review(tmp_path, monke
 
 
 def test_slack_review_without_fields_can_approve_exact_tool(tmp_path, monkeypatch):
-    from pistachio.models import ToolProposal
+    from mica.models import ToolProposal
 
     with _client(tmp_path, monkeypatch) as client:
         services = client.app.state.services
@@ -938,7 +938,7 @@ def test_slack_review_without_fields_can_decline(tmp_path, monkeypatch):
 
 def test_all_approval_notifications_have_native_actions_and_no_website_links(tmp_path):
     notifier = ChannelNotifier(Settings(env="test", artifact_root=tmp_path,
-                                        control_plane_url="https://pistachio.example"))
+                                        control_plane_url="https://mica.example"))
     for approval in [_large_approval(), *[
         ApprovalRequest(task_id="pending", kind=kind, title="Review", detail="Decision needed")
         for kind in ApprovalKind

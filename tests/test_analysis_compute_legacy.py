@@ -4,9 +4,9 @@ import json
 
 import pytest
 
-from pistachio.agents.analysis.batch import job_spec
-from pistachio.agents.analysis.config import Settings
-from pistachio.config import Settings as AppSettings
+from mica.agents.analysis.batch import job_spec
+from mica.agents.analysis.config import Settings
+from mica.config import Settings as AppSettings
 
 
 def app_settings():
@@ -63,7 +63,7 @@ def test_attempt_uses_reserved_budget_and_shorter_deadline():
 
 
 def test_pinned_sdk_cumulative_cost_baseline(tmp_path):
-    from pistachio.agents.analysis.recovery_tools import restored_cost
+    from mica.agents.analysis.recovery_tools import restored_cost
 
     sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
     path = tmp_path / ".claude/projects/synthetic" / f"{sid}.jsonl"

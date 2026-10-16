@@ -8,17 +8,17 @@ from analysis_helpers import memory_message as message
 from test_analysis_batch import bridge  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from pistachio.agents.analysis import direct, recovery
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.storage import LocalStorage
-from pistachio.agents.analysis.tiers import launch_choice
+from mica.agents.analysis import direct, recovery
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.storage import LocalStorage
+from mica.agents.analysis.tiers import launch_choice
 
 EVENT = "a" * 32
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
 async def test_terminal_stop_is_not_a_success_or_resource_failure(chat, cancelled):
-    from pistachio.agents.analysis.calibration import recent
+    from mica.agents.analysis.calibration import recent
 
     chat.decision.return_value = direct.Decision(route="compute", reply="Working")
     initial = await message(chat, "Plot data", "1.0")
@@ -313,7 +313,7 @@ def test_reported_model_overage_is_charged_before_any_successor():
 async def test_original_deadline_stops_queued_worker_without_relaunch(bridge, monkeypatch):
     from test_analysis_batch import payload
 
-    from pistachio.agents.analysis import batch
+    from mica.agents.analysis import batch
 
     now = [1000.0]
     monkeypatch.setattr(batch.time, "time", lambda: now[0])
@@ -336,7 +336,7 @@ async def test_original_deadline_stops_queued_worker_without_relaunch(bridge, mo
 async def test_expired_interrupted_submission_does_not_create_a_worker(bridge, monkeypatch):
     from test_analysis_batch import payload
 
-    from pistachio.agents.analysis import batch
+    from mica.agents.analysis import batch
 
     now = [1000.0]
     monkeypatch.setattr(batch.time, "time", lambda: now[0])

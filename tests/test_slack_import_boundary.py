@@ -5,14 +5,14 @@ from pathlib import Path
 
 
 def test_slack_modules_do_not_import_browser_memory_or_services():
-    root = Path(__file__).resolve().parents[1] / "src/pistachio"
+    root = Path(__file__).resolve().parents[1] / "src/mica"
     files = [*(root / "agents/analysis").glob("*.py"), root / "api/slack_analysis.py"]
     forbidden = (
-        "pistachio.services",
-        "pistachio.agents.memory",
-        "pistachio.agents.context",
-        "pistachio.agents.harness",
-        "pistachio.agents.session",
+        "mica.services",
+        "mica.agents.memory",
+        "mica.agents.context",
+        "mica.agents.harness",
+        "mica.agents.session",
     )
     for path in files:
         for node in ast.walk(ast.parse(path.read_text())):
@@ -25,6 +25,6 @@ def test_slack_modules_do_not_import_browser_memory_or_services():
             )
             for module in modules:
                 assert not module.startswith(forbidden), (path, module)
-                if module == "pistachio.api.auth":
+                if module == "mica.api.auth":
                     assert path.name == "slack_analysis.py"
                     assert [a.name for a in node.names] == ["get_principal"]

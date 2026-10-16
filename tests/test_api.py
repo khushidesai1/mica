@@ -12,9 +12,9 @@ from io import BytesIO
 import pytest
 from fastapi.testclient import TestClient
 
-from pistachio.api.app import create_app
-from pistachio.config import Settings
-from pistachio.models import (
+from mica.api.app import create_app
+from mica.config import Settings
+from mica.models import (
     ArtifactRef,
     MemoryItem,
     MemoryKind,
@@ -24,7 +24,7 @@ from pistachio.models import (
     TaskResult,
     TaskStatus,
 )
-from pistachio.storage.memory import InMemoryRepository
+from mica.storage.memory import InMemoryRepository
 
 
 def test_project_api_enforces_iap_identity(tmp_path) -> None:
@@ -56,7 +56,7 @@ def test_headless_service_has_no_browser_routes(tmp_path, auth_mode) -> None:
         env="test",
         auth_mode=auth_mode,
         artifact_root=tmp_path,
-        oidc_audience="https://pistachio.example",
+        oidc_audience="https://mica.example",
     )
     app = create_app(settings=settings, repository=InMemoryRepository())
     with TestClient(app) as client:
@@ -85,7 +85,7 @@ def test_oidc_api_auth_and_service_callbacks_survive_ui_removal(tmp_path, monkey
         env="test",
         auth_mode="oidc",
         artifact_root=tmp_path,
-        oidc_audience="https://pistachio.example",
+        oidc_audience="https://mica.example",
         allowed_emails=("alice@example.org",),
         cloud_tasks_service_account="worker@example.iam.gserviceaccount.com",
         signed_link_secret="test-signing-secret",
@@ -102,8 +102,8 @@ def test_oidc_api_auth_and_service_callbacks_survive_ui_removal(tmp_path, monkey
         assert event_id == "a" * 32 and tick == 0
         return "completed"
 
-    monkeypatch.setattr("pistachio.api.auth.id_token.verify_oauth2_token", verify)
-    monkeypatch.setattr("pistachio.api.slack_analysis.BatchBridge.process", process)
+    monkeypatch.setattr("mica.api.auth.id_token.verify_oauth2_token", verify)
+    monkeypatch.setattr("mica.api.slack_analysis.BatchBridge.process", process)
     app = create_app(settings=settings, repository=InMemoryRepository())
     with TestClient(app) as client:
         # Previously signed browser cookies no longer grant API access.
@@ -124,7 +124,7 @@ def test_oidc_api_auth_and_service_callbacks_survive_ui_removal(tmp_path, monkey
             encoded.encode(),
             hashlib.sha256,
         ).hexdigest()
-        client.cookies.set("pistachio_session", f"{encoded}.{signature}")
+        client.cookies.set("mica_session", f"{encoded}.{signature}")
         assert client.get("/api/v1/projects").status_code == 401
         assert (
             client.get("/api/v1/projects", headers={"Authorization": "Bearer invalid"}).status_code
@@ -599,7 +599,7 @@ def test_deployment_build_notifications_are_ignored(tmp_path, monkeypatch, subst
 
 
 def test_tool_build_notification_still_updates_tool(tmp_path):
-    from pistachio.models import ToolRecord, ToolStatus
+    from mica.models import ToolRecord, ToolStatus
 
     repo = InMemoryRepository()
     tool = ToolRecord(

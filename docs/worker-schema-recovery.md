@@ -28,7 +28,7 @@ user's dataset. The cloud job succeeded with `FAILED_BUNDLE_SCHEMA_VALIDATED` an
 `PROTOCOL2_WORKER_CONFORMANCE_PASSED`.
 
 Staging now serves revision `pistachio-staging-00058-xoy` at 100% traffic. Preview/live health
-checks passed, and `PISTACHIO_BATCH_IMAGE` was the only runtime setting changed. The API image,
+checks passed, and `MICA_BATCH_IMAGE` was the only runtime setting changed. The API image,
 scientific libraries, authentication and sandbox configuration were preserved.
 
 The latest failed task, `task_11acc4455f0c4a6d8ba9025817347e49`, was recovered by appending a new

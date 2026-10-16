@@ -4,18 +4,18 @@ from pathlib import Path
 
 import pytest
 
-from pistachio.agents.context import ContextBuilder
-from pistachio.agents.memory import MemoryManager, ProjectCompactor
-from pistachio.config import Settings
-from pistachio.execution.backends import LocalExecutor
-from pistachio.services.tasks import TaskService
-from pistachio.storage.memory import InMemoryRepository
+from mica.agents.context import ContextBuilder
+from mica.agents.memory import MemoryManager, ProjectCompactor
+from mica.config import Settings
+from mica.execution.backends import LocalExecutor
+from mica.services.tasks import TaskService
+from mica.storage.memory import InMemoryRepository
 
 
 @pytest.fixture(autouse=True)
 def isolate_local_dotenv(monkeypatch):
     """Keep workstation .env settings out of test-created configurations."""
-    from pistachio.agents.analysis.config import Settings as AnalysisSettings
+    from mica.agents.analysis.config import Settings as AnalysisSettings
 
     for settings_type in (Settings, AnalysisSettings):
         monkeypatch.setitem(settings_type.model_config, "env_file", None)

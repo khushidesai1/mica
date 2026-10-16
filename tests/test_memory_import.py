@@ -6,9 +6,9 @@ from pathlib import Path
 from analysis_helpers import seed_project
 from fake_github import FakeGitHub
 
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.project_memory import GitHubMemory
-from pistachio.agents.analysis.storage import LocalStorage
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.project_memory import GitHubMemory
+from mica.agents.analysis.storage import LocalStorage
 
 spec = importlib.util.spec_from_file_location(
     "memory_import", Path(__file__).parents[1] / "tools/memory_import.py"

@@ -4,8 +4,8 @@ import json
 
 from conftest import task_service
 
-from pistachio.agents.harness import AgentStageTimeout
-from pistachio.models import (
+from mica.agents.harness import AgentStageTimeout
+from mica.models import (
     AnalysisStep,
     ApprovalDecision,
     CodeBuildResult,

@@ -14,11 +14,11 @@ import tempfile
 import time
 from pathlib import Path
 
-from pistachio.config import Settings
-from pistachio.execution.development import DevelopmentExecutor
-from pistachio.execution.smoke import ANALYSIS, TESTS
-from pistachio.execution.workspace import digest
-from pistachio.models import (
+from mica.config import Settings
+from mica.execution.development import DevelopmentExecutor
+from mica.execution.smoke import ANALYSIS, TESTS
+from mica.execution.workspace import digest
+from mica.models import (
     AttachmentRef,
     ExecutionBundle,
     OutputSpec,
@@ -50,7 +50,7 @@ async def benchmark() -> None:
                 source_hash=digest(files),
                 source_files=[SourceFile(path=k, content=v) for k, v in files.items()],
                 script=BENCHMARK_ANALYSIS,
-                runtime_image=os.environ["PISTACHIO_BATCH_IMAGE"],
+                runtime_image=os.environ["MICA_BATCH_IMAGE"],
                 command_timeout_seconds=180,
                 contract=TaskContract(
                     objective="Aggregation, Louvain and Silhouette bounded benchmark",

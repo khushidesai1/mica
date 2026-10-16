@@ -48,7 +48,7 @@ def probe(data_file, outside):
         for k in (
             "SLACK_BOT_TOKEN",
             "SLACK_APP_TOKEN",
-            "PISTACHIO_SLACK_BOT_TOKEN",
+            "MICA_SLACK_BOT_TOKEN",
             "ANTHROPIC_API_KEY",
         )
     ), "Credential exposed to generated code"
@@ -77,7 +77,7 @@ def probe(data_file, outside):
             continue
         for entry in entries:
             name, _, value = entry.partition(b"=")
-            if name in {b"ANTHROPIC_API_KEY", b"SLACK_BOT_TOKEN", b"PISTACHIO_SLACK_BOT_TOKEN"}:
+            if name in {b"ANTHROPIC_API_KEY", b"SLACK_BOT_TOKEN", b"MICA_SLACK_BOT_TOKEN"}:
                 assert not value, "Credential exposed through the process filesystem"
     with Path("outputs/sandbox-probe.json").open("w") as handle:
         json.dump(

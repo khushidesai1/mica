@@ -10,24 +10,24 @@ from unittest.mock import AsyncMock
 import pytest
 from slack_sdk.errors import SlackApiError
 
-from pistachio.agents.analysis import slack_app
-from pistachio.agents.analysis.config import Settings
-from pistachio.agents.analysis.progress import TaskProgress
-from pistachio.agents.analysis.runner import Context, TurnResult
-from pistachio.agents.analysis.sessions import Sessions
-from pistachio.agents.analysis.slack_app import SlackAgent
-from pistachio.agents.analysis.slack_format import (
+from mica.agents.analysis import slack_app
+from mica.agents.analysis.config import Settings
+from mica.agents.analysis.progress import TaskProgress
+from mica.agents.analysis.runner import Context, TurnResult
+from mica.agents.analysis.sessions import Sessions
+from mica.agents.analysis.slack_app import SlackAgent
+from mica.agents.analysis.slack_format import (
     activity_blocks,
     chunks,
     done_blocks,
     status_blocks,
     to_mrkdwn,
 )
-from pistachio.agents.analysis.storage import LocalStorage
+from mica.agents.analysis.storage import LocalStorage
 
 
 async def test_heartbeat_tolerates_three_unavailable_checks(bot, monkeypatch, caplog):
-    from pistachio.agents.analysis.identity import IdentityUnavailable
+    from mica.agents.analysis.identity import IdentityUnavailable
 
     monkeypatch.setattr(slack_app, "HEARTBEAT_SECONDS", 0.001)
     calls = 0
@@ -156,7 +156,7 @@ def test_status_labels_are_plain_text_and_bounded():
 
 
 def test_cleanup_preserves_fresh_work_and_resets_old_session(bot):
-    from pistachio.agents.analysis.runner import Context
+    from mica.agents.analysis.runner import Context
     from tools.cleanup_workspaces import cleanup
 
     for thread in ["1.0", "2.0"]:
@@ -173,7 +173,7 @@ def test_cleanup_preserves_fresh_work_and_resets_old_session(bot):
 
 
 async def test_receipt_status_reused_and_heartbeat_stops(bot, monkeypatch):
-    from pistachio.agents.analysis import slack_app
+    from mica.agents.analysis import slack_app
 
     monkeypatch.setattr(slack_app, "HEARTBEAT_SECONDS", 0.005)
     await send(bot, event("plot", _notice_ts="9.0"))
@@ -194,7 +194,7 @@ async def test_receipt_status_reused_and_heartbeat_stops(bot, monkeypatch):
 
 @pytest.mark.parametrize("fail_once", [False, True])
 async def test_heartbeat_flushes_throttled_step_and_retries_failure(bot, monkeypatch, fail_once):
-    from pistachio.agents.analysis import slack_app
+    from mica.agents.analysis import slack_app
 
     clock = SimpleNamespace(now=0)
     monkeypatch.setattr(slack_app, "time", SimpleNamespace(monotonic=lambda: clock.now))
@@ -263,7 +263,7 @@ async def test_help_me_plot_is_computed(bot):
 async def test_pdf_and_png_reports_are_attached_to_thread_before_answer(bot, monkeypatch):
     from claude_agent_sdk import ResultMessage
 
-    from pistachio.agents.analysis import runner
+    from mica.agents.analysis import runner
 
     ctx = bot.sessions.get("C123", "1.0")[0]
     paths = []
@@ -336,7 +336,7 @@ async def test_oversized_report_is_reported_as_undelivered(bot, monkeypatch):
 async def test_existing_reports_can_be_resent_without_regenerating(bot, monkeypatch):
     from claude_agent_sdk import ResultMessage
 
-    from pistachio.agents.analysis import runner
+    from mica.agents.analysis import runner
 
     ctx = bot.sessions.get("C123", "1.0")[0]
     paths = [ctx.workdir / "outputs/gap_report" / name for name in ["report.pdf", "overview.png"]]

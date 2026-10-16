@@ -5,9 +5,9 @@ import json
 import pytest
 from test_technical_autonomy import development_task
 
-from pistachio.execution.backends import LocalExecutor
-from pistachio.execution.workspace import digest
-from pistachio.models import (
+from mica.execution.backends import LocalExecutor
+from mica.execution.workspace import digest
+from mica.models import (
     CandidateReview,
     DecisionScope,
     DecisionSet,
@@ -24,10 +24,10 @@ from pistachio.models import (
     ToolRecord,
     ToolStatus,
 )
-from pistachio.services.development import DevelopmentService
-from pistachio.services.planning import effective_parameter_manifest, resolve_registered_tools
-from pistachio.services.policy import ExecutionPolicy
-from pistachio.services.tasks import TaskService
+from mica.services.development import DevelopmentService
+from mica.services.planning import effective_parameter_manifest, resolve_registered_tools
+from mica.services.policy import ExecutionPolicy
+from mica.services.tasks import TaskService
 
 
 def default_parameter(**updates):

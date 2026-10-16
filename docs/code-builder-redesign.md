@@ -1,4 +1,4 @@
-# Pistachio: tested, reproducible analysis development
+# Mica: tested, reproducible analysis development
 
 Status: proposed implementation specification  
 Date: 28 September 2026  
@@ -11,7 +11,7 @@ the original protocol 1 architecture.
 
 ## 1. Decision and assessment
 
-The current specification is a useful description of Pistachio's orchestration and approval boundaries. It is insufficient as a specification for a reliable coding agent. It tells a model to emit a correct script, then relies on static checks, a model-written preflight, and one repaired execution to make that script work. The model has no development tools with which to inspect its environment, exercise code, or examine artifacts before returning its program.
+The current specification is a useful description of Mica's orchestration and approval boundaries. It is insufficient as a specification for a reliable coding agent. It tells a model to emit a correct script, then relies on static checks, a model-written preflight, and one repaired execution to make that script work. The model has no development tools with which to inspect its environment, exercise code, or examine artifacts before returning its program.
 
 Replace this with a bounded development session: inspect, design, edit files, execute checks in the target environment, inspect failures and artifacts, revise, then freeze and run a verified code revision. Deliver results only after independent output checks and reproducibility packaging pass.
 
@@ -36,7 +36,7 @@ These are implementation observations, not diagnoses of a production traceback.
 | The runner always supplies CLI seed zero. | `LocalExecutor.execute` and `DockerExecutor.execute`. | The runtime must bind seeds to effective configuration; a generated program could use approved values separately, but current invocation does not enforce that correspondence. |
 | The current repair tests mainly validate orchestration. | `tests/test_planner_v2.py`: `RuntimeRepairHarness` raises a fabricated reshape exception; `PreflightRepairHarness` checks a hard-coded tuple. | Passing tests do not demonstrate correct AnnData processing, real slicing, clustering, or score selection. |
 
-Paths above are relative to `src/pistachio/` unless otherwise specified. Baseline verification during this review: `pytest -q tests/test_planner_v2.py tests/test_batch_resilience.py tests/test_security.py` passed all 21 tests. No production traceback or production artifacts were retrieved.
+Paths above are relative to `src/mica/` unless otherwise specified. Baseline verification during this review: `pytest -q tests/test_planner_v2.py tests/test_batch_resilience.py tests/test_security.py` passed all 21 tests. No production traceback or production artifacts were retrieved.
 
 ### Concrete failure motivating this design
 
@@ -323,15 +323,15 @@ Implement the concrete Louvain fixture, independent output checks, figure inspec
 
 | Existing area | Required change |
 | --- | --- |
-| `src/pistachio/models.py` | Add versioned session/revision/runtime/test/failure/verification/publication records, operation counters, and protocol selection. Preserve old deserialization. |
-| `src/pistachio/agents/harness.py` | Replace the new-task code-only call with the development agent's tools and bounded continuations. Keep typed control outcomes; source files need not be returned as one giant JSON string. |
-| `src/pistachio/services/tasks.py` | Integrate session states, operation reservation/reconciliation, targeted amendment resumes, and final success gating. Avoid embedding the entire new loop in this already large service. |
+| `src/mica/models.py` | Add versioned session/revision/runtime/test/failure/verification/publication records, operation counters, and protocol selection. Preserve old deserialization. |
+| `src/mica/agents/harness.py` | Replace the new-task code-only call with the development agent's tools and bounded continuations. Keep typed control outcomes; source files need not be returned as one giant JSON string. |
+| `src/mica/services/tasks.py` | Integrate session states, operation reservation/reconciliation, targeted amendment resumes, and final success gating. Avoid embedding the entire new loop in this already large service. |
 | New `services/development.py` and `services/verification.py` | Own development transitions/budgets and independent gate aggregation respectively. |
 | New `execution/workspace.py` and runtime/runner modules | Own normalized paths, content-addressed revisions, environment capability probes, and the shared sandbox operation protocol. |
-| `src/pistachio/execution/validation.py` | Keep static feedback, extend project checks, and distinguish static acceptance from runtime/result verification. |
-| `src/pistachio/execution/backends.py` | Separate staging, execution, diagnostics, and collection; support typed modes with explicit manifests instead of string-searching for `--preflight`. |
-| `src/pistachio/worker/main.py` | Preserve all evidence, normalize worker failures, separate credentialed I/O from generated execution, and publish complete bundles atomically/idempotently. |
-| `src/pistachio/services/planning.py`, `services/tools.py` | Resolve runtime capabilities and dependency evidence; never mark a review complete solely because registry metadata exists. |
+| `src/mica/execution/validation.py` | Keep static feedback, extend project checks, and distinguish static acceptance from runtime/result verification. |
+| `src/mica/execution/backends.py` | Separate staging, execution, diagnostics, and collection; support typed modes with explicit manifests instead of string-searching for `--preflight`. |
+| `src/mica/worker/main.py` | Preserve all evidence, normalize worker failures, separate credentialed I/O from generated execution, and publish complete bundles atomically/idempotently. |
+| `src/mica/services/planning.py`, `services/tools.py` | Resolve runtime capabilities and dependency evidence; never mark a review complete solely because registry metadata exists. |
 | Storage repositories and `services/snapshots.py` | Persist session revisions, operation claims, leases, and cumulative budget reservations consistently in memory and Firestore implementations. |
 | `services/artifacts.py`, API and connectors | Separate results/reproduction/audit artifacts; expose only validated committed delivery files; preserve relative paths and task ACLs. |
 | `connectors/presentation.py` and memory promotion | Summarize actual verified results, replay coverage and unresolved limitations; promote result memory only after publication commit. |

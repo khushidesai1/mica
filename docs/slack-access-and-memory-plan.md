@@ -1,4 +1,4 @@
-# Plan: Private projects, explicit sharing, and Letta‑lite user memory for Pistachio's Slack agent
+# Plan: Private projects, explicit sharing, and Letta‑lite user memory for Mica's Slack agent
 
 > Source behavior update, 10 October 2026: [the routing and memory implementation plan](worker-routing-and-memory-plan.md) supersedes the pricing/quote gates, thread-draft guide flow, knowledge feature flag, and per-thread channel summaries described below. Those passages remain historical design/deployment evidence. This local implementation has not been deployed or validated in staging.
 
@@ -10,7 +10,7 @@
 > is complete; cloud build, migration, deployment, and live checks remain approval-gated.
 
 **Later approved admission model:** membership in any admin-enabled Slack channel replaces the
-manual Slack user/email allowlists. Admins onboard channels by inviting Pistachio and mentioning
+manual Slack user/email allowlists. Admins onboard channels by inviting Mica and mentioning
 `enable this channel`; `disable this channel` removes an access channel. Identity comes from Slack,
 with the same normalized-email memory keys. Project ACLs and private memory remain independent.
 See the current setup guide for the short membership cache, required scopes, and bootstrap admins.
@@ -30,14 +30,14 @@ The original design details below are retained as provenance; these corrections 
 
 ## 0. Read first
 
-1. **Where Slack code is allowed to live (deployment constraint).** `docker/Dockerfile.api-slack` builds the deployed API image on top of the frozen, already-deployed web image. It copies only `src/pistachio/agents/analysis/` and `src/pistachio/api/slack_analysis.py`. `cloudbuild/build-slack-api.yaml` then runs `scripts/check_slack_preservation.py`, which fails if any other deployed file changed. So:
-   - Put every new Slack-side module in `src/pistachio/agents/analysis/`.
-   - Add no new imports of web modules (`pistachio.services.*`, `pistachio.agents.{memory,context,harness,session}`, `pistachio.api.auth`). In `receive()`, replace the lazy `from pistachio.connectors.slack import _reply` with a direct `AsyncWebClient` call, the way `BatchBridge.notify` already does (`batch.py:140`).
+1. **Where Slack code is allowed to live (deployment constraint).** `docker/Dockerfile.api-slack` builds the deployed API image on top of the frozen, already-deployed web image. It copies only `src/mica/agents/analysis/` and `src/mica/api/slack_analysis.py`. `cloudbuild/build-slack-api.yaml` then runs `scripts/check_slack_preservation.py`, which fails if any other deployed file changed. So:
+   - Put every new Slack-side module in `src/mica/agents/analysis/`.
+   - Add no new imports of web modules (`mica.services.*`, `mica.agents.{memory,context,harness,session}`, `mica.api.auth`). In `receive()`, replace the lazy `from mica.connectors.slack import _reply` with a direct `AsyncWebClient` call, the way `BatchBridge.notify` already does (`batch.py:140`).
    - From the web app, use only `Repository.get/set_connector_state`, `begin_event`, `release_event`, and settings the Slack code already reads (`slack_user_map`, `gcs_bucket`, `slack_bot_token`, …). Read `allowed_emails` as `getattr(app, "allowed_emails", ())`.
    - New settings go in `agents/analysis/config.py` as `AGENT_*` fields. Add no new third-party dependencies.
    - The worker image (`docker/Dockerfile.slack-agent`) copies all of `src/`. Always build the API and worker images from the same commit.
 2. **The browser fixes (Part B, §8) edit web files.** They take effect only at the next full web deploy, not with the Slack build. Slack code must never depend on them.
-3. **Each milestone ends green:** `.venv/bin/pytest -q`, `.venv/bin/ruff check src tests tools`, `.venv/bin/mypy src/pistachio`.
+3. **Each milestone ends green:** `.venv/bin/pytest -q`, `.venv/bin/ruff check src tests tools`, `.venv/bin/mypy src/mica`.
 4. **Fail closed.** If the identity, project, membership, or registry is missing, refuse with a short message. Never loosen the runner's tool guard or sandbox.
 5. **Ask the human before any cloud action:** migration `--apply`, Cloud Run environment changes, image builds, deploys.
 6. **The repo has no commits yet.** Ask the user to commit the current tree as a baseline before M0, so each milestone is a reviewable diff.
@@ -493,12 +493,12 @@ B1–B4, each with a test:
 ## 10. Rollout (ask before every cloud step)
 
 1. **Release 1 (M1):** the API image, built with `cloudbuild/build-slack-api.yaml` (which runs the preservation check).
-   - Before deploying, confirm that every email in `PISTACHIO_SLACK_USER_MAP` is also in `PISTACHIO_ALLOWED_EMAILS`. Terraform sets both (`infra/main.tf:281`, `353`).
+   - Before deploying, confirm that every email in `MICA_SLACK_USER_MAP` is also in `MICA_ALLOWED_EMAILS`. Terraform sets both (`infra/main.tf:281`, `353`).
    - Confirm the base image's `Settings` has `allowed_emails`.
 2. **Release 2 (M2–M3b):**
    1. Build the API and worker images from one commit.
    2. Run the migration dry run and review `owners.json` with the user, then run `--apply`.
-   3. Deploy one tagged revision with no traffic, using the new API image and `PISTACHIO_SLACK_AGENT_IMAGE` set to the new worker digest. One revision changes both.
+   3. Deploy one tagged revision with no traffic, using the new API image and `MICA_SLACK_AGENT_IMAGE` set to the new worker digest. One revision changes both.
    4. Run the health and credential checks, then promote.
    5. Old ingress, tasks, and workers must be drained before migration and remain stopped until cutover; do not use a second pass as a substitute.
 3. **Release 3 (M4, memory):** same path. It can ship together with Release 2 if preferred.
@@ -516,10 +516,10 @@ B1–B4, each with a test:
 
 ## 11. Verification
 
-- **Every milestone:** `pytest -q`, `ruff check src tests tools`, `mypy src/pistachio`.
+- **Every milestone:** `pytest -q`, `ruff check src tests tools`, `mypy src/mica`.
 - **Import boundary:** this must print nothing:
   ```
-  grep -rnE "from pistachio\.(services|agents\.(memory|context|harness|session))" src/pistachio/agents/analysis src/pistachio/api/slack_analysis.py
+  grep -rnE "from mica\.(services|agents\.(memory|context|harness|session))" src/mica/agents/analysis src/mica/api/slack_analysis.py
   ```
 - **Build gate:** `cloudbuild/build-slack-api.yaml` passes `check_slack_preservation.py` and the Dockerfile smoke test.
 - **Live, in staging, led by the user**, with two mapped users A and B in DMs:

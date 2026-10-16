@@ -15,4 +15,4 @@ RUN pip install --no-deps . && mkdir -p /srv/pistachio/work /opt/sci/bin && \
 ENV HOME=/srv/pistachio AGENT_WORK_ROOT=/srv/pistachio/work AGENT_STATE_DB=/srv/pistachio/state.db
 USER 65532:65532
 ENTRYPOINT []
-CMD ["python", "-m", "pistachio.agents.analysis.batch_worker"]
+CMD ["python", "-m", "mica.agents.analysis.batch_worker"]

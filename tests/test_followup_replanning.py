@@ -6,9 +6,9 @@ import pytest
 from conftest import task_service
 from test_planner_v2 import StagedHarness
 
-from pistachio.connectors.presentation import TaskConversationPresenter
-from pistachio.execution.workspace import WorkspaceStore, digest
-from pistachio.models import (
+from mica.connectors.presentation import TaskConversationPresenter
+from mica.execution.workspace import WorkspaceStore, digest
+from mica.models import (
     ApprovalDecision,
     ApprovalKind,
     DecisionSet,

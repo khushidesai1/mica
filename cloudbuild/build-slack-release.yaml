@@ -11,7 +11,7 @@ steps:
   - id: verify-headless-api
     name: gcr.io/cloud-builders/docker
     waitFor: [build-api]
-    args: [run, --rm, --network=none, -e, PISTACHIO_ARTIFACT_ROOT=/tmp/pistachio-smoke, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_headless_api.py]
+    args: [run, --rm, --network=none, -e, MICA_ARTIFACT_ROOT=/tmp/mica-smoke, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_headless_api.py]
   - id: verify-api-source-and-attachments
     name: gcr.io/cloud-builders/docker
     waitFor: [build-api]

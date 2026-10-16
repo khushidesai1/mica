@@ -3,12 +3,12 @@
 Verified October 10, 2026 (America/Los_Angeles; October 11 UTC). Source commit
 `503f05a01218ee6ef49955d3ba2e8f0074595d6d` is deployed at 100% traffic as
 `pistachio-staging-memory-503f05a01218`. Memory uses the private repository
-`khushidesai1/pistachio-memory`, branch `main`.
+`khushidesai1/mica-memory`, branch `main`.
 
 ## Release and checks
 
 - Ruff (`src tests tools`) and strict mypy passed; pytest: **702 passed, 6 skipped**.
-- [GitHub CI](https://github.com/khushidesai1/pistachio/actions/runs/38099630839) passed.
+- [GitHub CI](https://github.com/khushidesai1/mica/actions/runs/38099630839) passed.
 - Cloud Build `35581e81-52db-4c14-baa1-0d8040db2c25` passed all ten steps,
   including API/worker compatibility, source and attachment checks, Linux telemetry,
   checkpoint recovery, compute policy, and synthetic CosMx/Cellpose checks.

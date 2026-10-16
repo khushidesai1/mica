@@ -4,7 +4,7 @@
 > Web rollout/preservation instructions below are superseded by the current
 > [headless deployment guide](deployment.md#headless-api-rollout).
 
-Deployed to [Pistachio staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app).
+Deployed to [Mica staging](https://pistachio-staging-h5a7b7akbq-uc.a.run.app).
 Revision `pistachio-staging-00050-xay` serves 100% of traffic.
 
 The release includes the supplied SVG logo, softer workspace styling, project sidebar,

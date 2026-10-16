@@ -9,10 +9,10 @@ from pydantic import SecretStr
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from pistachio.agents.analysis import access, direct, identity
-from pistachio.agents.analysis import channel_access as ca
-from pistachio.agents.analysis.config import Settings
-from pistachio.api import slack_analysis
+from mica.agents.analysis import access, direct, identity
+from mica.agents.analysis import channel_access as ca
+from mica.agents.analysis.config import Settings
+from mica.api import slack_analysis
 
 
 @pytest.fixture
