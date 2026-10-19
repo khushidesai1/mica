@@ -67,6 +67,9 @@ changed behavior. Prefer fakes for large file counts, large object sizes and fai
 Do not run lengthy model conversations or full-scale data transfers for routine releases;
 reserve those for explicit scale validation or a specific unresolved production issue.
 Keep build, authentication and worker compatibility gates, and clean up synthetic outputs.
+Run live Slack smoke checks only in the owner's private DM, never in shared project channels.
+Simulate malformed model output, outages, and retry timing locally with fakes; do not inject
+failures into collaborators' conversations. Remove synthetic DM messages after verification.
 
 ## Provision
 

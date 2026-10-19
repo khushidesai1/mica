@@ -293,14 +293,18 @@ async def test_read_only_brief_ignores_attachment_without_download(chat):
 
 
 async def test_router_rejects_truncated_output(monkeypatch):
+    calls = []
+
     def respond(request):
+        calls.append(request)
         return httpx.Response(200, json={"stop_reason": "max_tokens", "content": []})
 
     transport = httpx.MockTransport(respond)
     client = httpx.AsyncClient(transport=transport)
     monkeypatch.setattr(direct.httpx, "AsyncClient", lambda **kw: client)
-    with pytest.raises(ValueError, match="too long"):
+    with pytest.raises(direct.RoutingUnavailable):
         await direct.decide("fake-key", "test-model", {"request": "hi"})
+    assert len(calls) == 2
 
 
 async def test_reply_delivery_retry_does_not_repeat_model_or_create_worker(chat):
@@ -436,13 +440,24 @@ async def test_brief_is_read_only_even_with_uploaded_guide(chat, upload_http):
     chat.decision.assert_not_called()
 
 
-async def test_retry_after_router_failure_does_not_redownload(chat, upload_http):
-    chat.decision.side_effect = RuntimeError("interrupted router")
+@pytest.mark.parametrize("queued_retry", [False, True])
+async def test_retry_after_router_failure_does_not_redownload(
+    chat, upload_http, monkeypatch, queued_retry
+):
+    now = [100.0]
+    monkeypatch.setattr(batch.time, "time", lambda: now[0])
+    chat.decision.side_effect = (
+        direct.RoutingUnavailable() if queued_retry else RuntimeError("interrupted router")
+    )
     event = await attachment_message(chat, [attached()])
-    with pytest.raises(RuntimeError, match="interrupted router"):
-        await chat.process(event, 0)
+    if queued_retry:
+        assert await chat.process(event, 0) == "pending"
+    else:
+        with pytest.raises(RuntimeError, match="interrupted router"):
+            await chat.process(event, 0)
     chat.decision.side_effect = None
-    assert await chat.process(event, 0) == "complete"
+    now[0] = 130
+    assert await chat.process(event, int(queued_retry)) == "complete"
     record, state = await thread_state(chat, event)
     assert len(upload_http) == len(state["thread_files"]) == 1
 
@@ -594,8 +609,8 @@ async def test_upload_rejection_lists_each_problem(chat, upload_http):
     assert not upload_http
 
 
-@pytest.mark.parametrize("archive", [False, True])
-async def test_router_retries_missing_tool_and_logs_only_metadata(monkeypatch, caplog, archive):
+@pytest.mark.parametrize("context", [{}, {"data_inventory": {"complete": False}}])
+async def test_router_retries_missing_tool_and_logs_only_metadata(monkeypatch, caplog, context):
     requests = []
 
     def respond(request):
@@ -610,12 +625,8 @@ async def test_router_retries_missing_tool_and_logs_only_metadata(monkeypatch, c
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     monkeypatch.setattr(direct.httpx, "AsyncClient", lambda **kw: client)
-    if archive:
-        result = await direct.decide("fake", "model", {}, event_id="event-test", has_archive=True)
-        assert result.route == "compute"
-    else:
-        with pytest.raises(ValueError, match="Couldn't determine the next step"):
-            await direct.decide("fake", "model", {}, event_id="event-test")
+    with pytest.raises(direct.RoutingUnavailable):
+        await direct.decide("fake", "model", context, event_id="event-test")
     assert len(requests) == 2
     first = requests[0]["messages"][0]["content"]
     second = requests[1]["messages"][0]["content"]
@@ -627,8 +638,8 @@ async def test_router_retries_missing_tool_and_logs_only_metadata(monkeypatch, c
         "disable_parallel_tool_use": True,
     }
     assert "thinking" not in requests[0]
-    assert "event-test" in caplog.text and "end_turn" in caplog.text
-    assert "text" in caplog.text and "private patient text" not in caplog.text
+    assert "event-test" in caplog.text and "tool_calls=0" in caplog.text
+    assert "private patient text" not in caplog.text
 
 
 async def test_router_uses_valid_second_decision(monkeypatch):
@@ -688,7 +699,7 @@ async def test_results_followup_uses_prior_methods_without_worker(chat):
     assert await chat.process(followup, 0) == "complete"
     context = chat.decision.call_args.args[2]
     assert "AtoMx export" in context["recent_messages"][-1]["methods"]
-    assert chat.decision.call_args.kwargs["has_archive"] is True
+    assert chat.decision.call_args.kwargs["deadline"] > 0
     assert chat.decision.call_args.kwargs["event_id"] == followup
     _, saved = await thread_state(chat, followup)
     assert saved["messages"][-1]["assistant"] == chat.decision.return_value.reply
@@ -864,10 +875,7 @@ async def test_plain_complete_inventory_answer_is_a_read_only_reply(
 
     client = httpx.AsyncClient(transport=httpx.MockTransport(respond))
     monkeypatch.setattr(direct.httpx, "AsyncClient", lambda **kw: client)
-    if not complete:
-        answer = await direct.decide("fake", "model", {"data_inventory": {"complete": False}})
-        assert answer.route == "compute"
-    elif stop == "end_turn" and not extra:
+    if complete and stop == "end_turn" and not extra:
         answer = await direct.decide("fake", "model", {"data_inventory": {"complete": complete}})
         assert answer.route == "reply" and "samples 3 and 7" in answer.reply
         assert answer.guide is None and answer.worker is None and answer.transfer_request is None

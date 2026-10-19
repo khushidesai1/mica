@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from mica.tool_catalog import spatial_analysis_capability
 
@@ -163,6 +163,18 @@ class WorkerChoice(BaseModel):
     allow_resize: bool = True
     reason: str = Field(min_length=5, max_length=200)
 
+    @field_validator("workload", "reason", mode="before")
+    @classmethod
+    def bounded_label(cls, value: Any) -> Any:
+        return value[:200] if isinstance(value, str) else value
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def meaningful_reason(cls, value: Any) -> Any:
+        if isinstance(value, str) and len(value.strip()) < 5:
+            return "unspecified"
+        return value
+
 
 class Decision(BaseModel):
     route: Literal["reply", "inventory", "view", "compute", "transfer"]
@@ -195,6 +207,13 @@ class Decision(BaseModel):
     worker: WorkerChoice | None = None
 
 
+class RoutingUnavailable(ValueError):
+    """A model routing failure that can be retried without replaying user actions."""
+
+
+ROUTING_SECONDS = 120
+
+
 async def decide(
     key: str,
     model: str,
@@ -202,128 +221,165 @@ async def decide(
     *,
     media: Sequence[dict[str, Any]] = (),
     event_id: str = "",
-    has_archive: bool = False,
+    deadline: float | None = None,
 ) -> Decision:
     system = SYSTEM + WORKER_POLICY + "\n" + project_memory.ROUTER_RULES
     schema = Decision.model_json_schema()
     invalid_calls = 0
-    async with httpx.AsyncClient(timeout=65) as client:
-        # One media fallback and one retry of an invalid routing response, at most.
-        for _ in range(3):
-            content = [{"type": "text", "text": json.dumps(context)}, *media]
-            if invalid_calls:
-                content.append(
-                    {
-                        "type": "text",
-                        "text": (
-                            "Your previous response did not call route_request exactly once. "
-                            "Correct that now: put your answer in the reply field of a single "
-                            "route_request tool call. Do not answer in plain text "
-                            "outside the tool. "
-                            "Use only the supplied evidence and routing rules."
-                        ),
-                    }
-                )
-            response = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-                json={
-                    "model": model,
-                    "max_tokens": 8192,
-                    "system": system,
-                    "messages": [
+    correction = ""
+    if deadline is None:
+        deadline = asyncio.get_running_loop().time() + ROUTING_SECONDS
+    if asyncio.get_running_loop().time() >= deadline:
+        raise RoutingUnavailable("Routing time budget exhausted.")
+    try:
+        async with asyncio.timeout_at(deadline), httpx.AsyncClient(timeout=65) as client:
+            # One media fallback and one retry of an invalid routing response, at most.
+            for _ in range(3):
+                content = [{"type": "text", "text": json.dumps(context)}, *media]
+                if invalid_calls:
+                    content.append(
                         {
-                            "role": "user",
-                            "content": content,
-                        }
-                    ],
-                    "tools": [
-                        {
-                            "name": "route_request",
-                            "description": (
-                                "Reply, list relevant folders, or request isolated computation, "
-                                "optionally revising the project brief."
+                            "type": "text",
+                            "text": (
+                                "Your previous routing response was invalid. "
+                                + correction
+                                + " Correct that now: put your answer in the reply field of a "
+                                "single route_request tool call. Do not answer in plain text "
+                                "outside the tool. "
+                                "Use only the supplied evidence and routing rules."
                             ),
-                            "input_schema": schema,
                         }
-                    ],
-                    # The configured model rejects forced tool choice. Validate and retry
-                    # route_request responses below instead of forcing them in the API.
-                    "tool_choice": {
-                        "type": "auto",
-                        "disable_parallel_tool_use": True,
-                    },
-                },
-            )
-            if response.status_code == 400 and media:
-                media = ()
-                context = {
-                    **context,
-                    "attachments_note": (
-                        "File contents couldn't be shown; only metadata is available."
-                    ),
-                    "attachments": [
-                        {**{k: v for k, v in f.items() if k != "head"}, "shown": False}
-                        for f in context.get("attachments", [])
-                    ],
-                }
-                continue
-            response.raise_for_status()
-            body = response.json()
-            calls = [
-                b
-                for b in body.get("content", [])
-                if b.get("type") == "tool_use" and b.get("name") == "route_request"
-            ]
-            if len(calls) != 1:
-                invalid_calls += 1
-                if invalid_calls < 2:
+                    )
+                try:
+                    response = await client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                        json={
+                            "model": model,
+                            "max_tokens": 8192,
+                            "system": system,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": content,
+                                }
+                            ],
+                            "tools": [
+                                {
+                                    "name": "route_request",
+                                    "description": (
+                                        "Reply, list relevant folders, or request isolated "
+                                        "computation, optionally revising the project brief."
+                                    ),
+                                    "input_schema": schema,
+                                }
+                            ],
+                            # The configured model rejects forced tool choice. Validate and retry
+                            # route_request responses below instead of forcing them in the API.
+                            "tool_choice": {
+                                "type": "auto",
+                                "disable_parallel_tool_use": True,
+                            },
+                        },
+                    )
+                except httpx.TransportError as exc:
+                    raise RoutingUnavailable("Routing service temporarily unavailable.") from exc
+                if response.status_code == 400 and media:
+                    media = ()
+                    context = {
+                        **context,
+                        "attachments_note": (
+                            "File contents couldn't be shown; only metadata is available."
+                        ),
+                        "attachments": [
+                            {**{k: v for k, v in f.items() if k != "head"}, "shown": False}
+                            for f in context.get("attachments", [])
+                        ],
+                    }
                     continue
-                logging.getLogger(__name__).warning(
-                    "Router omitted a unique route_request: event=%s stop_reason=%s block_types=%s",
-                    event_id,
-                    body.get("stop_reason"),
-                    [b.get("type") for b in body.get("content", [])],
-                )
-                metadata = context.get("data_inventory", {})
-                if not calls and isinstance(metadata, dict) and metadata.get("complete") is False:
-                    return Decision(
-                        route="compute", reply="I'll finish checking the folders with a worker."
-                    )
-                text = "\n".join(
-                    str(block.get("text", ""))
-                    for block in body.get("content", [])
-                    if block.get("type") == "text"
-                ).strip()
+                if response.status_code in {408, 409, 429} or response.status_code >= 500:
+                    raise RoutingUnavailable("Routing service temporarily unavailable.")
+                response.raise_for_status()
+                try:
+                    body = response.json()
+                except ValueError as exc:
+                    raise RoutingUnavailable(
+                        "Routing service returned an invalid response."
+                    ) from exc
                 if (
-                    not calls
-                    and body.get("stop_reason") == "end_turn"
-                    and isinstance(metadata, dict)
-                    and metadata.get("complete") is True
-                    and all(
-                        block.get("type") in {"text", "thinking", "redacted_thinking"}
-                        for block in body.get("content", [])
-                    )
-                    and 0 < len(text) <= 3500
+                    not isinstance(body, dict)
+                    or not isinstance(body.get("content"), list)
+                    or any(not isinstance(block, dict) for block in body["content"])
                 ):
-                    # Complete metadata can yield a plain final answer with auto tool choice.
-                    # Normalize only this read-only reply; it cannot edit a guide or run tools.
-                    return Decision(route="reply", reply=text)
-                if has_archive:
-                    return Decision(route="compute", reply="Checking the earlier results.")
-            if body.get("stop_reason") == "max_tokens":
-                raise ValueError(
-                    "The response was too long; please ask for a smaller brief change."
-                )
-            if len(calls) != 1:
-                break
-            result = Decision.model_validate(calls[0]["input"])
-            if result.guide is not None and len(result.guide.encode()) >= 100_000:
-                raise ValueError(
-                    "The revised brief is too large; please ask for a shorter version."
-                )
-            return result
-    raise ValueError("Couldn't determine the next step. Please retry or clarify your request.")
+                    raise RoutingUnavailable("Routing service returned an invalid response.")
+                calls = [b for b in body["content"] if b.get("type") == "tool_use"]
+                unique_call = len(calls) == 1 and calls[0].get("name") == "route_request"
+                if body.get("stop_reason") == "max_tokens":
+                    invalid_calls += 1
+                    correction = (
+                        "The response was truncated. Keep the reply and optional guide concise."
+                    )
+                    logging.getLogger(__name__).warning(
+                        "Router response truncated: event=%s attempt=%s", event_id, invalid_calls
+                    )
+                    if invalid_calls < 2:
+                        continue
+                    break
+                if not unique_call:
+                    invalid_calls += 1
+                    correction = "Call route_request exactly once."
+                    if invalid_calls < 2:
+                        continue
+                    logging.getLogger(__name__).warning(
+                        "Router omitted a unique route_request: event=%s tool_calls=%s",
+                        event_id,
+                        len(calls),
+                    )
+                    metadata = context.get("data_inventory", {})
+                    text = "\n".join(
+                        str(block.get("text", ""))
+                        for block in body.get("content", [])
+                        if block.get("type") == "text"
+                    ).strip()
+                    if (
+                        not calls
+                        and body.get("stop_reason") == "end_turn"
+                        and isinstance(metadata, dict)
+                        and metadata.get("complete") is True
+                        and all(
+                            block.get("type") in ("text", "thinking", "redacted_thinking")
+                            and (block.get("type") != "text" or isinstance(block.get("text"), str))
+                            for block in body.get("content", [])
+                        )
+                        and 0 < len(text) <= 3500
+                    ):
+                        # Complete metadata can yield a plain final answer with auto tool choice.
+                        # Normalize only this read-only reply; it cannot edit a guide or run tools.
+                        return Decision(route="reply", reply=text)
+                if not unique_call:
+                    break
+                try:
+                    result = Decision.model_validate(calls[0].get("input"))
+                except ValidationError as exc:
+                    # Do not log or repeat model-generated values, which can contain private data.
+                    issues = [
+                        {"field": ".".join(map(str, error["loc"])), "type": error["type"]}
+                        for error in exc.errors(include_input=False, include_context=False)
+                    ][:10]
+                    correction = "Match the tool schema. Invalid fields: " + json.dumps(issues)
+                    logging.getLogger(__name__).warning(
+                        "Router schema invalid: event=%s issues=%s", event_id, json.dumps(issues)
+                    )
+                else:
+                    if result.guide is None or len(result.guide.encode()) < 100_000:
+                        return result
+                    correction = "Keep the guide below 100000 UTF-8 bytes."
+                invalid_calls += 1
+                if invalid_calls >= 2:
+                    break
+    except TimeoutError as exc:
+        raise RoutingUnavailable("Routing time budget exhausted.") from exc
+    raise RoutingUnavailable("Couldn't determine the next step automatically.")
 
 
 def record_exchange(
@@ -636,12 +692,13 @@ async def handle(
             record["decision_access"] = grant.signature
             await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
 
+        routing_deadline = asyncio.get_running_loop().time() + ROUTING_SECONDS
         decision = await decide(
             bridge.app.anthropic_api_key.get_secret_value(),
             bridge.settings.model,
             model_context,
             event_id=event_id,
-            has_archive=bool(state.get("archive")),
+            deadline=routing_deadline,
             **({"media": media} if media else {}),
         )
         await save_pending(decision)
@@ -674,7 +731,7 @@ async def handle(
                 bridge.settings.model,
                 context,
                 event_id=event_id,
-                has_archive=bool(state.get("archive")),
+                deadline=routing_deadline,
                 **({"media": viewed} if viewed else {}),
             )
             await save_pending(second)
@@ -710,7 +767,7 @@ async def handle(
                 bridge.settings.model,
                 {**model_context, "data_inventory": metadata},
                 event_id=event_id,
-                has_archive=bool(state.get("archive")),
+                deadline=routing_deadline,
                 **({"media": media} if media else {}),
             )
             await save_pending(listed)

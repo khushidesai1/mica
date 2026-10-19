@@ -17,6 +17,7 @@ from uuid import NAMESPACE_URL, uuid5
 import httpx
 from google.api_core.exceptions import AlreadyExists, GoogleAPICallError, NotFound
 from google.cloud import batch_v1
+from pydantic import ValidationError
 
 from mica.config import Settings as AppSettings
 from mica.storage.base import Repository
@@ -497,11 +498,43 @@ class BatchBridge:
 
     async def advance(self, event_id: str, record: dict[str, Any]) -> None:
         if record["status"] == "pending" and record.get("route") != "compute":
-            from .direct import handle
+            from .direct import RoutingUnavailable, handle
 
+            if time.time() < record.get("routing_retry_at", 0):
+                return
             try:
                 if await handle(self, event_id, record, GCSStorage(self.app.gcs_bucket)):
                     return
+            except RoutingUnavailable:
+                attempts = int(record.get("routing_failures", 0)) + 1
+                record["routing_failures"] = attempts
+                log.warning("routing_recovery event=%s attempt=%s", event_id, attempts)
+                if attempts < 3:
+                    # The original receipt remains pending; normal polling survives restarts,
+                    # deduplicates deliveries, and rechecks access before each routing attempt.
+                    record["routing_retry_at"] = time.time() + 30 * attempts
+                    await self.notify(
+                        event_id, record, "replying",
+                        "I'm recovering from a temporary issue and will retry automatically. "
+                        "No need to resend your message.",
+                    )
+                else:
+                    record["status"] = "failed"
+                    await self.notify(
+                        event_id, record, "failed",
+                        "I couldn't safely start this request after several automatic recovery "
+                        "attempts. Your request and conversation are saved.",
+                    )
+                return
+            except ValidationError:
+                record["status"] = "failed"
+                log.warning("conversation_validation_failed event=%s", event_id)
+                await self.notify(
+                    event_id, record, "failed",
+                    "I couldn't safely complete this request because of an internal issue. "
+                    "Your request and conversation are saved.",
+                )
+                return
             except (ValueError, httpx.HTTPError, GoogleAPICallError) as exc:
                 record["status"] = "failed"
                 # Never fall back to a costly worker because conversation handling failed.

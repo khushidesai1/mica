@@ -9,6 +9,7 @@ import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from html import escape
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -143,6 +144,18 @@ def deny_text(grant: Grant) -> str:
         return "This chat isn't linked to a project. In your DM with Mica:\n" + PROJECT_HELP
     if grant.project_id not in grant.doc.projects:
         return "This thread's project is unavailable."
+    project = grant.project
+    if (
+        not grant.private
+        and grant.channel_key in project.published_channels
+        and not grant.doc.can_use(grant.project_id, grant.email)
+    ):
+        selector = grant.doc.selector(grant.project_id, project.owner)
+        return (
+            f"You don't have access to `{project.name}` yet. "
+            f"Ask {escape(project.owner, quote=False)} to run "
+            f"`share {selector} {escape(grant.email, quote=False)}` in their DM with Mica."
+        )
     return (
         "This conversation uses a private project or an unpublished channel. "
         "Ask its owner for access in a DM."

@@ -107,9 +107,9 @@ async def test_nonmember_channel_commands_never_read_or_compute(chat, command):
     await message(chat, "Describe project", "12.0", channel="C1")
     calls = chat.decision.await_count
     result = await message(chat, command, "13.0", user="U2", channel="C1", thread="12.0")
-    assert ("remembers and tidies" if command == "save brief" else "private project") in result[
-        "notice_text"
-    ]
+    assert (
+        "remembers and tidies" if command == "save brief" else "share liver bob@example.com"
+    ) in result["notice_text"]
     assert "Species" not in result["notice_text"]
     assert chat.decision.await_count == calls
     chat.test_client.delete_job.assert_not_called()

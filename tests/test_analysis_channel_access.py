@@ -1,6 +1,7 @@
 # ruff: noqa: F811
 """Offline onboarding and admission tests through the signed-webhook receiver boundary."""
 
+import json
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -12,6 +13,7 @@ from test_analysis_direct import chat  # noqa: F401
 from mica.agents.analysis import access, direct, identity
 from mica.agents.analysis import channel_access as ca
 from mica.agents.analysis.config import Settings
+from mica.agents.analysis.registry import Registry
 from mica.api import slack_analysis
 
 
@@ -84,6 +86,53 @@ async def test_default_denies_until_admin_onboards_and_inviting_alone_cannot_gra
         {"payload": payload(channel="CACCESS1", channel_type="channel"), "thread_key": "empty"},
     )
     assert not grant.allowed
+
+
+async def test_published_project_denial_identifies_owner_and_action(channels):
+    await onboard(channels)
+    registry = Registry(channels.store)
+    registry.update(
+        "publish",
+        "alice@example.com",
+        "publish",
+        lambda d: d.publish(channels.pid, "alice@example.com", "T1", "CACCESS1"),
+    )
+    record = {
+        "payload": payload(channel="CACCESS1", user="U2", channel_type="channel"),
+        "thread_key": "published-denial",
+    }
+    # A published channel can resolve an existing pinned thread even after its binding changes.
+    channels.store.put(
+        access.checkpoint_key(record["thread_key"]),
+        json.dumps({"context": {"project_slug": channels.pid}, "private": "secret"}).encode(),
+    )
+    grant = access.resolve(channels.app, channels.settings, channels.store, record)
+    assert not grant.allowed and not grant.state
+    text = access.deny_text(grant)
+    assert "don't have access to `liver`" in text
+    assert "Ask alice@example.com" in text and "share liver bob@example.com" in text
+    channels.decision.assert_not_awaited()
+
+
+@pytest.mark.parametrize("case", ["unpublished", "other-workspace", "private", "unknown-user"])
+async def test_denial_keeps_unpublished_project_and_owner_private(channels, case):
+    await onboard(channels)
+    registry = Registry(channels.store)
+    doc = registry.load()
+    doc.projects[channels.pid].published_channels = {"T1:CACCESS1"}
+    from dataclasses import replace
+
+    grant = access.Grant("bob@example.com", False, {}, doc, channels.pid, False, "T1:CACCESS1")
+    if case == "unpublished":
+        grant = replace(grant, channel_key="T1:COTHER")
+    elif case == "other-workspace":
+        grant = replace(grant, channel_key="T2:CACCESS1")
+    elif case == "private":
+        grant = replace(grant, private=True)
+    else:
+        grant = replace(grant, email="")
+    text = access.deny_text(grant)
+    assert "liver" not in text and "alice@example.com" not in text and "share " not in text
 
 
 async def test_any_enabled_channel_admits_without_manual_maps_or_email_allowlist(channels):

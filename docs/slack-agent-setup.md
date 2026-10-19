@@ -19,9 +19,22 @@ in ordinary chat. Reading CSV headers or counting cells still requires the worke
 Conversation routing is always enabled. Ordinary questions, planning, brief edits,
 `help`, `brief`, `cancel`, and bounded initial setup run in the control service.
 The direct Claude call has no shell, filesystem, or network tools. It can answer, update the shared guide,
-request a project-scoped metadata listing, or request isolated computation. API failures produce
-a visible retry message, never a worker fallback. Cancellation bypasses queued work and stops
-the active job without starting a new one.
+request a project-scoped metadata listing, or request isolated computation. Invalid routing output
+gets one immediate correction attempt with field-level feedback. If that fails, or the model API
+times out, rate-limits, or returns a server error, the original request stays pending and retries
+through the existing queue no earlier than 30 and 60 seconds after each failure. There are at most
+three routing cycles; each decision gets one correction and at most one media fallback. The initial
+decision and any inventory/view follow-up share a 120-second routing deadline. Exhaustion reports
+an internal failure and preserves the conversation. Only schema
+field names and error types are logged, never invalid values. Each attempt rechecks access;
+failed routing never invents a computation or bypasses write approval. Display-only worker workload
+and reason labels are truncated to 200 characters; short reasons become "unspecified". Routes,
+resource choices, paths, and replies still require validation. Cancellation bypasses queued work
+and stops the active job without starting a new one.
+
+A verified user who lacks membership in a project published to the current channel gets a message
+naming its owner and the exact `share` command to run in the owner's DM with Mica. Unpublished
+channels and private conversations keep a generic denial that does not disclose project details.
 
 The new worker calls the Claude Agent SDK directly. It does not invoke Mica's shared task planners,
 TaskContract generation, approval stages, or multi-stage execution pipeline. Each Slack thread
