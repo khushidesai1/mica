@@ -68,3 +68,18 @@ retain the planner version stored on their record and continue through the legac
 
 The local executor exists only for tests/development. The Docker executor applies a read-only root,
 no network, dropped capabilities, and an unprivileged UID.
+
+### Shared Slack and email analysis surfaces
+
+Labeled Gmail requests enter `BatchBridge` after OAuth mailbox validation and independent DKIM
+verification of the raw message. `Authentication-Results` and `Reply-To` never establish identity.
+Email receipts use mailbox plus message ID; private conversation keys add the verified sender and
+Gmail thread ID. Checkpoints carry their private owner. Registry defaults are shared across email
+and Slack DMs, while existing threads remain pinned to their original project.
+
+The router, admission, worker, project registry and memory backend are shared. Email's trusted
+surface marker denies project-data writes and transfers at admission, worker and broker boundaries.
+Slack retains its existing delivery adapter; email suppresses worker progress and passes one
+semantic terminal result to the control plane. That callback validates the active attempt,
+current membership and artifact prefix/content hash before producing one MIME message through a
+CAS-protected outbox. Mailbox secrets never reach the science worker or model process.

@@ -408,6 +408,33 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.gmail_account
       }
       env {
+        name  = "MICA_GMAIL_LABEL"
+        value = var.gmail_label
+      }
+      env {
+        name  = "MICA_GMAIL_ALIASES"
+        value = jsonencode(var.gmail_aliases)
+      }
+      env {
+        name  = "MICA_GMAIL_OAUTH_CLIENT_ID"
+        value = var.gmail_oauth_client_id
+      }
+      dynamic "env" {
+        for_each = { for name, secret in {
+          MICA_GMAIL_OAUTH_CLIENT_SECRET = var.gmail_oauth_client_secret_name
+          MICA_GMAIL_REFRESH_TOKEN       = var.gmail_refresh_token_secret_name
+        } : name => secret if secret != "" }
+        content {
+          name = env.key
+          value_source {
+            secret_key_ref {
+              secret  = env.value
+              version = var.gmail_oauth_secret_version
+            }
+          }
+        }
+      }
+      env {
         name  = "MICA_GMAIL_PUBSUB_TOPIC"
         value = google_pubsub_topic.gmail.id
       }

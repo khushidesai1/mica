@@ -14,7 +14,6 @@ from typing import Any
 
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
-from slack_sdk.web.async_slack_response import AsyncSlackResponse
 
 from . import attachments, script_capture, thread_history, write_access
 from .access import AccessMonitor, run_root
@@ -26,6 +25,7 @@ from .runner import Context, Runner, TurnResult
 from .sessions import Sessions
 from .slack_format import activity_blocks, chunks, done_blocks, status_blocks, to_mrkdwn
 from .storage import Storage
+from .transport import EmailWorkerTransport, SlackTransport, Transport
 from .write_worker import Publication
 
 log = logging.getLogger(__name__)
@@ -35,6 +35,8 @@ HEARTBEAT_SECONDS = 10
 
 
 class SlackAgent:
+    """Shared computation runner; surface adapters own delivery."""
+
     def __init__(
         self,
         settings: Settings,
@@ -49,9 +51,17 @@ class SlackAgent:
         before_delivery: Callable[[TurnResult], Awaitable[None]] | None = None,
         write_grant: write_access.WriteGrant | None = None,
         overwrite_paths: list[str] | None = None,
+        terminal_delivery: Callable[
+            [str, list[dict[str, str]], str | None], Awaitable[tuple[str, list[str]]]
+        ]
+        | None = None,
     ) -> None:
         self.settings, self.storage, self.sessions = settings, storage, sessions
         self.runner, self.client = runner, client
+        self.terminal_delivery = terminal_delivery
+        self.transport: Transport = (
+            EmailWorkerTransport() if terminal_delivery else SlackTransport(client)
+        )
         self.last_reply = ""
         self.completed = False
         self.last_error: str | None = None
@@ -101,8 +111,8 @@ class SlackAgent:
 
     async def say(
         self, key: tuple[str, str], text: str, blocks: list[dict[str, Any]] | None = None
-    ) -> AsyncSlackResponse:
-        return await self.client.chat_postMessage(
+    ) -> Any:
+        return await self.transport.post(
             channel=key[0],
             thread_ts=key[1],
             text=text,
@@ -226,7 +236,7 @@ class SlackAgent:
         if notice_ts:
             status: Any = {"ts": notice_ts}
             try:
-                await self.client.chat_update(
+                await self.transport.update(
                     channel=key[0],
                     ts=notice_ts,
                     text="Working on it…",
@@ -276,7 +286,7 @@ class SlackAgent:
                 else fallback
             )
             try:
-                await self.client.chat_update(
+                await self.transport.update(
                     channel=key[0],
                     ts=status["ts"],
                     text=text,
@@ -292,7 +302,7 @@ class SlackAgent:
                 # Older Slack surfaces may reject plan blocks. Keep the answer usable.
                 native_progress = False
                 log.warning("Slack rejected native progress; using compact status")
-                await self.client.chat_update(
+                await self.transport.update(
                     channel=key[0],
                     ts=status["ts"],
                     text=text,
@@ -400,7 +410,7 @@ class SlackAgent:
         compute = getattr(self.runner, "compute", None)
         if compute and compute.pending:
             self.continuing = True
-            await self.client.chat_update(
+            await self.transport.update(
                 channel=key[0],
                 ts=status["ts"],
                 text="Saving progress before continuing…",
@@ -478,11 +488,9 @@ class SlackAgent:
             uploads.extend(extra)
         if uploads and not await self.permitted(delivery=True):
             raise PermissionError("Project access changed before file delivery")
-        if uploads:
+        if uploads and not self.terminal_delivery:
             try:
-                await self.client.files_upload_v2(
-                    channel=key[0], thread_ts=key[1], file_uploads=uploads
-                )
+                await self.transport.upload(channel=key[0], thread_ts=key[1], file_uploads=uploads)
                 self.delivered = await asyncio.to_thread(
                     self.record_delivered, uploads, ctx, turn, published
                 )
@@ -546,5 +554,12 @@ class SlackAgent:
             log.warning("Final status update failed: %s", key, exc_info=True)
         if not await self.permitted(delivery=True):
             raise PermissionError("Project access changed before reply delivery")
-        for chunk in chunks(to_mrkdwn(reply)):
-            await self.say(key, chunk)
+        if self.terminal_delivery:
+            self.last_reply, names = await self.terminal_delivery(reply, uploads, self.last_error)
+            uploads = [upload for upload in uploads if upload["filename"] in names]
+            self.delivered = await asyncio.to_thread(
+                self.record_delivered, uploads, ctx, turn, published
+            )
+        else:
+            for chunk in chunks(to_mrkdwn(reply)):
+                await self.say(key, chunk)

@@ -35,6 +35,7 @@ class ProjectEntry(BaseModel):
     data_uri: str
     created_at: str = Field(default_factory=now)
     access_revision: int = 0
+    name_revision: int = 0
     published_channels: set[str] = Field(default_factory=set)
 
 
@@ -53,6 +54,7 @@ class RegistryDoc(BaseModel):
     version: Literal[1] = 1
     projects: dict[str, ProjectEntry] = Field(default_factory=dict)
     bindings: dict[str, Binding] = Field(default_factory=dict)
+    defaults: dict[str, str] = Field(default_factory=dict)
     # Durable operation receipts: replaying an old share must never undo a later unshare.
     applied_events: dict[str, Operation] = Field(default_factory=dict)
 
@@ -86,6 +88,25 @@ class RegistryDoc(BaseModel):
         binding = self.bindings.get(f"{team}:{channel}")
         return binding.project_id if binding else None
 
+    def active_for(self, email: str, team: str, channel: str, *, private: bool) -> str | None:
+        if not private:
+            return self.bound(team, channel)
+        email = normalize(email)
+        if email in self.defaults:
+            pid = self.defaults[email]
+            return pid if self.can_use(pid, email) else None
+        legacy = {
+            binding.project_id
+            for key, binding in self.bindings.items()
+            if key.split(":", 1)[-1].startswith("D")
+            and normalize(binding.bound_by) == email
+            and self.can_use(binding.project_id, email)
+        }
+        local = self.bindings.get(f"{team}:{channel}")
+        if channel.startswith("D") and local and normalize(local.bound_by) == email:
+            return local.project_id if self.can_use(local.project_id, email) else None
+        return next(iter(legacy)) if len(legacy) == 1 else None
+
     def selector(self, project_id: str, email: str) -> str:
         """Prefer a readable name only when it resolves to this exact project."""
         name = self.projects[project_id].name
@@ -118,7 +139,9 @@ class RegistryDoc(BaseModel):
             for pid, entry in self.projects.items()
         ):
             raise ValueError("You already have a project with that name. Choose another name.")
-        self.projects[project_id].name = name
+        if self.projects[project_id].name != name:
+            self.projects[project_id].name = name
+            self.projects[project_id].name_revision += 1
         return project_id
 
     def bind(
@@ -135,6 +158,11 @@ class RegistryDoc(BaseModel):
             raise ValueError("Invalid Slack conversation.")
         if not self.can_use(project_id, email):
             raise ValueError("That project is unavailable.")
+        if private:
+            self.defaults[normalize(email)] = project_id
+            # Keep existing DM bindings readable across rolling deployments.
+            if team == "EMAIL":
+                return
         key = f"{team}:{channel}"
         old = self.bound(team, channel)
         if not private:

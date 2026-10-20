@@ -538,7 +538,10 @@ args.output_dir.mkdir(parents=True, exist_ok=True)
     result = await LocalExecutor(settings).execute(bundle)
 
     assert result.exit_code == 0
-    assert result.artifacts[0].name == "input-name.txt"
+    # Filesystem traversal order differs across platforms; both outputs must be present.
+    assert {artifact.name for artifact in result.artifacts} == {
+        "input-name.txt", "generated_analysis.py"
+    }
 
 
 def test_required_h5ad_input_is_blocked_before_execution_when_unavailable() -> None:

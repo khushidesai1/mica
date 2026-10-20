@@ -81,5 +81,5 @@ Louvain/Silhouette execution, output validation and sandbox conformance. Preview
 and schema checks passed. No existing user task record was reset or amended for this rollout.
 
 Exact images and rollout evidence are recorded in
-`.pistachio/deployments/initial-quality-20260930.json`. Empirical model first-pass improvement
+`.mica/deployments/initial-quality-20260930.json`. Empirical model first-pass improvement
 has not yet been measured on new live analyses.

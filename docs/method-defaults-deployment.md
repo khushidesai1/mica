@@ -33,7 +33,7 @@ An optional live-model regression test was rejected by automatic approval review
 send project prompts through the staging API credential. It was not executed or retried indirectly.
 No full scientific analysis was rerun and no task or compute approval was changed.
 
-Deployment details are recorded after rollout in `.pistachio/deployments/method-defaults-20260929.json`.
+Deployment details are recorded after rollout in `.mica/deployments/method-defaults-20260929.json`.
 
 Staging is now on `pistachio-staging-00056-wuw` at 100% traffic. Build
 `7006ba64-79c2-43d4-b104-1729629bcb24` succeeded. Preview and live health/schema checks

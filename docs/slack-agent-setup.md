@@ -19,9 +19,22 @@ in ordinary chat. Reading CSV headers or counting cells still requires the worke
 Conversation routing is always enabled. Ordinary questions, planning, brief edits,
 `help`, `brief`, `cancel`, and bounded initial setup run in the control service.
 The direct Claude call has no shell, filesystem, or network tools. It can answer, update the shared guide,
-request a project-scoped metadata listing, or request isolated computation. API failures produce
-a visible retry message, never a worker fallback. Cancellation bypasses queued work and stops
-the active job without starting a new one.
+request a project-scoped metadata listing, or request isolated computation. Invalid routing output
+gets one immediate correction attempt with field-level feedback. If that fails, or the model API
+times out, rate-limits, or returns a server error, the original request stays pending and retries
+through the existing queue no earlier than 30 and 60 seconds after each failure. There are at most
+three routing cycles; each decision gets one correction and at most one media fallback. The initial
+decision and any inventory/view follow-up share a 120-second routing deadline. Exhaustion reports
+an internal failure and preserves the conversation. Only schema
+field names and error types are logged, never invalid values. Each attempt rechecks access;
+failed routing never invents a computation or bypasses write approval. Display-only worker workload
+and reason labels are truncated to 200 characters; short reasons become "unspecified". Routes,
+resource choices, paths, and replies still require validation. Cancellation bypasses queued work
+and stops the active job without starting a new one.
+
+A verified user who lacks membership in a project published to the current channel gets a message
+naming its owner and the exact `share` command to run in the owner's DM with Mica. Unpublished
+channels and private conversations keep a generic denial that does not disclose project details.
 
 The new worker calls the Claude Agent SDK directly. It does not invoke Mica's shared task planners,
 TaskContract generation, approval stages, or multi-stage execution pipeline. Each Slack thread
@@ -603,3 +616,27 @@ republished before use.
 New workers cancel active publishing tools, persist the stop reason and enforce a shutdown
 deadline. Completed objects retain their receipts. Cancellation allows cooperative shutdown,
 with forced Batch deletion as a fallback; older in-flight workers keep their existing protocol.
+
+## Email requests
+
+Email can use the same Claude agent, projects and analysis workers as Slack. The initial mailbox
+is `azizi.lab.341+mica@gmail.com`; intake remains disabled until mailbox OAuth and the Mica label
+are configured (see [deployment](deployment.md#gmail-activation)). Only labeled, cryptographically
+verified messages are accepted. DKIM must align exactly with the sender's domain; malformed,
+unsigned and unaligned mail is silently dropped. Gmail aliases and sent messages cannot trigger
+reply loops. The Slack email allowlist is not an email membership gate.
+
+Send `projects` to list your projects, or `switch <project>` to select the default for new threads
+in both email and Slack DMs. Existing conversations keep their project. A single legacy DM default
+is inherited; conflicting defaults require an explicit switch. Private email history belongs to
+one sender in one Gmail thread; adding another sender does not grant access to that history.
+
+Each request receives an acknowledgement and one final email containing its answer and supported
+attachments. Progress updates are suppressed. Final replies include only current project members
+from the original To/Cc list, and name recipients omitted for lack of membership. Project access
+is checked again before delivery. Attachment limits also apply to encoded MIME size; ask in the
+same email thread for smaller files when needed. Slack cannot retrieve private email artifacts.
+
+Email supports reading data and returning analysis artifacts. Project-data writes, transfers,
+access-management commands and interactive approval controls require Slack. Internal conversation
+checkpoints and project knowledge continue to work normally.

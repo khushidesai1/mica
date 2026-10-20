@@ -21,6 +21,7 @@ from mica.agents.analysis import (
     access,
     channel_access,
     identity,
+    surface,
     write_access,
     write_broker,
 )
@@ -346,6 +347,8 @@ async def write_output(
 
     bridge, storage, record = await worker_context(event_id, request)
     response.headers["Cache-Control"] = "no-store"
+    if surface.is_email(record):
+        raise HTTPException(403, surface.EMAIL_READ_ONLY)
     frozen = record.get("write_grant")
     if not frozen or frozen.get("id") != body.grant_id:
         raise HTTPException(403, "This run has no matching write grant.")
@@ -438,3 +441,44 @@ async def write_output(
             results.extend({"relative_path": path, **result} for path in unique_paths[index + 1 :])
             break
     return {"results": results}
+
+
+@router.post("/email-result/{event_id}", include_in_schema=False)
+async def email_result(event_id: str, request: Request) -> dict[str, Any]:
+    from mica.agents.analysis.email_delivery import TerminalResult, deliver
+
+    bridge, _, _ = await worker_context(event_id, request)
+    raw = await request.body()
+    if len(raw) > 300_000:
+        raise HTTPException(413, "Email result too large")
+    try:
+        body = TerminalResult.model_validate_json(raw)
+    except ValueError as exc:
+        raise HTTPException(422, "Invalid email result") from exc
+    mutex = f"claude-poll:{event_id}"
+    claim = await bridge.repository.begin_event(mutex, lease_seconds=240)
+    if claim.status != "claimed":
+        raise HTTPException(409, "Controller busy; retry")
+    try:
+        bridge, storage, record = await worker_context(event_id, request)
+        if not surface.is_email(record) or body.attempt != record.get("attempt", 0):
+            raise HTTPException(403, "Inactive email worker attempt")
+        handle = await deliver(bridge, event_id, record, body.text, kind="final", result=body)
+
+        receipt = json.loads(
+            (
+                await asyncio.to_thread(
+                    storage.get, f"{surface.EMAIL_STATE_PREFIX}/outbox/{event_id}/final.json"
+                )
+            )[0]
+        )
+        record.update(
+            terminal_reply=receipt["text"],
+            notice_text=receipt["text"],
+            notice_ts=handle,
+            email_result_attempt=body.attempt,
+        )
+        await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+        return {"id": handle, "text": receipt["text"], "artifacts": receipt["artifacts"]}
+    finally:
+        await bridge.repository.release_event(mutex, claim.token)

@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import urlsplit
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError, field_validator
 
 from mica.tool_catalog import spatial_analysis_capability
 
@@ -19,6 +19,7 @@ from . import (
     attachments,
     commands,
     project_memory,
+    surface,
     thread_history,
     write_access,
 )
@@ -163,6 +164,18 @@ class WorkerChoice(BaseModel):
     allow_resize: bool = True
     reason: str = Field(min_length=5, max_length=200)
 
+    @field_validator("workload", "reason", mode="before")
+    @classmethod
+    def bounded_label(cls, value: Any) -> Any:
+        return value[:200] if isinstance(value, str) else value
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def meaningful_reason(cls, value: Any) -> Any:
+        if isinstance(value, str) and len(value.strip()) < 5:
+            return "unspecified"
+        return value
+
 
 class Decision(BaseModel):
     route: Literal["reply", "inventory", "view", "compute", "transfer"]
@@ -195,6 +208,13 @@ class Decision(BaseModel):
     worker: WorkerChoice | None = None
 
 
+class RoutingUnavailable(ValueError):
+    """A model routing failure that can be retried without replaying user actions."""
+
+
+ROUTING_SECONDS = 120
+
+
 async def decide(
     key: str,
     model: str,
@@ -202,128 +222,165 @@ async def decide(
     *,
     media: Sequence[dict[str, Any]] = (),
     event_id: str = "",
-    has_archive: bool = False,
+    deadline: float | None = None,
 ) -> Decision:
     system = SYSTEM + WORKER_POLICY + "\n" + project_memory.ROUTER_RULES
     schema = Decision.model_json_schema()
     invalid_calls = 0
-    async with httpx.AsyncClient(timeout=65) as client:
-        # One media fallback and one retry of an invalid routing response, at most.
-        for _ in range(3):
-            content = [{"type": "text", "text": json.dumps(context)}, *media]
-            if invalid_calls:
-                content.append(
-                    {
-                        "type": "text",
-                        "text": (
-                            "Your previous response did not call route_request exactly once. "
-                            "Correct that now: put your answer in the reply field of a single "
-                            "route_request tool call. Do not answer in plain text "
-                            "outside the tool. "
-                            "Use only the supplied evidence and routing rules."
-                        ),
-                    }
-                )
-            response = await client.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
-                json={
-                    "model": model,
-                    "max_tokens": 8192,
-                    "system": system,
-                    "messages": [
+    correction = ""
+    if deadline is None:
+        deadline = asyncio.get_running_loop().time() + ROUTING_SECONDS
+    if asyncio.get_running_loop().time() >= deadline:
+        raise RoutingUnavailable("Routing time budget exhausted.")
+    try:
+        async with asyncio.timeout_at(deadline), httpx.AsyncClient(timeout=65) as client:
+            # One media fallback and one retry of an invalid routing response, at most.
+            for _ in range(3):
+                content = [{"type": "text", "text": json.dumps(context)}, *media]
+                if invalid_calls:
+                    content.append(
                         {
-                            "role": "user",
-                            "content": content,
-                        }
-                    ],
-                    "tools": [
-                        {
-                            "name": "route_request",
-                            "description": (
-                                "Reply, list relevant folders, or request isolated computation, "
-                                "optionally revising the project brief."
+                            "type": "text",
+                            "text": (
+                                "Your previous routing response was invalid. "
+                                + correction
+                                + " Correct that now: put your answer in the reply field of a "
+                                "single route_request tool call. Do not answer in plain text "
+                                "outside the tool. "
+                                "Use only the supplied evidence and routing rules."
                             ),
-                            "input_schema": schema,
                         }
-                    ],
-                    # The configured model rejects forced tool choice. Validate and retry
-                    # route_request responses below instead of forcing them in the API.
-                    "tool_choice": {
-                        "type": "auto",
-                        "disable_parallel_tool_use": True,
-                    },
-                },
-            )
-            if response.status_code == 400 and media:
-                media = ()
-                context = {
-                    **context,
-                    "attachments_note": (
-                        "File contents couldn't be shown; only metadata is available."
-                    ),
-                    "attachments": [
-                        {**{k: v for k, v in f.items() if k != "head"}, "shown": False}
-                        for f in context.get("attachments", [])
-                    ],
-                }
-                continue
-            response.raise_for_status()
-            body = response.json()
-            calls = [
-                b
-                for b in body.get("content", [])
-                if b.get("type") == "tool_use" and b.get("name") == "route_request"
-            ]
-            if len(calls) != 1:
-                invalid_calls += 1
-                if invalid_calls < 2:
+                    )
+                try:
+                    response = await client.post(
+                        "https://api.anthropic.com/v1/messages",
+                        headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
+                        json={
+                            "model": model,
+                            "max_tokens": 8192,
+                            "system": system,
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": content,
+                                }
+                            ],
+                            "tools": [
+                                {
+                                    "name": "route_request",
+                                    "description": (
+                                        "Reply, list relevant folders, or request isolated "
+                                        "computation, optionally revising the project brief."
+                                    ),
+                                    "input_schema": schema,
+                                }
+                            ],
+                            # The configured model rejects forced tool choice. Validate and retry
+                            # route_request responses below instead of forcing them in the API.
+                            "tool_choice": {
+                                "type": "auto",
+                                "disable_parallel_tool_use": True,
+                            },
+                        },
+                    )
+                except httpx.TransportError as exc:
+                    raise RoutingUnavailable("Routing service temporarily unavailable.") from exc
+                if response.status_code == 400 and media:
+                    media = ()
+                    context = {
+                        **context,
+                        "attachments_note": (
+                            "File contents couldn't be shown; only metadata is available."
+                        ),
+                        "attachments": [
+                            {**{k: v for k, v in f.items() if k != "head"}, "shown": False}
+                            for f in context.get("attachments", [])
+                        ],
+                    }
                     continue
-                logging.getLogger(__name__).warning(
-                    "Router omitted a unique route_request: event=%s stop_reason=%s block_types=%s",
-                    event_id,
-                    body.get("stop_reason"),
-                    [b.get("type") for b in body.get("content", [])],
-                )
-                metadata = context.get("data_inventory", {})
-                if not calls and isinstance(metadata, dict) and metadata.get("complete") is False:
-                    return Decision(
-                        route="compute", reply="I'll finish checking the folders with a worker."
-                    )
-                text = "\n".join(
-                    str(block.get("text", ""))
-                    for block in body.get("content", [])
-                    if block.get("type") == "text"
-                ).strip()
+                if response.status_code in {408, 409, 429} or response.status_code >= 500:
+                    raise RoutingUnavailable("Routing service temporarily unavailable.")
+                response.raise_for_status()
+                try:
+                    body = response.json()
+                except ValueError as exc:
+                    raise RoutingUnavailable(
+                        "Routing service returned an invalid response."
+                    ) from exc
                 if (
-                    not calls
-                    and body.get("stop_reason") == "end_turn"
-                    and isinstance(metadata, dict)
-                    and metadata.get("complete") is True
-                    and all(
-                        block.get("type") in {"text", "thinking", "redacted_thinking"}
-                        for block in body.get("content", [])
-                    )
-                    and 0 < len(text) <= 3500
+                    not isinstance(body, dict)
+                    or not isinstance(body.get("content"), list)
+                    or any(not isinstance(block, dict) for block in body["content"])
                 ):
-                    # Complete metadata can yield a plain final answer with auto tool choice.
-                    # Normalize only this read-only reply; it cannot edit a guide or run tools.
-                    return Decision(route="reply", reply=text)
-                if has_archive:
-                    return Decision(route="compute", reply="Checking the earlier results.")
-            if body.get("stop_reason") == "max_tokens":
-                raise ValueError(
-                    "The response was too long; please ask for a smaller brief change."
-                )
-            if len(calls) != 1:
-                break
-            result = Decision.model_validate(calls[0]["input"])
-            if result.guide is not None and len(result.guide.encode()) >= 100_000:
-                raise ValueError(
-                    "The revised brief is too large; please ask for a shorter version."
-                )
-            return result
-    raise ValueError("Couldn't determine the next step. Please retry or clarify your request.")
+                    raise RoutingUnavailable("Routing service returned an invalid response.")
+                calls = [b for b in body["content"] if b.get("type") == "tool_use"]
+                unique_call = len(calls) == 1 and calls[0].get("name") == "route_request"
+                if body.get("stop_reason") == "max_tokens":
+                    invalid_calls += 1
+                    correction = (
+                        "The response was truncated. Keep the reply and optional guide concise."
+                    )
+                    logging.getLogger(__name__).warning(
+                        "Router response truncated: event=%s attempt=%s", event_id, invalid_calls
+                    )
+                    if invalid_calls < 2:
+                        continue
+                    break
+                if not unique_call:
+                    invalid_calls += 1
+                    correction = "Call route_request exactly once."
+                    if invalid_calls < 2:
+                        continue
+                    logging.getLogger(__name__).warning(
+                        "Router omitted a unique route_request: event=%s tool_calls=%s",
+                        event_id,
+                        len(calls),
+                    )
+                    metadata = context.get("data_inventory", {})
+                    text = "\n".join(
+                        str(block.get("text", ""))
+                        for block in body.get("content", [])
+                        if block.get("type") == "text"
+                    ).strip()
+                    if (
+                        not calls
+                        and body.get("stop_reason") == "end_turn"
+                        and isinstance(metadata, dict)
+                        and metadata.get("complete") is True
+                        and all(
+                            block.get("type") in ("text", "thinking", "redacted_thinking")
+                            and (block.get("type") != "text" or isinstance(block.get("text"), str))
+                            for block in body.get("content", [])
+                        )
+                        and 0 < len(text) <= 3500
+                    ):
+                        # Complete metadata can yield a plain final answer with auto tool choice.
+                        # Normalize only this read-only reply; it cannot edit a guide or run tools.
+                        return Decision(route="reply", reply=text)
+                if not unique_call:
+                    break
+                try:
+                    result = Decision.model_validate(calls[0].get("input"))
+                except ValidationError as exc:
+                    # Do not log or repeat model-generated values, which can contain private data.
+                    issues = [
+                        {"field": ".".join(map(str, error["loc"])), "type": error["type"]}
+                        for error in exc.errors(include_input=False, include_context=False)
+                    ][:10]
+                    correction = "Match the tool schema. Invalid fields: " + json.dumps(issues)
+                    logging.getLogger(__name__).warning(
+                        "Router schema invalid: event=%s issues=%s", event_id, json.dumps(issues)
+                    )
+                else:
+                    if result.guide is None or len(result.guide.encode()) < 100_000:
+                        return result
+                    correction = "Keep the guide below 100000 UTF-8 bytes."
+                invalid_calls += 1
+                if invalid_calls >= 2:
+                    break
+    except TimeoutError as exc:
+        raise RoutingUnavailable("Routing time budget exhausted.") from exc
+    raise RoutingUnavailable("Couldn't determine the next step automatically.")
 
 
 def record_exchange(
@@ -382,6 +439,13 @@ async def show_context(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage, text: str
 ) -> bool:
     """Show the whole requested guide/cache, with resumable bounded Slack messages."""
+    if surface.is_email(record):
+        grant = await asyncio.to_thread(
+            access.resolve, bridge.app, bridge.settings, storage, record
+        )
+        return await finish(
+            bridge, event_id, record, text if grant.allowed else access.deny_text(grant)
+        )
     event = record["payload"]["event"]
     parts = list(chunks(to_mrkdwn(text)))
     sent = int(record.get("context_parts_sent", 0))
@@ -455,6 +519,26 @@ async def handle(
             commands.run, cmd, grant, registry, bridge.app, record, event_id, bridge.settings
         )
         if reply is not None:
+            if cmd.name == "rename" and bridge.settings.memory_repo:
+                doc = await asyncio.to_thread(registry.load)
+                renamed = record["renamed_project"]
+                if not doc.owns(renamed, grant.email):
+                    raise ValueError("Project ownership changed before memory synchronization.")
+                project = doc.projects[renamed]
+                # The registry operation is idempotent. A transient GitHub failure retries the
+                # same command, with the latest name/revision, before acknowledging completion.
+                try:
+                    await project_memory.GitHubMemory(bridge.settings).rename_project(
+                        renamed,
+                        project.name,
+                        project.name_revision,
+                        event_id=event_id,
+                        reserved_ids=set(doc.projects),
+                    )
+                except httpx.HTTPError as exc:
+                    # Preserve the receipt for Cloud Tasks retry instead of marking a
+                    # registry-only rename complete/failed in the generic HTTP handler.
+                    raise RuntimeError("Project memory synchronization needs retry") from exc
             return await finish(bridge, event_id, record, reply)
     is_init = bool(cmd and cmd.name == "init")
     if is_init:
@@ -463,8 +547,8 @@ async def handle(
             raise ValueError("Start init in a new thread.")
         await asyncio.to_thread(bridge.resolve_data, record)
         if "init_previous_project_id" not in record:
-            record["init_previous_project_id"] = grant.doc.bound(
-                record["payload"]["team_id"], event["channel"]
+            record["init_previous_project_id"] = grant.doc.active_for(
+                grant.email, record["payload"]["team_id"], event["channel"], private=grant.private
             )
             # Save the switch-back target before changing the binding, including on retries.
             await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
@@ -534,6 +618,8 @@ async def handle(
             survey_only=False,
         )
         state.update(context=ctx, turn=0, is_init=is_init, messages=[])
+        if surface.is_email(record):
+            state["private_owner"] = grant.email
         # Bind the thread before a router/memory failure can end its first turn.
         await asyncio.to_thread(
             storage.put, access.checkpoint_key(record["thread_key"]), json.dumps(state).encode()
@@ -570,15 +656,20 @@ async def handle(
             root = access.run_root(
                 grant.private, grant.email, grant.project_id, record["thread_key"], ctx["thread_ts"]
             )
-            ingested = await asyncio.to_thread(
-                attachments.ingest,
-                bridge.app.slack_bot_token,
-                storage,
-                [{**f, "user": f.get("user") or event.get("user", "")} for f in files],
-                root,
-                event_id,
-                bridge.settings,
-            )
+            if surface.is_email(record):
+                ingested = await asyncio.to_thread(
+                    attachments.ingest_email, storage, record, root, event_id, bridge.settings
+                )
+            else:
+                ingested = await asyncio.to_thread(
+                    attachments.ingest,
+                    bridge.app.slack_bot_token,
+                    storage,
+                    [{**f, "user": f.get("user") or event.get("user", "")} for f in files],
+                    root,
+                    event_id,
+                    bridge.settings,
+                )
             record["attachments"] = [f.model_dump() for f in ingested]
             record["attachments_access"] = grant.signature
             await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
@@ -597,10 +688,18 @@ async def handle(
             "data_path": ctx["data_path"],
             "data_uri": grant.project.data_uri,
             "project_name": grant.project.name,
-            "transfer_tool": await transfer_service.context(grant.project_id),
+            "transfer_tool": (
+                {"available": False, "reason": surface.EMAIL_READ_ONLY}
+                if surface.is_email(record)
+                else await transfer_service.context(grant.project_id)
+            ),
             "analysis_tools": [spatial_analysis_capability()],
-            "write_access": await asyncio.to_thread(
-                write_access.status, storage, grant.project_id, bridge.settings
+            "write_access": (
+                surface.EMAIL_READ_ONLY
+                if surface.is_email(record)
+                else await asyncio.to_thread(
+                    write_access.status, storage, grant.project_id, bridge.settings
+                )
             ),
             "recent_messages": state.get("messages", []),
             "thread_handoff": state.get("thread_summary", {}),
@@ -636,12 +735,13 @@ async def handle(
             record["decision_access"] = grant.signature
             await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
 
+        routing_deadline = asyncio.get_running_loop().time() + ROUTING_SECONDS
         decision = await decide(
             bridge.app.anthropic_api_key.get_secret_value(),
             bridge.settings.model,
             model_context,
             event_id=event_id,
-            has_archive=bool(state.get("archive")),
+            deadline=routing_deadline,
             **({"media": media} if media else {}),
         )
         await save_pending(decision)
@@ -674,7 +774,7 @@ async def handle(
                 bridge.settings.model,
                 context,
                 event_id=event_id,
-                has_archive=bool(state.get("archive")),
+                deadline=routing_deadline,
                 **({"media": viewed} if viewed else {}),
             )
             await save_pending(second)
@@ -710,7 +810,7 @@ async def handle(
                 bridge.settings.model,
                 {**model_context, "data_inventory": metadata},
                 event_id=event_id,
-                has_archive=bool(state.get("archive")),
+                deadline=routing_deadline,
                 **({"media": media} if media else {}),
             )
             await save_pending(listed)
@@ -728,6 +828,8 @@ async def handle(
         record["direct_decision_pending"] = False
         record["decision_access"] = grant.signature
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+    if surface.is_email(record) and (decision.route == "transfer" or decision.write_paths):
+        return await finish(bridge, event_id, record, surface.EMAIL_READ_ONLY)
     current = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
     # Init's binding may have moved in another thread, but this turn is fixed to its created ID.
     if is_init and not current.has_context:
@@ -788,7 +890,12 @@ async def handle(
         return False
     reply = decision.reply
     if is_init:
-        if current.doc.bound(record["payload"]["team_id"], event["channel"]) == grant.project_id:
+        if (
+            current.doc.active_for(
+                grant.email, record["payload"]["team_id"], event["channel"], private=grant.private
+            )
+            == grant.project_id
+        ):
             selection = f"Active project: {grant.project.name}."
             previous = record.get("init_previous_project_id")
             if (

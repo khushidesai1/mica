@@ -1,282 +1,251 @@
-"""Gmail History/Pub/Sub adapter with explicit project-thread binding."""
+"""Recoverable, labeled Gmail intake into the shared Claude agent."""
 
 from __future__ import annotations
 
 import asyncio
 import base64
 import hashlib
-import hmac
 import json
-import re
 import time
-from email.message import EmailMessage
-from email.utils import parseaddr
-from html import escape
-from io import BytesIO
-from typing import Annotated, Any, cast
-from urllib.parse import urlencode
+from contextlib import suppress
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse
-from google.auth import default
-from googleapiclient.discovery import build
-from starlette.datastructures import Headers
+from fastapi import APIRouter, Depends, HTTPException, Request
+from googleapiclient.errors import HttpError
 
+from mica.agents.analysis.batch import BatchBridge
+from mica.agents.analysis.config import CHECKPOINT_PREFIX
+from mica.agents.analysis.surface import EMAIL_STATE_PREFIX, email_keys
 from mica.api.auth import Principal, get_principal
 from mica.api.dependencies import Services
-from mica.models import TaskEnvelope, TaskSource
+from mica.connectors import gmail_client as client
 
 router = APIRouter(prefix="/integrations/gmail", tags=["integrations"])
-PROJECT_SUBJECT = re.compile(r"\[project:([a-z0-9-]+)\]", re.I)
 
 
-def _gmail_service(scopes: list[str]) -> Any:
-    credentials, _ = default(scopes=scopes)  # type: ignore[no-untyped-call]
-    return build("gmail", "v1", credentials=credentials, cache_discovery=False)
+def state_key(account: str) -> str:
+    return f"{EMAIL_STATE_PREFIX}/{hashlib.sha256(account.encode()).hexdigest()}/cursor.json"
 
 
-def _headers(message: dict[str, object]) -> dict[str, str]:
-    payload = message.get("payload", {})
-    values = payload.get("headers", []) if isinstance(payload, dict) else []
-    return {
-        str(item.get("name", "")).lower(): str(item.get("value", ""))
-        for item in values
-        if isinstance(item, dict)
+async def ingest(bridge: BatchBridge, api: Any, message_id: str, label: str, since: int) -> None:
+    item = await asyncio.to_thread(
+        api.users().messages().get(userId="me", id=message_id, format="metadata").execute
+    )
+    if (
+        label not in item.get("labelIds", [])
+        or "SENT" in item.get("labelIds", [])
+        or int(item.get("internalDate", 0)) < since
+        or int(item.get("sizeEstimate", 0)) > client.MAX_MESSAGE_BYTES
+    ):
+        return
+    item = await asyncio.to_thread(
+        api.users().messages().get(userId="me", id=message_id, format="raw").execute
+    )
+    encoded = item.get("raw", "")
+    if len(encoded) > (client.MAX_MESSAGE_BYTES + 2) // 3 * 4:
+        return
+    raw = base64.urlsafe_b64decode(encoded + "===")
+    verified = await asyncio.to_thread(client.verified_message, raw)
+    if verified is None:
+        return
+    sender, message = verified
+    if client.is_own(sender, bridge.app):
+        return
+    body = message.get_body(preferencelist=("plain",))
+    text = str(body.get_content()) if body else ""
+    parts = [p for p in message.walk() if p.get_filename() and not p.is_multipart()]
+    if len(text) > 50_000:
+        text = text[:50_000] + "\n[Message truncated at 50,000 characters.]"
+    payload: dict[str, Any] = {
+        "type": "event_callback",
+        "team_id": "EMAIL",
+        "event": {
+            "type": "message",
+            "channel_type": "email",
+            "user": sender,
+            "channel": "E" + item["threadId"].upper(),
+            "ts": f"{int(item['internalDate']) // 1000}.{int(item['internalDate']) % 1000:06d}",
+            "text": text or "Please review the attached files.",
+        },
+        "_email": {
+            "mailbox": client.mailbox(bridge.app),
+            "id": message_id,
+            "thread_id": item["threadId"],
+            "message_id": str(message["Message-ID"]),
+            "subject": str(message["Subject"] or "Mica"),
+            "recipients": [
+                a.addr_spec.lower()
+                for h in ("To", "Cc")
+                for a in getattr(message[h], "addresses", ())
+            ],
+        },
     }
+    event_id, _ = email_keys(payload, sender)
+    if parts:
+        key = f"{CHECKPOINT_PREFIX}/gmail/inputs/{event_id}.eml"
+        await asyncio.to_thread(bridge.storage.put, key, raw)
+        payload["_email"]["raw_key"] = key
+        payload["event"]["files"] = [{"name": p.get_filename()} for p in parts]
+    await bridge.accept(payload, principal=sender, surface_name="email")
 
 
-def _plain_text(payload: dict[str, Any]) -> str:
-    mime = str(payload.get("mimeType", ""))
-    body = payload.get("body", {})
-    if mime == "text/plain" and isinstance(body, dict) and body.get("data"):
-        return base64.urlsafe_b64decode(str(body["data"]) + "===").decode("utf-8", errors="replace")
-    for part in payload.get("parts", []) if isinstance(payload.get("parts"), list) else []:
-        if isinstance(part, dict):
-            text = _plain_text(part)
-            if text:
-                return text
-    return ""
-
-
-def _attachment_parts(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    found: list[dict[str, Any]] = []
-    if payload.get("filename"):
-        found.append(payload)
-    for part in payload.get("parts", []) if isinstance(payload.get("parts"), list) else []:
-        if isinstance(part, dict):
-            found.extend(_attachment_parts(part))
-    return found
-
-
-def _signature(secret: str, principal: str, thread: str, project: str, expiry: int) -> str:
-    value = f"{principal}\n{thread}\n{project}\n{expiry}".encode()
-    return hmac.new(secret.encode(), value, hashlib.sha256).hexdigest()
-
-
-async def _send_email(
-    services: Services, recipient: str, subject: str, text: str, thread_id: str = ""
-) -> None:
-    message = EmailMessage()
-    message["To"] = recipient
-    message["From"] = services.settings.gmail_account
-    message["Subject"] = subject
-    message.set_content(text)
-    raw = base64.urlsafe_b64encode(message.as_bytes()).decode()
-
-    def send() -> None:
-        api = _gmail_service(["https://www.googleapis.com/auth/gmail.send"])
-        body = {"raw": raw}
-        if thread_id:
-            body["threadId"] = thread_id
-        api.users().messages().send(userId="me", body=body).execute()
-
-    await asyncio.to_thread(send)
-
-
-async def _selection_email(services: Services, principal: str, thread_id: str) -> None:
-    projects = await services.repository.list_projects(principal)
-    expiry = int(time.time()) + 3600
-    links = []
-    for project in projects:
-        params = {
-            "principal": principal,
-            "thread": thread_id,
-            "project": project.id,
-            "expiry": expiry,
-            "signature": _signature(
-                services.settings.signed_link_secret,
-                principal,
-                thread_id,
-                project.id,
-                expiry,
-            ),
-        }
-        links.append(
-            f"- {project.name}: {services.settings.control_plane_url.rstrip('/')}"
-            f"/integrations/gmail/select?{urlencode(params)}"
-        )
-    text = "Choose a project for this email thread:\n" + (
-        "\n".join(links) if links else "No authorized projects are available."
-    )
-    await _send_email(services, principal, "Choose a Mica project", text, thread_id)
-
-
-async def _ingest_message(services: Services, api: Any, message_id: str) -> None:
-    message = await asyncio.to_thread(
-        api.users().messages().get(userId="me", id=message_id, format="full").execute
-    )
-    headers = _headers(message)
-    principal = parseaddr(headers.get("from", ""))[1].lower()
-    if not principal or principal == services.settings.gmail_account.lower():
-        return
-    thread_id = str(message.get("threadId", ""))
-    binding_key = f"gmail:{thread_id}"
-    project_id = await services.repository.get_channel_project(binding_key)
-    if not project_id:
-        match = PROJECT_SUBJECT.search(headers.get("subject", ""))
-        if match:
-            project = await services.repository.get_project_by_slug(match.group(1).lower())
-            if project and project.can_access(principal):
-                project_id = project.id
-                await services.repository.set_channel_project(binding_key, project.id)
-    if not project_id:
-        await _selection_email(services, principal, thread_id)
-        return
-    project = await services.repository.get_project(project_id)
-    if project is None or not project.can_access(principal):
-        await _selection_email(services, principal, thread_id)
-        return
-    prompt = _plain_text(message.get("payload", {})).strip()
-    if not prompt:
-        return
-    attachments = []
-    for part in _attachment_parts(message.get("payload", {})):
-        body = part.get("body", {})
-        encoded = body.get("data", "") if isinstance(body, dict) else ""
-        attachment_id = body.get("attachmentId", "") if isinstance(body, dict) else ""
-        if not encoded and attachment_id:
-            attachment = await asyncio.to_thread(
-                api.users()
-                .messages()
-                .attachments()
-                .get(userId="me", messageId=message_id, id=attachment_id)
-                .execute
+async def consume(bridge: BatchBridge, api: Any, notified: str) -> None:
+    account = client.mailbox(bridge.app)
+    key = state_key(account)
+    mutex = "gmail-consume:" + hashlib.sha256(account.encode()).hexdigest()
+    claim = await bridge.repository.begin_event(mutex, lease_seconds=300)
+    if claim.status != "claimed":
+        raise RuntimeError("Mailbox consumption busy; retry")
+    deadline = time.monotonic() + 180
+    store = bridge.storage
+    try:
+        try:
+            raw, generation = await asyncio.to_thread(store.get, key)
+        except FileNotFoundError:
+            raise RuntimeError("Renew the Gmail watch to activate intake first") from None
+        state = json.loads(raw)
+        if not state.get("resync") and int(notified) <= int(state["history_id"]):
+            return
+        label = await asyncio.to_thread(client.label_id, api, bridge.app.gmail_label)
+        while True:
+            if time.monotonic() > deadline:
+                raise RuntimeError("Mailbox page saved; retry remaining history")
+            if state.get("resync"):
+                response = await asyncio.to_thread(
+                    api.users()
+                    .messages()
+                    .list(
+                        userId="me",
+                        labelIds=[label],
+                        maxResults=50,
+                        q=f"after:{max(0, state['since'] // 1000 - 1)}",
+                        pageToken=state.get("page"),
+                    )
+                    .execute
+                )
+                ids = [m["id"] for m in response.get("messages", [])]
+            else:
+                try:
+                    response = await asyncio.to_thread(
+                        api.users()
+                        .history()
+                        .list(
+                            userId="me",
+                            startHistoryId=state["history_id"],
+                            labelId=label,
+                            historyTypes=["messageAdded", "labelAdded"],
+                            maxResults=50,
+                            pageToken=state.get("page"),
+                        )
+                        .execute
+                    )
+                except HttpError as exc:
+                    if exc.resp.status != 404:
+                        raise
+                    profile = await asyncio.to_thread(api.users().getProfile(userId="me").execute)
+                    state.update(resync=True, target=str(profile["historyId"]), page=None)
+                    generation = await asyncio.to_thread(
+                        store.put_if, key, json.dumps(state).encode(), generation
+                    )
+                    continue
+                ids = list(
+                    dict.fromkeys(
+                        change["message"]["id"]
+                        for entry in response.get("history", [])
+                        for kind in ("messagesAdded", "labelsAdded")
+                        for change in entry.get(kind, [])
+                    )
+                )
+            for message_id in ids:
+                if time.monotonic() > deadline:
+                    raise RuntimeError("Mailbox consumption timed out; retry this page")
+                try:
+                    await ingest(bridge, api, message_id, label, state["since"])
+                except HttpError as exc:
+                    if exc.resp.status != 404:
+                        raise
+            # CAS prevents a stale consumer from advancing over another consumer's work.
+            state["page"] = response.get("nextPageToken")
+            if not state["page"]:
+                state["history_id"] = (
+                    state.pop("target")
+                    if state.pop("resync", False)
+                    else str(response.get("historyId", notified))
+                )
+            generation = await asyncio.to_thread(
+                store.put_if, key, json.dumps(state).encode(), generation
             )
-            encoded = attachment.get("data", "")
-        if not encoded:
-            continue
-        data = base64.urlsafe_b64decode(str(encoded) + "===")
-        upload = UploadFile(
-            file=BytesIO(data),
-            filename=str(part.get("filename", "email-upload.bin")),
-            headers=Headers(
-                {"content-type": str(part.get("mimeType", "application/octet-stream"))}
-            ),
-        )
-        attachments.append(await services.uploads.accept(upload, principal))
-    task, created = await services.tasks.create(
-        TaskEnvelope(
-            project_id=project.id,
-            source=TaskSource.EMAIL,
-            external_event_id=f"gmail:{message_id}",
-            conversation_id=f"gmail:{thread_id}",
-            principal_id=principal,
-            prompt=prompt,
-            attachments=attachments,
-        )
-    )
-    if created:
-        await services.dispatcher.enqueue(task.id)
-    await _send_email(
-        services,
-        principal,
-        f"Re: {headers.get('subject', 'Mica task')}",
-        f"I’m on it — I’ve started {task.public_name}. I’ll keep you posted in this thread.",
-        thread_id,
-    )
+            if not state["page"]:
+                return
+    finally:
+        await bridge.repository.release_event(mutex, claim.token)
 
 
 @router.post("/push")
 async def gmail_push(
-    request: Request,
-    principal: Annotated[Principal, Depends(get_principal)],
+    request: Request, principal: Annotated[Principal, Depends(get_principal)]
 ) -> dict[str, bool]:
     services: Services = request.app.state.services
     if principal.id != services.settings.cloud_tasks_service_account.lower():
-        raise HTTPException(status_code=403, detail="untrusted Pub/Sub principal")
-    envelope = await request.json()
-    encoded = str(envelope.get("message", {}).get("data", ""))
-    notice = json.loads(base64.b64decode(encoded).decode())
-    new_history_id = str(notice["historyId"])
-    state = await services.repository.get_connector_state("gmail-history") or {}
-    old_history_id = str(state.get("history_id", ""))
-    if not old_history_id:
-        await services.repository.set_connector_state(
-            "gmail-history", {"history_id": new_history_id}
-        )
+        raise HTTPException(403, "Untrusted Pub/Sub principal")
+    if not client.enabled(services.settings):
         return {"ok": True}
-
-    def fetch() -> tuple[object, list[str]]:
-        api = _gmail_service(["https://www.googleapis.com/auth/gmail.readonly"])
-        ids: list[str] = []
-        request_call = (
-            api.users()
-            .history()
-            .list(userId="me", startHistoryId=old_history_id, historyTypes=["messageAdded"])
-        )
-        while request_call is not None:
-            response = request_call.execute()
-            for entry in response.get("history", []):
-                for added in entry.get("messagesAdded", []):
-                    ids.append(str(added["message"]["id"]))
-            request_call = api.users().history().list_next(request_call, response)
-        return api, list(dict.fromkeys(ids))
-
-    api, message_ids = await asyncio.to_thread(fetch)
-    for message_id in message_ids:
-        await _ingest_message(services, api, message_id)
-    await services.repository.set_connector_state("gmail-history", {"history_id": new_history_id})
+    try:
+        envelope = await request.json()
+        notice = json.loads(base64.b64decode(envelope["message"]["data"], validate=True))
+        if notice["emailAddress"].lower() != services.settings.gmail_account.lower() and notice[
+            "emailAddress"
+        ].lower() != client.mailbox(services.settings):
+            # Compare Gmail's canonical base address, including dotted account names.
+            copy = services.settings.model_copy(update={"gmail_account": notice["emailAddress"]})
+            if client.mailbox(copy) != client.mailbox(services.settings):
+                raise ValueError("Foreign mailbox")
+        history = str(int(notice["historyId"]))
+    except (ValueError, KeyError, TypeError):
+        raise HTTPException(400, "Invalid Gmail notification") from None
+    bridge = BatchBridge(services.settings, services.repository)
+    api = await asyncio.to_thread(client.service, services.settings)
+    await consume(bridge, api, history)
     return {"ok": True}
 
 
-@router.get("/select", response_class=HTMLResponse)
-async def select_gmail_project(
-    request: Request,
-    principal: str,
-    thread: str,
-    project: str,
-    expiry: int,
-    signature: str,
-) -> HTMLResponse:
-    services: Services = request.app.state.services
-    expected = _signature(services.settings.signed_link_secret, principal, thread, project, expiry)
-    if expiry < int(time.time()) or not hmac.compare_digest(signature, expected):
-        raise HTTPException(status_code=400, detail="expired or invalid selection link")
-    selected = await services.repository.get_project(project)
-    if selected is None or not selected.can_access(principal):
-        raise HTTPException(status_code=403, detail="project access denied")
-    await services.repository.set_channel_project(f"gmail:{thread}", selected.id)
-    return HTMLResponse(
-        f"<h1>Project selected</h1><p>This email thread is now bound to "
-        f"{escape(selected.name)}. You may return to Gmail.</p>"
-    )
+async def renew_watch(services: Services) -> dict[str, Any]:
+    if not client.enabled(services.settings):
+        return {"enabled": False}
+    api = await asyncio.to_thread(client.service, services.settings)
+    profile = await asyncio.to_thread(api.users().getProfile(userId="me").execute)
+    actual = services.settings.model_copy(update={"gmail_account": profile.get("emailAddress", "")})
+    if client.mailbox(actual) != client.mailbox(services.settings):
+        raise ValueError("OAuth credentials belong to a different Gmail mailbox")
+    label = await asyncio.to_thread(client.label_id, api, services.settings.gmail_label)
+    bridge = BatchBridge(services.settings, services.repository)
+    store = bridge.storage
+    key = state_key(client.mailbox(services.settings))
+    try:
+        await asyncio.to_thread(store.get, key)
+    except FileNotFoundError:
+        # Baseline before watch: renewal never overwrites the processed cursor.
+        since = int(time.time() * 1000)
+        from mica.agents.analysis.storage import Conflict
 
-
-async def renew_watch(services: Services) -> dict[str, object]:
-    if not services.settings.gmail_pubsub_topic:
-        raise ValueError("Gmail Pub/Sub topic is not configured")
-
-    def watch() -> dict[str, object]:
-        api = _gmail_service(["https://www.googleapis.com/auth/gmail.modify"])
-        return cast(
-            dict[str, object],
-            api.users()
-            .watch(userId="me", body={"topicName": services.settings.gmail_pubsub_topic})
-            .execute(),
+        with suppress(Conflict):
+            await asyncio.to_thread(
+                store.put_if,
+                key,
+                json.dumps({"history_id": str(profile["historyId"]), "since": since}).encode(),
+                None,
+            )
+    result: dict[str, Any] = await asyncio.to_thread(
+        api.users()
+        .watch(
+            userId="me",
+            body={
+                "topicName": services.settings.gmail_pubsub_topic,
+                "labelIds": [label],
+                "labelFilterBehavior": "INCLUDE",
+            },
         )
-
-    response = await asyncio.to_thread(watch)
-    await services.repository.set_connector_state(
-        "gmail-history", {"history_id": str(response["historyId"])}
+        .execute
     )
-    return response
+    await services.repository.set_connector_state("gmail-watch", result)
+    return result

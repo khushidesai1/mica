@@ -81,6 +81,6 @@ unverified. Existing tasks that already lost their old plan are not repaired ret
   returned for the new revision during the rollout check.
 
 The deployment record and isolated diff are saved under
-`.pistachio/deployments/plan-continuity-20260930.*`. The previous revision does not understand the
+`.mica/deployments/plan-continuity-20260930.*`. The previous revision does not understand the
 new handoff fields; once tasks persist those fields, use a compatible forward fix rather than
 blindly routing back to the older schema.

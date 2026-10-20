@@ -16,6 +16,8 @@ __pycache__/
 htmlcov/
 dist/
 build/
+.mica/
+# Legacy local state remains excluded during migration.
 .pistachio/
 .terraform/
 *.tfstate

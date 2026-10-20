@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     disable_agents_tracing: bool = True
 
-    artifact_root: Path = Path(".pistachio/artifacts")
+    artifact_root: Path = Path(".mica/artifacts")
     docker_artifact_root: Path | None = None
     artifact_retention_days: int = 30
     memory_inactive_days: int = 90
@@ -106,6 +106,11 @@ class Settings(BaseSettings):
     slack_user_map: dict[str, str] = Field(default_factory=dict)
     gmail_account: str = ""
     gmail_pubsub_topic: str = ""
+    gmail_label: str = ""
+    gmail_aliases: list[str] = Field(default_factory=list)
+    gmail_oauth_client_id: str = ""
+    gmail_oauth_client_secret: SecretStr = SecretStr("")
+    gmail_refresh_token: SecretStr = SecretStr("")
     signed_link_secret: str = ""
     github_org: str = "azizilab"
     github_app_token: str = ""

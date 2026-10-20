@@ -214,6 +214,10 @@ class Transfers:
         event_id: str,
         request: TransferRequest | None,
     ) -> str:
+        from . import surface
+
+        if surface.is_email(record):
+            raise PermissionError(surface.EMAIL_READ_ONLY)
         self.authorize(grant.project_id, grant.email)
         event = record["payload"]["event"]
         async with self.locked(grant.project_id):
@@ -819,6 +823,10 @@ class Transfers:
     async def command(
         self, cmd: Command, grant: Grant, record: dict[str, Any], event_id: str
     ) -> str:
+        from . import surface
+
+        if surface.is_email(record):
+            raise PermissionError(surface.EMAIL_READ_ONLY)
         self.authorize(grant.project_id, grant.email)
         if cmd.name == "transfer":
             return await self.request(

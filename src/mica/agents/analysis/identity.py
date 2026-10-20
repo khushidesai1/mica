@@ -28,10 +28,14 @@ def email_for(app: Any, team: str, user: str) -> str | None:
 
 
 def is_private(event: dict[str, Any]) -> bool:
-    return str(event.get("channel", "")).startswith("D") and event.get("channel_type") in {
-        None,
-        "im",
-    }
+    return event.get("channel_type") == "email" or (
+        str(event.get("channel", "")).startswith("D")
+        and event.get("channel_type")
+        in {
+            None,
+            "im",
+        }
+    )
 
 
 def user_key(email: str) -> str:

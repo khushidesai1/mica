@@ -132,3 +132,31 @@ variable "slack_agent_nat_enabled" {
   type        = bool
   default     = false
 }
+
+variable "gmail_label" {
+  description = "Existing Gmail label name or ID; blank keeps email intake disabled."
+  type        = string
+  default     = ""
+}
+variable "gmail_aliases" {
+  type    = list(string)
+  default = []
+}
+variable "gmail_oauth_client_id" {
+  type    = string
+  default = ""
+}
+variable "gmail_oauth_client_secret_name" {
+  description = "Existing Secret Manager secret containing the mailbox OAuth client secret."
+  type        = string
+  default     = ""
+}
+variable "gmail_refresh_token_secret_name" {
+  description = "Existing Secret Manager secret containing the mailbox refresh token."
+  type        = string
+  default     = ""
+}
+variable "gmail_oauth_secret_version" {
+  type    = string
+  default = "latest"
+}
