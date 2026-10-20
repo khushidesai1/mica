@@ -2,12 +2,19 @@
 
 ## Email requests and renamed project state — 2026-10-20
 
-Revision `pistachio-staging-rename-554fb1e` serves staging with coordinated build
+Revision `pistachio-staging-gmail-20261020` serves staging with coordinated build
 `8684099b-cc93-4729-af67-6c33e08500fd` from source `554fb1e`. It includes the email
 analysis route, shared private-project defaults, authenticated worker email delivery,
-and memory/storage name mappings. Gmail intake remains disabled pending mailbox-owner
-OAuth provisioning and watch activation; see [deployment](deployment.md#gmail-activation).
-The intended mailbox alias is `azizi.lab.341+mica@gmail.com`, with label `Mica`.
+and memory/storage name mappings. The owner provisioned OAuth credentials and activated
+Gmail for `azizi.lab.341+mica@gmail.com`, with label `Mica`; see
+[deployment](deployment.md#gmail-activation). The activation revision preserves all three
+verified image digests below and mounts version 1 of `mica-gmail-client-secret` and
+`mica-gmail-refresh-token`. No secret values were inspected during verification.
+
+Watch renewal and the authenticated Gmail push callback returned HTTP 200 at 04:24 UTC
+on 20 October. The durable intake cursor was initialized, and the watch expires at
+04:24 UTC on 27 October, with daily renewal enabled. A real sender-to-reply/artifact
+acceptance test remains outstanding; watch activation alone does not verify delivery.
 
 Validation: Ruff and mypy passed; 970 tests passed and 6 skipped. All configured build gates
 passed, including headless API/source checks, worker source/compute checks, and shared-worker
