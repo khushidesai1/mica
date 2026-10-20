@@ -26,6 +26,7 @@ from . import (
     access,
     memory_tasks,
     project_memory,
+    surface,
     thread_history,
     write_access,
     write_approval,
@@ -219,12 +220,26 @@ class BatchBridge:
         """One durable status message per input, independent of slow Spot startup."""
         from slack_sdk.web.async_client import AsyncWebClient
 
+        from .email_delivery import deliver
+        from .transport import SlackTransport
+
+        if surface.is_email(record):
+            terminal = phase in {"complete", "failed", "denied", "cancelled"}
+            if terminal:
+                record["terminal_reply"] = text
+            if terminal or phase == "received":
+                handle = await deliver(
+                    self, event_id, record, text, kind="final" if terminal else "ack"
+                )
+                record.update(notice_ts=handle, notice_phase=phase, notice_text=text)
+            return
+
         if phase in {"complete", "failed", "denied", "cancelled"}:
             record["terminal_reply"] = text
         if record.get("notice_text") == text:
             return
         event = record["payload"]["event"]
-        client = AsyncWebClient(token=self.app.slack_bot_token, timeout=5)
+        client = SlackTransport(AsyncWebClient(token=self.app.slack_bot_token, timeout=5))
         status: dict[str, Any] = (
             {"blocks": status_blocks(self.settings.loading_emoji, text)}
             if phase in STATUS_PHASES
@@ -232,11 +247,11 @@ class BatchBridge:
         )
         try:
             if record.get("notice_ts"):
-                await client.chat_update(
+                await client.update(
                     channel=event["channel"], ts=record["notice_ts"], text=text, **status
                 )
             else:
-                response = await client.chat_postMessage(
+                response = await client.post(
                     channel=event["channel"],
                     thread_ts=event.get("thread_ts") or event["ts"],
                     text=text,
@@ -304,15 +319,26 @@ class BatchBridge:
             30 if tick else 0,
         )
 
-    async def accept(self, payload: dict[str, Any], *, principal: str | None = None) -> str:
+    async def accept(
+        self,
+        payload: dict[str, Any],
+        *,
+        principal: str | None = None,
+        surface_name: str = "slack",
+    ) -> str:
         from .transfers import scrub_password_paste
 
-        payload = await scrub_password_paste(self, payload)
+        if surface_name not in {"slack", "email"}:
+            raise ValueError("Unknown intake surface")
+        if surface_name == "slack":
+            payload = await scrub_password_paste(self, payload)
         event = payload["event"]
         thread = event.get("thread_ts") or event["ts"]
         thread_key = digest(f"{payload.get('team_id')}:{event['channel']}:{thread}")
         # message and app_mention can describe the same message with different event IDs.
         event_id = digest(f"{payload.get('team_id')}:{event['channel']}:{event['ts']}")
+        if surface_name == "email":
+            event_id, thread_key = surface.email_keys(payload, principal or "")
         receipt_key = f"claude-event:{event_id}"
         mutex = f"claude-intake:{thread_key}"
         claim = await self.repository.begin_event(mutex, lease_seconds=60)
@@ -332,6 +358,7 @@ class BatchBridge:
             receipt = await self.repository.get_connector_state(receipt_key)
             if not receipt:
                 receipt = {
+                    "surface": surface_name,
                     "payload": payload,
                     "intake_principal": principal,
                     "thread_key": thread_key,
@@ -339,7 +366,8 @@ class BatchBridge:
                     "status": "pending",
                     "tick": 0,
                     "created": time.time(),
-                    "write_control": write_access.is_command(event.get("text", "")),
+                    "write_control": surface_name == "slack"
+                    and write_access.is_command(event.get("text", "")),
                 }
                 # Write controls bypass running work without replacing its queue tail.
                 # A subsequent analysis must still wait for that active computation.
@@ -384,7 +412,10 @@ class BatchBridge:
             )
             from .data_links import message_text
 
-            if message_text(record["payload"]["event"].get("text", "")).lower() == "cancel":
+            if (
+                not surface.is_email(record)
+                and message_text(record["payload"]["event"].get("text", "")).lower() == "cancel"
+            ):
                 grant = await asyncio.to_thread(
                     access.resolve,
                     self.app,
@@ -497,6 +528,13 @@ class BatchBridge:
         record["terminal_recorded"] = True
 
     async def advance(self, event_id: str, record: dict[str, Any]) -> None:
+        if surface.is_email(record):
+            record["write_grant"] = None
+            record["overwrite_paths"] = []
+            if record.get("overwrite_approval") or record.get("write_paths"):
+                record["status"] = "failed"
+                await self.notify(event_id, record, "denied", surface.EMAIL_READ_ONLY)
+                return
         if record["status"] == "pending" and record.get("route") != "compute":
             from .direct import RoutingUnavailable, handle
 
@@ -514,14 +552,18 @@ class BatchBridge:
                     # deduplicates deliveries, and rechecks access before each routing attempt.
                     record["routing_retry_at"] = time.time() + 30 * attempts
                     await self.notify(
-                        event_id, record, "replying",
+                        event_id,
+                        record,
+                        "replying",
                         "I'm recovering from a temporary issue and will retry automatically. "
                         "No need to resend your message.",
                     )
                 else:
                     record["status"] = "failed"
                     await self.notify(
-                        event_id, record, "failed",
+                        event_id,
+                        record,
+                        "failed",
                         "I couldn't safely start this request after several automatic recovery "
                         "attempts. Your request and conversation are saved.",
                     )
@@ -530,7 +572,9 @@ class BatchBridge:
                 record["status"] = "failed"
                 log.warning("conversation_validation_failed event=%s", event_id)
                 await self.notify(
-                    event_id, record, "failed",
+                    event_id,
+                    record,
+                    "failed",
                     "I couldn't safely complete this request because of an internal issue. "
                     "Your request and conversation are saved.",
                 )
@@ -764,6 +808,8 @@ class BatchBridge:
                 if record["private"]
                 else "",
             }
+            if surface.is_email(record):
+                manifest["surface"] = "email"
             if record["return_scripts"]:
                 manifest["return_scripts"] = True
             if record.get("recovery_version"):

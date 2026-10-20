@@ -10,6 +10,8 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "Proprietary" }
 dependencies = [
+  "dkimpy==1.1.8",
+  "dnspython==2.8.0",
   "fastapi==0.141.1",
   "google-api-python-client==2.187.0",
   "google-auth==2.41.1",
@@ -36,6 +38,7 @@ slack = ["claude-agent-sdk==0.2.163", "aiohttp==3.14.3", "uv==0.9.6", "packaging
 analysis-test = ["anndata==0.11.4", "pandas==2.2.3", "pyarrow==25.0.1", "matplotlib==3.10.3", "pypdfium2==5.14.0"]
 transfer-test = ["paramiko==3.5.1"]
 dev = [
+  "google-auth-oauthlib==1.2.2",
   "jsonschema==4.26.0",
   "mypy==1.19.1",
   "pytest==9.0.2",
@@ -76,5 +79,5 @@ exclude = ["tests"]
 disable_error_code = ["import-untyped"]
 
 [[tool.mypy.overrides]]
-module = ["google.*", "googleapiclient.*", "h5py", "PIL.*", "pypdf", "defusedxml.*", "numpy", "anndata", "pyarrow.*"]
+module = ["google.*", "googleapiclient.*", "dkim.*", "h5py", "PIL.*", "pypdf", "defusedxml.*", "numpy", "anndata", "pyarrow.*"]
 ignore_missing_imports = true

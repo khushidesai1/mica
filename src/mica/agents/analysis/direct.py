@@ -19,6 +19,7 @@ from . import (
     attachments,
     commands,
     project_memory,
+    surface,
     thread_history,
     write_access,
 )
@@ -438,6 +439,13 @@ async def show_context(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage, text: str
 ) -> bool:
     """Show the whole requested guide/cache, with resumable bounded Slack messages."""
+    if surface.is_email(record):
+        grant = await asyncio.to_thread(
+            access.resolve, bridge.app, bridge.settings, storage, record
+        )
+        return await finish(
+            bridge, event_id, record, text if grant.allowed else access.deny_text(grant)
+        )
     event = record["payload"]["event"]
     parts = list(chunks(to_mrkdwn(text)))
     sent = int(record.get("context_parts_sent", 0))
@@ -519,8 +527,8 @@ async def handle(
             raise ValueError("Start init in a new thread.")
         await asyncio.to_thread(bridge.resolve_data, record)
         if "init_previous_project_id" not in record:
-            record["init_previous_project_id"] = grant.doc.bound(
-                record["payload"]["team_id"], event["channel"]
+            record["init_previous_project_id"] = grant.doc.active_for(
+                grant.email, record["payload"]["team_id"], event["channel"], private=grant.private
             )
             # Save the switch-back target before changing the binding, including on retries.
             await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
@@ -590,6 +598,8 @@ async def handle(
             survey_only=False,
         )
         state.update(context=ctx, turn=0, is_init=is_init, messages=[])
+        if surface.is_email(record):
+            state["private_owner"] = grant.email
         # Bind the thread before a router/memory failure can end its first turn.
         await asyncio.to_thread(
             storage.put, access.checkpoint_key(record["thread_key"]), json.dumps(state).encode()
@@ -626,15 +636,20 @@ async def handle(
             root = access.run_root(
                 grant.private, grant.email, grant.project_id, record["thread_key"], ctx["thread_ts"]
             )
-            ingested = await asyncio.to_thread(
-                attachments.ingest,
-                bridge.app.slack_bot_token,
-                storage,
-                [{**f, "user": f.get("user") or event.get("user", "")} for f in files],
-                root,
-                event_id,
-                bridge.settings,
-            )
+            if surface.is_email(record):
+                ingested = await asyncio.to_thread(
+                    attachments.ingest_email, storage, record, root, event_id, bridge.settings
+                )
+            else:
+                ingested = await asyncio.to_thread(
+                    attachments.ingest,
+                    bridge.app.slack_bot_token,
+                    storage,
+                    [{**f, "user": f.get("user") or event.get("user", "")} for f in files],
+                    root,
+                    event_id,
+                    bridge.settings,
+                )
             record["attachments"] = [f.model_dump() for f in ingested]
             record["attachments_access"] = grant.signature
             await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
@@ -653,10 +668,18 @@ async def handle(
             "data_path": ctx["data_path"],
             "data_uri": grant.project.data_uri,
             "project_name": grant.project.name,
-            "transfer_tool": await transfer_service.context(grant.project_id),
+            "transfer_tool": (
+                {"available": False, "reason": surface.EMAIL_READ_ONLY}
+                if surface.is_email(record)
+                else await transfer_service.context(grant.project_id)
+            ),
             "analysis_tools": [spatial_analysis_capability()],
-            "write_access": await asyncio.to_thread(
-                write_access.status, storage, grant.project_id, bridge.settings
+            "write_access": (
+                surface.EMAIL_READ_ONLY
+                if surface.is_email(record)
+                else await asyncio.to_thread(
+                    write_access.status, storage, grant.project_id, bridge.settings
+                )
             ),
             "recent_messages": state.get("messages", []),
             "thread_handoff": state.get("thread_summary", {}),
@@ -785,6 +808,8 @@ async def handle(
         record["direct_decision_pending"] = False
         record["decision_access"] = grant.signature
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+    if surface.is_email(record) and (decision.route == "transfer" or decision.write_paths):
+        return await finish(bridge, event_id, record, surface.EMAIL_READ_ONLY)
     current = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
     # Init's binding may have moved in another thread, but this turn is fixed to its created ID.
     if is_init and not current.has_context:
@@ -845,7 +870,12 @@ async def handle(
         return False
     reply = decision.reply
     if is_init:
-        if current.doc.bound(record["payload"]["team_id"], event["channel"]) == grant.project_id:
+        if (
+            current.doc.active_for(
+                grant.email, record["payload"]["team_id"], event["channel"], private=grant.private
+            )
+            == grant.project_id
+        ):
             selection = f"Active project: {grant.project.name}."
             previous = record.get("init_previous_project_id")
             if (

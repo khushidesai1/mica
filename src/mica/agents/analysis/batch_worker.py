@@ -29,6 +29,7 @@ from . import (
     attachments,
     memory_workspace,
     project_memory,
+    surface,
     thread_history,
     write_access,
     write_worker,
@@ -96,7 +97,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             runtimes=resume.get("runtimes", []),
             sdk_cost_total=resume.get("sdk_cost_total"),
         )
-    url = getenv('MICA_CONTROL_PLANE_URL').rstrip("/")
+    url = getenv("MICA_CONTROL_PLANE_URL").rstrip("/")
     token = await asyncio.to_thread(id_token.fetch_id_token, GoogleRequest(), url)  # type: ignore[no-untyped-call]
     async with httpx.AsyncClient(timeout=30) as client:
         deadline = time.monotonic() + settings.access_unavailable_grace_seconds
@@ -127,7 +128,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             delay = min(delay * 2, 30)
     settings = Settings(**keys)
     settings.require_credentials()
-    if not settings.slack_bot_token.get_secret_value():
+    if not surface.is_email(request) and not settings.slack_bot_token.get_secret_value():
         raise ValueError("Slack credential has not been configured")
     check(settings)
     slack = AsyncWebClient(token=settings.slack_bot_token.get_secret_value())
@@ -148,7 +149,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                 }
             ).encode(),
         )
-        if request.get("notice_ts"):
+        if request.get("notice_ts") and not surface.is_email(request):
             await slack.chat_update(
                 channel=request["payload"]["event"]["channel"],
                 ts=request["notice_ts"],
@@ -190,7 +191,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             logging.warning(
                 "Thread checkpoint expired; continuing with the saved brief and bounded transcript"
             )
-    if request.get("notice_ts"):
+    if request.get("notice_ts") and not surface.is_email(request):
         try:
             await slack.chat_update(
                 channel=request["payload"]["event"]["channel"],
@@ -292,6 +293,8 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             return value
 
         async def compute_status(text: str) -> None:
+            if surface.is_email(request):
+                return
             await slack.chat_update(
                 channel=payload["event"]["channel"],
                 ts=request["notice_ts"],
@@ -340,6 +343,58 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
     )
     if runtimes:
         await asyncio.to_thread(runtimes.restore_thread, saved.get("runtimes", []))
+
+    async def deliver_email(
+        text: str, uploads: list[dict[str, str]], error: str | None
+    ) -> tuple[str, list[str]]:
+        from .email_delivery import MAX_FILE_BYTES, Artifact, TerminalResult, artifact_prefix
+
+        artifacts: list[Artifact] = []
+        total = 0
+        omitted = []
+        for upload in uploads:
+            path = Path(upload["file"])
+            size = path.stat().st_size
+            if size > MAX_FILE_BYTES or total + size > MAX_FILE_BYTES or len(artifacts) >= 100:
+                omitted.append(path.name)
+                continue
+            sha = await asyncio.to_thread(attachments.file_hash, path)
+            key = artifact_prefix(event_id, attempt) + sha
+            await asyncio.to_thread(storage.upload, key, path)
+            artifacts.append(Artifact(key=key, name=path.name, size=size, sha256=sha))
+            total += size
+        if omitted:
+            text += (
+                "\n\nCould not attach "
+                + ", ".join(omitted)
+                + ": the email size limit was reached. Ask in this thread for smaller files."
+            )
+        body = TerminalResult(
+            attempt=attempt,
+            text=text,
+            artifacts=artifacts,
+            outcome="failed" if error else "complete",
+        )
+        fresh_token = await asyncio.to_thread(
+            id_token.fetch_id_token,
+            GoogleRequest(),  # type: ignore[no-untyped-call]
+            url,
+        )
+        async with httpx.AsyncClient(timeout=120) as http:
+            for retry in range(8):
+                response = await http.post(
+                    f"{url}/api/v1/internal/slack-analysis/email-result/{event_id}",
+                    json=body.model_dump(),
+                    headers={"Authorization": f"Bearer {fresh_token}"},
+                )
+                if response.status_code in {409, 429, 503} and retry < 7:
+                    await asyncio.sleep(2)
+                    continue
+                response.raise_for_status()
+                delivered = response.json()
+                return str(delivered["text"]), list(delivered["artifacts"])
+        raise RuntimeError("Email delivery controller remained busy")
+
     agent = SlackAgent(
         settings,
         storage,
@@ -369,7 +424,8 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             payload["event"].get("thread_ts") or payload["event"]["ts"],
         ),
         authorized=lambda: worker_permitted(storage, request, saved, settings=settings),
-        publish_gcs=publisher.publish,
+        publish_gcs=None if surface.is_email(request) else publisher.publish,
+        terminal_delivery=deliver_email if surface.is_email(request) else None,
         write_grant=current_write_grant,
         overwrite_paths=request.get("overwrite_paths", []),
         before_delivery=before_delivery if compute else None,
@@ -697,6 +753,8 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         checkpoint["runtimes"] = sorted(runtimes.thread_ids)
     elif saved.get("runtimes"):
         checkpoint["runtimes"] = saved["runtimes"]
+    if surface.is_email(request):
+        checkpoint["private_owner"] = request["principal"]
     checkpoint["messages"] = saved.get("messages", [])
     checkpoint["thread_files"] = attachments.merge(saved.get("thread_files", []), agent.delivered)
     record_exchange(

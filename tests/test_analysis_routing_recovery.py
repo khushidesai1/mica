@@ -291,7 +291,11 @@ async def test_access_revocation_prevents_retry_model_and_project_reads(chat, mo
     now = [100.0]
     monkeypatch.setattr(batch.time, "time", lambda: now[0])
     chat.decision.side_effect = direct.RoutingUnavailable()
-    event = await chat.accept(payload(user="U2"))
+    registry.update(
+        "bob-default", "bob@example.com", "use",
+        lambda d: d.bind("T1", "D2", "bob@example.com", chat.pid, private=True) or chat.pid,
+    )
+    event = await chat.accept(payload(user="U2", channel="D2"))
     assert await chat.process(event, 0) == "pending"
     registry.update(
         "unshare",

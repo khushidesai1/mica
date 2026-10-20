@@ -12,6 +12,7 @@ COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --no-deps . && \
     pip install \
+      dkimpy==1.1.8 dnspython==2.8.0 \
       fastapi==0.141.1 google-api-python-client==2.187.0 google-auth==2.41.1 \
       google-cloud-batch==0.20.0 google-cloud-firestore==2.21.0 \
       google-cloud-pubsub==2.31.1 google-cloud-storage==3.4.0 httpx==0.28.1 \

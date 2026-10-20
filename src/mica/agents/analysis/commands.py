@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
+from . import surface
 from .access import Grant
 from .config import Settings
 from .data_links import init_args, message_text
@@ -163,6 +164,25 @@ def run(
     event = record["payload"]["event"]
     team, channel = record["payload"]["team_id"], event["channel"]
     email, doc = grant.email, grant.doc
+    if surface.is_email(record) and (
+        cmd.name.startswith("write ")
+        or cmd.name
+        in {
+            "help write",
+            "transfer",
+            "transfers",
+            "cancel transfer",
+            "atomx login status",
+            "replace atomx login",
+            "forget atomx login",
+            "share",
+            "unshare",
+            "publish",
+            "unpublish",
+            "cancel",
+        }
+    ):
+        return surface.EMAIL_READ_ONLY
     if cmd.name in {"help", "help all"}:
         return COMMAND_HELP
     if cmd.name == "help write":
@@ -182,7 +202,7 @@ def run(
     if cmd.name != "use" and not grant.private:
         raise ValueError("Use that command in your DM with Mica.")
     if cmd.name == "projects":
-        active = doc.bound(team, channel)
+        active = doc.active_for(email, team, channel, private=grant.private)
         rows = []
         for pid, project in sorted(doc.visible(email).items(), key=lambda item: item[1].name):
             selector = doc.selector(pid, email)

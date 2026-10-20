@@ -41,6 +41,12 @@ def check(source: Path, mode: str) -> None:
             == (installed / file.relative_to(source / "src/mica")).read_bytes()
         ), file
     print(f"SOURCE_VERIFIED: {len(files)} application files")
+    from mica.connectors.gmail_client import verified_message
+    from mica.agents.analysis.email_delivery import TerminalResult
+
+    assert verified_message(b"From: forged@example.com\r\n\r\nunsigned") is None
+    assert TerminalResult(attempt=0, text="image gate").artifacts == []
+    print("EMAIL_IDENTITY_AND_RESULT_IMPORTS_VERIFIED")
     # Pinned older workers and saved scripts may still import the former package.
     import importlib
 

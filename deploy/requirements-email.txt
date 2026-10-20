@@ -1,0 +1,2 @@
+dkimpy==1.1.8
+dnspython==2.8.0

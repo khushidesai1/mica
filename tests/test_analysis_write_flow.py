@@ -52,9 +52,10 @@ async def test_commands_do_not_use_a_model_or_worker_and_revoke_bypasses_queue(w
 async def test_command_in_thread_targets_explicit_project_without_rebinding(writable):
     from analysis_helpers import seed_project
 
-    other = seed_project(writable.store, name="other", channel="D2")
     compute = await writable.accept(payload("1.0"))
     await writable.process(compute, 0)
+    # A later selection changes the user's default but cannot move this pinned thread.
+    other = seed_project(writable.store, name="other", channel="D2")
     command = await writable.accept(
         payload("2.0", "1.0", f"write grant {other} gs://lab-data/liver/output/")
     )

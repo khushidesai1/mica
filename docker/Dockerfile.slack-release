@@ -4,6 +4,8 @@ FROM ${BASE_IMAGE}
 USER root
 ARG INSTALL_BOT_DEPENDENCIES=0
 COPY deploy/requirements-bot.txt /tmp/mica-requirements-bot.txt
+COPY deploy/requirements-email.txt /tmp/mica-requirements-email.txt
+RUN pip install --no-cache-dir --no-deps -r /tmp/mica-requirements-email.txt
 RUN if [ "$INSTALL_BOT_DEPENDENCIES" = "1" ]; then \
       pip install --no-cache-dir --no-deps -r /tmp/mica-requirements-bot.txt; \
     fi && \

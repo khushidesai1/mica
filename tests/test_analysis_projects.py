@@ -142,6 +142,8 @@ async def test_switch_keeps_thread_context_and_routes_new_threads(chat):  # noqa
     target = seed_project(
         chat.store, name="brain", channel="D3", uri="gs://lab-data/brain/", brief=b"Brain brief"
     )
+    # Creating the second project also selects it across private surfaces.
+    await message(chat, "switch liver", "9.0")
     first = await message(chat, "These are human liver samples", "10.0")
     pointer = checkpoint_key(first["thread_key"])
     original = chat.store.get(pointer)[0]

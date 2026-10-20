@@ -57,7 +57,7 @@ Preserve deployed Slack tokens, signing secrets, channel access settings, projec
 queues, worker images, and bucket connections. Browser OAuth variables are no longer consumed or
 mounted; remove them from local tfvars/environment files when convenient. The old OAuth Secret
 Manager resource remains tracked to avoid deleting existing credentials as part of UI removal.
-Keep the separate signed-link secret: uploads and Gmail project selection still use it.
+Keep the separate signed-link secret for signed upload operations.
 No Terraform apply or cloud deployment is implied by these source changes.
 
 ## Release validation
@@ -96,7 +96,7 @@ production. First target the Secret Manager resources, add the OpenAI, Slack, Gi
 link-signing secret versions with `gcloud secrets versions add`, then run the full apply (Cloud Run
 references `latest`). Never put secret values in committed tfvars.
 
-Configure the Slack event and interactivity URLs, Gmail delegated credentials/watch, and GitHub App
+Configure the Slack event and interactivity URLs, Gmail mailbox OAuth/watch, and GitHub App
 after the first apply. Create a read-only Cloud Build trigger for this repository using
 `cloudbuild/tool-builder.yaml`, place its trigger ID in `tool_build_trigger`, and grant its build
 service account only source-read, Artifact Registry write, scanner, and Cloud Build log access.
@@ -112,3 +112,43 @@ recovers successful results if a worker completion event is missed.
 
 The Terraform queue caps concurrent dispatches at three and Cloud Run scales to zero. Batch hard
 limits and the $20 gate are enforced again in application policy, independent of Terraform.
+
+## Gmail activation
+
+Deploy the API and Claude worker together; update `MICA_SLACK_AGENT_IMAGE` to the new immutable
+Claude digest and preserve `MICA_BATCH_IMAGE` for the shared science worker. Run the existing
+API/shared-worker compatibility gate. Email defaults off when any required OAuth or label setting
+is missing. The Gmail refresh token stays in the control plane; workers submit bounded artifact
+references through the authenticated, attempt-fenced `/api/v1/internal/slack-analysis/email-result/`
+callback. Do not mount Gmail credentials in workers.
+
+The mailbox owner must complete these activation steps:
+
+1. Create a desktop OAuth client and consent configuration for the consumer Gmail mailbox.
+   Run `.venv/bin/python scripts/gmail_authorize.py /secure/path/client_secret.json` locally.
+   It requests Gmail readonly, send and modify scopes and prints a sensitive refresh token.
+   Keep the client JSON and token out of Git and logs. External OAuth apps left in Testing can
+   issue short-lived refresh tokens; configure the consent app appropriately for ongoing use.
+2. Create Secret Manager secrets for the OAuth client secret and refresh token. Set
+   `gmail_oauth_client_secret_name`, `gmail_refresh_token_secret_name`,
+   `gmail_oauth_client_id`, and optionally `gmail_oauth_secret_version` in private tfvars.
+3. Set `gmail_account = "azizi.lab.341+mica@gmail.com"`, create a Gmail filter labeling requests
+   to that alias, set `gmail_label` to that label name/ID, and list other bot addresses in
+   `gmail_aliases`. Confirm the base mailbox and label before enabling intake.
+4. Apply Terraform yourself to mount the existing secrets and environment settings. Routine
+   application releases do not create secrets, change IAM, or apply Terraform.
+5. Call the authenticated `/api/v1/internal/gmail/renew-watch` endpoint. Verify its history ID,
+   then send `projects` and a small artifact-producing analysis from your own authorized address.
+   Confirm threading, one acknowledgement, and one final reply. Check reply-all filtering only
+   with addresses you have authorized for testing.
+
+The first activation records a time cutoff and history baseline; mail older than activation is
+not executed. Watch renewal never advances the processed cursor. Expired history triggers a
+resumable scan of labeled mail since activation, protected by durable message receipts. Labeling
+an older, pre-activation message does not execute it; forward a fresh request instead.
+
+The GCS outbox at `projects/_gmail/outbox/<event>/<ack|final>.json` records send intent
+before contacting Gmail. A lost response is reconciled through its deterministic RFC822 Message-ID
+and the sent-mail search. An ambiguous send with no matching sent message is held for operator
+review; it is never blindly resent. Inspect Gmail and the recorded Message-ID before resolving a
+stuck operation. This prioritizes avoiding duplicates and does not promise exactly-once delivery.

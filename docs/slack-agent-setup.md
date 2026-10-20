@@ -616,3 +616,27 @@ republished before use.
 New workers cancel active publishing tools, persist the stop reason and enforce a shutdown
 deadline. Completed objects retain their receipts. Cancellation allows cooperative shutdown,
 with forced Batch deletion as a fallback; older in-flight workers keep their existing protocol.
+
+## Email requests
+
+Email can use the same Claude agent, projects and analysis workers as Slack. The initial mailbox
+is `azizi.lab.341+mica@gmail.com`; intake remains disabled until mailbox OAuth and the Mica label
+are configured (see [deployment](deployment.md#gmail-activation)). Only labeled, cryptographically
+verified messages are accepted. DKIM must align exactly with the sender's domain; malformed,
+unsigned and unaligned mail is silently dropped. Gmail aliases and sent messages cannot trigger
+reply loops. The Slack email allowlist is not an email membership gate.
+
+Send `projects` to list your projects, or `switch <project>` to select the default for new threads
+in both email and Slack DMs. Existing conversations keep their project. A single legacy DM default
+is inherited; conflicting defaults require an explicit switch. Private email history belongs to
+one sender in one Gmail thread; adding another sender does not grant access to that history.
+
+Each request receives an acknowledgement and one final email containing its answer and supported
+attachments. Progress updates are suppressed. Final replies include only current project members
+from the original To/Cc list, and name recipients omitted for lack of membership. Project access
+is checked again before delivery. Attachment limits also apply to encoded MIME size; ask in the
+same email thread for smaller files when needed. Slack cannot retrieve private email artifacts.
+
+Email supports reading data and returning analysis artifacts. Project-data writes, transfers,
+access-management commands and interactive approval controls require Slack. Internal conversation
+checkpoints and project knowledge continue to work normally.

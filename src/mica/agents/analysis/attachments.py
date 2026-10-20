@@ -427,3 +427,66 @@ def output_record(path: Path, workdir: Path, turn: int, key: str | None) -> dict
         event_id="",
         turn=turn,
     ).model_dump()
+
+
+def ingest_email(
+    storage: Storage,
+    record: dict[str, Any],
+    root: str,
+    event_id: str,
+    settings: Settings,
+) -> list[ThreadFile]:
+    """Ingest authenticated MIME parts under the same limits as Slack uploads."""
+    from email import policy
+    from email.parser import BytesParser
+
+    from mica.connectors.gmail_client import MAX_MESSAGE_BYTES
+
+    expected = f"{CHECKPOINT_PREFIX}/gmail/inputs/{event_id}.eml"
+    if record["payload"]["_email"].get("raw_key") != expected:
+        raise AttachmentError("Invalid email attachment source")
+    raw = storage.read_prefix(expected, MAX_MESSAGE_BYTES + 1)
+    if len(raw) > MAX_MESSAGE_BYTES:
+        raise AttachmentError("Email exceeds the message size cap")
+    message = BytesParser(policy=policy.default).parsebytes(raw)
+    parts = [p for p in message.walk() if p.get_filename() and not p.is_multipart()]
+    if len(parts) > settings.attachment_max_files:
+        raise AttachmentError(f"Attach at most {settings.attachment_max_files} files per message.")
+    root = upload_root(root)
+    total = 0
+    files = []
+    for index, part in enumerate(parts, 1):
+        name = str(part.get_filename())[:200]
+        encoded = part.get_payload()
+        if not isinstance(encoded, str):
+            raise AttachmentError(f"{name}: invalid MIME attachment")
+        # Refuse oversized encoded input before allocating a decoded copy.
+        cap = settings.attachment_max_mb * 1_000_000
+        if len(encoded) > (cap + 2) // 3 * 4 + cap // 30 + 1024:
+            raise AttachmentError(f"{name}: exceeds the per-file cap")
+        data = part.get_payload(decode=True)
+        if not isinstance(data, bytes):
+            raise AttachmentError(f"{name}: invalid attachment encoding")
+        total += len(data)
+        if len(data) > cap or total > settings.attachment_max_message_mb * 1_000_000:
+            raise AttachmentError(f"{name}: exceeds the attachment size cap")
+        filename = f"{index:02d}-{safe_name(name)}"
+        key = f"{root}/attachments/{event_id}/{filename}"
+        storage.put(key, data)
+        kind, media = classify(filename, data[:HEAD_BYTES])
+        files.append(
+            ThreadFile(
+                id="f" + hashlib.sha256(f"{event_id}:{index}".encode()).hexdigest()[:8],
+                source="user",
+                name=name,
+                path=f"inputs/{event_id[:8]}/{filename}",
+                kind=kind,
+                media_type=media,
+                size=len(data),
+                sha256=hashlib.sha256(data).hexdigest(),
+                key=key,
+                event_id=event_id,
+                user=record["intake_principal"],
+            )
+        )
+    return files

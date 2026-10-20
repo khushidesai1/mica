@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from . import surface
 from .config import Settings
 from .help_text import PROJECT_HELP
 from .identity import NOT_ENABLED, IdentityUnavailable, is_private, resolve_email, user_key
@@ -105,7 +106,12 @@ class Grant:
 def resolve(app: Any, settings: Settings, storage: Storage, record: dict[str, Any]) -> Grant:
     payload = record["payload"]
     event, team = payload["event"], payload.get("team_id", "")
-    email = resolve_email(app, settings, storage, team, event.get("user", "")) or ""
+    if surface.is_email(record):
+        email = str(record.get("intake_principal") or "")
+        if not surface.valid_email_record(record, email):
+            email = ""
+    else:
+        email = resolve_email(app, settings, storage, team, event.get("user", "")) or ""
     if record.get("intake_principal") and record["intake_principal"] != email:
         email = ""
     private = is_private(event)
@@ -118,7 +124,11 @@ def resolve(app: Any, settings: Settings, storage: Storage, record: dict[str, An
         state = json.loads(storage.get(checkpoint_key(record["thread_key"]))[0])
     except FileNotFoundError:
         state = {}
-    project_id = state.get("context", {}).get("project_slug") or doc.bound(team, event["channel"])
+    if surface.is_email(record) and state and state.get("private_owner") != email:
+        return Grant("", True, {}, doc, "", False, channel_key)
+    project_id = state.get("context", {}).get("project_slug") or doc.active_for(
+        email, team, event["channel"], private=private
+    )
     project_id = str(project_id or "")
     allowed = doc.can_use(project_id, email)
     if allowed and not private:
@@ -133,7 +143,9 @@ def resolve(app: Any, settings: Settings, storage: Storage, record: dict[str, An
         allowed,
         channel_key,
         bool(state.get("context")),
-        f"{settings.access_mode}:{team}" if settings.access_mode != "mapped" else "",
+        surface.EMAIL_POLICY
+        if surface.is_email(record)
+        else (f"{settings.access_mode}:{team}" if settings.access_mode != "mapped" else ""),
     )
 
 
@@ -192,6 +204,16 @@ def worker_permitted(
         ):
             return False
     email, pid = request.get("principal", ""), request.get("project_id", "")
+    if request.get("payload", {}).get("team_id") == "EMAIL" and not surface.is_email(request):
+        return False
+    email_surface = surface.is_email(request)
+    if email_surface and (
+        not surface.valid_email_record(request, email)
+        or state.get("private_owner") != email
+        or request.get("write_grant")
+        or request.get("overwrite_paths")
+    ):
+        return False
     event = request.get("payload", {}).get("event", {})
     if not email or not pid or state.get("context", {}).get("project_slug") != pid:
         return False
@@ -201,8 +223,8 @@ def worker_permitted(
     channel_key = f"{request['payload'].get('team_id', '')}:{event.get('channel', '')}"
     if not is_private(event) and channel_key not in doc.projects[pid].published_channels:
         return False
-    policy = ""
-    if settings and settings.access_mode != "mapped":
+    policy = surface.EMAIL_POLICY if email_surface else ""
+    if settings and settings.access_mode != "mapped" and not email_surface:
         team = request["payload"].get("team_id", "")
         policy = f"{settings.access_mode}:{team}"
     grant = Grant(
@@ -222,7 +244,7 @@ def worker_permitted(
     if request.get("access_signature") != grant.signature:
         return False
     # Local revocation, binding and path checks take precedence over Slack outages.
-    if settings and settings.access_mode != "mapped":
+    if settings and settings.access_mode != "mapped" and not email_surface:
         return bool(
             resolve_email(settings, settings, storage, team, event.get("user", "")) == email
         )

@@ -20,5 +20,6 @@
 !templates/**
 !deploy/
 !deploy/requirements-bot.txt
+!deploy/requirements-email.txt
 src/**/__pycache__/
 src/**/*.pyc
