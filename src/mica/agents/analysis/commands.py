@@ -12,7 +12,7 @@ from .config import Settings
 from .data_links import init_args, message_text
 from .help_text import COMMAND_HELP, PROJECT_HELP, WRITE_DETAILS, WRITE_HELP
 from .identity import target_email
-from .registry import Registry
+from .registry import ProjectEntry, Registry, RegistryDoc
 
 
 @dataclass(frozen=True)
@@ -62,7 +62,9 @@ def parse(raw: str) -> Command | None:
             return Command("scripts")
         if len(words) == 2 and words[1].lower() in {"on", "off"}:
             return Command("scripts", (words[1].lower(),))
-        raise ValueError("Use scripts, scripts on or scripts off.")
+        if len(words) == 2 and words[1].lower() in {"onn", "of", "ofv", "maybe"}:
+            raise ValueError("Use scripts, scripts on or scripts off.")
+        return None
     if action == "knowledge" and len(words) == 3 and words[1].lower() == "show":
         return Command("knowledge show", (words[2],))
     if action == "knowledge" and len(words) == 3 and words[1].lower() == "github":
@@ -80,12 +82,12 @@ def parse(raw: str) -> Command | None:
 
         words = shlex.split(message_text(text))
         if len(words) not in {2, 4, 6}:
-            raise ValueError("Use transfer <sample> [as <name>] [from <export_root>].")
+            return None
         transfer_args = {"sample": words[1]}
         for i in range(2, len(words), 2):
             field = {"as": "as_sample", "from": "export_root"}.get(words[i].lower())
             if not field or field in transfer_args:
-                raise ValueError("Use transfer <sample> [as <name>] [from <export_root>].")
+                return None
             transfer_args[field] = words[i + 1]
         request = TransferRequest(**transfer_args)
         return Command("transfer", (request.sample, request.export_root, request.as_sample))
@@ -112,11 +114,19 @@ def parse(raw: str) -> Command | None:
         and (len(words) == 2 or words[2] == "--force")
     ):
         return Command("use", (words[1],), len(words) == 3)
-    if action in {"share", "unshare", "publish", "unpublish"} and len(words) == 3:
-        return Command(action, tuple(words[1:]))
+    if action in {"share", "unshare"} and len(words) == 3:
+        if re.fullmatch(r"<@[A-Z0-9]+(?:\|[^>]+)?>|<mailto:[^>]+>|[^\s@]+@[^\s@]+", words[2]):
+            return Command(action, tuple(words[1:]))
+        return None
+    if action in {"publish", "unpublish"} and len(words) == 3:
+        if re.fullmatch(r"<#([CG][A-Z0-9]+)(?:\|[^>]+)?>|[CG][A-Z0-9]+", words[2]):
+            return Command(action, tuple(words[1:]))
+        return None
     if action == "rename":
-        if len(words) != 3:
+        if len(words) <= 2:
             raise ValueError("In your DM, use rename <name or ID> <new-name>.")
+        if len(words) != 3 or words[1].lower() in {"this", "the", "my"}:
+            return None
         return Command(action, tuple(words[1:]))
     if action == "remember" and len(words) > 1:
         content = text.split(maxsplit=1)[1]
@@ -170,16 +180,14 @@ def run(
         in {
             "help write",
             "transfer",
-            "transfers",
             "cancel transfer",
-            "atomx login status",
             "replace atomx login",
             "forget atomx login",
             "share",
             "unshare",
             "publish",
             "unpublish",
-            "cancel",
+            "rename",
         }
     ):
         return surface.EMAIL_READ_ONLY
@@ -204,11 +212,20 @@ def run(
     if cmd.name == "projects":
         active = doc.active_for(email, team, channel, private=grant.private)
         rows = []
-        for pid, project in sorted(doc.visible(email).items(), key=lambda item: item[1].name):
+        query = cmd.args[0].casefold() if cmd.args else ""
+        matches = sorted(
+            (
+                (pid, project)
+                for pid, project in doc.visible(email).items()
+                if not query or query in project.name.casefold() or query in pid.casefold()
+            ),
+            key=lambda item: (item[1].name, item[0]),
+        )
+        for number, (pid, project) in enumerate(matches[:50], 1):
             selector = doc.selector(pid, email)
             label = " (new threads)" if pid == active else ""
             owner = f" · shared by {project.owner}" if project.owner != email else ""
-            rows.append(f"• {project.name}{label}{owner} — `switch {selector}`")
+            rows.append(f"{number}. {project.name}{label}{owner} — `switch {selector}`")
         thread = (
             f"\nThis thread uses {grant.project.name}."
             if grant.allowed and grant.has_context and grant.project_id != active
@@ -216,12 +233,29 @@ def run(
         )
         return (
             "Your projects:\n"
-            + ("\n".join(rows) or "No projects yet.")
+            + (
+                "\n".join(rows) or "No matching projects."
+                if query
+                else "\n".join(rows) or "No projects yet."
+            )
+            + (
+                f"\nShowing 50 of {len(matches)} projects. "
+                "Ask me to find projects by name to narrow the list."
+                if len(matches) > 50
+                else ""
+            )
             + thread
             + "\n\n"
             + PROJECT_HELP
         )
     operation = f"{cmd.name}:{cmd.args}:{cmd.force}:{team}:{channel}"
+
+    def checked(current: RegistryDoc) -> RegistryDoc:
+        expected = record.get("command_expected_project")
+        if expected and current.projects.get(cmd.args[0]) != ProjectEntry.model_validate(expected):
+            raise ValueError("Project settings changed. Request a fresh confirmation.")
+        return current
+
     if cmd.name == "rename":
         # Resolve inside the atomic update: retries must survive the old name disappearing,
         # and a replay must not rename another project that later reuses that name.
@@ -229,7 +263,7 @@ def run(
             event_id,
             email,
             operation,
-            lambda d: d.rename(d.find(cmd.args[0], email), email, cmd.args[1]),
+            lambda d: checked(d).rename(d.find(cmd.args[0], email), email, cmd.args[1]),
         )
         return (
             f"Project renamed to {cmd.args[1]}. "
@@ -248,9 +282,11 @@ def run(
             return pid
 
         registry.update(event_id, email, operation, bind)
-        return (
-            f"New threads will use {doc.projects[pid].name}. "
-            "Send a new message outside this thread to start. Existing threads keep their project."
+        return f"New threads will use {doc.projects[pid].name}. " + (
+            "Start a new email thread to use it. This email thread keeps its project."
+            if surface.is_email(record)
+            else "Send a new message outside this thread to start. "
+            "Existing threads keep their project."
         )
     if cmd.name in {"share", "unshare"}:
         if not doc.owns(pid, email):
@@ -267,7 +303,7 @@ def run(
             event_id,
             email,
             operation,
-            lambda d: d.share(pid, email, target, remove=cmd.name == "unshare"),
+            lambda d: checked(d).share(pid, email, target, remove=cmd.name == "unshare"),
         )
         return (
             f"{'Removed access for' if cmd.name == 'unshare' else 'Shared with'} {target}. "
@@ -282,7 +318,9 @@ def run(
         event_id,
         email,
         operation,
-        lambda d: d.publish(pid, email, team, target_channel, remove=cmd.name == "unpublish"),
+        lambda d: checked(d).publish(
+            pid, email, team, target_channel, remove=cmd.name == "unpublish"
+        ),
     )
     if cmd.name == "unpublish":
         return (

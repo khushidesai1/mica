@@ -91,7 +91,11 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     monkeypatch.setattr("slack_sdk.web.async_client.AsyncWebClient", lambda **kw: slack)
     from analysis_helpers import seed_project
 
-    from mica.agents.analysis import direct
+    from mica.agents.analysis import command_intent, direct
+
+    monkeypatch.setattr(
+        command_intent, "classify", AsyncMock(return_value=command_intent.Intent(route="continue"))
+    )
 
     pid = seed_project(storage)
     monkeypatch.setattr(

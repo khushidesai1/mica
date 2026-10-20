@@ -26,7 +26,13 @@ WRITE_DETAILS = (
     "an upload already completing may finish."
 )
 
-COMMAND_HELP = """*Projects*
+COMMAND_HELP = """You can use ordinary language in Slack or email: "What projects can I access?",
+"Use my-project", "Create project my-project at gs://bucket/folder/", "Show the project guide",
+"Include the scripts", or "Stop this analysis". Project creation needs an explicit data URI.
+Access changes require a private Slack confirmation; email offers that handoff.
+Exact commands still work:
+
+*Projects*
 • `init <name> gs://bucket/folder/` — Create and select a project (DM).
 • `switch` — List your projects (alias: `projects`).
 • `switch <name or ID>` — Select a project for new threads (alias: `use`).

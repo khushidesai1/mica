@@ -27,13 +27,14 @@ from mica.agents.analysis.registry import Registry
         ("help all", Command("help all")),
         ("switch to log scale", None),
         ("help me switch projects", None),
+        ("rename liver to brain", None),
     ],
 )
 def test_project_command_grammar(text, expected):
     assert parse(text) == expected
 
 
-@pytest.mark.parametrize("text", ["rename", "rename liver", "rename liver to brain"])
+@pytest.mark.parametrize("text", ["rename", "rename liver"])
 def test_incomplete_rename_has_usage_error(text):
     with pytest.raises(ValueError, match="rename <name or ID> <new-name>"):
         parse(text)

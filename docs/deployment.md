@@ -179,3 +179,11 @@ Email intake removes conventional signature blocks and trailing quoted replies b
 the new request. For example, `projects` followed by a signature still runs the projects command.
 Inline replies below quoted text remain intact. Sender verification always checks the original
 signed message bytes before extracting request text.
+
+
+Natural-language account and control requests are documented in
+[`natural-language-requests.md`](natural-language-requests.md). This API release includes
+sender-only account replies, guarded project creation, signed administrative confirmation,
+and stable email follow-up session metadata. It does not enable or replace AtoMx transfer
+images, credentials, or infrastructure. Run the routing snapshot and complete application checks
+before the existing API/worker compatibility release gates.

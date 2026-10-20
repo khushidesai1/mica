@@ -405,17 +405,78 @@ class BatchBridge:
                 return str(record["status"])
             if not record.get("notice_ts"):
                 await self.notify(event_id, record, "received", "On it…")
+            from . import command_intent, commands
+            from .direct import RoutingUnavailable, finish
+
+            cmd = commands.Command("cancel") if record.get("cancel_control") else None
+            if record["status"] == "pending" and record.get("route") != "compute":
+                try:
+                    cmd = commands.parse(record["payload"]["event"].get("text", ""))
+                    intent = (
+                        None
+                        if cmd
+                        else await command_intent.prepare(self, event_id, record, self.storage)
+                    )
+                    if intent and intent.route == "command" and intent.proposal:
+                        if intent.proposal.operation == "cancel":
+                            cmd = commands.Command("cancel")
+                        if intent.proposal.operation == "write revoke" and not surface.is_email(
+                            record
+                        ):
+                            # This control may present an approval while compute is running.
+                            # Later turns must follow its predecessor, never treat the preview
+                            # as completion of that active computation.
+                            record["control_bypass"] = True
+                            await self.repository.set_connector_state(key, record)
+                except RoutingUnavailable:
+                    record["routing_failures"] = int(record.get("routing_failures", 0)) + 1
+                    if record["routing_failures"] >= 3:
+                        record["status"] = "failed"
+                        await self.notify(
+                            event_id,
+                            record,
+                            "failed",
+                            "I couldn't determine this request after several attempts. "
+                            "Please try again.",
+                        )
+                    else:
+                        await self.notify(
+                            event_id,
+                            record,
+                            "replying",
+                            "I'm retrying a temporary routing issue. No need to resend.",
+                        )
+                    record["tick"] = tick + 1
+                    await self.repository.set_connector_state(key, record)
+                    if record["status"] == "pending":
+                        await self.schedule(event_id, tick + 1)
+                    return str(record["status"])
+                except ValueError as exc:
+                    record["status"] = "failed"
+                    await self.notify(event_id, record, "failed", str(exc).splitlines()[0][:250])
+                    await self.repository.set_connector_state(key, record)
+                    return "failed"
             previous = (
                 await self.repository.get_connector_state(f"claude-event:{record['previous']}")
                 if record.get("previous")
                 else None
             )
+            for _ in range(100):
+                if not previous or not previous.get("control_bypass"):
+                    break
+                previous = (
+                    await self.repository.get_connector_state(
+                        f"claude-event:{previous['previous']}"
+                    )
+                    if previous.get("previous")
+                    else None
+                )
+            else:
+                raise RuntimeError("Control predecessor chain exceeds the safe limit")
             from .data_links import message_text
 
-            if (
-                not surface.is_email(record)
-                and message_text(record["payload"]["event"].get("text", "")).lower() == "cancel"
-            ):
+            if cmd and cmd.name == "cancel":
+                record["cancel_control"] = True
                 grant = await asyncio.to_thread(
                     access.resolve,
                     self.app,
@@ -435,6 +496,7 @@ class BatchBridge:
                 or message_text(record["payload"]["event"].get("text", "")).lower()
                 in {"forget context", "forget all"}
                 or record.get("write_control")
+                or record.get("control_bypass")
             ):
                 await self.advance(event_id, record)
             else:
@@ -1001,7 +1063,18 @@ class BatchBridge:
             prior = await self.repository.get_connector_state(key)
             if not prior:
                 break
+            if prior.get("thread_key") != record["thread_key"] or (
+                surface.is_email(record)
+                and (
+                    not surface.is_email(prior)
+                    or prior.get("intake_principal") != record.get("intake_principal")
+                )
+            ):
+                raise PermissionError("Cancellation crossed a conversation boundary")
             next_cursor = prior.get("previous")
+            if prior.get("control_bypass"):
+                cursor = next_cursor
+                continue
             if prior["status"] in {"complete", "failed"} and prior.get("cancelled_by") != event_id:
                 cursor = None
                 break

@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from mica.connectors import gmail_client
 
-from . import access
+from . import access, command_intent
 from .config import CHECKPOINT_PREFIX
 from .storage import Conflict
 from .surface import EMAIL_STATE_PREFIX
@@ -160,8 +160,38 @@ async def deliver(
     sender = record.get("intake_principal", "")
     if not sender or grant.email != sender:
         raise PermissionError("Email sender verification is unavailable")
+    # Audience is server-owned event metadata; model/worker replies cannot widen it.
+    account_reply = record.get("reply_scope") == "account"
+    audience = record.get("reply_audience", "project_participants")
+    if account_reply:
+        audience = "sender_only"
+        if record.get("account_visibility") != command_intent.visibility(grant):
+            # Rebuild a read-only list from current visibility; never replay a mutation here.
+            intent = record.get("command_intent", {}).get("proposal") or {}
+            exact = record["payload"]["event"].get("text", "").strip().lower()
+            if intent.get("operation") == "projects" or exact in {"projects", "switch"}:
+                from . import commands
+                from .registry import Registry
+
+                text = (
+                    commands.run(
+                        commands.Command(
+                            "projects", (intent["selector"],) if intent.get("selector") else ()
+                        ),
+                        grant,
+                        Registry(storage),
+                        bridge.app,
+                        record,
+                        event_id,
+                        bridge.settings,
+                    )
+                    or "No projects available."
+                )
+            else:
+                text = "Your project access changed while preparing this reply. Please ask again."
+            result = None
     # Never deliver project content after revocation, including queued worker output.
-    if kind == "final" and grant.project_id and not grant.allowed:
+    if kind == "final" and not account_reply and grant.project_id and not grant.allowed:
         text, result = (
             "Project access is unavailable. Ask the project owner for access in Slack.",
             None,
@@ -169,7 +199,7 @@ async def deliver(
     meta = record["payload"]["_email"]
     recipients = [sender]
     dropped = []
-    if kind == "final" and grant.allowed:
+    if kind == "final" and audience == "project_participants" and grant.allowed:
         for email in dict.fromkeys(meta.get("recipients", [])):
             if email == sender or gmail_client.is_own(email, bridge.app):
                 continue
@@ -227,10 +257,18 @@ async def deliver(
         raise ValueError("Final MIME message exceeds the email budget")
     # Recheck immediately before send intent; no project data is sent after known revocation.
     current = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
-    if current.signature != grant.signature:
+    if (
+        current.email != grant.email
+        or (
+            account_reply and command_intent.visibility(current) != command_intent.visibility(grant)
+        )
+        or (not account_reply and current.signature != grant.signature)
+    ):
         raise RuntimeError("Project membership changed while preparing email; retry")
     saved = {
         "status": "sending",
+        "audience": audience,
+        "scope": "account" if account_reply else "project",
         "text": text,
         "artifacts": included,
         "message_id": message_id,
