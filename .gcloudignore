@@ -21,5 +21,7 @@
 !deploy/
 !deploy/requirements-bot.txt
 !deploy/requirements-email.txt
+!deploy/atomx/
+!deploy/atomx/**
 src/**/__pycache__/
 src/**/*.pyc

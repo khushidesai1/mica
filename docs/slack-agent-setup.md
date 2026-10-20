@@ -617,6 +617,25 @@ New workers cancel active publishing tools, persist the stop reason and enforce 
 deadline. Completed objects retain their receipts. Cancellation allows cooperative shutdown,
 with forced Batch deletion as a fallback; older in-flight workers keep their existing protocol.
 
+## Transfers
+
+AtoMx transfers use a dedicated transfer worker and the user's saved SFTP login, with a pinned
+SSH host key to authenticate the server. User credentials do not replace host-key verification.
+Transfers remain disabled until the image, independently verified host key, service identity,
+network access and scratch-bucket canary are confirmed.
+
+The completion-marker update is implemented but **not deployed** as of 20 October 2026.
+Image builds, live bucket checks and rollout are on hold pending key confirmation. No project
+configuration or transfer flag has been changed.
+
+Verified transfers create `done.txt` in both destination sample folders after publishing the
+authoritative `transfer_status/<sample>.done.json`. The admin-only `atomx-transfer backfill`
+command can repair missing text or record legacy bucket listings; it defaults to a dry run and
+never connects to SFTP. Backfilled records are explicitly listing-only, not source verification.
+There is no Slack backfill command or backfill Batch job. See the
+[transfer CLI documentation](../tools/atomx_transfer/README.md) for format, concurrency rules and
+verification behavior.
+
 ## Email requests
 
 Email can use the same Claude agent, projects and analysis workers as Slack. The initial mailbox

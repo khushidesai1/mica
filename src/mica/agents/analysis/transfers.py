@@ -61,6 +61,8 @@ def marker_state(values: dict[str, Any]) -> str:
     if "in_progress" in values:
         return "stuck" if age(values["in_progress"].get("heartbeat")) > 3600 else "in_progress"
     if "done" in values:
+        if values["done"].get("provenance") == "backfill":
+            return "done (backfilled; listing-only, not verified)"
         return "done (marker; manifest not rechecked here)"
     return "failed" if "failed" in values else "on_atomx_only"
 
