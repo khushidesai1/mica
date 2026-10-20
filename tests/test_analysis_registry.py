@@ -3,11 +3,68 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from mica.agents.analysis.registry import Registry, RegistryDoc
+from mica.agents.analysis.registry import Binding, Registry, RegistryDoc
 from mica.agents.analysis.storage import Conflict, LocalStorage
 from tools.migrate_slack_registry import apply, report
 
 A, B = "alice@example.com", "bob@example.com"
+
+
+def test_first_invitation_selects_normalized_recipient_and_later_invites_preserve_choice():
+    doc = RegistryDoc()
+    first = doc.create(A, "first", "gs://data/first/")
+    second = doc.create(A, "second", "gs://data/second/")
+    doc.share(first, A, B.upper())
+    assert doc.defaults == {B: first}
+    assert doc.active_for(B, "EMAIL", "E1", private=True) == first
+    doc.share(second, A, B)
+    assert doc.defaults[B] == first
+    doc.bind("EMAIL", "E1", B, second, private=True)
+    doc.share(first, A, B)
+    assert doc.defaults[B] == second
+    assert not doc.can_use(first, "different@example.com")
+    assert not doc.projects[first].published_channels
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("revoked", [False, True])
+def test_invitation_preserves_explicit_and_legacy_choices_even_if_revoked(legacy, revoked):
+    doc = RegistryDoc()
+    old = doc.create(A, "old-project", "gs://data/old/")
+    new = doc.create(A, "new-project", "gs://data/new/")
+    doc.projects[old].members.add(B)
+    if legacy:
+        doc.bindings["T1:D1"] = Binding(project_id=old, bound_by=B)
+    else:
+        doc.defaults[B] = old
+    if revoked:
+        doc.share(old, A, B, remove=True)
+    doc.share(new, A, B)
+    assert doc.active_for(B, "EMAIL", "E1", private=True) == (None if revoked else old)
+    assert doc.defaults == ({} if legacy else {B: old})
+
+
+def test_concurrent_first_invites_choose_once_and_replay_cannot_restore_access(tmp_path):
+    registry = Registry(LocalStorage(tmp_path))
+    projects = [
+        registry.update(name, A, name, lambda d, name=name: d.create(A, name, "gs://data/"))
+        for name in ("first", "second")
+    ]
+
+    def share(pid):
+        return registry.update("share-" + pid, A, "share", lambda d: d.share(pid, A, B))
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(share, projects))
+    selected = registry.load().defaults[B]
+    assert selected in projects
+    assert all(registry.load().can_use(pid, B) for pid in projects)
+    registry.update("revoke", A, "unshare", lambda d: d.share(selected, A, B, remove=True))
+    share(selected)
+    doc = registry.load()
+    assert doc.defaults[B] == selected
+    assert not doc.can_use(selected, B)
+    assert doc.active_for(B, "EMAIL", "E1", private=True) is None
 
 
 def test_compare_and_swap_and_concurrent_updates(tmp_path):

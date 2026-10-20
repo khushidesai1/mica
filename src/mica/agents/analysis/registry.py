@@ -202,18 +202,37 @@ class RegistryDoc(BaseModel):
         return pid
 
     def share(self, project_id: str, owner: str, target: str, *, remove: bool = False) -> str:
+        target = normalize(target)
         if not self.owns(project_id, owner):
             raise ValueError("Only the project owner can change sharing.")
         if target == owner:
             raise ValueError("The owner always has access.")
         members = self.projects[project_id].members
+        new_member = target not in members
         if (target in members) == remove:
             self.projects[project_id].access_revision += 1
         if remove:
             members.discard(target)
         else:
             members.add(target)
+            if new_member:
+                self.initialize_default(project_id, target)
         return project_id
+
+    def initialize_default(self, project_id: str, email: str) -> bool:
+        """Select an initial private project without replacing any prior choice."""
+        email = normalize(email)
+        if not self.can_use(project_id, email):
+            raise ValueError("That project is unavailable.")
+        if email in self.defaults or any(
+            key.split(":", 1)[-1].startswith("D") and normalize(binding.bound_by) == email
+            for key, binding in self.bindings.items()
+        ):
+            # Preserve revoked and ambiguous legacy choices as well: an invitation
+            # must never silently redirect an established user's private messages.
+            return False
+        self.defaults[email] = project_id
+        return True
 
     def publish(
         self, project_id: str, owner: str, team: str, channel: str, *, remove: bool = False
