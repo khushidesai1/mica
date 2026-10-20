@@ -30,10 +30,17 @@ class Settings(BaseSettings):
     memory_token_secret: str = ""  # Control-plane-only Secret Manager version.
     memory_index_chars: int = Field(default=4000, ge=1, le=16000)
     memory_file_kb: int = Field(default=16, ge=1, le=64)
-    memory_max_files: int = Field(default=200, ge=1, le=1000)
-    memory_total_kb: int = Field(default=1024, ge=1, le=16384)
+    memory_max_files: int = Field(default=500, ge=1, le=1000)
+    memory_total_kb: int = Field(default=4096, ge=1, le=16384)
     memory_router_chars: int = Field(default=12000, ge=1, le=64000)
     memory_auto_edit: bool = True
+    memory_compaction_enabled: bool = True
+    # During coordinated rollout, keep the old layout until old API requests have drained.
+    memory_archive_after: float = Field(default=0, ge=0)
+    memory_compaction_chars: int = Field(default=24000, ge=2000, le=64000)
+    memory_compaction_attempts: int = Field(default=2, ge=1, le=3)
+    memory_compaction_calls_per_hour: int = Field(default=3, ge=1, le=6)
+    memory_compaction_cooldown_seconds: int = Field(default=600, ge=60, le=3600)
     memory_model: str = "claude-opus-5"  # Requires forced tool choice support.
     fallback_model: str = "claude-opus-5"
     bucket: str = Field(

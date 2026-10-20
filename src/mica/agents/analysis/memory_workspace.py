@@ -10,6 +10,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from . import memory_archive
 from .config import CHECKPOINT_PREFIX, Settings
 from .project_memory import Snapshot, file_limit, valid_path, validate
 from .storage import Storage
@@ -91,12 +92,17 @@ def proposal(work: Path, base: Snapshot, settings: Settings) -> Proposal:
     files, rejected = scan(work, settings)
     changes: dict[str, str | None] = {}
     for path in files.keys() | base.files.keys():
+        if memory_archive.is_index(path):
+            continue
         if any(path == bad or path.startswith(bad + "/") for bad in rejected):
             continue
         value = files[path].decode() if path in files else None
         before = base.files.get(path)
         if value != (before.text if before else None):
-            changes[path] = value
+            if path.startswith("archive/"):
+                rejected[path] = "Archive entries are immutable; edit an active entry."
+            else:
+                changes[path] = value
     return Proposal(base_head=base.head_oid, changes=changes, rejected=rejected)
 
 
@@ -121,22 +127,12 @@ def publication_proposal(
         "status: current\n\n" + receipts + "\nOnly confirmed files are counted. "
         "This is publication evidence, not scientific validation.\n"
     )
-    previous = (
-        result.changes.get(
-            "INDEX.md", base.files["INDEX.md"].text if "INDEX.md" in base.files else ""
-        )
-        or ""
-    )
-    index = previous.rstrip() + f"\n- [Published outputs {event_id[:8]}]({path})\n"
     try:
         validate(path, text.encode(), settings)
-        validate("INDEX.md", index.encode(), settings)
     except ValueError:
-        result.rejected[path] = (
-            "Publication locations exceed memory limits; retained in thread history."
-        )
+        result.rejected[path] = "Publication receipt exceeds memory limits; retained in history."
     else:
-        result.changes.update({path: text, "INDEX.md": index})
+        result.changes[path] = text
     return result.model_dump_json().encode()
 
 

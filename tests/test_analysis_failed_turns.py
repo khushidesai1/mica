@@ -189,7 +189,7 @@ async def test_pending_line_updates_on_retry_and_disappears_on_success(chat, mon
     assert "Proseg TMA" not in (await chat.memory_backend.read(chat.pid)).files["open.md"].text
 
 
-async def test_large_growth_commits_then_enqueues_compaction_once(chat, monkeypatch):
+async def test_growth_below_file_pressure_commits_without_compaction(chat, monkeypatch):
     chat.settings.memory_auto_edit = True
     queued = AsyncMock()
     monkeypatch.setattr(job_lifecycle, "enqueue", queued)
@@ -200,4 +200,4 @@ async def test_large_growth_commits_then_enqueues_compaction_once(chat, monkeypa
     await memory_tasks.process(chat, event, chat.store)
     assert (await chat.memory_backend.read(chat.pid)).files["open.md"].text == expanded
     compact = [c for c in queued.call_args_list if "/memory-compact/" in c.args[2]]
-    assert len(compact) == 1
+    assert not compact

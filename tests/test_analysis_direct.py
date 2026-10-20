@@ -806,17 +806,13 @@ def test_inventory_paths_have_sanity_bounds():
 async def test_imported_layout_is_supplied_in_router_context(chat):
     from tools.memory_import import layout_from_memory
 
-    base = await chat.memory_backend.read(chat.pid)
-    await chat.memory_backend.commit(
-        chat.pid,
-        base,
+    # Historical project without a guide; ordinary writers can no longer delete core files.
+    chat.github.seed(
         {
-            "PROJECT.md": None,
-            "open.md": "type: open\nsource: analysis, 2026-10-11\nstatus: current\n\n"
-            "AtoMx raw: `raw_outputs/raw/<TMA>/`",
-        },
-        source="editor",
-        event_id="prepare-import",
+            f"projects/{chat.pid}/PROJECT.md": None,
+            f"projects/{chat.pid}/open.md": "type: open\nsource: analysis, 2026-10-11\n"
+            "status: current\n\nAtoMx raw: `raw_outputs/raw/<TMA>/`",
+        }
     )
     await layout_from_memory(
         chat.store,
