@@ -5,6 +5,7 @@ import base64
 import hashlib
 import json
 from email import policy
+from email.message import EmailMessage
 from email.parser import BytesParser
 from unittest.mock import AsyncMock
 
@@ -29,6 +30,24 @@ def sent_messages(mail):
         )
         for call in mail.gmail.users().messages().send.call_args_list
     ]
+
+
+def test_content_fingerprint_survives_wire_encoding_and_gmail_headers():
+    original = EmailMessage(policy=policy.SMTP)
+    original["From"] = "mi.ca+requests@gmail.com"
+    original["To"] = "alice@example.com, bob@example.com"
+    original["Subject"] = "Réponse: " + "long project title " * 12
+    original["In-Reply-To"] = "<request@example.com>"
+    original["Message-ID"] = "<before@example.com>"
+    original["X-Mica-Delivery-ID"] = "unique"
+    original.set_content("Résultats\n\nLine two.\n")
+    original.add_attachment(b"a,b\n1,2\n", maintype="text", subtype="csv", filename="résultats.csv")
+    received = BytesParser(policy=policy.SMTP).parsebytes(original.as_bytes())
+    received.replace_header("Message-ID", "<changed@mail.gmail.com>")
+    received["Date"] = "Tue, 20 Oct 2026 18:00:00 +0000"
+    assert email_delivery.content_fingerprint(original) == email_delivery.content_fingerprint(
+        received
+    )
 
 
 async def test_ack_progress_final_reply_all_membership_and_threading(mail):
@@ -109,15 +128,100 @@ async def test_mime_budget_omits_files_with_truthful_recovery_message(mail, monk
 
 async def test_send_accepted_response_lost_reconciles_without_resending(mail):
     eid, record = await email_record(mail)
-    mail.gmail.users().messages().send().execute.side_effect = TimeoutError("lost response")
+    mail.gmail.users().messages().send.return_value.execute.side_effect = TimeoutError(
+        "lost response"
+    )
     with pytest.raises(TimeoutError):
         await deliver(mail, eid, record, "Answer", kind="final")
+    sent = sent_messages(mail)[0]
     mail.gmail.users().messages().send.reset_mock()
+    mail.gmail.users().threads().get().execute.return_value = {"messages": []}
     with pytest.raises(RuntimeError, match="unconfirmed"):
         await deliver(mail, eid, record, "Answer", kind="final")
     mail.gmail.users().messages().send.assert_not_called()
-    mail.gmail.users().messages().list().execute.return_value = {"messages": [{"id": "accepted"}]}
+    mail.gmail.users().threads().get().execute.return_value = {
+        "messages": [
+            {
+                "id": "accepted",
+                "labelIds": ["SENT"],
+                "payload": {
+                    "headers": [
+                        {"name": "Message-ID", "value": "<gmail-rewrote-this@mail.gmail.com>"},
+                        {"name": "X-Mica-Delivery-ID", "value": str(sent["X-Mica-Delivery-ID"])},
+                    ]
+                },
+            }
+        ]
+    }
+    sent.replace_header("Message-ID", "<gmail-rewrote-this@mail.gmail.com>")
+    mail.mail_messages["accepted"] = {
+        "labelIds": ["SENT"],
+        "raw": base64.urlsafe_b64encode(sent.as_bytes()).decode(),
+    }
     assert await deliver(mail, eid, record, "Answer", kind="final") == "accepted"
+    mail.gmail.users().messages().send.assert_not_called()
+
+
+@pytest.mark.parametrize("labels, count", [([], 1), (["SENT"], 2)])
+async def test_reconciliation_rejects_inbound_or_duplicate_delivery_headers(mail, labels, count):
+    eid, record = await email_record(mail)
+    mail.gmail.users().messages().send.return_value.execute.side_effect = TimeoutError(
+        "lost response"
+    )
+    with pytest.raises(TimeoutError):
+        await deliver(mail, eid, record, "Answer", kind="final")
+    sent = sent_messages(mail)[0]
+    mail.gmail.users().messages().send.reset_mock()
+    mail.gmail.users().threads().get().execute.return_value = {
+        "messages": [
+            {
+                "id": str(index),
+                "labelIds": labels,
+                "payload": {
+                    "headers": [
+                        {"name": "X-Mica-Delivery-ID", "value": str(sent["X-Mica-Delivery-ID"])},
+                    ]
+                },
+            }
+            for index in range(count)
+        ]
+    }
+    with pytest.raises(RuntimeError, match="unconfirmed"):
+        await deliver(mail, eid, record, "Answer", kind="final")
+    mail.gmail.users().messages().send.assert_not_called()
+
+
+@pytest.mark.parametrize("change", ["body", "recipient"])
+async def test_reconciliation_checks_content_and_recipients(mail, change):
+    eid, record = await email_record(mail)
+    mail.gmail.users().messages().send.return_value.execute.side_effect = TimeoutError("lost")
+    with pytest.raises(TimeoutError):
+        await deliver(mail, eid, record, "Answer", kind="final")
+    sent = sent_messages(mail)[0]
+    mail.gmail.users().messages().send.reset_mock()
+    mail.gmail.users().threads().get().execute.return_value = {
+        "messages": [
+            {
+                "id": "different",
+                "labelIds": ["SENT"],
+                "payload": {
+                    "headers": [
+                        {"name": "X-Mica-Delivery-ID", "value": str(sent["X-Mica-Delivery-ID"])},
+                    ]
+                },
+            }
+        ]
+    }
+    if change == "body":
+        sent.set_content("Different answer")
+    else:
+        sent.replace_header("To", "outsider@example.com")
+    mail.mail_messages["different"] = {
+        "labelIds": ["SENT"],
+        "raw": base64.urlsafe_b64encode(sent.as_bytes()).decode(),
+    }
+    with pytest.raises(RuntimeError, match="unconfirmed"):
+        await deliver(mail, eid, record, "Answer", kind="final")
     mail.gmail.users().messages().send.assert_not_called()
 
 

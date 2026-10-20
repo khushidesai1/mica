@@ -168,7 +168,14 @@ resumable scan of labeled mail since activation, protected by durable message re
 an older, pre-activation message does not execute it; forward a fresh request instead.
 
 The GCS outbox at `projects/_gmail/outbox/<event>/<ack|final>.json` records send intent
-before contacting Gmail. A lost response is reconciled through its deterministic RFC822 Message-ID
-and the sent-mail search. An ambiguous send with no matching sent message is held for operator
-review; it is never blindly resent. Inspect Gmail and the recorded Message-ID before resolving a
-stuck operation. This prioritizes avoiding duplicates and does not promise exactly-once delivery.
+before contacting Gmail. Gmail can rewrite the RFC822 Message-ID, so new sends also carry a random
+`X-Mica-Delivery-ID` recorded in the outbox. A lost response is reconciled against that header on
+sent messages in the original thread. Legacy operations use their saved Message-ID search.
+An ambiguous send with no unique matching sent message is held for operator review; it is never
+blindly resent. Inspect Gmail and the recorded delivery identifier before resolving a stuck
+operation. This prioritizes avoiding duplicates and does not promise exactly-once delivery.
+
+Email intake removes conventional signature blocks and trailing quoted replies before routing
+the new request. For example, `projects` followed by a signature still runs the projects command.
+Inline replies below quoted text remain intact. Sender verification always checks the original
+signed message bytes before extracting request text.
