@@ -825,7 +825,7 @@ class Transfers:
     ) -> str:
         from . import surface
 
-        if surface.is_email(record):
+        if surface.is_email(record) and cmd.name != "transfers":
             raise PermissionError(surface.EMAIL_READ_ONLY)
         self.authorize(grant.project_id, grant.email)
         if cmd.name == "transfer":
