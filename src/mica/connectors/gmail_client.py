@@ -11,10 +11,6 @@ from typing import Any
 import dkim
 import dns.exception
 import dns.resolver
-import google_auth_httplib2
-import httplib2
-from google.oauth2.credentials import Credentials
-from googleapiclient.discovery import build
 
 from mica.config import Settings
 
@@ -33,6 +29,12 @@ def enabled(settings: Settings) -> bool:
 
 
 def service(settings: Settings) -> Any:
+    # Only the control plane creates Gmail clients; worker result models need no API SDK.
+    import google_auth_httplib2
+    import httplib2
+    from google.oauth2.credentials import Credentials
+    from googleapiclient.discovery import build
+
     if not enabled(settings):
         raise ValueError("Gmail OAuth and label configuration is incomplete")
     credentials = Credentials(  # type: ignore[no-untyped-call]

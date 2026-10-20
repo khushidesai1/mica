@@ -12,7 +12,6 @@ from email.message import EmailMessage
 from email.policy import SMTP
 from typing import TYPE_CHECKING, Any, Literal
 
-from googleapiclient.errors import HttpError
 from pydantic import BaseModel, Field
 
 from mica.connectors import gmail_client
@@ -56,6 +55,8 @@ async def deliver(
     kind: Literal["ack", "final"],
     result: TerminalResult | None = None,
 ) -> str:
+    from googleapiclient.errors import HttpError
+
     storage = bridge.storage
     key = f"{EMAIL_STATE_PREFIX}/outbox/{event_id}/{kind}.json"
     message_id = f"<mica.{event_id}.{kind}@{gmail_client.mailbox(bridge.app).split('@')[1]}>"
