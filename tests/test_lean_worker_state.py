@@ -277,5 +277,5 @@ def test_confirmed_publication_locations_enter_memory_proposal():
     proposal = memory_workspace.decode_pending(updated, settings)
     result = proposal.changes["results/published-" + "b" * 32 + ".md"]
     assert receipt in result and "not scientific validation" in result
-    assert "published-" in proposal.changes["INDEX.md"]
+    assert "INDEX.md" not in proposal.changes  # The store generates the inventory atomically.
     assert memory_workspace.publication_proposal(raw, base, "b" * 32, "", settings) == raw

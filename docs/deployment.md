@@ -187,3 +187,22 @@ sender-only account replies, guarded project creation, signed administrative con
 and stable email follow-up session metadata. It does not enable or replace AtoMx transfer
 images, credentials, or infrastructure. Run the routing snapshot and complete application checks
 before the existing API/worker compatibility release gates.
+
+
+## Project memory archive rollout
+
+Use `cloudbuild/build-slack-release.yaml` to build the API, Claude worker, and refreshed shared
+worker from the same source commit. Its offline gates verify archive materialization, paged
+indexes, immutable archive proposals, prompt bounds, and worker execution compatibility.
+Update the API image and immutable worker image environment pins in one revision; preserve
+all other runtime settings and secret references. Preview that revision before promoting traffic.
+
+For the first archive rollout, set `AGENT_MEMORY_ARCHIVE_AFTER` to a Unix timestamp later than
+promotion plus the old revision's request timeout and a safety margin. Verify that deadline
+has passed before checking archive behavior. This lets old API requests finish scheduling their
+old-format snapshots while normal analysis continues. Existing worker snapshots remain immutable;
+late proposals use the new controller's conflict-preserving writer. Do not pause the shared queue.
+Run `tools/memory_smoke.py --github-cli` with the deployed memory repository settings and record
+and confirm cleanup of the exact `projects/_smoke/` folder. Never create a real project or send
+user-facing messages for this store check. After archives exist, retain archive-compatible API
+and workers when rolling back. See [project memory](project-memory.md) for limits and controls.

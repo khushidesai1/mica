@@ -28,7 +28,10 @@ async def test_round_trip_and_historical_snapshot(store, caplog):
     saved = await backend.commit("p_test", base, files, source="editor", event_id="roundtrip")
     result = await backend.read("p_test", event_id="readback")
     assert result.head_oid == saved.commit_oid
-    assert {p: f.text for p, f in result.files.items()} == files
+    assert {p: f.text for p, f in result.files.items() if p != "INDEX.md"} == {
+        p: text for p, text in files.items() if p != "INDEX.md"
+    }
+    assert "(conventions.md)" in result.files["INDEX.md"].text
     assert all(f.oid == blob_oid(f.text) for f in result.files.values())
     assert (await backend.read("p_test", head_oid=base.head_oid)).files == {}
     assert "memory_read pid=p_test event=roundtrip" in caplog.text
@@ -69,7 +72,7 @@ async def test_exact_guide_limit_and_markdown_recipe_limit(store):
         event_id="limits",
         source="worker",
     )
-    assert saved.writes == 2 and not saved.rejected
+    assert set(saved.added) == {"PROJECT.md", "recipes/plot.md", "INDEX.md"} and not saved.rejected
 
 
 async def test_concurrent_edits_merge_and_conflicts_are_preserved(store):
@@ -79,7 +82,7 @@ async def test_concurrent_edits_merge_and_conflicts_are_preserved(store):
     saved = await backend.commit(
         "p_test", base, {"lessons.md": FACT}, event_id="other", source="worker"
     )
-    assert saved.writes == 1
+    assert set(saved.added) == {"lessons.md", "INDEX.md"}
     saved = await backend.commit(
         "p_test", base, {"conventions.md": FACT + "Changed"}, event_id="collision", source="worker"
     )
@@ -123,7 +126,7 @@ async def test_unavailable_reads_fail_open_and_writes_raise(store, timeout, capl
 
 async def test_aggregate_limit_rejects_new_files_without_losing_existing(store):
     backend, github = store
-    backend.settings.memory_max_files = 2
+    backend.settings.memory_max_files = 3
     base = await backend.read("p_test")
     saved = await backend.commit(
         "p_test",
@@ -136,8 +139,8 @@ async def test_aggregate_limit_rejects_new_files_without_losing_existing(store):
         source="editor",
         event_id="full",
     )
-    assert saved.writes == 2 and len(saved.rejected) == 1
-    assert len(github.trees[github.head]) == 2
+    assert not saved.commit_oid and len(saved.rejected) == 3
+    assert github.trees[github.head] == {}
 
 
 async def test_success_metrics_survive_default_application_warning_level(store, caplog):

@@ -19,6 +19,7 @@ from mica.agents.analysis import (
     attachments,
     commands,
     direct,
+    memory_archive,
     memory_workspace,
     project_memory,
     write_access,
@@ -37,12 +38,11 @@ def check(source: Path, mode: str) -> None:
     files = sorted((source / "src/mica").rglob("*.py"))
     for file in files:
         assert (
-            file.read_bytes()
-            == (installed / file.relative_to(source / "src/mica")).read_bytes()
+            file.read_bytes() == (installed / file.relative_to(source / "src/mica")).read_bytes()
         ), file
     print(f"SOURCE_VERIFIED: {len(files)} application files")
-    from mica.connectors.gmail_client import verified_message
     from mica.agents.analysis.email_delivery import TerminalResult
+    from mica.connectors.gmail_client import verified_message
 
     assert verified_message(b"From: forged@example.com\r\n\r\nunsigned") is None
     assert TerminalResult(attempt=0, text="image gate").artifacts == []
@@ -122,6 +122,31 @@ def check(source: Path, mode: str) -> None:
             Path("/opt/pistachio/templates/PROJECT.template.md").read_bytes()
             == (source / "templates/PROJECT.template.md").read_bytes()
         )
+        original = "type: fact\nsource: synthetic image gate\nstatus: current\n\nArchived evidence."
+        layout = memory_archive.prepare(
+            {}, {f"data/note-{n:03d}.md": original for n in range(200)}, settings
+        )
+        archived = project_memory.Snapshot(
+            head_oid="a" * 40,
+            files={
+                p: project_memory.File(text=t, oid="b" * 40)
+                for p, t in layout.items()
+                if t is not None
+            },
+        )
+        assert "archive/INDEX.md" in archived.files
+        assert len([p for p in archived.files if p.startswith("archive/index-")]) > 1
+        memory_workspace.materialize(work / "archive-work", archived, settings)
+        assert not memory_workspace.proposal(work / "archive-work", archived, settings).changes
+        context = project_memory.context(archived, "archived evidence", settings)
+        assert len(context) <= settings.memory_router_chars and "File: archive/" not in context
+        path = next(
+            p for p in archived.files if p.startswith("archive/") and not memory_archive.is_index(p)
+        )
+        (work / "archive-work" / "knowledge" / path).unlink()
+        proposal = memory_workspace.proposal(work / "archive-work", archived, settings)
+        assert path in proposal.rejected and path not in proposal.changes
+        print("MEMORY_ARCHIVE_PAGES_AND_WORKER_COMPATIBILITY_VERIFIED")
         print("GITHUB_MEMORY_SNAPSHOT_AND_GUIDE_POLICY_VERIFIED")
         for text in ("help", "help all", "help write", "write help"):
             cmd = commands.parse(text)

@@ -21,17 +21,38 @@ Allowed files: `PROJECT.md`, `INDEX.md`, `conventions.md`, `open.md`, `lessons.m
 `data/*.md`, `results/*.md`, and `recipes/*.{md,py,R,sh}`. Markdown entries require
 `type:`, `source:`, and `status:` headers, except the guide and index. Limits are
 4,000 index characters, 16 KiB per Markdown entry, 100,000 guide bytes, 64 KiB per recipe,
-200 files, and 1 MiB per project. Secret-like content and unsafe paths are rejected.
+500 files, and 4 MiB per project, including archives and generated indexes. Secret-like content and unsafe paths are rejected.
 
 Run the live store check with `.venv/bin/python tools/memory_smoke.py`. For local setup,
 `--github-cli` uses the existing GitHub CLI login without printing or saving its token.
 The check writes only to `projects/_smoke/`, checks read-back and conflict preservation,
-prints commit IDs, then removes those test files.
+prints commit IDs, verifies paged archives and exact originals, then explicitly removes the
+isolated test folder using a head-fenced administrative commit. Ordinary writers cannot erase archives.
 
 Administrators can edit files in GitHub or use `git revert <sha>`; edits take effect on
 the next read. Purging Git history with `git filter-repo` and a force-push is a human-only
 operation. Anything said about a project, in a DM or a channel, may be remembered for
 everyone using that project, and repository readers can see it.
+
+## Active entries and retained originals
+
+The application generates `INDEX.md` from active entries. It reserves core entries and gives
+new or changed entries priority; overflow moves to the archive without changing its bytes.
+`archive/INDEX.md` links to bounded `archive/index-0001.md` pages. Every overwritten or deleted
+entry is retained at `archive/<sha256-of-original-path-and-content>/<original-path>`.
+This includes recipes, conflict copies, guide updates, and entries demoted by compaction.
+The original path, provenance headers, and exact contents remain available. Repeating a version
+reuses its archive object; same-named entries from different directories cannot collide.
+
+The active index is not a complete inventory. The 12,000-character router budget stays unchanged;
+archive text is never automatically injected. Workers can Read the archive pages or Grep
+`knowledge/archive/`, and users can request `memory archive/INDEX.md` or a specific archived path.
+Archives can contain superseded facts: check the current entry and provenance before reuse.
+
+All normal writers use the same atomic archive/index policy. They cannot edit archive entries.
+If an update plus its retained originals cannot fit the hard storage ceiling, it is rejected
+without removing any originals. Compaction does not free retained storage or purge history;
+capacity exhaustion requires an operator's reviewed retention/capacity decision.
 
 ## Project renames
 
@@ -75,14 +96,35 @@ not saved as failed-turn results. Routine memory updates remain silent.
 
 ## Compaction and operations
 
-After a turn, compaction is queued once per head when any limit exceeds 80%, conflicts or
-rejections exist, the project reaches a multiple of 20 commits, or a turn grows any accepted
-file by more than 1 KiB. The growth trigger runs after committing the valid change. A forced-tool editor
-merges duplicates and conflict copies, preserves sources and working recipes, and reaches
-70% of every limit with one index link per entry. Invalid output commits nothing. A newer
-head supersedes a pending compaction, so it cannot overwrite a concurrent conversation.
-Compaction runs silently. Model inputs, proposals and receipts are cached as temporary GCS
-task state so retries use the same inputs and do not duplicate commits.
+After a turn, maintenance is eligible for unresolved conflicts, superseded entries, entries
+above 85% of their individual limit, quarantined invalid files, or an outdated generated index.
+Ordinary growth alone does not trigger a model call. Archive growth is not compaction pressure.
+Maintenance works on at most 24,000 serialized characters, keeping each conflict and its canonical
+entry together. It skips an individually oversized group without truncating it. The model may
+change only selected paths and cannot delete core files. Originals are archived by application
+code even when a model merge omits a fact. There is no whole-project reduction target.
+
+A project lease coalesces concurrent tasks. Content fingerprints ignore unrelated projects'
+commits. Model attempts are persisted before calls: at most two attempts per input and three
+calls per project per hour, with a ten-minute cooldown between new inputs. Pending work resumes
+after the budget window. Cached proposals survive transient commit failures. Invalid, oversized,
+or truncated output is terminal for that input; it is never repeatedly purchased on retries.
+A changed project snapshot supersedes a proposal before commit. Maintenance remains silent.
+
+Controls: `AGENT_MEMORY_COMPACTION_ENABLED=false` stops maintenance alone;
+`AGENT_MEMORY_COMPACTION_CHARS`, `AGENT_MEMORY_COMPACTION_ATTEMPTS`,
+`AGENT_MEMORY_COMPACTION_CALLS_PER_HOUR`, and `AGENT_MEMORY_COMPACTION_COOLDOWN_SECONDS`
+configure the bounded defaults above. Do not pause the shared analysis queue to contain memory.
+Firestore connector state `memory-maintenance:<project-id>` records pending work, counters,
+cooldown and outcome; `memory-maintenance-lock:<project-id>` is the short lease. GCS task state
+under `tasks/slack-analysis/memory-compaction-v2/<project-id>/` caches inputs, attempts and output.
+These records are diagnostics, not the authoritative memory store.
+
+Deploy the archive-aware API and workers together. `AGENT_MEMORY_ARCHIVE_AFTER` is a Unix timestamp
+(default 0) used for the first rollout: set it beyond the previous API request timeout plus a
+safety margin. Until then, maintenance is disabled and normal writes use the previous layout;
+originals remain in Git history. After activation, every new replacement uses the archive policy.
+Once archive files exist, rollback must retain archive-compatible API and workers.
 
 For migration, set the memory environment variables and run
 `.venv/bin/python tools/memory_import.py --bucket <artifact-bucket>` to preview, then add
@@ -108,9 +150,11 @@ Do not select hypotheses, results, or counts for a layout guide.
 Set `AGENT_MEMORY_AUTO_EDIT=false` to suspend background writes and compaction (explicit
 `init` still saves a guide). Unset `AGENT_MEMORY_REPO` to disable all GitHub memory.
 Inspect `memory_read`, `memory_commit`, `memory_editor`, and `memory_compaction` logs for
-IDs, counts, and failure types. Failed background operations return 503 for Cloud Tasks
-retry. Unreadable or invalid repository files need an administrator's correction before
-compaction; their contents are never sent to the model.
+IDs, counts, and failure types. Transient failures return 503 for bounded Cloud Tasks retries. Terminal compaction validation
+failures return success to acknowledge the task and log `exhausted:<rule>`. Inspect `deferred:*`,
+`superseded`, `already_complete`, and quarantine/oversized-group outcomes before intervening.
+Invalid repository entries stay quarantined for administrator review; their contents never
+reach the model.
 
 See [staging verification](project-memory-staging.md) for deployed commit IDs,
 live save/recall and compaction evidence, and known verification limits.
