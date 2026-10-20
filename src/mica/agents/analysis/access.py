@@ -152,6 +152,12 @@ def resolve(app: Any, settings: Settings, storage: Storage, record: dict[str, An
 def deny_text(grant: Grant) -> str:
     if not grant.email:
         return NOT_ENABLED
+    if not grant.project_id and grant.identity_policy == surface.EMAIL_POLICY:
+        return (
+            "This email conversation has no project selected. Reply with “List my projects”, "
+            "then “Use <project name>”. Project owners and members can use email without "
+            "publishing to a Slack channel."
+        )
     if not grant.project_id:
         return "This chat isn't linked to a project. In your DM with Mica:\n" + PROJECT_HELP
     if grant.project_id not in grant.doc.projects:

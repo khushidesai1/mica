@@ -133,12 +133,12 @@ async def test_unbound_dm_controls_and_structured_help(chat):  # noqa: F811
         if text != "help":
             assert len(reply["notice_text"]) < 320
         else:
-            assert "• `share <project> @user`" in reply["notice_text"]
+            assert "• `share <project> @user-or-email`" in reply["notice_text"]
             assert "• `write grant" in reply["notice_text"]
             assert "help all" not in reply["notice_text"]
         assert "liver" not in reply["notice_text"]
     full = await message(chat, "help all", "13.0")
-    assert "• `share <project> @user`" in full["notice_text"]
+    assert "• `share <project> @user-or-email`" in full["notice_text"]
     assert "• `memory`" in full["notice_text"]
     chat.decision.assert_not_called()
     chat.test_client.create_job.assert_not_called()

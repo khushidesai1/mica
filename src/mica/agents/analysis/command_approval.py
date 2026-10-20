@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 from slack_sdk.web.async_client import AsyncWebClient
 
 from . import access, commands, surface, write_access
-from .identity import resolve_email, target_email
+from .identity import member_email, resolve_email
 from .registry import ProjectEntry
 from .storage import Conflict, Storage
 
@@ -87,20 +87,15 @@ async def propose(
         await asyncio.to_thread(bridge.resolve_data, record, uri=cmd.args[1])
     event, team = record["payload"]["event"], record["payload"]["team_id"]
     if cmd.name in {"share", "unshare"}:
-        if bridge.settings.access_mode in {"channel", "workspace"}:
-            from .channel_access import target_email as channel_target
-
-            recipient = await asyncio.to_thread(
-                channel_target,
-                bridge.app,
-                bridge.settings,
-                storage,
-                team,
-                cmd.args[1],
-                removing=cmd.name == "unshare",
-            )
-        else:
-            recipient = target_email(bridge.app, team, cmd.args[1])
+        recipient = await asyncio.to_thread(
+            member_email,
+            bridge.app,
+            bridge.settings,
+            storage,
+            team,
+            cmd.args[1],
+            removing=cmd.name == "unshare",
+        )
         cmd = commands.Command(cmd.name, (cmd.args[0], recipient))
     proposal = {
         "command": asdict(cmd),
@@ -140,6 +135,11 @@ async def propose(
             "This affects every project member and future requests in existing conversations. "
             "Running requests using the old location may stop. Files and write permissions "
             "are unchanged."
+        )
+    if saved["name"] == "share":
+        text += (
+            " This grants the named email address access to the project and its shared memory. "
+            "They can use email without Slack membership or channel publication."
         )
     if saved["name"] == "publish":
         text += " Everyone who can view that channel, including future members, may see replies."

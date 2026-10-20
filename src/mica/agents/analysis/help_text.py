@@ -43,7 +43,9 @@ Email requests for this setting direct you to private Slack.
 Existing threads keep their project. In channels, add `--force` to replace a selection.
 
 *Sharing — owner, DM*
-• `share <project> @user` — Give someone project access.
+• `share <project> @user-or-email` — Give someone project access.
+Email recipients need no Slack account or channel publication; they email from the shared address
+and ask to list/select the project. This does not send an invitation email.
 • `unshare <project> @user` — Remove someone's project access.
 • `publish <project> #channel` — Allow replies visible to that channel.
 • `unpublish <project> #channel` — Stop replies in that channel.

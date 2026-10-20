@@ -15,7 +15,7 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError, SlackRequestError
 
 from .config import Settings
-from .identity import IdentityUnavailable, normalize
+from .identity import IdentityUnavailable, normalize, recipient_email
 from .storage import Storage, update_model
 
 KEY = "projects/_access/channels.json"
@@ -76,7 +76,7 @@ def lookup(fetch: Callable[[], Any]) -> Any:
         raise IdentityUnavailable(type(exc).__name__) from exc
     if not response.get("ok"):
         error = response.get("error", "invalid_response")
-        if error == "user_not_found":
+        if error in {"user_not_found", "users_not_found"}:
             return None
         reason = error if re.fullmatch(r"[a-z_]{1,60}", str(error)) else "slack_error"
         raise IdentityUnavailable(reason)
@@ -171,19 +171,9 @@ def target_email(
     if mention:
         user = mention[1]
     else:
-        mail = re.fullmatch(r"<mailto:([^|>]+)(?:\|[^>]+)?>", value)
-        email = normalize(mail[1] if mail else value)
-        if not re.fullmatch(r"[^\s@]+@[^\s@]+", email):
-            raise ValueError("Mention an enabled user or supply their Slack email.")
-        if removing:
-            return email  # Owners can revoke former members, including deactivated accounts.
-        try:
-            response = lookup(lambda: client_for(app).users_lookupByEmail(email=email))
-            user = response["user"]["id"] if response else ""
-        except IdentityUnavailable:
-            raise
-        except Exception:
-            user = ""
+        # Membership is surface-independent. The recipient proves this address by
+        # signed email at intake; granting it never enrolls them into Slack.
+        return recipient_email(value)
     try:
         result = (
             (
@@ -199,7 +189,7 @@ def target_email(
     except Exception:
         result = None
     if not result:
-        raise ValueError("That account is not enabled for Mica.")
+        raise ValueError("That Slack account is not enabled. Supply their email address instead.")
     return result
 
 
