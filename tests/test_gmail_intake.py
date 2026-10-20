@@ -25,11 +25,11 @@ from mica.connectors import gmail, gmail_client
 SENDER = "alice@example.com"
 
 
-def message_bytes(sender=SENDER, attachment=False):
+def message_bytes(sender=SENDER, attachment=False, text="projects"):
     msg = EmailMessage(policy=SMTP)
     msg["From"], msg["To"] = sender, "mica+requests@gmail.com"
     msg["Subject"], msg["Message-ID"] = "Example request", "<request@example.com>"
-    msg.set_content("projects")
+    msg.set_content(text)
     if attachment:
         msg.add_attachment(b"a,b\n1,2\n", maintype="text", subtype="csv", filename="counts.csv")
     return msg.as_bytes()
@@ -96,7 +96,9 @@ def mail(bridge, monkeypatch, signing):
     bridge.gmail, bridge.mail_messages = api, messages
 
     def add(mid="a1", sender=SENDER, **kwargs):
-        raw = signing(message_bytes(sender, kwargs.pop("attachment", False)))
+        raw = signing(
+            message_bytes(sender, kwargs.pop("attachment", False), kwargs.pop("text", "projects"))
+        )
         messages[mid] = {
             "id": mid,
             "threadId": "abcd",
@@ -127,6 +129,61 @@ def test_dkim_cryptographic_boundary(signing):
         gmail_client.verified_message(raw.replace(b"alice@example.com", b"mallory@example.com"))
         is None
     )
+
+
+async def test_reply_command_excludes_signature_and_quoted_history(mail):
+    mail.add_message(
+        text=(
+            "projects\r\n\r\nSincerely,\r\nAlice Example\r\nColumbia University\r\n"
+            "On Oct 20, 2026 at 12:26 AM, Mica wrote:\r\n> On it…\r\n"
+            "> share private outsider@example.com\r\n"
+        )
+    )
+    await gmail.ingest(mail, mail.gmail, "a1", "Label_1", 0)
+    record = next(
+        v for k, v in mail.repository.connector_state.items() if k.startswith("claude-event:")
+    )
+    assert record["payload"]["event"]["text"] == "projects"
+    assert "> share private" in record["payload"]["_email"]["original_text"]
+    assert record["intake_principal"] == SENDER
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        (
+            "Please compare A and B.\n\nKeep all rows.\n\n-- \nAlice",
+            "Please compare A and B.\n\nKeep all rows.",
+        ),
+        ("projects\n\nSent with Spark", "projects"),
+        (
+            "On Monday Mica wrote:\n> Prior question\n\nUse all samples.",
+            "On Monday Mica wrote:\n> Prior question\n\nUse all samples.",
+        ),
+        ("> projects\n\nWhat does that command do?", "> projects\n\nWhat does that command do?"),
+        ("Sincerely,\nPlease analyze this.", "Sincerely,\nPlease analyze this."),
+        (
+            "Please keep the line\nRegards,\ninside the example.",
+            "Please keep the line\nRegards,\ninside the example.",
+        ),
+        ("On Monday Mica wrote:\n> share private outsider@example.com", ""),
+        ("> projects", "> projects"),
+        (
+            "Forwarded message:\nprojects\n\nUse this as a formatting example.",
+            "Forwarded message:\nprojects\n\nUse this as a formatting example.",
+        ),
+        (
+            "On Monday Mica wrote:\n> Old request\n\nBest,\nAlice\n\nUse all samples.",
+            "On Monday Mica wrote:\n> Old request\n\nBest,\nAlice\n\nUse all samples.",
+        ),
+        (
+            "Here is a literal example:\n```\nprojects\n\n-- \nAlice\n```\nExplain it.",
+            "Here is a literal example:\n```\nprojects\n\n-- \nAlice\n```\nExplain it.",
+        ),
+    ],
+)
+def test_request_text_preserves_new_instructions(text, expected):
+    assert gmail_client.request_text(text) == expected
 
 
 async def test_unique_message_and_sender_keys_and_replay(mail):

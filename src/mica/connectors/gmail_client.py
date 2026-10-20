@@ -18,6 +18,46 @@ SCOPES = [f"https://www.googleapis.com/auth/gmail.{s}" for s in ("readonly", "se
 MAX_MESSAGE_BYTES = 35_000_000
 
 
+def request_text(text: str) -> str:
+    """Extract a top-posted request without treating old replies as new instructions."""
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+    # Only remove a quoted suffix. Inline replies below a quotation remain intact.
+    for index, line in enumerate(lines):
+        if (
+            re.fullmatch(r"On .+wrote:", line.strip(), re.IGNORECASE)
+            and any(value.lstrip().startswith(">") for value in lines[index + 1 :])
+            and all(
+                not value.strip() or value.lstrip().startswith(">") for value in lines[index + 1 :]
+            )
+        ):
+            lines = lines[:index]
+            break
+    # Retained quotations/forwarded mail and fenced examples can contain signature
+    # markers before new inline instructions. Leave their structure untouched.
+    if any(
+        line.lstrip().startswith((">", "```"))
+        or re.search(r"forwarded message|original message|^On .+wrote:", line, re.IGNORECASE)
+        for line in lines
+    ):
+        return "\n".join(lines).strip()
+    # Conventional signature boundaries, on their own paragraph. Require actual
+    # request content before the boundary so a greeting is never the whole request.
+    closings = {"sincerely,", "best,", "best regards,", "kind regards,", "regards,"}
+    for index, line in enumerate(lines):
+        if (
+            index
+            and any(value.strip() for value in lines[:index])
+            and (
+                line == "-- "
+                or line.strip().lower() in {"sent with spark", "sent from my iphone"}
+                or (not lines[index - 1].strip() and line.strip().lower() in closings)
+            )
+        ):
+            lines = lines[:index]
+            break
+    return "\n".join(lines).strip()
+
+
 def enabled(settings: Settings) -> bool:
     return bool(
         settings.gmail_account
