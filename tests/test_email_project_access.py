@@ -93,6 +93,7 @@ async def test_exact_external_share_completes_instead_of_staying_on_it(bridge):
     assert await bridge.process(eid, 0) == "complete"
     doc = Registry(bridge.store).load()
     assert doc.can_use(bridge.pid, EXTERNAL)
+    assert doc.defaults[EXTERNAL] == bridge.pid
     assert not doc.projects[bridge.pid].published_channels
     assert doc.projects[bridge.pid].access_revision == 1
     record = await bridge.repository.get_connector_state("claude-event:" + eid)
@@ -127,6 +128,7 @@ async def test_natural_external_share_preserves_owner_confirmation(bridge, monke
     assert not Registry(bridge.store).load().can_use(bridge.pid, EXTERNAL)
     await command_approval.handle(bridge, bridge.store, action(eid))
     assert Registry(bridge.store).load().can_use(bridge.pid, EXTERNAL)
+    assert Registry(bridge.store).load().defaults[EXTERNAL] == bridge.pid
     await command_approval.handle(bridge, bridge.store, action(eid))
     assert Registry(bridge.store).load().projects[bridge.pid].access_revision == 1
 
@@ -197,10 +199,27 @@ async def test_owner_and_email_only_member_use_unpublished_project(mail, monkeyp
     assert not registry.load().projects[mail.pid].published_channels
 
 
-async def test_member_without_selection_gets_email_instructions(mail):
+async def test_first_invitation_routes_first_email_without_selection(mail):
     Registry(mail.store).update(
         "grant", SENDER, "share", lambda d: d.share(mail.pid, SENDER, EXTERNAL)
     )
+    direct.decide.return_value = direct.Decision(route="reply", reply="Project answer.")
+    eid, record = await intake(mail, "first-question", EXTERNAL, "Tell me about my project")
+    grant = access.resolve(mail.app, mail.settings, mail.store, record)
+    assert grant.allowed and grant.project_id == mail.pid
+    assert await direct.handle(mail, eid, record, mail.store)
+    assert record["notice_text"] == "Project answer."
+    assert EXTERNAL in str(sent_messages(mail)[-1]["To"])
+    _, outsider = await intake(mail, "other-address", "other@example.com", "My project?")
+    assert not access.resolve(mail.app, mail.settings, mail.store, outsider).allowed
+
+
+async def test_legacy_member_without_selection_gets_email_instructions(mail):
+    def legacy_invite(doc):
+        doc.projects[mail.pid].members.add(EXTERNAL)
+        return mail.pid
+
+    Registry(mail.store).update("legacy-grant", SENDER, "share", legacy_invite)
     eid, record = await intake(mail, "unselected", EXTERNAL, "Tell me about my project")
     assert await direct.handle(mail, eid, record, mail.store)
     assert "List my projects" in record["notice_text"]

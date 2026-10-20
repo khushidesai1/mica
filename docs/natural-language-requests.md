@@ -32,8 +32,13 @@ Project access is shared across interfaces: owners can share with an explicit em
 even if the recipient has no Slack account or enabled channel. Only authenticated owners may
 change membership. Natural sharing still requires the existing private Slack confirmation;
 explicit `share <project> <email>` and `unshare` retain their existing owner-only behavior.
-The recipient must send a verified email from the shared address, list their projects, and
-select one. Membership does not send an invitation or grant Slack admission. No Slack channel
+The recipient must send a verified email from the shared address. Their first invitation sets
+their default project for new email conversations and private Slack threads, so they can ask a
+question immediately. Later invitations preserve their selection; `Use <project name>` switches
+it. Existing defaults and legacy DM selections are preserved, including revoked selections;
+existing conversations retain their project and still require membership. Older invitations
+without a default can be selected with `List my projects` followed by `Use <project name>`.
+Membership does not send an invitation or grant Slack admission. No Slack channel
 publication is required for owners or members to use a project over email. Publishing remains
 a separate permission to expose project replies to a Slack channel's audience.
 Unknown Slack mentions return a helpful error; recipient lookup outages end with a clear
