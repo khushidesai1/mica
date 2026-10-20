@@ -213,7 +213,8 @@ class RegistryDoc(BaseModel):
             raise ValueError("An owner always has access. Remove their co-owner role first.")
         members = self.projects[project_id].members
         new_member = target not in members
-        if (target in members) == remove:
+        # Additive sharing preserves queued workers; only revocation advances the epoch.
+        if remove and target in members:
             self.projects[project_id].access_revision += 1
         if remove:
             members.discard(target)
@@ -269,7 +270,7 @@ class RegistryDoc(BaseModel):
             raise ValueError("Choose a Slack channel, not a DM.")
         channels = self.projects[project_id].published_channels
         key = f"{team}:{channel}"
-        if (key in channels) == remove:
+        if remove and key in channels:
             self.projects[project_id].access_revision += 1
         if remove:
             channels.discard(key)

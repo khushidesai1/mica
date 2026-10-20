@@ -92,3 +92,8 @@ compatibility gates. Keep transfer images and infrastructure unchanged. For acce
 user-initiated private Slack/email messages to list projects, select or create a project,
 request an analysis, follow up, and cancel. Confirm the final email in Sent and the user's
 mailbox; a Gmail acceptance receipt alone does not establish inbox delivery.
+
+Inviting another collaborator, adding a co-owner, or publishing an additional Slack channel
+preserves existing queued and running worker grants. Removing a collaborator or co-owner role,
+or unpublishing a channel, still revokes outstanding grants; adding access back does not
+reactivate an earlier grant.
