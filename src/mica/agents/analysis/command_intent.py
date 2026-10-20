@@ -31,6 +31,9 @@ Operation = Literal[
     "connect atomx",
     "share",
     "unshare",
+    "add-owner",
+    "remove-owner",
+    "owners",
     "publish",
     "unpublish",
     "rename",
@@ -63,6 +66,10 @@ Scripts on/off only controls returning generated code, never running a script.
 Transfers/status and my AtoMx connection status are read operations. Connecting AtoMx means
 connect atomx. Never ask for or return passwords, usernames, connection URLs or secret values.
 For administrative changes choose the corresponding operation; code will require approval.
+Making someone an owner/co-owner means add-owner, never share. Removing only their owner
+role means remove-owner and retains collaboration access. Listing owners means owners.
+These roles do not grant cloud IAM or bucket write-administrator permissions. The original
+owner remains an owner; requests to transfer sole ownership need clarification.
 Never claim success. Set selector and target only from user-supplied referents.
 Use selector="this project" for an explicitly current-project operation.
 Do not invent project IDs, email addresses, Slack IDs, recipients, scopes, durations,
@@ -106,7 +113,7 @@ class Intent(BaseModel):
 def visibility(grant: access.Grant) -> str:
     """Bind private account replies to the registry view that produced them."""
     rows = [
-        (pid, p.name, p.owner, p.access_revision)
+        (pid, p.name, p.owner, sorted(p.co_owners), p.access_revision)
         for pid, p in sorted(grant.doc.visible(grant.email).items())
     ]
     return hashlib.sha256(json.dumps(rows).encode()).hexdigest()
@@ -254,6 +261,14 @@ async def remember_projects(
 
 def command(proposal: Proposal, grant: access.Grant, *, source_text: str = "") -> commands.Command:
     op = proposal.operation
+    if op in {"share", "unshare"} and (
+        proposal.scope.strip().lower() not in {"", "member", "collaborator"}
+        or re.search(r"\b(?:co[- ]?owners?|owners?|ownership)\b", source_text, re.I)
+    ):
+        raise ValueError(
+            "Sharing changes collaborator access only. To change ownership, ask me to "
+            "add or remove a co-owner with their email address or Slack mention."
+        )
     if op == "init":
         if not proposal.selector or not proposal.scope:
             raise ValueError(
@@ -304,7 +319,7 @@ def command(proposal: Proposal, grant: access.Grant, *, source_text: str = "") -
         if not proposal.scope.startswith("gs://") or proposal.scope not in exact_uris:
             raise ValueError("What exact gs:// data location should this project use by default?")
         return commands.Command(op, (pid, data_uri(proposal.scope)))
-    if op in {"use", "write status", "write revoke"}:
+    if op in {"use", "owners", "write status", "write revoke"}:
         return commands.Command(op, (pid,))
     if op == "write grant":
         from .write_access import duration, scope

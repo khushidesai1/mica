@@ -31,6 +31,7 @@ def project_key(project_id: str) -> str:
 class ProjectEntry(BaseModel):
     name: str = Field(pattern=r"^[a-z0-9-]{3,40}$")
     owner: str
+    co_owners: set[str] = Field(default_factory=set)
     members: set[str] = Field(default_factory=set)
     data_uri: str
     created_at: str = Field(default_factory=now)
@@ -60,10 +61,11 @@ class RegistryDoc(BaseModel):
 
     def can_use(self, project_id: str, email: str) -> bool:
         entry = self.projects.get(project_id)
-        return bool(entry and (entry.owner == email or email in entry.members))
+        return bool(entry and (self.owns(project_id, email) or email in entry.members))
 
     def owns(self, project_id: str, email: str) -> bool:
-        return project_id in self.projects and self.projects[project_id].owner == email
+        entry = self.projects.get(project_id)
+        return bool(entry and (entry.owner == email or email in entry.co_owners))
 
     def visible(self, email: str) -> dict[str, ProjectEntry]:
         return {key: value for key, value in self.projects.items() if self.can_use(key, email)}
@@ -72,7 +74,7 @@ class RegistryDoc(BaseModel):
         if self.can_use(name, email):
             return name
         matches = [key for key, value in self.visible(email).items() if value.name == name]
-        own = [key for key in matches if self.owns(key, email)]
+        own = [key for key in matches if self.projects[key].owner == email]
         if own:
             return own[0]
         if len(matches) == 1:
@@ -135,7 +137,9 @@ class RegistryDoc(BaseModel):
         if not re.fullmatch(r"[a-z0-9-]{3,40}", name):
             raise ValueError("Use 3–40 lowercase letters, numbers, or hyphens for the new name.")
         if any(
-            pid != project_id and entry.owner == owner and entry.name == name
+            pid != project_id
+            and entry.owner == self.projects[project_id].owner
+            and entry.name == name
             for pid, entry in self.projects.items()
         ):
             raise ValueError("You already have a project with that name. Choose another name.")
@@ -205,11 +209,12 @@ class RegistryDoc(BaseModel):
         target = normalize(target)
         if not self.owns(project_id, owner):
             raise ValueError("Only the project owner can change sharing.")
-        if target == owner:
-            raise ValueError("The owner always has access.")
+        if self.owns(project_id, target):
+            raise ValueError("An owner always has access. Remove their co-owner role first.")
         members = self.projects[project_id].members
         new_member = target not in members
-        if (target in members) == remove:
+        # Additive sharing preserves queued workers; only revocation advances the epoch.
+        if remove and target in members:
             self.projects[project_id].access_revision += 1
         if remove:
             members.discard(target)
@@ -217,6 +222,28 @@ class RegistryDoc(BaseModel):
             members.add(target)
             if new_member:
                 self.initialize_default(project_id, target)
+        return project_id
+
+    def set_co_owner(
+        self, project_id: str, actor: str, target: str, *, remove: bool = False
+    ) -> str:
+        target = normalize(target)
+        if not self.owns(project_id, actor):
+            raise ValueError("Only a project owner can change ownership.")
+        entry = self.projects[project_id]
+        if target == entry.owner:
+            raise ValueError("The original project owner cannot be removed or replaced.")
+        if remove and target == actor:
+            raise ValueError("Ask another owner to remove your co-owner role.")
+        if remove:
+            if target in entry.co_owners:
+                entry.co_owners.remove(target)
+                entry.access_revision += 1
+        elif target not in entry.co_owners:
+            # Membership also keeps older read-only workers compatible with this role.
+            entry.members.add(target)
+            entry.co_owners.add(target)
+            self.initialize_default(project_id, target)
         return project_id
 
     def initialize_default(self, project_id: str, email: str) -> bool:
@@ -243,7 +270,7 @@ class RegistryDoc(BaseModel):
             raise ValueError("Choose a Slack channel, not a DM.")
         channels = self.projects[project_id].published_channels
         key = f"{team}:{channel}"
-        if (key in channels) == remove:
+        if remove and key in channels:
             self.projects[project_id].access_revision += 1
         if remove:
             channels.discard(key)

@@ -119,7 +119,9 @@ def parse(raw: str) -> Command | None:
         and (len(words) == 2 or words[2] == "--force")
     ):
         return Command("use", (words[1],), len(words) == 3)
-    if action in {"share", "unshare"} and len(words) == 3:
+    if action == "owners" and len(words) == 2:
+        return Command("owners", (words[1],))
+    if action in {"share", "unshare", "add-owner", "remove-owner"} and len(words) == 3:
         if re.fullmatch(r"<@[A-Z0-9]+(?:\|[^>]+)?>|<mailto:[^>]+>|[^\s@]+@[^\s@]+", words[2]):
             return Command(action, tuple(words[1:]))
         return None
@@ -190,6 +192,8 @@ def run(
             "forget atomx login",
             "share",
             "unshare",
+            "add-owner",
+            "remove-owner",
             "publish",
             "unpublish",
             "rename",
@@ -216,6 +220,9 @@ def run(
         "use",
         "rename",
         "data-root",
+        "owners",
+        "add-owner",
+        "remove-owner",
         "share",
         "unshare",
         "publish",
@@ -239,7 +246,13 @@ def run(
         for number, (pid, project) in enumerate(matches[:50], 1):
             selector = doc.selector(pid, email)
             label = " (new threads)" if pid == active else ""
-            owner = f" · shared by {project.owner}" if project.owner != email else ""
+            owner = (
+                " · co-owner"
+                if email in project.co_owners
+                else f" · shared by {project.owner}"
+                if project.owner != email
+                else ""
+            )
             rows.append(f"{number}. {project.name}{label}{owner} — `switch {selector}`")
         thread = (
             f"\nThis thread uses {grant.project.name}."
@@ -303,6 +316,37 @@ def run(
         if not grant.private:
             raise ValueError("Choose an authorized project in your DM first.") from None
         raise
+    if cmd.name == "owners":
+        entry = doc.projects[pid]
+        return f"Owners of {entry.name}:\n" + "\n".join(
+            [f"• {entry.owner} (original owner)"]
+            + [f"• {target} (co-owner)" for target in sorted(entry.co_owners)]
+        )
+    if cmd.name in {"add-owner", "remove-owner"}:
+        if not record.get("command_expected_project"):
+            raise ValueError("Ownership changes require a private Slack confirmation.")
+        target = member_email(
+            app,
+            settings,
+            registry.storage,
+            team,
+            cmd.args[1],
+            removing=cmd.name == "remove-owner",
+        )
+        registry.update(
+            event_id,
+            email,
+            operation,
+            lambda d: checked(d).set_co_owner(
+                pid, email, target, remove=cmd.name == "remove-owner"
+            ),
+        )
+        return (
+            f"Removed {target}'s co-owner role; they remain a collaborator."
+            if cmd.name == "remove-owner"
+            else f"{target} is now a co-owner of {doc.projects[pid].name}. "
+            "Existing owners keep their roles."
+        )
     if cmd.name == "use":
 
         def bind(current: Any) -> str:

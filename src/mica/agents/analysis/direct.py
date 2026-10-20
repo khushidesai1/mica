@@ -530,6 +530,7 @@ async def dispatch_command(
     registry = Registry(storage)
     if cmd.name in {
         "projects",
+        "owners",
         "use",
         "scripts",
         "help",
@@ -673,10 +674,13 @@ async def handle(
                 return await finish(bridge, event_id, record, surface.EMAIL_READ_ONLY)
             if not grant.private and intent.proposal.operation in {
                 "projects",
+                "owners",
                 "init",
                 "use",
                 "share",
                 "unshare",
+                "add-owner",
+                "remove-owner",
                 "rename",
                 "data-root",
                 "atomx login status",
@@ -696,6 +700,7 @@ async def handle(
                 )
             if intent.proposal.operation in {
                 "projects",
+                "owners",
                 "use",
                 "scripts",
                 "help",
@@ -731,6 +736,8 @@ async def handle(
             if cmd.name in {
                 "share",
                 "unshare",
+                "add-owner",
+                "remove-owner",
                 "publish",
                 "unpublish",
                 "rename",
@@ -741,14 +748,14 @@ async def handle(
                 from . import command_approval
 
                 return await command_approval.propose(bridge, event_id, record, storage, cmd, grant)
-    if cmd and cmd.name == "data-root":
+    if cmd and cmd.name in {"data-root", "add-owner", "remove-owner"}:
         from . import command_approval, command_intent
 
         if surface.is_email(record):
             command_intent.private_reply(record, grant)
             return await finish(bridge, event_id, record, surface.EMAIL_READ_ONLY)
         if not grant.private:
-            raise ValueError("Change the data location in your private Slack conversation.")
+            raise ValueError("Change project settings in your private Slack conversation.")
         pid = grant.doc.find(cmd.args[0], grant.email)
         cmd = commands.Command(cmd.name, (pid, cmd.args[1]))
         return await command_approval.propose(bridge, event_id, record, storage, cmd, grant)

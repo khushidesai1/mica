@@ -44,6 +44,16 @@ a separate permission to expose project replies to a Slack channel's audience.
 Unknown Slack mentions return a helpful error; recipient lookup outages end with a clear
 no-change response instead of retrying indefinitely. Requester authentication still fails closed.
 
+Project owners can add co-owners with "Make @Josh a co-owner of this project" or
+`add-owner <project> <email-or-Slack-mention>`. Both forms require private Slack confirmation.
+Co-owners can manage sharing, other co-owners, publication, project names and data locations;
+they do not become cloud IAM or write-access administrators. Existing owners keep their roles.
+`remove-owner <project> <email-or-Slack-mention>` demotes a co-owner to collaborator; `unshare`
+can then remove access. The original owner cannot be removed, and co-owners must ask another
+owner to demote them. `owners <project>` or "Who owns this project?" lists the roles privately
+in Slack or email. Email owner-change requests hand off to Slack. Ownership requests are never
+silently treated as ordinary sharing. Project names remain scoped to their original creator.
+
 Project creation asks for missing details; it never invents a bucket or substitutes a parent
 folder. Clarifications and numbered project choices last ten minutes and are reauthorized.
 Natural write grants require an explicit scope and duration. Natural requests cannot add
@@ -82,3 +92,8 @@ compatibility gates. Keep transfer images and infrastructure unchanged. For acce
 user-initiated private Slack/email messages to list projects, select or create a project,
 request an analysis, follow up, and cancel. Confirm the final email in Sent and the user's
 mailbox; a Gmail acceptance receipt alone does not establish inbox delivery.
+
+Inviting another collaborator, adding a co-owner, or publishing an additional Slack channel
+preserves existing queued and running worker grants. Removing a collaborator or co-owner role,
+or unpublishing a channel, still revokes outstanding grants; adding access back does not
+reactivate an earlier grant.

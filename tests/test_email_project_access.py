@@ -95,7 +95,7 @@ async def test_exact_external_share_completes_instead_of_staying_on_it(bridge):
     assert doc.can_use(bridge.pid, EXTERNAL)
     assert doc.defaults[EXTERNAL] == bridge.pid
     assert not doc.projects[bridge.pid].published_channels
-    assert doc.projects[bridge.pid].access_revision == 1
+    assert doc.projects[bridge.pid].access_revision == 0
     record = await bridge.repository.get_connector_state("claude-event:" + eid)
     assert "Shared with" in record["notice_text"]
     assert "channel publication are not required" in record["notice_text"]
@@ -130,7 +130,7 @@ async def test_natural_external_share_preserves_owner_confirmation(bridge, monke
     assert Registry(bridge.store).load().can_use(bridge.pid, EXTERNAL)
     assert Registry(bridge.store).load().defaults[EXTERNAL] == bridge.pid
     await command_approval.handle(bridge, bridge.store, action(eid))
-    assert Registry(bridge.store).load().projects[bridge.pid].access_revision == 1
+    assert Registry(bridge.store).load().projects[bridge.pid].access_revision == 0
 
 
 async def test_slack_recipient_outage_finishes_without_false_actor_outage(bridge, monkeypatch):

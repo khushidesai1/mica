@@ -47,6 +47,11 @@ Existing threads keep their project. In channels, add `--force` to replace a sel
 Email recipients need no Slack account or channel publication; they email from the shared address
 and ask to list/select the project. This does not send an invitation email.
 • `unshare <project> @user` — Remove someone's project access.
+• `owners <project>` — List its owners (private Slack or email).
+• `add-owner <project> @user-or-email` — Add a co-owner, keeping existing owners.
+• `remove-owner <project> @user-or-email` — Remove a co-owner role, keeping collaborator access.
+Owner changes require private Slack confirmation. You can say "Make @Josh a co-owner of this
+project". Co-owners manage project settings and access; the original owner cannot be removed.
 • `publish <project> #channel` — Allow replies visible to that channel.
 • `unpublish <project> #channel` — Stop replies in that channel.
 
