@@ -34,6 +34,7 @@ Operation = Literal[
     "publish",
     "unpublish",
     "rename",
+    "data-root",
     "write status",
     "write grant",
     "write revoke",
@@ -47,6 +48,11 @@ analysis, writing scripts, and transfers of named samples choose continue.
 Creating a project means init; selector is its new name and scope is the explicit gs:// data
 location supplied by the user. Ask for missing name or data location; never infer a bucket,
 copy the current project's data location, or invent a URI. Existing setup checks still apply.
+Changing an existing project's default bucket, data location, data root, or mounted folder
+means data-root, not a brief edit or init. Use selector for the project ("this project" when
+explicitly current) and scope for the exact user-supplied gs:// URI. Ask for a missing URI;
+never invent a path, substitute its parent, or interpret a one-off analysis input as a default
+change. Explaining/documenting a path in the brief without changing the setting chooses continue.
 List/find my projects or collaborations means projects, including questions phrased as
 "Can you list the projects that I am collaborating on?". Ignore email signatures and quoted
 old messages when identifying the current request. Help about Mica means help.
@@ -290,6 +296,14 @@ def command(proposal: Proposal, grant: access.Grant, *, source_text: str = "") -
         raise ValueError("Which project should I use? You can ask me to list your projects.")
     # Resolve to an ID before any operation or approval; later name reuse cannot retarget it.
     pid = grant.doc.find(selector, grant.email)
+    if op == "data-root":
+        from .data_links import data_uri, message_text
+
+        supplied = re.findall(r"gs://[^\s<>`\"']+", message_text(source_text))
+        exact_uris = {value for token in supplied for value in (token, token.rstrip(".,;)]"))}
+        if not proposal.scope.startswith("gs://") or proposal.scope not in exact_uris:
+            raise ValueError("What exact gs:// data location should this project use by default?")
+        return commands.Command(op, (pid, data_uri(proposal.scope)))
     if op in {"use", "write status", "write revoke"}:
         return commands.Command(op, (pid,))
     if op == "write grant":

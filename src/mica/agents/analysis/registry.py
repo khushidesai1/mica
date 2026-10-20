@@ -144,6 +144,12 @@ class RegistryDoc(BaseModel):
             self.projects[project_id].name_revision += 1
         return project_id
 
+    def set_data_uri(self, project_id: str, owner: str, uri: str) -> str:
+        if not self.owns(project_id, owner):
+            raise ValueError("Only the project owner can change its data location.")
+        self.projects[project_id].data_uri = data_uri(uri)
+        return project_id
+
     def bind(
         self,
         team: str,
