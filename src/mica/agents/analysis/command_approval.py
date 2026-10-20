@@ -23,6 +23,8 @@ PREFIX = "mica_command_"
 ADMIN = {
     "share",
     "unshare",
+    "add-owner",
+    "remove-owner",
     "publish",
     "unpublish",
     "rename",
@@ -86,7 +88,7 @@ async def propose(
     if cmd.name == "data-root":
         await asyncio.to_thread(bridge.resolve_data, record, uri=cmd.args[1])
     event, team = record["payload"]["event"], record["payload"]["team_id"]
-    if cmd.name in {"share", "unshare"}:
+    if cmd.name in {"share", "unshare", "add-owner", "remove-owner"}:
         recipient = await asyncio.to_thread(
             member_email,
             bridge.app,
@@ -94,9 +96,14 @@ async def propose(
             storage,
             team,
             cmd.args[1],
-            removing=cmd.name == "unshare",
+            removing=cmd.name in {"unshare", "remove-owner"},
         )
         cmd = commands.Command(cmd.name, (cmd.args[0], recipient))
+    if cmd.name in {"add-owner", "remove-owner"}:
+        # Validate role constraints before offering a confirmation; mutate only a copy.
+        grant.doc.model_copy(deep=True).set_co_owner(
+            cmd.args[0], grant.email, cmd.args[1], remove=cmd.name == "remove-owner"
+        )
     proposal = {
         "command": asdict(cmd),
         "event_id": event_id,
@@ -136,6 +143,14 @@ async def propose(
             "Running requests using the old location may stop. Files and write permissions "
             "are unchanged."
         )
+    if saved["name"] == "add-owner":
+        text += (
+            " They can manage project sharing, other co-owners, publication, name and data "
+            "location. Existing owners retain their roles. This grants no cloud IAM or "
+            "write-administrator permissions."
+        )
+    if saved["name"] == "remove-owner":
+        text += " They keep collaborator access. The original owner remains an owner."
     if saved["name"] == "share":
         text += (
             " This grants the named email address access to the project and its shared memory. "
