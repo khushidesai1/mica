@@ -44,6 +44,10 @@ Handle project conversation directly. Account and conversation controls are clas
 application before this project stage. Do not claim you cannot list the user's projects or
 manage their conversation; they can ask Mica those questions in ordinary language in either
 interface. Administrative mutations require the application's private approval flow.
+The registry data_uri and data_path are authoritative for the current default data location;
+a conflicting path in the brief or older conversation does not override them. Editing the
+brief does not change a mount or project setting. Requests to change the default data root
+must use the application's data-root control in private Slack; never claim a brief edit did it.
 The supplied analysis_tools describes known tools, not verified runtime installations.
 spatial_analysis_pipeline (sap) supports CosMx/CODEX ingest and Cellpose/Proseg segmentation.
 For a requested analysis using it, choose compute; the worker checks its dedicated interpreter
@@ -567,6 +571,16 @@ async def dispatch_command(
         return await show_context(
             bridge, event_id, record, storage, contents or "No project memory saved yet."
         )
+    if cmd.name == "data-root":
+        if surface.is_email(record):
+            command_intent.private_reply(record, grant)
+            return await finish(bridge, event_id, record, surface.EMAIL_READ_ONLY)
+        if not grant.private:
+            raise ValueError("Change the data location in your private Slack conversation.")
+        pid = grant.doc.find(cmd.args[0], grant.email)
+        if not grant.doc.owns(pid, grant.email):
+            raise ValueError("Only the project owner can change its data location.")
+        await asyncio.to_thread(bridge.resolve_data, record, uri=cmd.args[1])
     if cmd.name != "init":
         reply = await asyncio.to_thread(
             commands.run, cmd, grant, registry, bridge.app, record, event_id, bridge.settings
@@ -659,6 +673,7 @@ async def handle(
                 "share",
                 "unshare",
                 "rename",
+                "data-root",
                 "atomx login status",
                 "connect atomx",
                 "publish",
@@ -714,12 +729,24 @@ async def handle(
                 "publish",
                 "unpublish",
                 "rename",
+                "data-root",
                 "write grant",
                 "write revoke",
             }:
                 from . import command_approval
 
                 return await command_approval.propose(bridge, event_id, record, storage, cmd, grant)
+    if cmd and cmd.name == "data-root":
+        from . import command_approval, command_intent
+
+        if surface.is_email(record):
+            command_intent.private_reply(record, grant)
+            return await finish(bridge, event_id, record, surface.EMAIL_READ_ONLY)
+        if not grant.private:
+            raise ValueError("Change the data location in your private Slack conversation.")
+        pid = grant.doc.find(cmd.args[0], grant.email)
+        cmd = commands.Command(cmd.name, (pid, cmd.args[1]))
+        return await command_approval.propose(bridge, event_id, record, storage, cmd, grant)
     if cmd and cmd.name != "init":
         handled = await dispatch_command(bridge, event_id, record, storage, cmd, grant)
         if handled is not None:
@@ -811,6 +838,18 @@ async def handle(
         if surface.is_email(record):
             state["private_owner"] = grant.email
         # Bind the thread before a router/memory failure can end its first turn.
+        await asyncio.to_thread(
+            storage.put, access.checkpoint_key(record["thread_key"]), json.dumps(state).encode()
+        )
+    # Rebind the next turn to the registry's current data root. Do not resume an SDK
+    # session whose sandbox was initialized with the previous mount scope. Preserve
+    # conversation history and work products; in-flight requests fail their existing
+    # access-signature check rather than being silently retargeted.
+    uri = urlsplit(grant.project.data_uri)
+    expected_path = str(bridge.settings.data_mount_root / uri.netloc / uri.path.lstrip("/"))
+    if ctx["data_path"] != expected_path:
+        await asyncio.to_thread(bridge.resolve_data, record, uri=grant.project.data_uri)
+        ctx.update(data_path=expected_path, session_id=None)
         await asyncio.to_thread(
             storage.put, access.checkpoint_key(record["thread_key"]), json.dumps(state).encode()
         )

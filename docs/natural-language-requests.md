@@ -13,12 +13,20 @@ Examples:
 | “Find projects named atlas” | Searches the user's visible projects. Lists show at most 50 matches and explicitly report truncation. |
 | “Use atlas” / “the second one” after a list | Selects an authorized project for new conversations. Existing conversations keep their project. |
 | “Create a project named atlas at gs://lab-data/atlas/” | Uses the existing setup flow in a private, new conversation. Requires a user-supplied data URI and normal bucket admission. |
+| “Set atlas's default data folder to gs://lab-data/atlas/processed” | Changes the actual registry setting after owner confirmation in private Slack; email gives a Slack handoff. Exact syntax: `data-root atlas gs://lab-data/atlas/processed`. |
 | “Show the project guide” / “show saved project memory” | Reads the authorized project's guide or memory without a compute worker. |
 | “Include the scripts” / “stop attaching scripts” | Changes the requester's script-attachment preference. |
 | “Stop this analysis” | Cancels the earlier queued/running work in the same authorized conversation, including email. |
 | “Share atlas with person@example.org” | Previews an exact change with Confirm/Cancel in private Slack. |
 | “Rename atlas to atlas-v2” | Requires private Slack confirmation. Both typed and natural email rename requests direct the user to Slack. |
 | “Revoke write access to atlas” | An authorized write administrator can preview and confirm without waiting for running computation. Later analysis still waits for that computation. |
+
+Changing a default data location validates the destination against the same bucket admission
+as project creation. It updates the registry, not just the brief, and affects every member.
+Existing conversations adopt the current location on their next request and reset the worker
+session while retaining conversation history and work products. Running requests with the old
+access signature can stop; retry them after the change. No files move and no write grant is
+created or expanded. The registry location takes precedence over older paths in project memory.
 
 Project creation asks for missing details; it never invents a bucket or substitutes a parent
 folder. Clarifications and numbered project choices last ten minutes and are reauthorized.

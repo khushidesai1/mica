@@ -9,7 +9,7 @@ from typing import Any
 from . import surface
 from .access import Grant
 from .config import Settings
-from .data_links import init_args, message_text
+from .data_links import data_uri, init_args, message_text
 from .help_text import COMMAND_HELP, PROJECT_HELP, WRITE_DETAILS, WRITE_HELP
 from .identity import target_email
 from .registry import ProjectEntry, Registry, RegistryDoc
@@ -55,6 +55,11 @@ def parse(raw: str) -> Command | None:
     if not words:
         return None
     action = words[0].lower()
+    if action == "data-root":
+        words = message_text(text).split()
+        if len(words) != 3:
+            raise ValueError("Use data-root <project name or ID> gs://bucket/folder/.")
+        return Command("data-root", (words[1], data_uri(words[2])))
     if action == "memory" and len(words) == 2:
         return Command("memory", (words[1],))
     if action == "scripts":
@@ -188,6 +193,7 @@ def run(
             "publish",
             "unpublish",
             "rename",
+            "data-root",
         }
     ):
         return surface.EMAIL_READ_ONLY
@@ -205,7 +211,16 @@ def run(
         from .write_access import command
 
         return command(cmd, grant, registry.storage, record, event_id, settings)
-    if cmd.name not in {"projects", "use", "rename", "share", "unshare", "publish", "unpublish"}:
+    if cmd.name not in {
+        "projects",
+        "use",
+        "rename",
+        "data-root",
+        "share",
+        "unshare",
+        "publish",
+        "unpublish",
+    }:
         return None
     if cmd.name != "use" and not grant.private:
         raise ValueError("Use that command in your DM with Mica.")
@@ -256,6 +271,19 @@ def run(
             raise ValueError("Project settings changed. Request a fresh confirmation.")
         return current
 
+    if cmd.name == "data-root":
+        pid = registry.update(
+            event_id,
+            email,
+            operation,
+            lambda d: checked(d).set_data_uri(d.find(cmd.args[0], email), email, cmd.args[1]),
+        )
+        current = registry.load().projects[pid]
+        return (
+            f"{current.name}'s default data location is {current.data_uri}. "
+            "Future requests, including follow-ups in existing conversations, use this location. "
+            "No files were moved and no write permissions were granted."
+        )
     if cmd.name == "rename":
         # Resolve inside the atomic update: retries must survive the old name disappearing,
         # and a replay must not rename another project that later reuses that name.

@@ -37,6 +37,9 @@ Exact commands still work:
 • `switch` — List your projects (alias: `projects`).
 • `switch <name or ID>` — Select a project for new threads (alias: `use`).
 • `rename <name or ID> <new-name>` — Rename your project (owner, DM).
+• `data-root <project> gs://bucket/folder/` — Change its default data location (owner, Slack DM,
+confirmation required). You can also say "Set this project's default data folder to gs://bucket/folder/".
+Email requests for this setting direct you to private Slack.
 Existing threads keep their project. In channels, add `--force` to replace a selection.
 
 *Sharing — owner, DM*

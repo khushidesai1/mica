@@ -20,7 +20,16 @@ if TYPE_CHECKING:
     from .batch import BatchBridge
 
 PREFIX = "mica_command_"
-ADMIN = {"share", "unshare", "publish", "unpublish", "rename", "write grant", "write revoke"}
+ADMIN = {
+    "share",
+    "unshare",
+    "publish",
+    "unpublish",
+    "rename",
+    "data-root",
+    "write grant",
+    "write revoke",
+}
 
 
 def key(event_id: str) -> str:
@@ -74,6 +83,8 @@ async def propose(
     if surface.is_email(record):
         return await finish(bridge, event_id, record, surface.EMAIL_READ_ONLY)
     authorize(bridge, storage, cmd, grant, record)
+    if cmd.name == "data-root":
+        await asyncio.to_thread(bridge.resolve_data, record, uri=cmd.args[1])
     event, team = record["payload"]["event"], record["payload"]["team_id"]
     if cmd.name in {"share", "unshare"}:
         if bridge.settings.access_mode in {"channel", "workspace"}:
@@ -123,6 +134,13 @@ async def propose(
         + (": " + " · ".join(saved["args"][1:]) if len(saved["args"]) > 1 else "")
         + ". This request expires in 10 minutes."
     )
+    if saved["name"] == "data-root":
+        text += (
+            f" Current location: {proposal['project']['data_uri']}. "
+            "This affects every project member and future requests in existing conversations. "
+            "Running requests using the old location may stop. Files and write permissions "
+            "are unchanged."
+        )
     if saved["name"] == "publish":
         text += " Everyone who can view that channel, including future members, may see replies."
     await bridge.notify(event_id, record, "replying", text)
@@ -234,6 +252,7 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
             generation = await asyncio.to_thread(
                 storage.put_if, path, json.dumps(proposal).encode(), generation
             )
+        record["command_expected_project"] = proposal["project"]
         try:
             await dispatch_command(bridge, proposal["operation_id"], record, storage, cmd, grant)
         finally:
