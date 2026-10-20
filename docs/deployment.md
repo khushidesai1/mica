@@ -153,7 +153,7 @@ The mailbox owner must complete these activation steps:
    `gmail_oauth_client_secret_name`, `gmail_refresh_token_secret_name`,
    `gmail_oauth_client_id`, and optionally `gmail_oauth_secret_version` in private tfvars.
 3. Set `gmail_account = "azizi.lab.341+mica@gmail.com"`, create a Gmail filter labeling requests
-   to that alias, set `gmail_label` to that label name/ID, and list other bot addresses in
+   to that alias, set `gmail_label = "Mica"` (or its label ID), and list other bot addresses in
    `gmail_aliases`. Confirm the base mailbox and label before enabling intake.
 4. Apply Terraform yourself to mount the existing secrets and environment settings. Routine
    application releases do not create secrets, change IAM, or apply Terraform.

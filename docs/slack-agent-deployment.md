@@ -1,5 +1,42 @@
 > Source behavior update, 10 October 2026: [the routing and memory implementation plan](worker-routing-and-memory-plan.md) supersedes the pricing/quote gates, thread-draft guide flow, knowledge feature flag, and per-thread channel summaries described below. Those passages remain historical design/deployment evidence. This local implementation has not been deployed or validated in staging.
 
+## Email requests and renamed project state — 2026-10-20
+
+Revision `pistachio-staging-rename-554fb1e` serves staging with coordinated build
+`8684099b-cc93-4729-af67-6c33e08500fd` from source `554fb1e`. It includes the email
+analysis route, shared private-project defaults, authenticated worker email delivery,
+and memory/storage name mappings. Gmail intake remains disabled pending mailbox-owner
+OAuth provisioning and watch activation; see [deployment](deployment.md#gmail-activation).
+The intended mailbox alias is `azizi.lab.341+mica@gmail.com`, with label `Mica`.
+
+Validation: Ruff and mypy passed; 970 tests passed and 6 skipped. All configured build gates
+passed, including headless API/source checks, worker source/compute checks, and shared-worker
+schema compatibility. Optional spatial sizing retained its configured skip. Preview health
+returned 200, removed routes 404, and unsigned Slack/Gmail ingress and unauthenticated email
+callbacks 401. Runtime settings were preserved apart from the coordinated image references.
+
+The `crc-cosmx` memory guide moved atomically from the legacy folder into
+`projects/crc-cosmx/`, with its stable-ID mapping in `.mica/projects.json`, in memory commit
+`a4d9a2982f5d0fe354994deb9a246668724c410e`. Existing guide content was preserved. Future
+rename commands synchronize the registry and memory before confirming completion.
+
+The staging prefix `projects/pista-cosmx-6k-crc/` was copied to `projects/crc-cosmx/`:
+94 objects, 40,251,270 bytes, verified by size and checksums. The storage index redirects
+existing logical keys to the new folder. The owner requested retaining all 94 originals;
+they are backups, not active destinations. Task dispatch was paused with no active workers
+or in-flight tasks during cutover, then restored. No synthetic smoke objects were created.
+
+Local state now uses `.mica/`, including linked worktrees and new script checkpoints.
+Old script checkpoints still restore verified contents. Evidence is retained locally at
+`.mica/deployments/email-requests-20261019/`. Rollback must preserve the folder mappings or
+reconcile physical data before using older writers; simply restoring an old image is unsafe.
+
+Immutable images:
+
+- API: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/api@sha256:461f1e15f8ec9644bbd165ce7dd79b899032890846b8516ae9378b6ee8f90645`
+- Claude worker: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/slack-agent@sha256:6ee24f2651a3013f58ffcc3ad03796daf755a64760b27df2fe5c1539429ae9b1`
+- Shared science worker: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/science@sha256:86acffefebb4bf0c928623382b7cbc67cdcafcb3607eea595f693d3704fc6249`
+
 # Verified deployment source recovery — 8 October 2026
 
 The live service `pistachio-staging-resize-20261006` serves 100% of traffic in
