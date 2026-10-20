@@ -84,7 +84,7 @@ before validation. A superseded untested first draft is not reported as a succes
   50% less preparation time on the measured workload. Synthetic checks do not establish model
   accuracy, percentile latency, full-population result equivalence or every target.
 - Promote only the matching tested images. Exact deployment and benchmark evidence belongs in
-  `.pistachio/deployments/` and `.pistachio/benchmarks/`.
+  `.mica/deployments/` and `.mica/benchmarks/`.
 
 ## September 30 measured preparation canary
 

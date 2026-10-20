@@ -2,6 +2,7 @@
 
 import json
 
+import httpx
 import pytest
 from analysis_helpers import seed_project
 from test_analysis_batch import bridge, payload  # noqa: F401
@@ -56,10 +57,14 @@ async def test_rename_preserves_channel_threads_and_project_content(chat):  # no
     assert after.projects[chat.pid].model_dump() == {
         **before.projects[chat.pid].model_dump(),
         "name": "liver-atlas",
+        "name_revision": before.projects[chat.pid].name_revision + 1,
     }
     assert after.bindings == before.bindings
     assert chat.store.get(pointer)[0] == checkpoint
-    assert (await chat.memory_backend.read(chat.pid)).files["PROJECT.md"] == brief
+    renamed_memory = await chat.memory_backend.read(chat.pid)
+    assert renamed_memory._root == "projects/liver-atlas"
+    assert renamed_memory.files["PROJECT.md"].text.startswith("# Project brief: liver-atlas\n")
+    assert brief.text.split("\n", 1)[-1] in renamed_memory.files["PROJECT.md"].text
     saved_output = f"projects/{chat.pid}/runs/saved/outputs/result.txt"
     assert chat.store.get(saved_output)[0] == b"saved result"
     chat.decision.assert_not_called()
@@ -136,6 +141,28 @@ async def test_unbound_dm_controls_and_structured_help(chat):  # noqa: F811
     assert "• `memory`" in full["notice_text"]
     chat.decision.assert_not_called()
     chat.test_client.create_job.assert_not_called()
+
+
+async def test_rename_retries_memory_failure_before_acknowledging(chat, monkeypatch):  # noqa: F811
+    original = chat.memory_backend.rename_project
+
+    async def unavailable(*args, **kwargs):
+        raise httpx.ConnectError("GitHub unavailable")
+
+    monkeypatch.setattr(chat.memory_backend, "rename_project", unavailable)
+    with pytest.raises(RuntimeError, match="synchronization needs retry"):
+        await message(chat, "rename liver liver-atlas", "10.0")
+    assert Registry(chat.store).load().projects[chat.pid].name_revision == 1
+    assert (await chat.memory_backend.read(chat.pid))._root == f"projects/{chat.pid}"
+    assert not any(
+        "Project renamed" in call.kwargs.get("text", "")
+        for call in chat.test_slack.chat_postMessage.call_args_list
+    )
+    monkeypatch.setattr(chat.memory_backend, "rename_project", original)
+    reply = await message(chat, "rename liver liver-atlas", "10.0")
+    assert reply["status"] == "complete"
+    assert Registry(chat.store).load().projects[chat.pid].name_revision == 1
+    assert (await chat.memory_backend.read(chat.pid))._root == "projects/liver-atlas"
 
 
 async def test_switch_keeps_thread_context_and_routes_new_threads(chat):  # noqa: F811

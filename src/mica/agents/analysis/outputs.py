@@ -81,7 +81,7 @@ def retention_reason(relative: Path, size: int, *, recovery: bool = False) -> st
         return "dataset"
     if relative.parts[:2] == ("outputs", "gcs"):
         return "bucket-staging"
-    if recovery and relative.parts[:2] == (".pistachio", "scripts"):
+    if recovery and relative.parts[:2] in {(".mica", "scripts"), (".pistachio", "scripts")}:
         return "" if size <= 1_000_000 else "oversized-script"
     if not relative.parts or relative.parts[0] not in {"code", "notes", "logs", "outputs"}:
         return "temporary-or-unrecognized"

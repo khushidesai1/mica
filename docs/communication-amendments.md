@@ -51,7 +51,7 @@ model; references establish provenance, not a general proof of semantic correctn
   delegated seed; general assent to sampling selected routine reproducible defaults without asking
   for another decision. These fixtures contained no real task/project records or datasets.
 - Model replies were concise and contained no extra clarification requests or internal evidence
-  language. Results are saved in `.pistachio/deployments/communication-model-eval-20260930.json`.
+  language. Results are saved in `.mica/deployments/communication-model-eval-20260930.json`.
 - A local, deterministic check loaded the incident's saved handoff and successfully bound a
   10,000-cell amendment to its actual reply ID. This check made no model request or database write.
 
@@ -66,7 +66,7 @@ restarted by deploying the release, and their stored records were not manually e
 - Preview and normal staging health/schema checks passed. Runtime environment, worker image,
   resource limits, and service configuration match the prior live revision. No ERROR-level logs
   were returned for the new revision during the rollout check.
-- Deployment metadata and isolated source diff: `.pistachio/deployments/communication-20260930.*`.
+- Deployment metadata and isolated source diff: `.mica/deployments/communication-20260930.*`.
   The separate latency preview was not promoted, and the scientific worker was not rebuilt.
 
 New parsed request records may contain `delegated_choices`. Prefer a compatible forward fix over

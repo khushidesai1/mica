@@ -46,4 +46,4 @@ completion handler accepts non-tool Cloud Build events, then tries to look up an
 tool ID and returns 500. This was observed for the deployment build; it is outside the
 UI changes and has not been changed here. The UI health and authentication checks passed.
 Immutable deployment references are in
-`.pistachio/deployments/ui-regression-fixes-20260929.json`.
+`.mica/deployments/ui-regression-fixes-20260929.json`.

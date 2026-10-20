@@ -101,7 +101,13 @@ class FakeGitHub:
         head = variables.get("head") or self.head
         files = self.trees[head]
         prefix = variables.get("path", "") + "/"
+        names = files.get(".mica/projects.json")
         node = {
+            "names": {
+                "object": {"text": names, "byteSize": len(names.encode()), "isTruncated": False}
+            }
+            if names is not None
+            else None,
             "oid": head,
             "file": {"object": self.tree(files, prefix)}
             if any(p.startswith(prefix) for p in files)

@@ -305,7 +305,7 @@ def build() -> None:
             ["Task dispatch", "In process asynchronous task", "Cloud Tasks queue with concurrency capped at three"],
             ["State", "In memory repository", "Firestore"],
             ["Analysis execution", "Local process or no network Docker container", "Ephemeral Google Cloud Batch VM"],
-            ["Artifacts", "Local .pistachio directory", "Cloud Storage task prefixes"],
+            ["Artifacts", "Local .mica directory", "Cloud Storage task prefixes"],
             ["Images", "Locally built API and science images", "Artifact Registry images pinned by digest"],
             ["Events", "Direct service calls", "Pub Sub for completion Gmail and tool build events"],
             ["Scheduled maintenance", "None", "Cloud Scheduler for compaction reconciliation Gmail watch and catalog work"],

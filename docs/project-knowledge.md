@@ -131,7 +131,7 @@ The earlier knowledge release passed 705 local tests. Current implementation and
 are tracked in [the routing and memory plan](worker-routing-and-memory-plan.md). The coordinated
 release must build API and workers from one source commit, drain old jobs, preserve
 existing environment and secret mappings, and check authenticated endpoint boundaries
-before promoting traffic. Deployment evidence is saved under `.pistachio/deployments/`.
+before promoting traffic. Deployment evidence is saved under `.mica/deployments/`.
 
 Before enabling the mirror, an administrator must create a private repository with an initialized
 branch, configure a separate token with contents write access to that repository, and make its

@@ -1,6 +1,9 @@
 .git
 .venv
 .venv-slack
+.mica
+
+# Legacy local state remains excluded during migration.
 .pistachio
 .pytest_cache
 .mypy_cache

@@ -36,7 +36,7 @@ probe operation under the tested runtime. A conditional Firestore update retaine
 scientific authority, prior operations, result references and spent budget. The new reservation
 totals $0.8333 within the existing $31.875 approved envelope. No older duplicate task was restarted.
 The task was dispatched through the normal authenticated Cloud Tasks queue. Deployment and
-recovery evidence is recorded in `.pistachio/deployments/worker-sync-20260929.json`.
+recovery evidence is recorded in `.mica/deployments/worker-sync-20260929.json`.
 
 The real-data recovery probe succeeded in 188 seconds, passed runtime/input-schema validation,
 and durably published its result with exit code 0. The task advanced into normal model-driven

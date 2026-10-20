@@ -519,6 +519,26 @@ async def handle(
             commands.run, cmd, grant, registry, bridge.app, record, event_id, bridge.settings
         )
         if reply is not None:
+            if cmd.name == "rename" and bridge.settings.memory_repo:
+                doc = await asyncio.to_thread(registry.load)
+                renamed = record["renamed_project"]
+                if not doc.owns(renamed, grant.email):
+                    raise ValueError("Project ownership changed before memory synchronization.")
+                project = doc.projects[renamed]
+                # The registry operation is idempotent. A transient GitHub failure retries the
+                # same command, with the latest name/revision, before acknowledging completion.
+                try:
+                    await project_memory.GitHubMemory(bridge.settings).rename_project(
+                        renamed,
+                        project.name,
+                        project.name_revision,
+                        event_id=event_id,
+                        reserved_ids=set(doc.projects),
+                    )
+                except httpx.HTTPError as exc:
+                    # Preserve the receipt for Cloud Tasks retry instead of marking a
+                    # registry-only rename complete/failed in the generic HTTP handler.
+                    raise RuntimeError("Project memory synchronization needs retry") from exc
             return await finish(bridge, event_id, record, reply)
     is_init = bool(cmd and cmd.name == "init")
     if is_init:

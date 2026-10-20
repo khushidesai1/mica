@@ -21,8 +21,9 @@ from .project_memory import SECRET
 MAX_BYTES = 1_000_000
 MAX_SCRIPTS = 10
 SUFFIXES = {".py", ".R", ".r", ".sh", ".jl"}
-EXCLUDED = {"inputs", ".previews", "outputs", "scratch", ".pistachio"}
-CACHE = Path(".pistachio/scripts")
+EXCLUDED = {"inputs", ".previews", "outputs", "scratch", ".mica", ".pistachio"}
+CACHE = Path(".mica/scripts")
+LEGACY_CACHE = Path(".pistachio/scripts")
 
 
 def relative_path(value: str) -> Path:
@@ -176,15 +177,16 @@ def candidates(work: Path, command: str) -> tuple[list[str], bool]:
 
 
 def clear(work: Path) -> None:
-    parent = work / CACHE.parent
-    if parent.is_symlink() or parent.is_file():
-        parent.unlink()
-        return
-    root = work / CACHE
-    if root.is_symlink() or root.is_file():
-        root.unlink()
-    elif root.is_dir():
-        shutil.rmtree(root)
+    for cache in (CACHE, LEGACY_CACHE):
+        parent = work / cache.parent
+        if parent.is_symlink() or parent.is_file():
+            parent.unlink()
+            continue
+        root = work / cache
+        if root.is_symlink() or root.is_file():
+            root.unlink()
+        elif root.is_dir():
+            shutil.rmtree(root)
 
 
 @dataclass(frozen=True)
@@ -217,7 +219,10 @@ class Capture:
             for row in rows:
                 path = relative_path(row["path"])
                 try:
-                    content = read_regular(self.work, CACHE / path)
+                    try:
+                        content = read_regular(self.work, CACHE / path)
+                    except FileNotFoundError:
+                        content = read_regular(self.work, LEGACY_CACHE / path)
                     checked_content(content)
                     item = Script(str(path), content, float(row["last_run"]))
                     if item.metadata() != row:

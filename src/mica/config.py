@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     embedding_model: str = "text-embedding-3-small"
     disable_agents_tracing: bool = True
 
-    artifact_root: Path = Path(".pistachio/artifacts")
+    artifact_root: Path = Path(".mica/artifacts")
     docker_artifact_root: Path | None = None
     artifact_retention_days: int = 30
     memory_inactive_days: int = 90

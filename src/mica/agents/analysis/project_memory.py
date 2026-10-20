@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import logging
 import re
 import time
@@ -19,7 +20,7 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, TypeAdapter
 
 from .config import Settings
 
@@ -105,7 +106,19 @@ class File(BaseModel):
     oid: str
 
 
+class MemoryName(BaseModel):
+    folder: str = Field(pattern=r"^[A-Za-z0-9_-]{1,100}$")
+    name: str = Field(pattern=r"^[a-z0-9-]{3,40}$")
+    revision: int = Field(ge=0)
+
+
+NAMES_PATH = ".mica/projects.json"
+
+
 class Snapshot(BaseModel):
+    # Routing metadata stays in the control plane, never in worker/model snapshots.
+    _root: str = PrivateAttr(default="")
+    _names: dict[str, MemoryName] = PrivateAttr(default_factory=dict)
     head_oid: str
     files: dict[str, File] = Field(default_factory=dict)
     commit_count: int = 0
@@ -206,6 +219,7 @@ def _tree_fields(depth: int) -> str:
 TREE = _tree_fields(3)  # Includes _unmerged/<event>/data/<topic>.md.
 NODE = """oid file(path: $path) { object { ... on Tree { TREE } } }
 history(first: 1, path: $path) { totalCount }
+names: file(path: ".mica/projects.json") { object { ... on Blob { text byteSize isTruncated } } }
 """.replace("TREE", TREE)
 READ = """query MemoryRead($owner: String!, $repo: String!, $branch: String!, $path: String!) {
   repository(owner: $owner, name: $repo) { isPrivate
@@ -270,7 +284,7 @@ class GitHubMemory:
             if not (
                 query in {READ, READ_HEAD}
                 and error.get("type") == "NOT_FOUND"
-                and error.get("path", [])[-1:] == ["file"]
+                and error.get("path", [])[-1:] in (["file"], ["names"])
             )
         ]
         if errors:
@@ -303,8 +317,12 @@ class GitHubMemory:
                 (time.monotonic() - started) * 1000,
             )
 
-    async def _read(self, client: httpx.AsyncClient, pid: str, *, head_oid: str = "") -> Snapshot:
+    async def _read(
+        self, client: httpx.AsyncClient, pid: str, *, head_oid: str = "", _root: str = ""
+    ) -> Snapshot:
         variables = self.variables(pid)
+        if _root:
+            variables["path"] = "projects/" + valid_project(_root)
         variables.update(
             {"head": head_oid}
             if head_oid
@@ -319,12 +337,31 @@ class GitHubMemory:
         node = repo["object"] if head_oid else (repo.get("ref") or {}).get("target")
         if not node or not node.get("oid"):
             raise ValueError("Initialize the memory branch before use.")
+        names_blob = (node.get("names") or {}).get("object")
+        names: dict[str, MemoryName] = {}
+        if names_blob:
+            if names_blob.get("isTruncated") or names_blob.get("byteSize", 0) > 1_000_000:
+                raise ValueError("Project memory name index is too large")
+            names = TypeAdapter(dict[str, MemoryName]).validate_json(names_blob["text"])
+            for identifier in names:
+                valid_project(identifier)
+            if len({entry.folder for entry in names.values()}) != len(names):
+                raise ValueError("Project memory folders must be unique")
+        target = names[pid].folder if pid in names else pid
+        if not _root and pid not in names and pid in {entry.folder for entry in names.values()}:
+            raise ValueError("This memory folder belongs to another project ID")
+        if not _root and target != pid:
+            return await self._read(client, pid, head_oid=node["oid"], _root=target)
         snapshot = Snapshot(head_oid=node["oid"], commit_count=node["history"]["totalCount"])
+        snapshot._root, snapshot._names = variables["path"], names
 
         async def walk(tree: dict[str, Any], parent: str = "") -> None:
             for entry in tree.get("entries", []):
                 path, obj = parent + entry["name"], entry["object"]
                 if entry["type"] == "tree":
+                    if not obj or "entries" not in obj:
+                        snapshot.invalid[path] = 0
+                        continue
                     await walk(obj, path + "/")
                     continue
                 size = obj.get("byteSize", 0)
@@ -440,7 +477,7 @@ class GitHubMemory:
                     if not accepted:
                         outcome = "nothing"
                         return saved
-                    root = "projects/" + pid + "/"
+                    root = latest._root + "/"
                     params = {
                         "branch": {
                             "repositoryNameWithOwner": self.settings.memory_repo,
@@ -494,6 +531,110 @@ class GitHubMemory:
                 len(saved.rejected),
                 outcome,
             )
+
+    async def rename_project(
+        self,
+        pid: str,
+        name: str,
+        revision: int,
+        *,
+        event_id: str,
+        reserved_ids: set[str] | None = None,
+    ) -> Saved:
+        """Move memory and its stable-ID mapping atomically; fence stale renames."""
+        valid_project(pid)
+        proposed_name = MemoryName(folder=name, name=name, revision=revision)
+        if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", event_id):
+            raise ValueError("Invalid memory rename event")
+        async with self.connection() as client:
+            for _ in range(3):
+                latest = await self._read(client, pid)
+                previous = latest._names.get(pid)
+                if previous and previous.revision > revision:
+                    return Saved()
+                if previous and previous.revision == revision and previous.name != name:
+                    raise ValueError("Conflicting project names at the same revision")
+                if latest.invalid:
+                    raise ValueError("Repair invalid memory entries before renaming the folder")
+                names = dict(latest._names)
+                occupied = {entry.folder for key, entry in names.items() if key != pid}
+                occupied |= (reserved_ids or set()) - {pid}
+                folder = previous.folder if previous and previous.name == name else name
+                if folder in occupied:
+                    folder += "-" + hashlib.sha256(pid.encode()).hexdigest()[:10]
+                if folder in occupied:
+                    raise ValueError("The destination memory folder is already occupied")
+                destination = "projects/" + folder
+                if destination != latest._root:
+                    target = await self._read(client, pid, head_oid=latest.head_oid, _root=folder)
+                    if target.files or target.invalid:
+                        folder = name + "-" + hashlib.sha256(pid.encode()).hexdigest()[:10]
+                        destination = "projects/" + folder
+                        target = await self._read(
+                            client, pid, head_oid=latest.head_oid, _root=folder
+                        )
+                        if target.files or target.invalid or folder in occupied:
+                            raise ValueError("The destination memory folder is already occupied")
+                proposed_name = proposed_name.model_copy(update={"folder": folder})
+                files = {path: file.text for path, file in latest.files.items()}
+                guide = files.get("PROJECT.md", "")
+                heading = f"# Project brief: {name}\n"
+                files["PROJECT.md"] = (
+                    re.sub(r"\A#[^\n]*(?:\n|$)", heading, guide, count=1)
+                    if guide.startswith("# ")
+                    else heading + "\n" + guide
+                )
+                validate("PROJECT.md", files["PROJECT.md"].encode(), self.settings)
+                if (
+                    previous == proposed_name
+                    and latest._root == destination
+                    and latest.files.get("PROJECT.md")
+                    and files["PROJECT.md"] == latest.files["PROJECT.md"].text
+                ):
+                    return Saved()
+                names[pid] = proposed_name
+                index = (
+                    json.dumps(
+                        {key: entry.model_dump() for key, entry in names.items()},
+                        indent=2,
+                        sort_keys=True,
+                    )
+                    + "\n"
+                )
+                additions = {f"{destination}/{path}": text for path, text in files.items()}
+                additions[NAMES_PATH] = index
+                deletions = (
+                    [{"path": f"{latest._root}/{path}"} for path in latest.files]
+                    if destination != latest._root
+                    else []
+                )
+                params = {
+                    "branch": {
+                        "repositoryNameWithOwner": self.settings.memory_repo,
+                        "branchName": self.settings.memory_branch,
+                    },
+                    "expectedHeadOid": latest.head_oid,
+                    "message": {
+                        "headline": f"memory({pid}): rename {event_id}",
+                        "body": f"Display name: {name}; name revision: {revision}",
+                    },
+                    "fileChanges": {
+                        "additions": [
+                            {"path": path, "contents": base64.b64encode(text.encode()).decode()}
+                            for path, text in additions.items()
+                        ],
+                        "deletions": deletions,
+                    },
+                }
+                try:
+                    result = await self.graphql(client, COMMIT, {"input": params})
+                except HeadMoved:
+                    continue
+                return Saved(
+                    commit_oid=result["createCommitOnBranch"]["commit"]["oid"],
+                    changed=["PROJECT.md"],
+                )
+        raise HeadMoved("Memory branch kept changing; retry the rename")
 
     def _merge(
         self, base: Snapshot, latest: Snapshot, updates: dict[str, str | None], event_id: str

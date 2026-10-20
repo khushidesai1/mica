@@ -67,7 +67,7 @@ def test_optional_budget_never_drops_code_notes_or_recovery_scripts(tmp_path):
         for p in (
             "code/a.py",
             "notes/methods.md",
-            ".pistachio/scripts/code/a.py",
+            ".mica/scripts/code/a.py",
             "outputs/figure.png",
             "logs/large.log",
         )

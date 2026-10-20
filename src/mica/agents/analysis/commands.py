@@ -225,7 +225,7 @@ def run(
     if cmd.name == "rename":
         # Resolve inside the atomic update: retries must survive the old name disappearing,
         # and a replay must not rename another project that later reuses that name.
-        registry.update(
+        record["renamed_project"] = registry.update(
             event_id,
             email,
             operation,

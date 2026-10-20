@@ -197,7 +197,7 @@ The private archive below is a backup of local files, not an export of all cloud
 On the original Mac the transfer directory is:
 
 ```text
-/Users/khushidesai/Documents/mica/.pistachio/laptop-handoff/
+/Users/khushidesai/Documents/mica/.mica/laptop-handoff/
 ```
 
 Transfer `mica-private-2026-10-05.tar.gz` and its `.sha256` file using AirDrop or an
@@ -209,7 +209,7 @@ the existing Docker/Cloud Build upload rules.
 The archive preserves:
 
 - `infra/terraform.tfstate`, `infra/terraform.tfstate.backup`, and `infra/terraform.tfvars`.
-- `.pistachio/artifacts/`, `.pistachio/benchmarks/`, and `.pistachio/deployments/`, including
+- `.mica/artifacts/`, `.mica/benchmarks/`, and `.mica/deployments/`, including
   exact source and verification records for the deployed progress releases (about 338 MB
   uncompressed in total on the old Mac).
 - `codex-reference/config.toml.source-reference` and a configuration inventory for manual review.
@@ -228,7 +228,7 @@ tar -xzf mica-private-2026-10-05.tar.gz -C mica-private-2026-10-05
 ```
 
 On a **fresh clone**, restore the three `infra/` files to the clone's `infra/` directory and
-merge the archived `.pistachio/` directory into the clone's `.pistachio/`. If either already
+merge the archived `.mica/` directory into the clone's `.mica/`. If either already
 contains local files, compare/back them up before copying. Retain the old Mac's originals
 until the new setup has been verified. The archive contains local artifacts and may include
 private research or conversation material.

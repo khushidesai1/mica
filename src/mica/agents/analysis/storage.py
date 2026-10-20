@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import json
+import re
 import shutil
 import tempfile
 import threading
@@ -13,6 +15,23 @@ from typing import BinaryIO, Protocol, cast
 from pydantic import BaseModel
 
 _LOCAL_LOCK = threading.RLock()
+STORAGE_PATHS_KEY = "projects/_registry/storage-paths.json"
+
+
+def storage_paths(raw: bytes) -> dict[str, str]:
+    """Control-plane physical folder mapping; identities and private roots stay stable."""
+    if len(raw) > 1_000_000:
+        raise ValueError("Project storage path index is too large")
+    paths = json.loads(raw)
+    if not isinstance(paths, dict) or any(
+        not isinstance(value, str) or not re.fullmatch(r"[a-z0-9][a-z0-9_-]{2,99}", value)
+        for item in paths.items()
+        for value in item
+    ):
+        raise ValueError("Invalid project storage path index")
+    if len(set(paths.values())) != len(paths) or set(paths) & set(paths.values()):
+        raise ValueError("Project storage paths must be unique and cannot form chains")
+    return cast(dict[str, str], paths)
 
 
 class Storage(Protocol):
@@ -120,10 +139,26 @@ class GCSStorage:
 
         self.bucket = storage.Client().bucket(bucket)
 
+    def physical_key(self, key: str) -> str:
+        # Read each time: a migration cutover must affect existing API/worker instances.
+        # Internal metadata, private runs, and temporary task paths never need the index.
+        parts = key.split("/", 2)
+        if len(parts) < 2 or parts[0] != "projects" or parts[1].startswith("_"):
+            return key
+        from google.api_core.exceptions import NotFound
+
+        try:
+            raw = self.bucket.blob(STORAGE_PATHS_KEY).download_as_bytes(end=1_000_000)
+        except NotFound:
+            return key
+        paths = storage_paths(bytes(raw))
+        parts[1] = paths.get(parts[1], parts[1])
+        return "/".join(parts)
+
     def get(self, key: str) -> tuple[bytes, str]:
         from google.api_core.exceptions import NotFound
 
-        blob = self.bucket.blob(key)
+        blob = self.bucket.blob(self.physical_key(key))
         try:
             blob.reload()
             return bytes(blob.download_as_bytes(if_generation_match=blob.generation)), str(
@@ -133,10 +168,10 @@ class GCSStorage:
             raise FileNotFoundError(key) from exc
 
     def put(self, key: str, data: bytes) -> None:
-        self.bucket.blob(key).upload_from_string(data)
+        self.bucket.blob(self.physical_key(key)).upload_from_string(data)
 
     def open_read(self, key: str) -> AbstractContextManager[BinaryIO]:
-        blob = self.bucket.blob(key)
+        blob = self.bucket.blob(self.physical_key(key))
         blob.reload()
         return cast(
             AbstractContextManager[BinaryIO],
@@ -146,7 +181,7 @@ class GCSStorage:
     def put_if(self, key: str, data: bytes, generation: str | None) -> str:
         from google.api_core.exceptions import PreconditionFailed
 
-        blob = self.bucket.blob(key)
+        blob = self.bucket.blob(self.physical_key(key))
         try:
             blob.upload_from_string(data, if_generation_match=int(generation) if generation else 0)
         except PreconditionFailed as exc:
@@ -157,21 +192,26 @@ class GCSStorage:
         from google.api_core.exceptions import NotFound, PreconditionFailed
 
         try:
-            self.bucket.blob(key).delete(if_generation_match=int(generation))
+            self.bucket.blob(self.physical_key(key)).delete(if_generation_match=int(generation))
         except (NotFound, PreconditionFailed) as exc:
             raise Conflict("The object changed since it was read.") from exc
 
     def keys(self, prefix: str) -> list[str]:
-        return [blob.name for blob in self.bucket.list_blobs(prefix=prefix)]
+        physical = self.physical_key(prefix)
+        return [
+            prefix + blob.name[len(physical) :] for blob in self.bucket.list_blobs(prefix=physical)
+        ]
 
     def upload(self, key: str, path: Path) -> None:
-        self.bucket.blob(key).upload_from_filename(str(path))
+        self.bucket.blob(self.physical_key(key)).upload_from_filename(str(path))
 
     def upload_new(self, key: str, path: Path) -> None:
         from google.api_core.exceptions import PreconditionFailed
 
         try:
-            self.bucket.blob(key).upload_from_filename(str(path), if_generation_match=0)
+            self.bucket.blob(self.physical_key(key)).upload_from_filename(
+                str(path), if_generation_match=0
+            )
         except PreconditionFailed as exc:
             raise Conflict("The object already exists.") from exc
 
@@ -179,14 +219,14 @@ class GCSStorage:
         # BlobWriter terminates (rather than finalizing) the upload on exceptional exit.
         return cast(
             AbstractContextManager[BinaryIO],
-            self.bucket.blob(key).open("wb", chunk_size=8 * 1024 * 1024),
+            self.bucket.blob(self.physical_key(key)).open("wb", chunk_size=8 * 1024 * 1024),
         )
 
     def download(self, key: str, path: Path) -> None:
         from google.api_core.exceptions import NotFound
 
         try:
-            self.bucket.blob(key).download_to_filename(str(path))
+            self.bucket.blob(self.physical_key(key)).download_to_filename(str(path))
         except NotFound as exc:
             raise FileNotFoundError(key) from exc
 
@@ -194,7 +234,9 @@ class GCSStorage:
         from google.api_core.exceptions import NotFound
 
         try:
-            return bytes(self.bucket.blob(key).download_as_bytes(start=0, end=limit - 1))
+            return bytes(
+                self.bucket.blob(self.physical_key(key)).download_as_bytes(start=0, end=limit - 1)
+            )
         except NotFound as exc:
             raise FileNotFoundError(key) from exc
 

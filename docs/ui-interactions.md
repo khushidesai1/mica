@@ -38,7 +38,7 @@ configuration is identical except for the API image. The application source diff
 from the previous deployment contains only `api/templates/index.html`.
 
 No signed-in live analysis was submitted. Deployment details and immutable image/source
-references are recorded in `.pistachio/deployments/ui-interactions-20260929.json`.
+references are recorded in `.mica/deployments/ui-interactions-20260929.json`.
 The previous revision uses the same data model and can be restored with:
 
 ```bash

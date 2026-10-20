@@ -1,7 +1,8 @@
 # GitHub project memory
 
 Project memory uses a private GitHub repository, with one folder per project at
-`projects/<project_id>/`. Enable it with `AGENT_MEMORY_REPO=owner/repository`,
+`projects/<project_id>/` initially, or its renamed folder below. Enable it with
+`AGENT_MEMORY_REPO=owner/repository`,
 `AGENT_MEMORY_BRANCH=main`, and `AGENT_MEMORY_TOKEN_SECRET` set to a Secret Manager
 version resource (`projects/<gcp-project>/secrets/<name>/versions/latest`).
 Set `AGENT_MEMORY_MODEL` to a model supporting forced tool choice (default: `claude-opus-5`).
@@ -31,6 +32,21 @@ Administrators can edit files in GitHub or use `git revert <sha>`; edits take ef
 the next read. Purging Git history with `git filter-repo` and a force-push is a human-only
 operation. Anything said about a project, in a DM or a channel, may be remembered for
 everyone using that project, and repository readers can see it.
+
+## Project renames
+
+The owner’s `rename <project> <new-name>` command updates the registry name, then
+atomically moves its GitHub memory to `projects/<new-name>/` and updates the guide
+heading before reporting completion. The control-plane index `.mica/projects.json`
+maps the stable project ID to that folder. If a folder belongs to another project,
+Mica adds a stable suffix instead of mixing their memory. Access grants, conversation
+checkpoints and saved run IDs remain unchanged.
+
+Transient GitHub failures retry the same rename. A monotonic name revision prevents
+an older retry from undoing a newer rename, and in-flight worker proposals resolve
+the current folder when committed. Historical snapshots resolve the mapping at their
+original commit. Deploy the mapping-aware API and drain older writers before migrating
+an existing folder; do not move memory by hand without updating the index.
 
 ## Turns and viewing memory
 

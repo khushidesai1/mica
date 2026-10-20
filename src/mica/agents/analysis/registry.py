@@ -35,6 +35,7 @@ class ProjectEntry(BaseModel):
     data_uri: str
     created_at: str = Field(default_factory=now)
     access_revision: int = 0
+    name_revision: int = 0
     published_channels: set[str] = Field(default_factory=set)
 
 
@@ -138,7 +139,9 @@ class RegistryDoc(BaseModel):
             for pid, entry in self.projects.items()
         ):
             raise ValueError("You already have a project with that name. Choose another name.")
-        self.projects[project_id].name = name
+        if self.projects[project_id].name != name:
+            self.projects[project_id].name = name
+            self.projects[project_id].name_revision += 1
         return project_id
 
     def bind(

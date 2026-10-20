@@ -157,3 +157,105 @@ async def test_success_metrics_survive_default_application_warning_level(store, 
         assert "A guide" not in caplog.text
     finally:
         root.setLevel(logging.INFO)
+
+
+async def test_rename_moves_folder_keeps_stable_id_and_old_worker_proposals(store):
+    backend, github = store
+    github.seed(
+        {
+            "projects/pista-cosmx-6k-crc/PROJECT.md": "# Old title\n\nVerified data guide.\n",
+            "projects/pista-cosmx-6k-crc/conventions.md": FACT,
+        }
+    )
+    before = await backend.read("pista-cosmx-6k-crc")
+    result = await backend.rename_project("pista-cosmx-6k-crc", "crc-cosmx", 1, event_id="rename")
+    assert result.commit_oid
+    files = github.trees[github.head]
+    assert not any(p.startswith("projects/pista-cosmx-6k-crc/") for p in files)
+    assert (
+        files["projects/crc-cosmx/PROJECT.md"]
+        == "# Project brief: crc-cosmx\n\nVerified data guide.\n"
+    )
+    assert files["projects/crc-cosmx/conventions.md"] == FACT
+    after = await backend.read("pista-cosmx-6k-crc")
+    assert after.files["conventions.md"].text == FACT
+    assert "_names" not in after.model_dump() and "_root" not in after.model_dump()
+    historical = await backend.read("pista-cosmx-6k-crc", head_oid=before.head_oid)
+    assert historical.files == before.files
+    # A worker started before the rename writes through the stable ID to the new folder.
+    await backend.commit(
+        "pista-cosmx-6k-crc", before, {"open.md": FACT}, source="worker", event_id="old-worker"
+    )
+    assert github.trees[github.head]["projects/crc-cosmx/open.md"] == FACT
+    assert not any(p.startswith("projects/pista-cosmx-6k-crc/") for p in github.trees[github.head])
+
+
+async def test_newer_rename_wins_and_replay_does_not_revert(store):
+    backend, github = store
+    await backend.rename_project("p_test", "first-name", 1, event_id="first")
+    await backend.rename_project("p_test", "second-name", 2, event_id="second")
+    head = github.head
+    assert not (await backend.rename_project("p_test", "first-name", 1, event_id="first")).writes
+    assert not (await backend.rename_project("p_test", "second-name", 2, event_id="second")).writes
+    assert github.head == head
+    assert (
+        (await backend.read("p_test"))
+        .files["PROJECT.md"]
+        .text.startswith("# Project brief: second-name")
+    )
+
+
+async def test_duplicate_names_and_existing_folders_are_isolated(store):
+    backend, github = store
+    github.seed({"projects/crc-cosmx/PROJECT.md": "# Other owner's data\n"})
+    await backend.rename_project("p_alice", "crc-cosmx", 1, event_id="alice")
+    await backend.rename_project("p_bob", "crc-cosmx", 1, event_id="bob")
+    alice = await backend.read("p_alice")
+    bob = await backend.read("p_bob")
+    assert alice._root != bob._root
+    assert github.trees[github.head]["projects/crc-cosmx/PROJECT.md"] == "# Other owner's data\n"
+
+
+async def test_rename_refuses_invalid_entries_without_deleting_them(store):
+    backend, github = store
+    github.seed({"projects/p_test/unsupported.bin": "keep me"})
+    head = github.head
+    with pytest.raises(ValueError, match="invalid memory"):
+        await backend.rename_project("p_test", "new-name", 1, event_id="rename")
+    assert github.head == head
+
+
+async def test_rename_retries_concurrent_memory_edit_without_losing_it(store, monkeypatch):
+    backend, github = store
+    github.seed({"projects/p_test/PROJECT.md": "# Original\n"})
+    original = backend.graphql
+    moved = False
+
+    async def race(client, query, variables):
+        nonlocal moved
+        if query == memory.COMMIT and not moved:
+            moved = True
+            github.seed({"projects/p_test/open.md": FACT})
+        return await original(client, query, variables)
+
+    monkeypatch.setattr(backend, "graphql", race)
+    await backend.rename_project("p_test", "crc-cosmx", 1, event_id="raced")
+    assert github.trees[github.head]["projects/crc-cosmx/open.md"] == FACT
+    assert not any(p.startswith("projects/p_test/") for p in github.trees[github.head])
+    # A folder name is not an alternate authorization identity.
+    assert await backend.read("crc-cosmx") is None
+
+
+async def test_rename_reserves_empty_project_ids_and_replays_suffixed_folder(store):
+    backend, github = store
+    await backend.rename_project(
+        "p_test", "crc-cosmx", 1, event_id="rename", reserved_ids={"crc-cosmx", "p_test"}
+    )
+    snapshot = await backend.read("p_test")
+    assert snapshot._root.startswith("projects/crc-cosmx-")
+    head = github.head
+    await backend.rename_project(
+        "p_test", "crc-cosmx", 1, event_id="rename", reserved_ids={"crc-cosmx", "p_test"}
+    )
+    assert github.head == head
+    assert (await backend.read("crc-cosmx")).files == {}

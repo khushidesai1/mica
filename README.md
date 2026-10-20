@@ -120,7 +120,7 @@ deployment definitions, and documentation; cloud project briefs and thread check
 See [Slack setup](docs/slack-agent-setup.md) and the
 [deployment record](docs/slack-agent-deployment.md) for the existing infrastructure.
 
-Credentials, `.env`, virtual environments, local `.pistachio/` artifacts, Terraform state, and
+Credentials, `.env`, virtual environments, local `.mica/` artifacts, Terraform state, and
 `infra/terraform.tfvars` are intentionally excluded from Git. Sign into GitHub and Google Cloud
 on the new laptop and configure local credentials separately. Production secrets stay in Secret
 Manager. Transfer any needed local artifacts securely.

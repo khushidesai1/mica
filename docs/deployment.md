@@ -113,6 +113,26 @@ recovers successful results if a worker completion event is missed.
 The Terraform queue caps concurrent dispatches at three and Cloud Run scales to zero. Batch hard
 limits and the $20 gate are enforced again in application policy, independent of Terraform.
 
+## Migrating a staging project folder
+
+Project identities remain stable when moving an artifact prefix. The optional GCS object
+`projects/_registry/storage-paths.json` maps project IDs to physical folder names, for example
+`{"pista-cosmx-6k-crc": "crc-cosmx"}`. Every analysis storage operation resolves this index;
+checkpoint listings retain their logical keys. Private-user runs and internal metadata keep
+their existing paths. Mapping entries must be unique, without chains or reserved internal names.
+
+Deploy mapping-aware API and worker images first. Pause task dispatch, confirm workers have
+stopped, and drain in-flight API requests before changing data. Copy the exact source prefix to
+an unoccupied destination with source-generation and create-only preconditions. Verify object
+counts, sizes and CRC32C checksums, then confirm source generations have not changed. Publish
+the mapping with a generation precondition; verify reads through the old logical keys before
+deleting only those recorded source generations. Record the inventory and cutover evidence.
+Restore dispatch after verification. A failed verification must preserve the source objects.
+
+After deleting source objects, rolling back to an API or worker without mapping support requires
+copying the data back and removing the mapping under the same drain-and-verify procedure. Merely
+switching to an older revision would make the renamed project's saved results inaccessible.
+
 ## Gmail activation
 
 Deploy the API and Claude worker together; update `MICA_SLACK_AGENT_IMAGE` to the new immutable

@@ -9,14 +9,14 @@ services:
       MICA_EXECUTION_BACKEND: docker
       MICA_AUTH_MODE: dev
       MICA_BATCH_IMAGE: mica-science:local
-      MICA_ARTIFACT_ROOT: /app/.pistachio/artifacts
-      MICA_DOCKER_ARTIFACT_ROOT: ${PWD}/.pistachio/artifacts
+      MICA_ARTIFACT_ROOT: /app/.mica/artifacts
+      MICA_DOCKER_ARTIFACT_ROOT: ${PWD}/.mica/artifacts
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
     ports:
       - "8080:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./.pistachio:/app/.pistachio
+      - ./.mica:/app/.mica
     read_only: true
     tmpfs:
       - /tmp

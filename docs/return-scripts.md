@@ -41,7 +41,7 @@ The general output extension filter and existing `outputs.publish` provenance pa
 
 Exact returned copies are also retained under `outputs/returned-scripts/turn-N/`, archived to
 that turn's storage prefix, and entered in the thread file registry for restoration and review.
-The temporary `.pistachio/scripts/` cache is deleted after delivery attempts and on cancellation;
+The temporary `.mica/scripts/` cache is deleted after delivery attempts and on cancellation;
 continuations carry it in the existing checkpoint archive. With the setting off, explicitly
 asking to attach a `.py`, `.R` or `.sh` file still has the previous extension-filter limitation.
 
@@ -64,4 +64,4 @@ Rollout uses coordinated API and worker images from one source commit. Keep
 `AGENT_RETURN_SCRIPTS_DEFAULT=false`, then verify an opt-in user's analysis and a follow-up with
 `scripts off` in Slack.
 
-Deployment evidence is retained locally under `.pistachio/deployments/return-scripts-20261009/`.
+Deployment evidence is retained locally under `.mica/deployments/return-scripts-20261009/`.

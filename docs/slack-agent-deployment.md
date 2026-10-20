@@ -100,7 +100,7 @@ Deployed image digests (repository prefix
 | `science` (unchanged) | `sha256:0972b8ae1e37a272b0ed54dae18b3412f034c47e83520b5805437bfb8f0a8041` |
 
 Evidence, immutable source, runtime snapshots, live IAM policies, and canary results:
-`.pistachio/deployments/slack-write-access-20261006/`. The preceding compatible API/worker pair
+`.mica/deployments/slack-write-access-20261006/`. The preceding compatible API/worker pair
 is `pistachio-staging-memory-20261006`, recorded below. Roll back the pair together after draining
 work; keep the narrowed IAM grants. The old pair does not publish new GCS outputs.
 
@@ -154,7 +154,7 @@ Deployed image digests (repository prefix
 | `science` (unchanged) | `sha256:0972b8ae1e37a272b0ed54dae18b3412f034c47e83520b5805437bfb8f0a8041` |
 
 Evidence, immutable source, runtime snapshots, and drain checks:
-`.pistachio/deployments/conversation-memory-20261006/`. The preceding API/worker pair is revision
+`.mica/deployments/conversation-memory-20261006/`. The preceding API/worker pair is revision
 `pistachio-staging-attachments-20261005`, recorded below. Always drain and deploy the pair
 together. After accepting new memory operations, do not run an old writer that drops reset
 markers; preserve/reset the new caches before any re-enable following a rollback.
@@ -193,7 +193,7 @@ Deployed image digests (repository prefix
 | `slack-agent` | `sha256:4efd1144189b5288e6bff3907a7acca4fa00a2852ca26aa84397ed309cf6d6e7` |
 | `science` (unchanged) | `sha256:0972b8ae1e37a272b0ed54dae18b3412f034c47e83520b5805437bfb8f0a8041` |
 
-Evidence and the immutable source bundle: `.pistachio/deployments/attachments-20261005/`.
+Evidence and the immutable source bundle: `.mica/deployments/attachments-20261005/`.
 The prior compatible revision is `pistachio-staging-brief-20261005`; its API/worker pair is
 recorded below and in the private release manifest.
 
@@ -262,7 +262,7 @@ Deployed image digests (repository prefix
 | `slack-agent` | `sha256:afcc8d5f33af94c9dc4b8cb01c1a0b803ee48ae1c0fc31d377e1e2b7d9c80c29` |
 | `science` | `sha256:0972b8ae1e37a272b0ed54dae18b3412f034c47e83520b5805437bfb8f0a8041` |
 
-Evidence and the source bundle: `.pistachio/deployments/brief-updates-20261005/`.
+Evidence and the source bundle: `.mica/deployments/brief-updates-20261005/`.
 The prior compatible revision is `pistachio-staging-rename-20261005`; no storage schema changed.
 
 ## Rename existing projects — 5 October 2026
@@ -301,7 +301,7 @@ Deployed image digests (repository prefix
 | `science` | `sha256:2963e57f7fb1a8f7b2c89e660bee016be6535988fce119f1aa0dd6280128a3b3` |
 
 Evidence, source bundle, build results, and pre-release runtime configuration:
-`.pistachio/deployments/project-rename-20261005/`. The prior compatible revision is
+`.mica/deployments/project-rename-20261005/`. The prior compatible revision is
 `pistachio-staging-00097-log`; this rename-only release did not change the storage schema.
 
 ## Metadata routing, conversational replies, and Slack reports — 5 October 2026
@@ -335,7 +335,7 @@ workspace to be checkpointed so the next request can resend the same reports.
   and unauthenticated worker credential requests returned 401. Runtime fingerprints matched.
   The verified revision now receives all traffic, and the temporary preview tag was removed.
 
-Evidence and immutable image digests: `.pistachio/deployments/slack-delivery-20261005/`.
+Evidence and immutable image digests: `.mica/deployments/slack-delivery-20261005/`.
 Canary report:
 `gs://pistachio-staging-artifacts-5304c19c/tasks/slack-analysis/acceptance/slack-delivery-20261005.json`.
 
@@ -370,7 +370,7 @@ and duplicate notification handling are covered by regression tests.
   No user analysis or Slack message was replayed. The existing thread checkpoint was
   confirmed intact; the next message can continue with the corrected worker.
 
-Evidence: `.pistachio/deployments/workspace-cwd-20261005/`. The final harness is saved as
+Evidence: `.mica/deployments/workspace-cwd-20261005/`. The final harness is saved as
 `acceptance-tested.py` and embedded in the Batch job's commands. The report is at
 `gs://pistachio-staging-artifacts-5304c19c/tasks/slack-analysis/acceptance/workspace-cwd-20261005-v4.json`.
 The three earlier reports preserve the diagnostic differences between root-folder,
@@ -403,7 +403,7 @@ remain enforced; no additional container privileges or IAM grants were added.
   starts a fresh worker with the fixed image. No project reinitialization is required.
 
 The acceptance harness now always uses a production-length private path. Evidence is in
-`.pistachio/deployments/sandbox-sockets-20261005/`; the live report is at
+`.mica/deployments/sandbox-sockets-20261005/`; the live report is at
 `gs://pistachio-staging-artifacts-5304c19c/tasks/slack-analysis/acceptance/sandbox-sockets-20261005.json`.
 
 ## Full source sync and private-project cutover
@@ -442,7 +442,7 @@ Legacy private threads start a fresh SDK context on their next turn under the ne
 workspace paths. Previous drafts/checkpoints remain available for reviewed recovery; unsaved
 old drafts are not automatically published as shared project briefs.
 
-Release evidence is in `.pistachio/deployments/full-sync-20261005/`, including source hashes,
+Release evidence is in `.mica/deployments/full-sync-20261005/`, including source hashes,
 digest pins, endpoint checks, migration checks, and backup object generations. No test Slack
 message or upload is sent by the deployment checks.
 
@@ -692,7 +692,7 @@ The live service was still on baseline `87c4312`. This release applies only the 
 and progress source-file changes to that exact deployed source, rather than deploying later
 local access-control, registry, command-routing, or memory work. The reproducible source,
 backport script, diff, image references, and checks are saved under
-`.pistachio/deployments/slack-voice-progress-20261004-002043/` (UTC release timestamp).
+`.mica/deployments/slack-voice-progress-20261004-002043/` (UTC release timestamp).
 
 - API build `47baa119-7add-4053-86ef-ba190ae6d948`: SUCCESS, including web preservation checks.
 - API image: `us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/api@sha256:2314dcdf817e5320e1147530df0fb99f8563a3b2e9fdfa3b74f2d830c96b6296`.
@@ -741,6 +741,6 @@ Updates remain throttled and failed updates are retried by the heartbeat.
   returned no ERROR-level entries.
 
 Release source, hashes, build details, and preview/live checks are saved under
-`.pistachio/deployments/slack-expandable-progress-20261005/`. User-led acceptance:
+`.mica/deployments/slack-expandable-progress-20261005/`. User-led acceptance:
 start a new analysis in Slack and tap its activity heading. Already-running workers
 keep their previous image. Roll back by routing traffic to `pistachio-staging-00085-bac`.

@@ -222,15 +222,29 @@ def test_checkpoint_carries_captures_but_workspace_cannot_forge_manifest(tmp_pat
     capture = script_capture.Capture(tmp_path)
     executed(capture, "python code/a.py")
     manifest = capture.checkpoint()
-    write(tmp_path, ".pistachio/scripts/manifest.json", b'{"scripts": []}')
+    write(tmp_path, ".mica/scripts/manifest.json", b'{"scripts": []}')
     resumed = script_capture.Capture(tmp_path, manifest)
     assert resumed.scripts == capture.scripts
     resumed.checkpoint()
-    write(tmp_path, ".pistachio/scripts/code/a.py", b"forged\n")
+    write(tmp_path, ".mica/scripts/code/a.py", b"forged\n")
     tampered = script_capture.Capture(tmp_path, manifest)
     assert not tampered.scripts and tampered.skipped
     capture.checkpoint()
     assert not script_capture.Capture(tmp_path).scripts  # New request ignores all prior captures.
+
+
+def test_legacy_script_checkpoint_restores_and_rewrites_to_mica(tmp_path):
+    write(tmp_path, "code/a.py")
+    capture = script_capture.Capture(tmp_path)
+    executed(capture, "python code/a.py")
+    manifest = capture.checkpoint()
+    (tmp_path / ".mica").rename(tmp_path / ".pistachio")
+    restored = script_capture.Capture(tmp_path, manifest)
+    assert restored.scripts == capture.scripts
+    assert not (tmp_path / ".pistachio/scripts").exists()
+    restored.checkpoint()
+    assert (tmp_path / ".mica/scripts/code/a.py").read_bytes() == b'print("hello")\n'
+    assert not (tmp_path / ".pistachio/scripts").exists()
 
 
 async def test_hooks_and_prompt_are_opt_in_and_keep_failures_out(tmp_path):
