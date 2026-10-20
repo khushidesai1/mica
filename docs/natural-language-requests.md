@@ -28,6 +28,17 @@ session while retaining conversation history and work products. Running requests
 access signature can stop; retry them after the change. No files move and no write grant is
 created or expanded. The registry location takes precedence over older paths in project memory.
 
+Project access is shared across interfaces: owners can share with an explicit email address,
+even if the recipient has no Slack account or enabled channel. Only authenticated owners may
+change membership. Natural sharing still requires the existing private Slack confirmation;
+explicit `share <project> <email>` and `unshare` retain their existing owner-only behavior.
+The recipient must send a verified email from the shared address, list their projects, and
+select one. Membership does not send an invitation or grant Slack admission. No Slack channel
+publication is required for owners or members to use a project over email. Publishing remains
+a separate permission to expose project replies to a Slack channel's audience.
+Unknown Slack mentions return a helpful error; recipient lookup outages end with a clear
+no-change response instead of retrying indefinitely. Requester authentication still fails closed.
+
 Project creation asks for missing details; it never invents a bucket or substitutes a parent
 folder. Clarifications and numbered project choices last ten minutes and are reauthorized.
 Natural write grants require an explicit scope and duration. Natural requests cannot add

@@ -11,7 +11,7 @@ from .access import Grant
 from .config import Settings
 from .data_links import data_uri, init_args, message_text
 from .help_text import COMMAND_HELP, PROJECT_HELP, WRITE_DETAILS, WRITE_HELP
-from .identity import target_email
+from .identity import member_email
 from .registry import ProjectEntry, Registry, RegistryDoc
 
 
@@ -319,14 +319,9 @@ def run(
     if cmd.name in {"share", "unshare"}:
         if not doc.owns(pid, email):
             raise ValueError("Only the project owner can change sharing.")
-        if settings.access_mode in {"channel", "workspace"}:
-            from .channel_access import target_email as channel_target
-
-            target = channel_target(
-                app, settings, registry.storage, team, cmd.args[1], removing=cmd.name == "unshare"
-            )
-        else:
-            target = target_email(app, team, cmd.args[1])
+        target = member_email(
+            app, settings, registry.storage, team, cmd.args[1], removing=cmd.name == "unshare"
+        )
         registry.update(
             event_id,
             email,
@@ -336,7 +331,13 @@ def run(
         return (
             f"{'Removed access for' if cmd.name == 'unshare' else 'Shared with'} {target}. "
             "Existing Slack channel messages remain visible to their channel audience."
-            + (" Members also see this project's knowledge." if cmd.name == "share" else "")
+            + (
+                " They can email Mica from that address and ask to list or select this project; "
+                "Slack membership and channel publication are not required for email access. "
+                "Members also see this project's knowledge."
+                if cmd.name == "share"
+                else ""
+            )
         )
     match = re.fullmatch(r"<#([CG][A-Z0-9]+)(?:\|[^>]+)?>|([CG][A-Z0-9]+)", cmd.args[1])
     if not match:

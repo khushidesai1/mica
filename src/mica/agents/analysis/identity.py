@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import re
+from email.errors import HeaderParseError
+from email.headerregistry import Address
 from typing import Any
 from uuid import NAMESPACE_URL, uuid5
 
@@ -42,24 +44,52 @@ def user_key(email: str) -> str:
     return hashlib.sha256(normalize(email).encode()).hexdigest()[:32]
 
 
+def recipient_email(token: str) -> str:
+    """An explicit email identifies a project member, not a Slack account."""
+    mail = re.fullmatch(r"<mailto:([^|>]+)(?:\|[^>]+)?>", token)
+    value = normalize(mail[1] if mail else token)
+    try:
+        address = Address(addr_spec=value)
+    except (ValueError, HeaderParseError) as exc:
+        raise ValueError("Supply one complete email address or a Slack user mention.") from exc
+    if (
+        not value.isascii()
+        or any(c.isspace() for c in value)
+        or not address.username
+        or address.addr_spec != value
+        or not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?", address.domain)
+    ):
+        raise ValueError("Supply one complete email address or a Slack user mention.")
+    return value
+
+
 def target_email(app: Any, team: str, token: str) -> str:
     mention = re.fullmatch(r"<@([A-Z0-9]+)(?:\|[^>]+)?>", token)
-    if mention:
-        result = email_for(app, team, mention[1])
-    else:
-        mail = re.fullmatch(r"<mailto:([^|>]+)(?:\|[^>]+)?>", token)
-        target = normalize(mail[1] if mail else token)
-        result = next(
-            (
-                email_for(app, team, key.split(":", 1)[-1])
-                for key, value in app.slack_user_map.items()
-                if (":" not in key or key.startswith(team + ":")) and normalize(value) == target
-            ),
-            None,
-        )
+    if not mention:
+        return recipient_email(token)
+    result = email_for(app, team, mention[1])
     if not result:
-        raise ValueError("That account is not enabled for Mica.")
+        raise ValueError("That Slack account is not enabled. Supply their email address instead.")
     return result
+
+
+def member_email(
+    app: Any, settings: Any, storage: Any, team: str, token: str, *, removing: bool = False
+) -> str:
+    """Resolve only the recipient; actor authentication remains independently fail-closed."""
+    try:
+        if settings.access_mode in {"channel", "workspace"}:
+            from .channel_access import target_email as channel_target
+
+            return channel_target(app, settings, storage, team, token, removing=removing)
+        return target_email(app, team, token)
+    except IdentityUnavailable as exc:
+        # Recipient lookup failures must not trap an authenticated owner's request in
+        # the actor-admission retry loop. No registry mutation has happened yet.
+        raise ValueError(
+            "I couldn't verify that Slack recipient right now. No access was changed. "
+            "Please retry or supply their complete email address."
+        ) from exc
 
 
 async def post(token: str, channel: str, thread_ts: str, text: str, *, event_id: str) -> None:
