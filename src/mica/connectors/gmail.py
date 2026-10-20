@@ -52,10 +52,11 @@ async def ingest(bridge: BatchBridge, api: Any, message_id: str, label: str, sin
     if client.is_own(sender, bridge.app):
         return
     body = message.get_body(preferencelist=("plain",))
-    text = str(body.get_content()) if body else ""
+    original_text = str(body.get_content()) if body else ""
+    if len(original_text) > 50_000:
+        original_text = original_text[:50_000] + "\n[Message truncated at 50,000 characters.]"
+    text = client.request_text(original_text)
     parts = [p for p in message.walk() if p.get_filename() and not p.is_multipart()]
-    if len(text) > 50_000:
-        text = text[:50_000] + "\n[Message truncated at 50,000 characters.]"
     payload: dict[str, Any] = {
         "type": "event_callback",
         "team_id": "EMAIL",
@@ -80,6 +81,8 @@ async def ingest(bridge: BatchBridge, api: Any, message_id: str, label: str, sin
             ],
         },
     }
+    if text != original_text:
+        payload["_email"]["original_text"] = original_text
     event_id, _ = email_keys(payload, sender)
     if parts:
         key = f"{CHECKPOINT_PREFIX}/gmail/inputs/{event_id}.eml"

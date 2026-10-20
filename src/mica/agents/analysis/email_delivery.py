@@ -8,7 +8,9 @@ import copy
 import hashlib
 import json
 import mimetypes
+import uuid
 from email.message import EmailMessage
+from email.parser import BytesParser
 from email.policy import SMTP
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -46,6 +48,80 @@ def artifact_prefix(event_id: str, attempt: int) -> str:
     return f"{CHECKPOINT_PREFIX}/events/{event_id}/email/a{attempt}/"
 
 
+def content_fingerprint(message: EmailMessage) -> str:
+    """Compare content independently of Gmail's transport header rewrites."""
+    body = message.get_body(preferencelist=("plain",))
+    attachments = []
+    for part in message.iter_attachments():
+        data = part.get_payload(decode=True)
+        if not isinstance(data, bytes):
+            raise ValueError("Email attachment has no decodable content")
+        attachments.append((part.get_filename(), hashlib.sha256(data).hexdigest()))
+    content = {
+        "headers": {
+            name: str(message.get(name, ""))
+            for name in ("From", "To", "Subject", "In-Reply-To", "X-Mica-Delivery-ID")
+        },
+        "text": str(body.get_content()).replace("\r\n", "\n") if body else "",
+        "attachments": attachments,
+    }
+    return hashlib.sha256(json.dumps(content, sort_keys=True).encode()).hexdigest()
+
+
+def sent_match(api: Any, saved: dict[str, Any], thread_id: str) -> str | None:
+    """Find a send receipt even when Gmail replaced our RFC822 Message-ID."""
+    if saved.get("delivery_id"):
+        thread = (
+            api.users()
+            .threads()
+            .get(
+                userId="me",
+                id=thread_id,
+                format="metadata",
+                metadataHeaders=["X-Mica-Delivery-ID"],
+                fields="messages(id,labelIds,payload/headers)",
+            )
+            .execute()
+        )
+        if len(thread.get("messages", [])) > 1000:
+            return None
+        matches = [
+            message["id"]
+            for message in thread.get("messages", [])
+            if "SENT" in message.get("labelIds", [])
+            and any(
+                header.get("name", "").lower() == "x-mica-delivery-id"
+                and header.get("value") == saved["delivery_id"]
+                for header in message.get("payload", {}).get("headers", [])
+            )
+        ]
+        if len(matches) != 1:
+            return None
+        candidate = api.users().messages().get(userId="me", id=matches[0], format="raw").execute()
+        encoded = candidate.get("raw", "")
+        if (
+            "SENT" not in candidate.get("labelIds", [])
+            or len(encoded) > (MAX_MIME_BYTES + 64_000) * 4 // 3 + 4
+        ):
+            return None
+        parsed = BytesParser(policy=SMTP).parsebytes(base64.urlsafe_b64decode(encoded + "==="))
+        if not isinstance(parsed, EmailMessage) or content_fingerprint(parsed) != saved.get(
+            "content_sha256"
+        ):
+            return None
+    else:
+        # Preserve compatibility for older outbox operations. A rewritten legacy ID
+        # cannot be reconciled automatically; it must remain held for operator review.
+        response = (
+            api.users()
+            .messages()
+            .list(userId="me", q=f"in:sent rfc822msgid:{saved['message_id']}", maxResults=2)
+            .execute()
+        )
+        matches = [message["id"] for message in response.get("messages", [])]
+    return str(matches[0]) if len(matches) == 1 else None
+
+
 async def deliver(
     bridge: BatchBridge,
     event_id: str,
@@ -71,21 +147,13 @@ async def deliver(
     if saved:
         # A crash/timeout can happen after Gmail accepts a message. Never send again merely
         # because search has not indexed it yet. An unresolved operation needs operator review.
-        response = await asyncio.to_thread(
-            api.users()
-            .messages()
-            .list(
-                userId="me",
-                q=f"in:sent rfc822msgid:{message_id}",
-                maxResults=2,
-            )
-            .execute
+        matched = await asyncio.to_thread(
+            sent_match, api, saved, record["payload"]["_email"]["thread_id"]
         )
-        matches = response.get("messages", [])
-        if len(matches) == 1:
-            saved.update(status="sent", gmail_id=matches[0]["id"])
+        if matched:
+            saved.update(status="sent", gmail_id=matched)
             await asyncio.to_thread(storage.put_if, key, json.dumps(saved).encode(), generation)
-            return str(matches[0]["id"])
+            return matched
         raise RuntimeError(f"Email {kind} send is unconfirmed; reconcile outbox {event_id}")
 
     grant = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
@@ -118,6 +186,8 @@ async def deliver(
     message["To"] = ", ".join(recipients)
     message["Subject"] = meta["subject"]
     message["Message-ID"] = message_id
+    delivery_id = uuid.uuid4().hex
+    message["X-Mica-Delivery-ID"] = delivery_id
     message["In-Reply-To"] = meta["message_id"]
     message["References"] = meta["message_id"]
     message.set_content(text)
@@ -164,8 +234,10 @@ async def deliver(
         "text": text,
         "artifacts": included,
         "message_id": message_id,
+        "delivery_id": delivery_id,
         "attempt": result.attempt if result else None,
         "sha256": hashlib.sha256(serialized).hexdigest(),
+        "content_sha256": content_fingerprint(message),
     }
     try:
         generation = await asyncio.to_thread(storage.put_if, key, json.dumps(saved).encode(), None)
