@@ -186,6 +186,10 @@ async def prepare(
     if commands.parse(record["payload"]["event"].get("text", "")):
         return None
     grant = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
+    from .observability import capture_project
+
+    if capture_project(record, grant):
+        await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
     if not grant.email:
         return None
     if "command_intent" in record:

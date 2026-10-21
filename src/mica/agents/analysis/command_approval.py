@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import access, commands, surface, write_access
+from . import access, commands, observability, surface, write_access
 from .identity import member_email, resolve_email
 from .registry import ProjectEntry
 from .storage import Conflict, Storage
@@ -85,6 +85,7 @@ async def propose(
     if surface.is_email(record):
         return await finish(bridge, event_id, record, surface.EMAIL_READ_ONLY)
     authorize(bridge, storage, cmd, grant, record)
+    observability.capture_project(record, grant, target=cmd.args[0])
     if cmd.name == "data-root":
         await asyncio.to_thread(bridge.resolve_data, record, uri=cmd.args[1])
     event, team = record["payload"]["event"], record["payload"]["team_id"]
@@ -252,6 +253,7 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
         args = proposal["command"]
         cmd = commands.Command(args["name"], tuple(args["args"]), args["force"])
         authorize(bridge, storage, cmd, grant, record)
+        observability.capture_project(record, grant, target=cmd.args[0])
         pid = cmd.args[0]
         # An already-applied operation must be able to finish memory synchronization and
         # delivery after a crash. Its durable receipt prevents repeating its mutation.
