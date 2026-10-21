@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi import HTTPException, Response
 from starlette.requests import Request
-from test_analysis_batch import bridge  # noqa: F401
+from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_slack import bot, event, send  # noqa: F401
 from test_gmail_intake import SENDER, email_record, mail, signing  # noqa: F401
 
@@ -21,6 +21,8 @@ from mica.agents.analysis.email_delivery import Artifact, TerminalResult, artifa
 from mica.agents.analysis.registry import Registry
 from mica.agents.analysis.transport import EmailWorkerTransport
 from mica.api import slack_analysis
+from mica.connectors.notifications import ChannelNotifier
+from mica.models import ConversationMessage, TaskEnvelope, TaskRecord, TaskSource, TaskStatus
 
 
 def sent_messages(mail):
@@ -50,7 +52,7 @@ def test_content_fingerprint_survives_wire_encoding_and_gmail_headers():
     )
 
 
-async def test_ack_progress_final_reply_all_membership_and_threading(mail):
+async def test_only_final_reply_with_membership_and_threading(mail):
     eid, record = await email_record(mail)
     record["payload"]["_email"]["recipients"] = [
         SENDER,
@@ -64,14 +66,15 @@ async def test_ack_progress_final_reply_all_membership_and_threading(mail):
     )
     await mail.notify(eid, record, "received", "On it")
     await mail.notify(eid, record, "received", "On it")
-    for phase in ("replying", "starting", "waiting"):
+    for phase in ("replying", "starting", "waiting", "cancelling"):
         await mail.notify(eid, record, phase, "Still working")
+    assert sent_messages(mail) == []
+    assert mail.store.keys(f"projects/_gmail/outbox/{eid}/") == []
     await mail.notify(eid, record, "complete", "The answer")
     await mail.notify(eid, record, "complete", "The answer")
     messages = sent_messages(mail)
-    assert len(messages) == 2
-    assert str(messages[0]["To"]) == SENDER
-    final = messages[1]
+    assert len(messages) == 1
+    final = messages[0]
     assert {a.addr_spec for a in final["To"].addresses} == {SENDER, "bob@example.com"}
     assert "outsider@example.com" in final.get_content()
     assert "not project members" in final.get_content()
@@ -79,6 +82,102 @@ async def test_ack_progress_final_reply_all_membership_and_threading(mail):
     assert final["In-Reply-To"] == final["References"] == "<request@example.com>"
     assert mail.gmail.users().messages().send.call_args.kwargs["body"]["threadId"] == "abcd"
     mail.test_slack.chat_postMessage.assert_not_awaited()
+
+
+async def test_email_process_ignores_unconfirmed_old_ack_and_retries_only_final(mail):
+    eid, record = await email_record(mail)
+    # An acknowledgement lost during an older deployment must not hold up the answer.
+    mail.store.put(
+        f"projects/_gmail/outbox/{eid}/ack.json", b'{"status":"sending"}'
+    )
+    assert await mail.process(eid, 0) == "complete"
+    assert await mail.process(eid, 0) == "complete"
+    messages = sent_messages(mail)
+    assert len(messages) == 1
+    assert "On it" not in messages[0].get_content()
+    assert "liver" in messages[0].get_content().lower()
+    assert mail.store.get(f"projects/_gmail/outbox/{eid}/ack.json")[0] == (
+        b'{"status":"sending"}'
+    )
+
+
+async def test_slack_keeps_acknowledgement_and_progress(bridge):
+    record = {"surface": "slack", "payload": payload(), "status": "pending"}
+    await bridge.notify("slack-progress", record, "received", "On it…")
+    await bridge.notify("slack-progress", record, "starting", "Starting your worker…")
+    assert bridge.test_slack.chat_postMessage.call_args.kwargs["text"] == "On it…"
+    assert bridge.test_slack.chat_update.call_args.kwargs["text"] == "Starting your worker…"
+
+
+async def test_clarification_is_a_substantive_email_response(mail, monkeypatch):
+    eid, _ = await email_record(mail)
+    # Natural-language routing can finish this turn with a question the user must answer.
+    from mica.agents.analysis import command_intent
+
+    record = await mail.repository.get_connector_state(f"claude-event:{eid}")
+    record["payload"]["event"]["text"] = "Analyze my samples"
+    await mail.repository.set_connector_state(f"claude-event:{eid}", record)
+    monkeypatch.setattr(
+        command_intent, "classify",
+        AsyncMock(return_value=command_intent.Intent(route="continue")),
+    )
+    monkeypatch.setattr(
+        direct, "decide",
+        AsyncMock(return_value=direct.Decision(route="reply", reply="Which samples?")),
+    )
+    assert await mail.process(eid, 0) == "complete"
+    assert len(sent_messages(mail)) == 1
+    assert "Which samples?" in sent_messages(mail)[0].get_content()
+
+
+@pytest.mark.parametrize("kind", ["result", "failure", "cancelled", "input", "approval"])
+async def test_legacy_task_email_excludes_prior_progress(mail, monkeypatch, kind):
+    monkeypatch.setattr("mica.connectors.notifications.default", lambda **kw: (None, None))
+    monkeypatch.setattr("mica.connectors.notifications.build", lambda *a, **kw: mail.gmail)
+    task = TaskRecord(
+        envelope=TaskEnvelope(
+            project_id="project", principal_id=SENDER, source=TaskSource.EMAIL,
+            conversation_id="gmail:abcd", prompt="Analyze samples",
+        ),
+        status=TaskStatus.RUNNING,
+        conversation=[ConversationMessage(event_key=k, kind=k, text="Still working")
+                      for k in ("acknowledgement", "progress", "replan", "decision")],
+    )
+    notifier = ChannelNotifier(mail.app, mail.repository)
+    await notifier.notify(task)
+    assert sent_messages(mail) == []
+    task.conversation.append(ConversationMessage(event_key=kind, kind=kind, text="Useful reply"))
+    await notifier.notify(task)
+    await notifier.notify(task)
+    assert len(sent_messages(mail)) == 1
+    assert sent_messages(mail)[0].get_content().strip() == "Useful reply"
+
+
+async def test_transfer_email_sends_required_links_and_terminal_results_only(mail):
+    from mica.agents.analysis.transfers import Transfers
+
+    eid, _ = await email_record(mail)
+    mail.app.signed_link_secret = "synthetic-email-connection-key-0123456789"
+    mail.app.control_plane_url = "https://mica.test"
+    transfers = Transfers(mail, mail.store)
+    pending = {"id": eid, "state": "inventory", "requested_by": SENDER, "attempt": 0}
+    for state in ("inventory", "prepare", "submitting", "running", "cancelling"):
+        pending["state"] = state
+        await transfers.notify(pending, f"Progress for {state}", ("cancel",))
+    assert sent_messages(mail) == []
+    assert "delivery" not in pending and "delivery_progress" not in pending
+    for state, button in (("login", "login"), ("preview", "confirm")):
+        pending["state"] = state
+        await transfers.notify(pending, "Your input is required", (button, "cancel"))
+    assert len(sent_messages(mail)) == 2
+    assert all("/integrations/atomx#" in message.get_content() for message in sent_messages(mail))
+    pending["state"] = "cancelling"
+    await transfers.notify(pending, "An error needs attention", progress=False)
+    pending["state"] = "done"
+    await transfers.notify(pending, "Transfer verified")
+    await transfers.notify(pending, "Transfer verified")
+    assert len(sent_messages(mail)) == 4
+    assert "Transfer verified" in sent_messages(mail)[-1].get_content()
 
 
 async def test_one_final_contains_answer_and_artifact_and_checks_ownership(mail):
@@ -309,7 +408,7 @@ async def test_terminal_stop_is_one_email_without_progress_spam(mail, phase):
     await mail.notify(eid, record, "cancelling", "Stopping")
     await mail.notify(eid, record, phase, "The request stopped")
     await mail.notify(eid, record, phase, "The request stopped")
-    assert len(sent_messages(mail)) == 2
+    assert len(sent_messages(mail)) == 1
     assert "The request stopped" in sent_messages(mail)[-1].get_content()
 
 

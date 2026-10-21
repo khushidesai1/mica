@@ -195,8 +195,16 @@ class Transfers:
         if state not in TERMINAL:
             await self.schedule(p, delay)
 
-    async def notify(self, p: dict[str, Any], text: str, buttons: tuple[str, ...] = ()) -> None:
+    async def notify(
+        self, p: dict[str, Any], text: str, buttons: tuple[str, ...] = (),
+        *, progress: bool | None = None,
+    ) -> None:
+        from . import surface
+
+        if progress is None:
+            progress = p["state"] not in TERMINAL and not {"login", "confirm"}.intersection(buttons)
         p["delivery"] = [text, list(buttons)]
+        p["delivery_progress"] = progress
         await self.save(p)
         record = await self.repo.get_connector_state(f"claude-event:{p['id']}")
         if not record:
@@ -218,7 +226,7 @@ class Transfers:
                 purpose + ":" + url.rsplit("#", 1)[-1].split(".")[0],
                 private_link=True,
             )
-        else:
+        elif not (surface.is_email(record) and progress):
             await atomx_delivery.deliver(
                 self.bridge,
                 p["requested_by"],
@@ -230,6 +238,7 @@ class Transfers:
         # Store only redacted notice metadata; bearer links never enter pending/history records.
         p["notice"] = [text, list(buttons)]
         p.pop("delivery", None)
+        p.pop("delivery_progress", None)
         await self.save(p)
 
     async def request(
@@ -500,7 +509,10 @@ class Transfers:
         async with self.locked(p["project"]):
             p = await self.pending(pid)
             if p.get("delivery") and p.get("notice") != p["delivery"]:
-                await self.notify(p, p["delivery"][0], tuple(p["delivery"][1]))
+                await self.notify(
+                    p, p["delivery"][0], tuple(p["delivery"][1]),
+                    progress=p.get("delivery_progress"),
+                )
             if p["state"] in TERMINAL:
                 return str(p["state"])
             if tick != p["tick"]:
@@ -515,7 +527,7 @@ class Transfers:
                 else:
                     await self.release(p)
                     await self.transition(p, "failed")
-                await self.notify(p, escape(str(exc))[:2500])
+                await self.notify(p, escape(str(exc))[:2500], progress=False)
             except Exception:
                 await self.report_failure(p, "atomx_control_failed", unit=str(tick))
                 raise

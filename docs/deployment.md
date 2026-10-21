@@ -159,7 +159,8 @@ The mailbox owner must complete these activation steps:
    application releases do not create secrets, change IAM, or apply Terraform.
 5. Call the authenticated `/api/v1/internal/gmail/renew-watch` endpoint. Verify its history ID,
    then send `projects` and a small artifact-producing analysis from your own authorized address.
-   Confirm threading, one acknowledgement, and one final reply. Check reply-all filtering only
+   Confirm threading and one final reply, without an acknowledgement or progress emails.
+   Check reply-all filtering only
    with addresses you have authorized for testing.
 
 The first activation records a time cutoff and history baseline; mail older than activation is
@@ -167,13 +168,20 @@ not executed. Watch renewal never advances the processed cursor. Expired history
 resumable scan of labeled mail since activation, protected by durable message receipts. Labeling
 an older, pre-activation message does not execute it; forward a fresh request instead.
 
-The GCS outbox at `projects/_gmail/outbox/<event>/<ack|final>.json` records send intent
+Email sends final answers, failures, and cancellations. Required clarification questions,
+approval requests, and private credential links still arrive by email so work cannot silently
+wait for user input. Acknowledgements, queue/startup notices, automatic retry updates, and transfer
+progress stay on Slack; worker progress remains local for email-origin requests. The same policy
+applies to older task conversations, so their final emails do not include earlier progress text.
+
+The GCS outbox at `projects/_gmail/outbox/<event>/final.json` records send intent
 before contacting Gmail. Gmail can rewrite the RFC822 Message-ID, so new sends also carry a random
 `X-Mica-Delivery-ID` recorded in the outbox. A lost response is reconciled against that header on
 sent messages in the original thread. Legacy operations use their saved Message-ID search.
 An ambiguous send with no unique matching sent message is held for operator review; it is never
 blindly resent. Inspect Gmail and the recorded delivery identifier before resolving a stuck
 operation. This prioritizes avoiding duplicates and does not promise exactly-once delivery.
+Existing `ack.json` receipts remain for historical reconciliation; new requests do not create them.
 
 Email intake removes conventional signature blocks and trailing quoted replies before routing
 the new request. For example, `projects` followed by a signature still runs the projects command.
