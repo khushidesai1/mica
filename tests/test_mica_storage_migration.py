@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -247,3 +248,60 @@ def test_snapshot_proposals_do_not_allow_other_objects_under_task_prefix(tmp_pat
                 tmp_path / "snapshots.json", paused_state_uri=f"gs://{SOURCE}/{other}#10"
             ), tmp_path / "proposals.jsonl",
         )
+
+
+
+def copied_mtime(value):
+    return {"sha256": "test-content-digest", migration.RSYNC_MTIME: value}
+
+
+def test_rsync_generated_mtime_matches_source_creation_without_weakening_metadata(tmp_path):
+    created = "2026-09-24T00:00:00.987654Z"
+    timestamp = str(int(datetime.fromisoformat(created).timestamp()))
+    result, _ = verify(
+        tmp_path, before=[record(timeCreated=created)], destination=[record(
+            generation="20", timeCreated="2026-10-21T16:00:00Z",
+            metadata=copied_mtime(timestamp),
+        )],
+    )
+    assert result["verified"]
+
+
+@pytest.mark.parametrize("mtime", ["999", "not-a-timestamp", "1727136000.5", None])
+def test_rsync_cannot_add_arbitrary_mtime(tmp_path, mtime):
+    result, _ = verify(tmp_path, destination=[record(metadata=copied_mtime(mtime))])
+    assert result["issues"] == {"metadata_mismatch": 1}
+
+
+@pytest.mark.parametrize("destination_value", ["123", "124", None])
+def test_preexisting_source_mtime_requires_exact_preservation(tmp_path, destination_value):
+    source = record(metadata=copied_mtime("123"))
+    destination = record(metadata=(
+        copied_mtime(destination_value) if destination_value is not None
+        else {"sha256": "test-content-digest"}
+    ))
+    result, _ = verify(tmp_path, before=[source], destination=[destination])
+    assert result["verified"] is (destination_value == "123")
+
+
+@pytest.mark.parametrize("key", [
+    "goog-reserved-file-mtime-extra", "goog-reserved-file-atime", "goog-reserved-posix-mode",
+])
+def test_other_reserved_metadata_is_still_verified(tmp_path, key):
+    result, _ = verify(tmp_path, destination=[record(metadata={
+        "sha256": "test-content-digest", key: "123",
+    })])
+    assert result["issues"] == {"metadata_mismatch": 1}
+
+
+def test_rsync_field_never_discloses_custom_metadata_value():
+    encoded = json.dumps(record(metadata=copied_mtime("sensitive-marker")))
+    assert "sensitive-marker" not in encoded
+
+
+def test_old_inventory_without_rsync_field_keeps_identical_record_format():
+    value = record()
+    assert "rsync_mtime_hash" not in value
+    with_added = record(metadata=copied_mtime("123"))
+    assert value["metadata_hash"] == with_added["metadata_hash"]
+    assert value != with_added

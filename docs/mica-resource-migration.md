@@ -218,6 +218,17 @@ python scripts/mica_storage_migration.py verify \
 ```
 
 Inventory limits/truncation must be resolved; a partial listing cannot prove a complete copy.
+Verification compares application/custom metadata and standard object metadata. It treats only
+`goog-reserved-file-mtime` separately: `gcloud storage rsync` adds this bookkeeping field from
+the source object's creation time when the field is absent. A new destination value must match
+that UTC timestamp in integer seconds; an existing source value must survive exactly. Other
+reserved metadata keys remain part of the strict metadata comparison. This allows the documented
+[modification-time metadata](https://docs.cloud.google.com/storage-transfer/docs/metadata-preservation)
+without accepting arbitrary metadata changes. The separate Storage Transfer Service marker
+`x-goog-reserved-source-generation` is excluded from the metadata hash; actual destination
+generations always come from the API, never this marker. Recapture inventories created by an older
+tool version if source objects already had the modification-time field. A successful bulk-copy
+check while the old stack is live still requires a final frozen sync before cutover.
 Use `snapshot-proposals --help` for dry-run persisted-reference patches, and review those
 proposals separately. Neither helper creates resources, transfers object bodies, nor changes
 live records. A checked-in migration tool or successful offline plan does not mean any cloud

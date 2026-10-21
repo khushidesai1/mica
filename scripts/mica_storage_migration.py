@@ -23,6 +23,7 @@ from urllib.parse import urlsplit
 
 PROJECT = "azizilab-aml"
 SOURCE = "pistachio-staging-artifacts-5304c19c"
+RSYNC_MTIME = "goog-reserved-file-mtime"
 DESTINATION = re.compile(r"mica-staging-artifacts-[a-z0-9]+(?:-[a-z0-9]+)*")
 PRESERVED = (
     "contentType", "cacheControl", "contentDisposition", "contentEncoding", "contentLanguage",
@@ -50,7 +51,7 @@ def object_record(properties: dict[str, Any]) -> dict[str, Any]:
     """Preserve verifiable metadata fingerprints without disclosing metadata values."""
     metadata = {
         k: v for k, v in properties.get("metadata", {}).items()
-        if k != "x-goog-reserved-source-generation"
+        if k not in {"x-goog-reserved-source-generation", RSYNC_MTIME}
     }
     preserved = {
         key: properties.get(key, False if key.endswith("Hold") else None)
@@ -65,6 +66,12 @@ def object_record(properties: dict[str, Any]) -> dict[str, Any]:
         "created": properties.get("timeCreated"),
         "metadata_hash": hashlib.sha256(canonical(preserved)).hexdigest(),
     }
+    # rsync synthesizes this exact key from source creation time when absent. Keep
+    # its fingerprint separately so existing values must still survive unchanged.
+    if RSYNC_MTIME in properties.get("metadata", {}):
+        record["rsync_mtime_hash"] = hashlib.sha256(
+            canonical(properties["metadata"][RSYNC_MTIME])
+        ).hexdigest()
     if not record["crc32c"] or record["size"] < 0:
         raise ValueError("Object metadata lacks a checksum or valid size")
     return record
@@ -161,6 +168,22 @@ def load_inventory(path: Path, bucket: str) -> dict[str, dict[str, Any]]:
     return inventory_records(header, rows, bucket)
 
 
+def rsync_mtime_matches(source: dict[str, Any], destination: dict[str, Any]) -> bool:
+    before, after = source.get("rsync_mtime_hash"), destination.get("rsync_mtime_hash")
+    if before is not None or after is None:
+        return before == after
+    # gcloud rsync uses UTC creation time truncated to integer Unix seconds. Only
+    # this generated addition is allowed, not arbitrary goog-reserved-* changes.
+    try:
+        created = datetime.fromisoformat(source["created"])
+        if created.tzinfo is None:
+            return False
+        expected = str(int(created.timestamp()))
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    return after == hashlib.sha256(canonical(expected)).hexdigest()
+
+
 def verify(
     source: str, destination: str, before_path: Path, after_path: Path,
     destination_path: Path, output: Path,
@@ -193,7 +216,7 @@ def verify(
         if b.get("md5") and c.get("md5") and b["md5"] != c["md5"]:
             problems["content_mismatch"] += 1
             continue
-        if b["metadata_hash"] != c["metadata_hash"]:
+        if b["metadata_hash"] != c["metadata_hash"] or not rsync_mtime_matches(b, c):
             problems["metadata_mismatch"] += 1
             continue
         records.append({
