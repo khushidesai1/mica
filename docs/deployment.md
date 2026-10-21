@@ -184,6 +184,8 @@ approval requests, and private credential links still arrive by email so work ca
 wait for user input. Acknowledgements, queue/startup notices, automatic retry updates, and transfer
 progress stay on Slack; worker progress remains local for email-origin requests. The same policy
 applies to older task conversations, so their final emails do not include earlier progress text.
+An AtoMx request hands email delivery to the transfer controller: its preparation receipt is
+silent, required forms arrive when needed, and the verified transfer result arrives at completion.
 
 The GCS outbox at `projects/_gmail/outbox/<event>/final.json` records send intent
 before contacting Gmail. Gmail can rewrite the RFC822 Message-ID, so new sends also carry a random
