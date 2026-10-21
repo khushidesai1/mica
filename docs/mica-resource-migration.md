@@ -151,8 +151,8 @@ evidence = json.loads(Path(".mica/migration/foundation.tfvars.evidence.json").re
 copies = evidence["operator_secret_copies"]
 for entry in copies:
     versions = json.loads(subprocess.check_output([
-        "gcloud", "secrets", "versions", "list", "--project=" + project,
-        "--secret=" + entry["target"], "--format=json",
+        "gcloud", "secrets", "versions", "list", entry["target"],
+        "--project=" + project, "--format=json",
     ]))
     if versions:
         raise SystemExit("Destination already has versions: " + entry["target"])
