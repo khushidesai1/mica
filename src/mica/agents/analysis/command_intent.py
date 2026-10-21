@@ -171,6 +171,7 @@ async def classify(
             deadline=started + remaining,
             result_type=Intent,
             system=SYSTEM,
+            repair_model=bridge.settings.routing_repair_model,
         )
     finally:
         record["routing_budget"] = max(

@@ -52,6 +52,48 @@ async def test_schema_correction_does_not_repeat_invalid_values(monkeypatch, cap
     assert "private" not in feedback + caplog.text
 
 
+async def test_missing_tool_uses_forced_repair_with_same_context(monkeypatch):
+    requests = provider(
+        monkeypatch,
+        [
+            {"content": [{"type": "text", "text": "I started a job (unverified)."}]},
+            response({"route": "compute", "reply": "I'll make the requested plot."}),
+        ],
+    )
+    context = {"request": "Make the plot", "project_name": "Authorized project"}
+    result = await direct.decide("fake", "primary", context, repair_model="repair")
+    assert result.route == "compute"
+    assert [r["model"] for r in requests] == ["primary", "repair"]
+    assert requests[1]["tool_choice"] == {
+        "type": "tool", "name": "route_request", "disable_parallel_tool_use": True
+    }
+    assert requests[0]["tools"] == requests[1]["tools"]
+    assert requests[0]["system"] == requests[1]["system"]
+    assert requests[1]["messages"][0]["content"][0] == requests[0]["messages"][0]["content"][0]
+    assert "unverified" not in json.dumps(requests[1])
+
+
+async def test_forced_repair_also_validates_command_schema(monkeypatch):
+    from mica.agents.analysis.command_intent import Intent
+
+    requests = provider(monkeypatch, [{"content": []}, response({"route": "continue"})])
+    result = await direct.route_model(
+        "fake", "primary", {}, result_type=Intent, system="Classify only", repair_model="repair"
+    )
+    assert result.route == "continue" and len(requests) == 2
+    assert requests[1]["tool_choice"]["type"] == "tool"
+
+
+async def test_unavailable_repair_does_not_fall_back_to_prose_or_compute(monkeypatch):
+    requests = provider(
+        monkeypatch,
+        [{"content": [{"type": "text", "text": "Starting now."}]}, httpx.Response(503)],
+    )
+    with pytest.raises(direct.RoutingUnavailable):
+        await direct.decide("fake", "primary", {})
+    assert len(requests) == 2 and requests[1]["tool_choice"]["type"] == "tool"
+
+
 @pytest.mark.parametrize("field", ["workload", "reason"])
 async def test_long_display_labels_validate_without_correction(monkeypatch, field):
     worker = {"category": "analysis", "reason": "Normal analysis.", field: "x" * 250}
@@ -219,6 +261,8 @@ async def test_retry_backoff_survives_restart_and_exhausts_once(chat, monkeypatc
     assert await chat.process(event, 0) == "pending"
     record = await receipt(chat, event)
     assert record["routing_failures"] == 1 and record["routing_retry_at"] == 130
+    assert record["project_id"] == chat.pid
+    assert record["principal"] == "alice@example.com"
     assert "retry automatically" in record["notice_text"]
     restarted = batch.BatchBridge(chat.app, chat.repository)
     now[0] = 129
