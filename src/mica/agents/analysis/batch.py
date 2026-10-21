@@ -238,10 +238,7 @@ class BatchBridge:
             terminal = phase in {"complete", "failed", "denied", "cancelled"}
             if terminal:
                 record["terminal_reply"] = text
-            if terminal or phase == "received":
-                handle = await deliver(
-                    self, event_id, record, text, kind="final" if terminal else "ack"
-                )
+                handle = await deliver(self, event_id, record, text, kind="final")
                 record.update(notice_ts=handle, notice_phase=phase, notice_text=text)
             return
 
