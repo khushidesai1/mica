@@ -38,6 +38,10 @@ resource "google_cloud_run_v2_service" "api" {
   location            = var.region
   ingress             = "INGRESS_TRAFFIC_ALL"
   deletion_protection = true
+  # Normalize API defaults; the revision below retains the configured runtime limits.
+  scaling {
+    min_instance_count = 0
+  }
   template {
     service_account                  = google_service_account.runtime["control"].email
     timeout                          = "${var.runtime_limits.timeout}s"
