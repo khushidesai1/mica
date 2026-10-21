@@ -1,2 +1,2 @@
-bucket = "REPLACE_WITH_VERIFIED_ADMIN_ONLY_STATE_BUCKET"
-prefix = "mica-staging/terraform"
+# Use an absolute, durable, administrator-only location outside any temporary worktree.
+path = "/ABSOLUTE/PRIVATE/MICA_STATE_DIR/mica-staging/terraform.tfstate"

@@ -54,31 +54,51 @@ the reviewed prefix-specific retention after reference compatibility is verified
 
 ## State backend preparation
 
-Use an administrator-controlled, versioned GCS bucket and unique state prefix, separate
-from the application artifact buckets. GCS provides Terraform state locking. Both existing
-runtime identities have project-wide `roles/storage.objectViewer`; a bucket in the same
-project inherits that access. Uniform access and private bucket bindings do **not** make
-such a bucket administrator-only. Use an administrative project without these grants,
-or separately review a narrow deny-policy design before placing state in the application
-project. Never upload state into a known runtime-readable bucket.
+The new root temporarily uses a **private local backend**. The administrator is the single
+operator for this stack; Terraform's local state lock serializes commands on that filesystem.
+Keep locking enabled and do not run competing copies of the state from another host. A future
+move to a GCS backend needs its own verified administrator-only bucket and an explicit state
+migration; do not upload or copy the legacy root's state.
 
-After the state project/bucket and operator access have been verified, the operator runs:
+Use an absolute durable directory in the primary checkout's ignored `.mica/terraform/` tree,
+**outside any temporary worktree**. Restrict directories to mode `0700` and state, backup, and
+saved plan files to `0600`. Keep dated backups on the administrator-controlled machine before
+and after each apply, and arrange an administrator-controlled encrypted backup of that directory.
+No secret values are managed by this root, but its state and metadata remain private.
 
 ```bash
-gcloud storage buckets create gs://ADMIN_STATE_BUCKET \
-  --project=ADMIN_STATE_PROJECT --location=us-central1 \
-  --uniform-bucket-level-access --public-access-prevention
-gcloud storage buckets update gs://ADMIN_STATE_BUCKET --versioning
-gcloud storage buckets get-iam-policy gs://ADMIN_STATE_BUCKET
-terraform -chdir=infra/mica-staging init \
-  -backend-config=bucket=ADMIN_STATE_BUCKET \
-  -backend-config=prefix=mica-staging/terraform
+umask 077
+# Set this to the durable primary checkout, not a /tmp worktree.
+MICA_STATE_DIR=/ABSOLUTE/PRIVATE/PRIMARY_CHECKOUT/.mica/terraform/mica-staging
+mkdir -p "$MICA_STATE_DIR/backups"
+chmod 700 "$MICA_STATE_DIR" "$MICA_STATE_DIR/backups"
+terraform -chdir=infra/mica-staging init -reconfigure \
+  -backend-config="path=$MICA_STATE_DIR/terraform.tfstate"
+# Before and after every apply, if a state file exists:
+if [ -f "$MICA_STATE_DIR/terraform.tfstate" ]; then
+  cp -p "$MICA_STATE_DIR/terraform.tfstate" \
+    "$MICA_STATE_DIR/backups/terraform-$(date -u +%Y%m%dT%H%M%SZ).tfstate"
+  chmod 600 "$MICA_STATE_DIR/terraform.tfstate" "$MICA_STATE_DIR"/backups/*.tfstate
+fi
 ```
 
-Do not initialize this backend from the legacy directory or migrate its state. Preserve
-the existing local state backup before any later shared-root reorganization. Authenticate
-Terraform using operator ADC or a short-lived access token; never put credentials in
-backend files, tfvars, scripts, or logs.
+Authenticate Terraform using operator ADC or a short-lived access token in the process
+environment; never put credentials in backend files, tfvars, scripts, or logs. Do not initialize
+from the legacy directory, disable locking, import existing singleton resources, or reinitialize
+the backend to an empty path after resources exist. Losing local state would require a separately
+reviewed recovery, not another create-only apply. Confirm the backend's absolute path before
+planning and applying; preserve the local `.terraform` backend metadata until the next init.
+
+The application project's existing runtime identities inherit `roles/storage.objectViewer`.
+Private bucket bindings and uniform bucket access cannot override that inherited read access,
+so a state bucket in the same project is not sufficiently isolated. A tag-conditioned IAM Deny
+prototype was evaluated but is not part of this implementation: `roles/iam.denyAdmin` must be
+granted at organization scope, and its create/update permissions cannot be placed in a project
+custom role. A project-level grant of that role is invalid. No organization grant, deny policy,
+tag, or state bucket is needed for the local backend. If remote state is introduced later, use
+an administrative project without runtime grants or separately approve and verify isolation
+before uploading any state. See [Google's deny access roles](https://cloud.google.com/iam/docs/deny-access)
+and [Terraform's local backend](https://developer.hashicorp.com/terraform/language/backend/local).
 
 ## Foundation plan and apply
 
@@ -101,8 +121,9 @@ exception after reviewing that diff. Do not add exceptions to make an unexplaine
 
 Review the full saved plan and new grants as well as the gate output. Then apply **that exact
 plan file** with `terraform -chdir=infra/mica-staging apply ../../.mica/migration/foundation.tfplan`.
-Do not apply a newly generated, unreviewed plan or use `-target`. A scratch local read-only
-plan is useful for review, but regenerate against the isolated remote backend before applying.
+Do not apply a newly generated, unreviewed plan or use `-target`. A scratch read-only plan is useful for review, but regenerate against the exact durable local
+backend using refreshed operator credentials before applying. Back up existing state first;
+check mode `0600` on state and backup files afterwards.
 
 ## Operator secret copies
 
