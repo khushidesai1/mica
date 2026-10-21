@@ -241,6 +241,7 @@ async def decide(
     media: Sequence[dict[str, Any]] = (),
     event_id: str = "",
     deadline: float | None = None,
+    repair_model: str = "claude-opus-5",
 ) -> Decision:
     return await route_model(
         key,
@@ -249,6 +250,7 @@ async def decide(
         media=media,
         event_id=event_id,
         deadline=deadline,
+        repair_model=repair_model,
         result_type=Decision,
         system=SYSTEM + WORKER_POLICY + "\n" + project_memory.ROUTER_RULES,
     )
@@ -264,6 +266,7 @@ async def route_model[RoutingModel: BaseModel](
     deadline: float | None = None,
     result_type: type[RoutingModel],
     system: str,
+    repair_model: str = "claude-opus-5",
 ) -> RoutingModel:
     schema = result_type.model_json_schema()
     invalid_calls = 0
@@ -296,7 +299,7 @@ async def route_model[RoutingModel: BaseModel](
                         "https://api.anthropic.com/v1/messages",
                         headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
                         json={
-                            "model": model,
+                            "model": repair_model if invalid_calls else model,
                             "max_tokens": 8192,
                             "system": system,
                             "messages": [
@@ -315,10 +318,15 @@ async def route_model[RoutingModel: BaseModel](
                                     "input_schema": schema,
                                 }
                             ],
-                            # The configured model rejects forced tool choice. Validate and retry
-                            # route_request responses below instead of forcing them in the API.
+                            # The primary model may reject forced choice. Use a compatible
+                            # model for the existing bounded correction attempt instead of
+                            # repeating the same optional-tool request that already failed.
                             "tool_choice": {
-                                "type": "auto",
+                                **(
+                                    {"type": "tool", "name": "route_request"}
+                                    if invalid_calls
+                                    else {"type": "auto"}
+                                ),
                                 "disable_parallel_tool_use": True,
                             },
                         },
@@ -818,6 +826,11 @@ async def handle(
         )
     if not grant.allowed:
         return await finish(bridge, event_id, record, access.deny_text(grant))
+    # Record only the authorized project, before memory/model calls can fail. This is
+    # diagnostic context; access.resolve still rechecks the registry on every retry.
+    record.update(
+        principal=grant.email, project_id=grant.project_id, project_name=grant.project.name
+    )
     transfer_service = Transfers(bridge, storage)
     if event.get("atomx_password_removed"):
         return await finish(
@@ -978,6 +991,7 @@ async def handle(
             model_context,
             event_id=event_id,
             deadline=routing_deadline,
+            repair_model=bridge.settings.routing_repair_model,
             **({"media": media} if media else {}),
         )
         await save_pending(decision)
@@ -1011,6 +1025,7 @@ async def handle(
                 context,
                 event_id=event_id,
                 deadline=routing_deadline,
+                repair_model=bridge.settings.routing_repair_model,
                 **({"media": viewed} if viewed else {}),
             )
             await save_pending(second)
@@ -1047,6 +1062,7 @@ async def handle(
                 {**model_context, "data_inventory": metadata},
                 event_id=event_id,
                 deadline=routing_deadline,
+                repair_model=bridge.settings.routing_repair_model,
                 **({"media": media} if media else {}),
             )
             await save_pending(listed)
