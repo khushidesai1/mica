@@ -9,7 +9,7 @@ from pathlib import Path
 from atomx_transfer import cli, worker
 from mica.agents.analysis.atomx_connections import Connections
 from mica.agents.analysis.config import Settings
-from mica.api.atomx import PAGE
+import mica
 from mica.config import Settings as AppSettings
 from mica.storage.memory import InMemoryRepository
 
@@ -38,7 +38,12 @@ async def check():
         pass
     else:
         raise AssertionError("Forgotten connection retained a session")
-    assert 'type="password"' in PAGE and "location.hash" in PAGE
+    page = Path(mica.__file__).with_name("api") / "atomx_form.html"
+    assert 'type="password"' in page.read_text() and "location.hash" in page.read_text()
+    if sys.argv[-1] == "api":
+        from mica.api.atomx import PAGE
+
+        assert PAGE == page.read_text()
     source = Path("/workspace/tools/atomx_transfer")
     installed = Path(cli.__file__).parent
     for path in [*source.glob("*.py"), *source.glob("scripts/*.sh")]:
