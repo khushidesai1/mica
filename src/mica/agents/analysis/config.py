@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     )
     slack_app_token: SecretStr = Field(default=SecretStr(""), alias="SLACK_APP_TOKEN")
     model: str = "claude-opus-5-5"
+    routing_repair_model: str = "claude-opus-5"  # Must support forced tool choice.
     loading_emoji: str = ":hourglass_flowing_sand:"  # AGENT_LOADING_EMOJI; custom emoji supported.
     failure_channel: str = Field(default="", pattern=r"^(?:[CG][A-Z0-9]+)?$")
     memory_repo: str = ""
