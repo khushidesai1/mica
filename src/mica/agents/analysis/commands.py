@@ -41,6 +41,7 @@ def parse(raw: str) -> Command | None:
         "clean brief",
         "transfers",
         "atomx login status",
+        "connect atomx",
         "replace atomx login",
         "forget atomx login",
     }:
@@ -186,10 +187,6 @@ def run(
         or cmd.name
         in {
             "help write",
-            "transfer",
-            "cancel transfer",
-            "replace atomx login",
-            "forget atomx login",
             "share",
             "unshare",
             "add-owner",

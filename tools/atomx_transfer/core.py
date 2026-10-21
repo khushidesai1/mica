@@ -15,6 +15,9 @@ from typing import Any, BinaryIO, Protocol
 
 import google_crc32c
 
+MARKER = "done.txt"
+SCOPES = ("raw", "additional_files")
+
 
 def now() -> str:
     return datetime.now(UTC).isoformat()
@@ -65,11 +68,180 @@ class Bucket(Protocol):
     def delete(self, name: str, generation: str) -> None: ...
     def stat(self, name: str) -> Object | None: ...
     def list(self, prefix: str) -> list[Object]: ...
+    def folders(self, prefix: str) -> list[str]: ...
     def copy(self, name: str, chunks: Iterator[bytes]) -> None: ...
 
 
 class Busy(ValueError):
     pass
+
+
+def marker_path(sample: str, scope: str) -> str:
+    sample_name(sample)
+    if scope not in SCOPES:
+        raise ValueError("Invalid marker scope")
+    return f"raw_outputs/{scope}/{sample}/{MARKER}"
+
+
+def destination_objects(bucket: Bucket, sample: str) -> list[Object]:
+    return [
+        obj
+        for scope in SCOPES
+        for obj in bucket.list(f"raw_outputs/{scope}/{sample_name(sample)}/")
+        if PurePosixPath(obj.name).name != MARKER
+    ]
+
+
+def scope_counts(objects: list[Object], sample: str, scopes: list[str]) -> dict[str, Any]:
+    counts = {}
+    for scope in scopes:
+        files = [obj for obj in objects if obj.name.startswith(f"raw_outputs/{scope}/{sample}/")]
+        counts[scope] = {"n_files": len(files), "total_bytes": sum(obj.size for obj in files)}
+    return counts
+
+
+def recorded_counts(body: dict[str, Any]) -> dict[str, Any]:
+    if body.get("provenance") == "backfill":
+        return dict(body["scope_counts"])
+    if body.get("provenance", "transfer") != "transfer":
+        raise ValueError("Unknown marker provenance")
+    return scope_counts([Object(**obj) for obj in body["manifest"]], body["sample"], list(SCOPES))
+
+
+def render_marker(body: dict[str, Any], scope: str, counts: dict[str, Any]) -> str:
+    backfilled = body.get("provenance") == "backfill"
+    fields = {
+        "sample": body["sample"],
+        "remote_sample": body["remote_sample"],
+        "scope": scope,
+        "status": "done",
+        "verified": "listing-only (backfilled)" if backfilled else "crc32c",
+        "export_root": body["export_root"],
+        "run_folder": body["run_folder"],
+        "scope_files": counts[scope]["n_files"],
+        "scope_bytes": counts[scope]["total_bytes"],
+        "sample_files": body["n_files"],
+        "sample_bytes": body["total_bytes"],
+        "finished": body["finished"],
+        "tool_version": body["tool_version"],
+        "run_id": body["run_id"],
+        "requested_by": body["requested_by"],
+        "record": f"transfer_status/{body['sample']}.done.json",
+    }
+    destinations = body.get("destinations")
+    if destinations:
+        fields["record"] = (
+            f"gs://{destinations['bucket']}/{destinations['status_prefix']}{body['sample']}.done.json"
+        )
+    prose = "Both sample scopes were compared with the source by size and crc32c at completion."
+    if backfilled:
+        fields.update(source_checked="no", backfilled_at=body["backfilled_at"])
+        fields.update({scope: "absent" for scope in SCOPES if scope not in counts})
+        prose = (
+            "Contents were never compared against the AtoMx source. Counts come from the "
+            "bucket listing at backfill time; this record is not a source verification."
+        )
+    # Keep metadata on one line even when supplied through an admin configuration.
+    lines = [
+        f"{key}: {str(value).replace(chr(10), ' ').replace(chr(13), ' ')}"
+        for key, value in fields.items()
+    ]
+    return "# AtoMx transfer marker v1\n" + "\n".join(lines) + "\n\n" + prose + "\n"
+
+
+def write_markers(bucket: Bucket, body: dict[str, Any], counts: dict[str, Any]) -> None:
+    for scope in counts:
+        path = marker_path(body["sample"], scope)
+        if bucket.stat(path) is None:
+            bucket.copy(path, iter([render_marker(body, scope, counts).encode()]))
+
+
+def backfill(bucket: Bucket, request: dict[str, Any]) -> dict[str, Any]:
+    """Snapshot legacy destinations or repair text from an immutable completion record."""
+    dry_run = request.get("dry_run", True)
+    discovered: dict[str, list[str]] = {}
+    for scope in SCOPES:
+        prefix = f"raw_outputs/{scope}/"
+        for folder in bucket.folders(prefix):
+            sample = sample_name(folder.removeprefix(prefix).removesuffix("/"))
+            discovered.setdefault(sample, []).append(scope)
+    selected = sample_name(request["sample"]) if request.get("sample") else None
+    summary: dict[str, Any] = {"dry_run": dry_run, "marked": [], "repaired": [], "skipped": []}
+    if selected and selected not in discovered:
+        raise ValueError("Sample has no destination folders")
+    for sample, scopes in sorted(discovered.items()):
+        if selected and sample != selected:
+            continue
+        prefix = f"transfer_status/{sample}"
+        done = bucket.read(prefix + ".done.json")
+        prior = bucket.read(prefix + ".in_progress.json")
+        failed = bucket.read(prefix + ".failed.json")
+        if (prior and (not done or age(prior[0]["heartbeat"]) <= 3600)) or (failed and not done):
+            summary["skipped"].append({"sample": sample, "reason": "unfinished_transfer"})
+            continue
+        if done:
+            counts = recorded_counts(done[0])
+            if all(bucket.stat(marker_path(sample, scope)) for scope in counts):
+                summary["skipped"].append({"sample": sample, "reason": "complete"})
+                continue
+        elif any(bucket.stat(marker_path(sample, scope)) for scope in scopes):
+            summary["skipped"].append({"sample": sample, "reason": "text_without_record"})
+            continue
+        if dry_run:
+            summary["repaired" if done else "marked"].append(sample)
+            continue
+        stamp = now()
+        lease = {
+            "version": 1,
+            "sample": sample,
+            "remote_sample": "unknown",
+            "export_root": "unknown",
+            "run_folder": "unknown",
+            "started": stamp,
+            "heartbeat": stamp,
+            "finished": None,
+            "tool_version": request["tool_version"],
+            "requested_by": request["requested_by"],
+            "login_saved_by": "none",
+            "run_id": request["run_id"],
+        }
+        try:
+            generation = bucket.write(
+                prefix + ".in_progress.json", lease, prior[1] if prior else None
+            )
+        except Busy:
+            summary["skipped"].append({"sample": sample, "reason": "concurrent_update"})
+            continue
+        try:
+            # A preceding transfer/backfill may have completed after our first read.
+            done = bucket.read(prefix + ".done.json")
+            if not done and bucket.read(prefix + ".failed.json"):
+                summary["skipped"].append({"sample": sample, "reason": "unfinished_transfer"})
+                continue
+            if done:
+                body = done[0]
+                counts = recorded_counts(body)
+            else:
+                counts = scope_counts(destination_objects(bucket, sample), sample, scopes)
+                body = {
+                    **lease,
+                    "provenance": "backfill",
+                    "source_checked": False,
+                    "finished": now(),
+                    "backfilled_at": now(),
+                    "scope_counts": counts,
+                    "n_files": sum(c["n_files"] for c in counts.values()),
+                    "total_bytes": sum(c["total_bytes"] for c in counts.values()),
+                }
+            lease["heartbeat"] = now()
+            generation = bucket.write(prefix + ".in_progress.json", lease, generation)
+            if not done:
+                bucket.write(prefix + ".done.json", body, None)
+            write_markers(bucket, body, counts)
+            summary["repaired" if done else "marked"].append(sample)
+        finally:
+            bucket.delete(prefix + ".in_progress.json", generation)
+    return summary
 
 
 def plan(
@@ -107,6 +279,8 @@ def plan(
     for file in files:
         if file.size < 0 or ".." in PurePosixPath(file.name).parts:
             raise ValueError("Invalid source file")
+        if PurePosixPath(file.name).name == MARKER:
+            raise ValueError("Source file collides with reserved done.txt marker")
     return runs[-1], sorted(files, key=lambda f: f.name)
 
 
@@ -131,6 +305,7 @@ class Transfer:
         self.last_beat = 0.0
         self.marker: dict[str, Any] = {
             "version": 1,
+            "destinations": request.get("destinations", {}),
             "sample": self.sample,
             "remote_sample": request["sample"],
             "export_root": request["export_root"],
@@ -184,6 +359,10 @@ class Transfer:
             if self.request.get("plan_fingerprint") != fingerprint(run, files):
                 raise ValueError("Source changed since confirmation; request a new preview")
             self.beat(force=True)
+            stage = getattr(self.remote, "stage", None)
+            if stage is not None:
+                step = "download"
+                stage(files, self.beat)
             step = "copy"
             manifest = []
             for file in files:
@@ -223,9 +402,7 @@ class Transfer:
                 self.beat,
             ) != (run, files):
                 raise ValueError("Source listing changed during transfer")
-            actual = self.bucket.list(f"raw_outputs/raw/{self.sample}/") + self.bucket.list(
-                f"raw_outputs/additional_files/{self.sample}/"
-            )
+            actual = destination_objects(self.bucket, self.sample)
             if sorted(actual, key=lambda f: f.name) != manifest:
                 raise ValueError(
                     "Destination manifest mismatch (missing, changed, or extra objects)"
@@ -233,11 +410,14 @@ class Transfer:
             self.beat(force=True)
             done = {
                 **self.marker,
+                "provenance": "transfer",
                 "finished": now(),
                 "manifest": [asdict(f) for f in manifest],
                 "source": {"n_files": len(files), "total_bytes": sum(f.size for f in files)},
             }
             self.bucket.write(self.prefix + ".done.json", done, None)
+            step = "markers"
+            write_markers(self.bucket, done, recorded_counts(done))
             self.bucket.delete(self.prefix + ".in_progress.json", self.generation)
             failed = self.bucket.read(self.prefix + ".failed.json")
             if failed:
@@ -268,6 +448,8 @@ def inventory(remote: Remote, bucket: Bucket, request: dict[str, Any]) -> dict[s
         except FileNotFoundError:
             continue
         for sample in samples:
+            if request.get("sample") and sample != request["sample"]:
+                continue
             sample_name(sample)
             target = (
                 (request.get("as_sample") or sample) if sample == request.get("sample") else sample
@@ -278,10 +460,11 @@ def inventory(remote: Remote, bucket: Bucket, request: dict[str, Any]) -> dict[s
                 marker = bucket.read(f"transfer_status/{target}.{suffix}.json")
                 if marker:
                     status = suffix
-                    if suffix == "done" and marker[0].get("plan_fingerprint") != fingerprint(
-                        run, files
-                    ):
-                        status = "changed_since_done"
+                    if suffix == "done":
+                        if marker[0].get("provenance") == "backfill":
+                            status = "done_backfilled"
+                        elif marker[0].get("plan_fingerprint") != fingerprint(run, files):
+                            status = "changed_since_done"
             entries.append(
                 {
                     "sample": sample,
@@ -309,7 +492,9 @@ def inventory(remote: Remote, bucket: Bucket, request: dict[str, Any]) -> dict[s
                     "run_folder": body["run_folder"],
                     "n_files": body["n_files"],
                     "total_bytes": body["total_bytes"],
-                    "status": "bucket_only",
+                    "status": (
+                        "done_backfilled" if body.get("provenance") == "backfill" else "bucket_only"
+                    ),
                 }
             )
     return {

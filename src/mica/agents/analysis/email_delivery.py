@@ -8,6 +8,7 @@ import copy
 import hashlib
 import json
 import mimetypes
+import re
 import uuid
 from email.message import EmailMessage
 from email.parser import BytesParser
@@ -128,11 +129,13 @@ async def deliver(
     record: dict[str, Any],
     text: str,
     *,
-    kind: Literal["ack", "final"],
+    kind: str,
     result: TerminalResult | None = None,
 ) -> str:
     from googleapiclient.errors import HttpError
 
+    if kind not in {"ack", "final"} and not re.fullmatch(r"atomx-[a-f0-9]{24}", kind):
+        raise ValueError("Invalid email delivery stage")
     storage = bridge.storage
     key = f"{EMAIL_STATE_PREFIX}/outbox/{event_id}/{kind}.json"
     message_id = f"<mica.{event_id}.{kind}@{gmail_client.mailbox(bridge.app).split('@')[1]}>"
@@ -269,7 +272,7 @@ async def deliver(
         "status": "sending",
         "audience": audience,
         "scope": "account" if account_reply else "project",
-        "text": text,
+        "text": "Private AtoMx action (link redacted)" if kind.startswith("atomx-") else text,
         "artifacts": included,
         "message_id": message_id,
         "delivery_id": delivery_id,

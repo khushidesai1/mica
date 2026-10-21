@@ -12,23 +12,25 @@ from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from html import escape
 from typing import TYPE_CHECKING, Any
-from uuid import NAMESPACE_URL, uuid5
 
-from google.api_core.exceptions import AlreadyExists, GoogleAPICallError, NotFound
+from google.api_core.exceptions import AlreadyExists, NotFound
 from google.cloud import batch_v1
-from slack_sdk.errors import SlackApiError
-from slack_sdk.web.async_client import AsyncWebClient
 
 from mica.tool_catalog import transfer_capability
 
-from . import job_lifecycle
+from . import (
+    atomx_connections,
+    atomx_delivery,
+    job_lifecycle,
+    project_memory,
+    transfer_destinations,
+)
 from .access import Grant
-from .progress import TaskProgress, check_in_due, elapsed_label
+from .progress import check_in_due, elapsed_label
 from .registry import Registry
-from .slack_format import activity_blocks, chunks
 from .storage import GCSStorage, Storage
 from .transfer_config import TransferProject, TransferRequest, age
-from .transfer_jobs import LoginSecrets, job_spec
+from .transfer_jobs import job_spec
 
 if TYPE_CHECKING:
     from .batch import BatchBridge
@@ -61,6 +63,8 @@ def marker_state(values: dict[str, Any]) -> str:
     if "in_progress" in values:
         return "stuck" if age(values["in_progress"].get("heartbeat")) > 3600 else "in_progress"
     if "done" in values:
+        if values["done"].get("provenance") == "backfill":
+            return "done (backfilled; listing-only, not verified)"
         return "done (marker; manifest not rechecked here)"
     return "failed" if "failed" in values else "on_atomx_only"
 
@@ -69,29 +73,58 @@ class Transfers:
     def __init__(self, bridge: BatchBridge, storage: Storage) -> None:
         self.bridge, self.repo, self.store = bridge, bridge.repository, storage
         self.settings, self.app = bridge.settings, bridge.app
-        self.secrets = LoginSecrets()
+        self.connections = atomx_connections.Connections(self.app, self.settings, self.repo)
 
     def config(self, project: str) -> TransferProject:
-        if not self.settings.transfers_enabled or project not in self.settings.transfer_projects:
-            raise ValueError("AtoMx transfers are not enabled for this project.")
+        if not self.settings.transfers_enabled:
+            raise ValueError("AtoMx transfers are not enabled yet.")
+        self.connections.key("credentials")
+        if not self.settings.transfer_host_key or "REPLACE" in self.settings.transfer_host_key:
+            raise ValueError(
+                "AtoMx server identity is not configured. Ask the operator to verify its host key."
+            )
         job_spec(self.app, self.settings, "0" * 32, "inventory")
-        return self.settings.transfer_projects[project]
+        doc = Registry(self.store).load()
+        if project not in doc.projects:
+            raise ValueError("Choose a project for this transfer.")
+        from urllib.parse import urlsplit
+
+        return TransferProject(bucket=urlsplit(doc.projects[project].data_uri).netloc)
 
     def authorize(self, project: str, email: str, pending: dict[str, Any] | None = None) -> None:
+        from urllib.parse import urlsplit
+
+        from .write_access import scope, validate_scope
+
         doc = Registry(self.store).load()
         if not doc.can_use(project, email):
             raise ValueError("Project membership is required.")
-        config = self.config(project)
-        # Prevent a renamed/rebound project from silently writing to its former bucket.
-        if not doc.projects[project].data_uri.startswith(f"gs://{config.bucket}/"):
-            raise ValueError("The project's data bucket does not match its transfer configuration.")
-        if (
-            pending
-            and not pending["channel"].startswith("D")
-            and f"{pending['team']}:{pending['channel']}"
-            not in doc.projects[project].published_channels
-        ):
-            raise ValueError("This channel is no longer authorized for the project.")
+        self.config(project)
+        if pending:
+            config = TransferProject.model_validate(pending["config"])
+            entry = doc.projects[project]
+            if (
+                pending.get("data_uri", entry.data_uri) != entry.data_uri
+                or pending.get("access_revision", entry.access_revision) != entry.access_revision
+            ):
+                raise ValueError(
+                    "Project access or storage changed; request a new transfer preview."
+                )
+            if config.bucket != urlsplit(entry.data_uri).netloc:
+                raise ValueError("The import bucket no longer matches the project.")
+            for prefix in (config.raw_prefix, config.additional_prefix, config.status_prefix):
+                uri = f"gs://{config.bucket}/{prefix}"
+                validate_scope(uri, self.settings)
+                if not doc.owns(project, email) and not uri.startswith(scope(entry.data_uri)):
+                    raise ValueError(
+                        "An owner must approve imports outside this project's linked prefix."
+                    )
+            if (
+                pending.get("surface") != "email"
+                and not pending["channel"].startswith("D")
+                and f"{pending['team']}:{pending['channel']}" not in entry.published_channels
+            ):
+                raise ValueError("This channel is no longer authorized for the project.")
 
     @asynccontextmanager
     async def locked(self, project: str) -> AsyncIterator[None]:
@@ -107,8 +140,38 @@ class Transfers:
     async def save(self, p: dict[str, Any]) -> None:
         await self.repo.set_connector_state(f"transfer-pending:{p['id']}", p)
 
-    async def login(self, project: str) -> dict[str, Any]:
-        return await self.repo.get_connector_state(f"atomx-login:{project}") or {}
+    async def login(self, owner: str) -> dict[str, Any]:
+        status = await self.connections.status(owner)
+        if not status.get("revision"):
+            return {}
+        return {
+            **status,
+            "version": status["revision"],
+            "status": "valid" if status.get("status") == "saved" else status.get("status"),
+            "saved_by": owner,
+            "saved_at": status.get("updated_at"),
+            "username": "your personal account",
+        }
+
+    async def connection_link(
+        self, owner: str, record: dict[str, Any], event_id: str, pending: str = ""
+    ) -> str:
+        if not self.settings.transfers_enabled:
+            return "Secure AtoMx connections are not available in this release."
+        url = await self.connections.issue(owner, "connection", event_id, pending)
+        await atomx_delivery.deliver(
+            self.bridge,
+            owner,
+            record,
+            event_id,
+            "Manage your private AtoMx connection (expires in 15 minutes): " + url,
+            "connection:" + url.rsplit("#", 1)[-1].split(".")[0],
+            private_link=True,
+        )
+        return (
+            "I sent a private link to manage your personal AtoMx connection. "
+            "Please use that form; do not send credentials in chat or email."
+        )
 
     async def pending(self, pid: str) -> dict[str, Any]:
         p = await self.repo.get_connector_state(f"transfer-pending:{pid}")
@@ -132,79 +195,40 @@ class Transfers:
             await self.schedule(p, delay)
 
     async def notify(self, p: dict[str, Any], text: str, buttons: tuple[str, ...] = ()) -> None:
-        actions = {
-            "login": ("Enter AtoMx login", "mica_transfer_login"),
-            "confirm": ("Confirm", "mica_transfer_confirm"),
-            "cancel": ("Cancel", "mica_transfer_cancel"),
-        }
-        blocks: list[dict[str, Any]] = [
-            {"type": "section", "text": {"type": "mrkdwn", "text": part}}
-            for part in chunks(text, limit=2900)
-        ]
-        if buttons:
-            blocks.append(
-                {
-                    "type": "actions",
-                    "elements": [
-                        {
-                            "type": "button",
-                            "text": {"type": "plain_text", "text": actions[b][0]},
-                            "action_id": actions[b][1],
-                            "value": p["id"],
-                        }
-                        for b in buttons
-                    ],
-                }
-            )
-        fallback = blocks
-        native = (
-            p["state"] in {"running", "inventory"}
-            and buttons == ("cancel",)
-            and p.get("native_progress", True)
-        )
-        if native:
-            task = TaskProgress(
-                p["job_run"],
-                "Transfer " + (p["request"]["as_sample"] or p["request"]["sample"])
-                if p["state"] == "running"
-                else "Inspect AtoMx export",
-                "AtoMx transfer" if p["state"] == "running" else "Checking AtoMx export",
-            )
-            blocks = activity_blocks([task], check_in=text) + blocks[-1:]
-        if p.get("notice") == [text, list(buttons)]:
-            return
         p["delivery"] = [text, list(buttons)]
         await self.save(p)
-        if "login" in buttons:
-            await self.repo.set_connector_state(
-                f"atomx-login-prompt:{p['team']}:{p['channel']}:{p['thread']}",
-                {"expires": p["expires"]},
+        record = await self.repo.get_connector_state(f"claude-event:{p['id']}")
+        if not record:
+            raise ValueError("The requesting conversation is unavailable.")
+        if "login" in buttons or "confirm" in buttons:
+            purpose = "connection" if "login" in buttons else "approval"
+            url = await self.connections.issue(
+                p["requested_by"],
+                purpose,
+                f"{p['id']}:{p['attempt']}:{p.get('login_version', '')}",
+                p["id"],
             )
-        client = AsyncWebClient(token=self.app.slack_bot_token, timeout=5)
-
-        async def deliver(selected: list[dict[str, Any]]) -> Any:
-            if p.get("notice_ts"):
-                return await client.chat_update(
-                    channel=p["channel"], ts=p["notice_ts"], text=text, blocks=selected
-                )
-            return await client.chat_postMessage(
-                channel=p["channel"],
-                thread_ts=p["thread"],
-                text=text,
-                blocks=selected,
-                client_msg_id=str(uuid5(NAMESPACE_URL, "atomx:" + p["id"])),
+            await atomx_delivery.deliver(
+                self.bridge,
+                p["requested_by"],
+                record,
+                p["id"],
+                text + "\n\nOpen your private form (expires in 15 minutes): " + url,
+                purpose + ":" + url.rsplit("#", 1)[-1].split(".")[0],
+                private_link=True,
             )
-
-        try:
-            response = await deliver(blocks)
-        except SlackApiError as exc:
-            if not native or exc.response.get("error") != "invalid_blocks":
-                raise
-            p["native_progress"] = False
-            response = await deliver(fallback)
-        if not p.get("notice_ts"):
-            p["notice_ts"] = response["ts"]
+        else:
+            await atomx_delivery.deliver(
+                self.bridge,
+                p["requested_by"],
+                record,
+                p["id"],
+                text,
+                f"status:{p['state']}:{hashlib.sha256(text.encode()).hexdigest()}",
+            )
+        # Store only redacted notice metadata; bearer links never enter pending/history records.
         p["notice"] = [text, list(buttons)]
+        p.pop("delivery", None)
         await self.save(p)
 
     async def request(
@@ -216,8 +240,8 @@ class Transfers:
     ) -> str:
         from . import surface
 
-        if surface.is_email(record):
-            raise PermissionError(surface.EMAIL_READ_ONLY)
+        if request is None:
+            return await self.connection_link(grant.email, record, event_id)
         self.authorize(grant.project_id, grant.email)
         event = record["payload"]["event"]
         async with self.locked(grant.project_id):
@@ -226,9 +250,16 @@ class Transfers:
                 if existing["state"] not in TERMINAL:
                     await self.schedule(existing)
                 return "Your transfer request is recorded in this thread."
-            login = await self.login(grant.project_id)
-            if request is None and login:
-                self.can_manage(grant.project_id, grant.email, login)
+            login = await self.login(grant.email)
+            snapshot = await project_memory.GitHubMemory(self.settings).read(grant.project_id)
+            guide = (
+                snapshot.files["PROJECT.md"].text
+                if snapshot and "PROJECT.md" in snapshot.files
+                else ""
+            )
+            config = transfer_destinations.resolve(
+                request, guide, str(event.get("text", "")), grant.doc, grant.project_id, grant.email
+            )
             p = {
                 "id": event_id,
                 "project": grant.project_id,
@@ -241,8 +272,19 @@ class Transfers:
                 "created": time.time(),
                 "attempt": 0,
                 "expires": time.time() + 1800,
-                "config": self.config(grant.project_id).model_dump(),
+                "config": config.model_dump(),
+                "surface": "email" if surface.is_email(record) else "slack",
+                "data_uri": grant.project.data_uri,
+                "access_revision": grant.project.access_revision,
             }
+            self.authorize(grant.project_id, grant.email, p)
+            index_key = "atomx-user-runs:" + atomx_connections.digest(grant.email)
+            async with self.connections.locked(index_key):
+                index = await self.repo.get_connector_state(index_key) or {"ids": []}
+                index["ids"] = list(dict.fromkeys(index["ids"] + [event_id]))
+                if len(index["ids"]) > 1000:
+                    raise ValueError("Your transfer history needs operator maintenance.")
+                await self.repo.set_connector_state(index_key, index)
             await self.transition(
                 p, "prepare" if request and login.get("status") == "valid" else "login"
             )
@@ -251,83 +293,6 @@ class Transfers:
             if request
             else "Opening the saved-login controls."
         )
-
-    def can_manage(self, project: str, email: str, login: dict[str, Any]) -> None:
-        if email != login.get("saved_by") and not Registry(self.store).load().owns(project, email):
-            raise ValueError(
-                "Only the project owner or the person who saved the login can change it."
-            )
-
-    async def forget(self, project: str, email: str) -> str:
-        self.authorize(project, email)
-        async with self.locked(project):
-            login = await self.login(project)
-            self.can_manage(project, email, login)
-            if login.get("version"):
-                await asyncio.to_thread(self.secrets.disable, login["version"])
-            if login.get("previous_version"):
-                await asyncio.to_thread(self.secrets.disable, login["previous_version"])
-            login["status"] = "disabled"
-            await self.repo.set_connector_state(f"atomx-login:{project}", login)
-        return "Saved AtoMx login disabled. Running jobs may already have read it."
-
-    async def save_login(
-        self, pid: str, email: str, username: str, password: str, submission: str
-    ) -> None:
-        p = await self.pending(pid)
-        async with self.locked(p["project"]):
-            p = await self.pending(pid)
-            self.authorize(p["project"], email, p)
-            login = await self.login(p["project"])
-            if login:
-                self.can_manage(p["project"], email, login)
-            elif email != p["requested_by"]:
-                raise ValueError("Only the requester can save the first login for this request.")
-            if login.get("submission") == submission:
-                if login.get("previous_version"):
-                    await asyncio.to_thread(self.secrets.disable, login["previous_version"])
-                    login.pop("previous_version")
-                    login["status"] = "valid"
-                    await self.repo.set_connector_state(f"atomx-login:{p['project']}", login)
-                if p["state"] == "login":
-                    p.update(expires=time.time() + 1800, attempt=p["attempt"] + 1)
-                    await self.transition(p, "prepare" if p["request"] else "done")
-                await self.schedule(p)
-                return
-            if p["state"] != "login" or time.time() > p["expires"]:
-                raise ValueError(
-                    "This login form expired. Start a new transfer or replace atomx login."
-                )
-            if not username.strip() or not password or len(username) > 320 or len(password) > 4096:
-                raise ValueError("Enter an AtoMx username and password in the form.")
-            if login.get("previous_version"):
-                await asyncio.to_thread(self.secrets.disable, login["previous_version"])
-            version = await asyncio.to_thread(
-                self.secrets.add, self.config(p["project"]).login_secret, username.strip(), password
-            )
-            # Persist the new version first; retries can finish disabling the old one.
-            replacement = {
-                "username": username.strip(),
-                "saved_by": email,
-                "saved_at": stamp(),
-                "version": version,
-                "status": "invalid" if login.get("version") else "valid",
-                "submission": submission,
-                "previous_version": login.get("version"),
-            }
-            await self.repo.set_connector_state(f"atomx-login:{p['project']}", replacement)
-            if login.get("version"):
-                await asyncio.to_thread(self.secrets.disable, login["version"])
-                replacement.pop("previous_version", None)
-                replacement["status"] = "valid"
-                await self.repo.set_connector_state(f"atomx-login:{p['project']}", replacement)
-            p.update(expires=time.time() + 1800, attempt=p["attempt"] + 1)
-            await self.transition(p, "prepare" if p["request"] else "done")
-            await self.notify(
-                p,
-                f"AtoMx login `{escape(username.strip())}` saved by {escape(email)}. "
-                "Future transfers will use it.",
-            )
 
     async def confirm(self, pid: str, email: str) -> None:
         p = await self.pending(pid)
@@ -338,18 +303,24 @@ class Transfers:
                 raise ValueError("Only the requester can confirm a pending preview, once.")
             if time.time() > p["expires"]:
                 raise ValueError("This confirmation expired. Request a new preview.")
-            login = await self.login(p["project"])
+            login = await self.login(p["requested_by"])
             if login.get("status") != "valid" or login.get("version") != p["login_version"]:
                 raise ValueError("The saved login changed. Request a new preview.")
-            if p["config"] != self.config(p["project"]).model_dump():
-                raise ValueError("Transfer configuration changed. Request a new preview.")
             await self.available(p)
             p["confirmed_by"] = email
             await self.transition(p, "submitting")
 
+    def destination_markers(self, p: dict[str, Any], sample: str) -> dict[str, Any]:
+        store = GCSStorage(p["config"]["bucket"])
+        return {
+            state: value
+            for state in ("in_progress", "done", "failed")
+            if (value := read(store, p["config"]["status_prefix"] + sample + "." + state + ".json"))
+        }
+
     async def available(self, p: dict[str, Any]) -> dict[str, Any]:
         sample = p["request"]["as_sample"] or p["request"]["sample"]
-        values = await asyncio.to_thread(markers, GCSStorage(p["config"]["bucket"]), sample)
+        values = await asyncio.to_thread(self.destination_markers, p, sample)
         if "done" in values:
             raise ValueError(
                 "This sample already has a done marker. Verify it before any new transfer."
@@ -405,7 +376,7 @@ class Transfers:
                 return
         if kind == "pull":
             await self.available(p)
-        login = await self.login(p["project"])
+        login = await self.login(p["requested_by"])
         if login.get("status") != "valid":
             await self.release(p)
             await self.transition(p, "login")
@@ -417,11 +388,12 @@ class Transfers:
             **p["request"],
             "run_id": run,
             "project": p["project"],
-            "layout": p["config"]["layout"],
+            "destinations": p["config"],
             "bucket": p["config"]["bucket"],
             "requested_by": p["requested_by"],
             "login_saved_by": login["saved_by"],
-            "login_secret_version": version,
+            "connection_revision": version,
+            "control_url": self.app.control_plane_url,
         }
         if kind == "pull":
             request["export_root"] = p["preview"]["export_root"]
@@ -438,6 +410,18 @@ class Transfers:
             login_version=version,
             job_terminal=False,
             login_saved_by=login["saved_by"],
+        )
+        grant_token = self.connections.mac("worker-grant", f"{run}:{p['requested_by']}:{version}")
+        await self.repo.set_connector_state(
+            "atomx-run:" + run,
+            {
+                "pending": p["id"],
+                "owner": p["requested_by"],
+                "revision": version,
+                "kind": kind,
+                "token_hash": atomx_connections.digest(grant_token),
+                "expires": p["job_started"] + p["max_run_seconds"] + 3600,
+            },
         )
         await self.save(p)  # Same job name and immutable request survive uncertain submissions.
         key = f"tasks/transfers/{run}/{kind}-request.json"
@@ -460,10 +444,10 @@ class Transfers:
                     ),
                     run,
                     kind,
+                    grant_token=grant_token,
+                    source_bytes=int(p.get("preview", {}).get("total_bytes", 0)),
                 ),
             )
-        login.update(last_used=stamp(), last_result="running")
-        await self.repo.set_connector_state(f"atomx-login:{p['project']}", login)
         await self.transition(p, "inventory" if kind == "inventory" else "running", delay=300)
         await self.notify(
             p, "Checking AtoMx…" if kind == "inventory" else "AtoMx transfer started.", ("cancel",)
@@ -490,19 +474,23 @@ class Transfers:
         if not item.get("plan_fingerprint"):
             return False
         marker_values = await self.available(p)
-        login = await self.login(p["project"])
+        login = await self.login(p["requested_by"])
         p.update(preview=item, expires=time.time() + 1800, login_version=login["version"])
         await self.transition(p, "preview", delay=300)
         text = (
             f"Transfer *{escape(wanted['sample'])}* as *{escape(target)}* from "
             f"`{escape(item['export_root'])}` / `{escape(item['run_folder'])}`?\n"
             f"{int(item['n_files']):,} files · {int(item['total_bytes']):,} bytes\n"
-            f"To `gs://{p['config']['bucket']}/raw_outputs/raw/{target}/` and "
-            f"`raw_outputs/additional_files/{target}/`.\n"
+            f"Raw: gs://{p['config']['bucket']}/{p['config']['raw_prefix']}{target}/\n"
+            "Additional: "
+            f"gs://{p['config']['bucket']}/{p['config']['additional_prefix']}{target}/\n"
             f"Existing marker status: {marker_state(marker_values)}.\n"
             f"Using `{escape(login['username'])}`, saved by {escape(login['saved_by'])} "
-            f"on {escape(login['saved_at'])}. Confirmation expires in 30 minutes."
+            f"on {escape(str(login['saved_at']))}. "
+            "This private confirmation link expires in 15 minutes."
         )
+        p["preview_text"] = text
+        await self.save(p)
         await self.notify(p, text, ("confirm", "cancel"))
         return True
 
@@ -534,8 +522,14 @@ class Transfers:
             await self.poll(p)
             return
         self.authorize(p["project"], p["requested_by"], p)
-        if p["config"] != self.config(p["project"]).model_dump():
-            raise ValueError("Transfer configuration changed. Start a new request.")
+        current = await self.login(p["requested_by"])
+        if p.get("login_version") and current.get("status") == "forgotten":
+            await self.release(p)
+            await self.transition(p, "cancelled")
+            await self.notify(
+                p, "Transfer cancelled because your personal connection was forgotten."
+            )
+            return
         if time.time() > p["expires"] and not (
             p["state"] == "submitting" and p.get("job_run") and not p.get("job_terminal")
         ):
@@ -544,7 +538,7 @@ class Transfers:
             await self.notify(p, "Transfer request expired. No transfer was started.")
             return
         if p["state"] == "login":
-            login = await self.login(p["project"])
+            login = await self.login(p["requested_by"])
             if p["request"] and login.get("status") == "valid":
                 await self.transition(p, "prepare")
                 return
@@ -552,27 +546,25 @@ class Transfers:
                 await self.notify(
                     p,
                     "I need an AtoMx export login once. It's saved for future transfers. "
-                    "Please use the button; never paste a password in chat.",
+                    "Please use the private link; never paste a password in chat or email.",
                     ("login", "cancel"),
                 )
             await self.transition(p, "login", delay=300)
         elif p["state"] == "prepare":
-            cached = await asyncio.to_thread(
-                read, GCSStorage(p["config"]["bucket"]), "transfer_status/_inventory.json"
-            )
-            if (
-                cached
-                and 0 <= age(cached.get("generated_at")) < 3600
-                and await self.preview(p, cached)
-            ):
-                return
             if await self.reserve(p):
                 await self.submit(p, "inventory")
             else:
                 await self.notify(p, "Waiting for this project's active transfer job to finish.")
                 await self.transition(p, "prepare", delay=300)
         elif p["state"] == "preview":
-            await self.transition(p, "preview", delay=300)
+            current = await self.login(p["requested_by"])
+            if current.get("version") != p["login_version"] or current.get("status") != "valid":
+                p.update(attempt=p["attempt"] + 1, expires=time.time() + 1800)
+                p.pop("job_run", None)
+                p.pop("confirmed_by", None)
+                await self.transition(p, "prepare" if current.get("status") == "valid" else "login")
+            else:
+                await self.transition(p, "preview", delay=300)
         elif p["state"] == "submitting":
             if await self.reserve(p):
                 await self.submit(p, "pull")
@@ -595,6 +587,12 @@ class Transfers:
                 return
             try:
                 self.authorize(p["project"], p["requested_by"], p)
+                current_login = await self.login(p["requested_by"])
+                if (
+                    current_login.get("version") != p.get("login_version")
+                    or current_login.get("status") != "valid"
+                ):
+                    raise ValueError("Personal connection changed")
             except ValueError:
                 await self.cancel_locked(p)
                 return
@@ -651,12 +649,9 @@ class Transfers:
                 "Current project members can check the transfer markers.",
             )
             return
-        login = await self.login(p["project"])
+        login = await self.login(p["requested_by"])
         if login.get("version") == p.get("login_version"):
-            login.update(last_result=result["status"])
-            if result["status"] == "auth_failed":
-                login["status"] = "invalid"
-            await self.repo.set_connector_state(f"atomx-login:{p['project']}", login)
+            await self.connections.result(p["requested_by"], p["login_version"], result["status"])
         completed_marker = result.get("marker", {})
         if (
             p["state"] == "cancelling"
@@ -680,7 +675,7 @@ class Transfers:
             await self.notify(
                 p,
                 "The saved AtoMx login no longer works. Its owner can replace it using "
-                "the button. You'll review and confirm the transfer again.",
+                "the private link. You'll review and confirm the transfer again.",
                 ("login", "cancel"),
             )
         elif state == "SUCCEEDED" and result["status"] == "done":
@@ -705,36 +700,18 @@ class Transfers:
     async def write_failure(self, p: dict[str, Any], error: str) -> None:
         if p.get("job_kind") != "pull":
             return
-        bucket = GCSStorage(p["config"]["bucket"])
-        target = p["request"]["as_sample"] or p["request"]["sample"]
-        key = f"transfer_status/{target}.failed.json"
-        existing = await asyncio.to_thread(markers, bucket, target)
-        if existing.get("done", {}).get("run_id") == p["job_run"]:
-            return  # Completion won a cancellation race.
-        if existing.get("in_progress", {}).get("run_id") not in {None, p["job_run"]}:
-            return  # A later run owns the marker; never replace its status.
-        body = {
-            **existing.get("in_progress", {}),
-            "version": 1,
-            "sample": target,
-            "remote_sample": p["request"]["sample"],
-            "export_root": p.get("preview", {}).get("export_root", p["request"]["export_root"]),
-            "run_folder": p.get("preview", {}).get("run_folder", ""),
-            "started": datetime.fromtimestamp(p["job_started"], UTC).isoformat(),
-            "heartbeat": existing.get("in_progress", {}).get("heartbeat", stamp()),
-            "tool_version": self.settings.transfer_image,
-            "login_saved_by": p["login_saved_by"],
-            "requested_by": p["requested_by"],
-            "run_id": p["job_run"],
-            "finished": stamp(),
-            "step": "job",
-            "error": error,
-        }
-        try:
-            _, generation = await asyncio.to_thread(bucket.get, key)
-        except FileNotFoundError:
-            generation = None
-        await asyncio.to_thread(bucket.put_if, key, json.dumps(body).encode(), generation)
+        # Controller audit remains available even when revoked writer access prevents a
+        # worker from updating destination markers. Never mint credentials after revocation.
+        await self.repo.set_connector_state(
+            f"atomx-failure:{p['job_run']}",
+            {
+                "run_id": p["job_run"],
+                "owner": p["requested_by"],
+                "error": error,
+                "finished": stamp(),
+                "destinations": p["config"],
+            },
+        )
 
     async def cancel_locked(self, p: dict[str, Any]) -> None:
         if p.get("job_run") and p["state"] in ACTIVE:
@@ -764,69 +741,54 @@ class Transfers:
             p["cancelled_by"] = email
             await self.cancel_locked(p)
 
-    async def context(self, project: str) -> dict[str, Any]:
-        try:
-            return await self.status_context(project)
-        except (GoogleAPICallError, ValueError, KeyError, TypeError):
-            return {
-                **transfer_capability(),
-                "available": False,
-                "reason": "Transfer status or configuration is unavailable. Please retry later.",
-            }
-
-    async def status_context(self, project: str) -> dict[str, Any]:
+    async def context(self, project: str, owner: str = "") -> dict[str, Any]:
         capability = transfer_capability()
-        if not self.settings.transfers_enabled or project not in self.settings.transfer_projects:
-            return capability
-        config = self.config(project)
-        bucket = GCSStorage(config.bucket)
-        keys = await asyncio.to_thread(bucket.keys, "transfer_status/")
-        samples = sorted(
-            {
-                k.rsplit("/", 1)[-1].removesuffix("." + suffix + ".json")
-                for k in keys
-                for suffix in ("in_progress", "done", "failed")
-                if k.endswith("." + suffix + ".json")
-            }
-        )[:100]
+        try:
+            self.config(project)
+        except ValueError as exc:
+            return {**capability, "available": False, "reason": str(exc)}
         rows = []
-        for sample in samples:
-            values = await asyncio.to_thread(markers, bucket, sample)
-            current = values.get("in_progress", values.get("done", values.get("failed", {})))
-            rows.append(
-                {
-                    "sample": sample,
-                    "status": marker_state(values),
-                    "age_seconds": age(current.get("finished") or current.get("heartbeat")),
-                }
-            )
-        inventory = await asyncio.to_thread(read, bucket, "transfer_status/_inventory.json")
-        login = await self.login(project)
+        if owner:
+            self.authorize(project, owner)
+            index = await self.repo.get_connector_state(
+                "atomx-user-runs:" + atomx_connections.digest(owner)
+            ) or {"ids": []}
+            for pid in reversed(index["ids"][-100:]):
+                pending = await self.pending(pid)
+                if pending["project"] == project and pending["requested_by"] == owner:
+                    rows.append(
+                        {
+                            "sample": pending["request"]["as_sample"]
+                            or pending["request"]["sample"],
+                            "status": pending["state"],
+                            "pending_id": pid,
+                        }
+                    )
         return {
             **capability,
             "available": True,
-            "reason": "Confirmation required for every transfer.",
+            "reason": (
+                "Uses your personal connection and a destination from your request"
+                " or project guide. Preview and confirmation required."
+            ),
+            "connection": await self.connections.status(owner) if owner else {},
             "samples": rows,
-            "coverage": "at most 100 marker samples",
-            "inventory": {
-                "age_seconds": age(inventory.get("generated_at")),
-                "samples": inventory.get("samples", [])[:100],
-            }
-            if inventory
-            else None,
-            "login": {
-                k: login.get(k)
-                for k in ("username", "saved_by", "saved_at", "status", "last_used", "last_result")
-            },
+            "inventory": None,
         }
 
     async def command(
         self, cmd: Command, grant: Grant, record: dict[str, Any], event_id: str
     ) -> str:
-        from . import surface
 
-        if surface.is_email(record) and cmd.name != "transfers":
-            raise PermissionError(surface.EMAIL_READ_ONLY)
+        if cmd.name in {"connect atomx", "replace atomx login", "forget atomx login"}:
+            return await self.connection_link(grant.email, record, event_id)
+        if cmd.name == "atomx login status":
+            value = await self.connections.status(grant.email)
+            state = value.get("status") or "not connected"
+            return (
+                f"Your personal AtoMx connection: {state}. Ask to connect, replace "
+                f"or forget it using a private form."
+            )
         self.authorize(grant.project_id, grant.email)
         if cmd.name == "transfer":
             return await self.request(
@@ -839,31 +801,24 @@ class Transfers:
                     as_sample=cmd.args[2],
                 ),
             )
-        if cmd.name == "replace atomx login":
-            return await self.request(grant, record, event_id, None)
-        if cmd.name == "forget atomx login":
-            return await self.forget(grant.project_id, grant.email)
-        if cmd.name == "atomx login status":
-            login = await self.login(grant.project_id)
-            if not login:
-                return "No AtoMx login saved. Request a transfer to enter it through the form."
-            return (
-                f"AtoMx login `{escape(login['username'])}` · {login['status']}\n"
-                f"Saved by {escape(login['saved_by'])} on {login['saved_at']}. "
-                f"Last used: {login.get('last_used', 'never')}; "
-                f"result: {login.get('last_result', 'none')}."
-            )
         if cmd.name == "cancel transfer":
             slots = await self.repo.get_connector_state(f"transfer-slots:{grant.project_id}") or {
                 "ids": []
             }
-            for pid in slots["ids"]:
+            personal = await self.repo.get_connector_state(
+                "atomx-user-runs:" + atomx_connections.digest(grant.email)
+            ) or {"ids": []}
+            for pid in reversed(list(dict.fromkeys(slots["ids"] + personal["ids"]))):
                 p = await self.pending(pid)
-                if cmd.args[0] == (p["request"]["as_sample"] or p["request"]["sample"]):
+                if (
+                    p["project"] == grant.project_id
+                    and p["state"] not in TERMINAL
+                    and cmd.args[0] == (p["request"]["as_sample"] or p["request"]["sample"])
+                ):
                     await self.cancel(pid, grant.email)
                     return "Transfer cancellation requested."
             return "No running transfer found. Use Cancel on the sample's preview if still pending."
-        context = await self.context(grant.project_id)
+        context = await self.context(grant.project_id, grant.email)
         if not context["available"]:
             return str(context["reason"])
         rows = [f"• {escape(r['sample'])}: {r['status']}" for r in context.get("samples", [])]
@@ -885,11 +840,6 @@ async def scrub_password_paste(bridge: BatchBridge, payload: dict[str, Any]) -> 
     """Discard recognizable password pastes before receipts, request files, or model context."""
     event = payload["event"]
     if not re.search(r"(?i)\b(?:password|passwd|pwd)\s*[:=]", event.get("text", "")):
-        return payload
-    thread = event.get("thread_ts") or event["ts"]
-    key = f"atomx-login-prompt:{payload.get('team_id')}:{event['channel']}:{thread}"
-    prompt = await bridge.repository.get_connector_state(key)
-    if not prompt or prompt.get("expires", 0) < time.time():
         return payload
     return {
         **payload,

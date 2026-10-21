@@ -4,8 +4,13 @@ FROM ${BASE_IMAGE}
 USER root
 ARG INSTALL_BOT_DEPENDENCIES=0
 COPY deploy/requirements-bot.txt /tmp/mica-requirements-bot.txt
+COPY deploy/requirements-transfer.txt /tmp/mica-requirements-transfer.txt
 COPY deploy/requirements-email.txt /tmp/mica-requirements-email.txt
-RUN pip install --no-cache-dir --no-deps -r /tmp/mica-requirements-email.txt
+RUN pip install --no-cache-dir --no-deps -r /tmp/mica-requirements-email.txt -r /tmp/mica-requirements-transfer.txt
+RUN if [ "$INSTALL_BOT_DEPENDENCIES" = "1" ]; then \
+      apt-get update && apt-get install -y --no-install-recommends openssh-client sshpass && \
+      rm -rf /var/lib/apt/lists/*; \
+    fi
 RUN if [ "$INSTALL_BOT_DEPENDENCIES" = "1" ]; then \
       pip install --no-cache-dir --no-deps -r /tmp/mica-requirements-bot.txt; \
     fi && \
@@ -17,6 +22,7 @@ COPY src /app/src
 COPY src /opt/pistachio/src
 COPY tools /opt/pistachio/tools
 COPY templates /opt/pistachio/templates
+RUN pip install --no-cache-dir --no-deps /opt/pistachio/tools/atomx_transfer
 RUN for name in api analyze worker; do \
       ln -sf /usr/local/bin/pistachio-$name /usr/local/bin/mica-$name; \
     done

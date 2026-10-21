@@ -17,6 +17,29 @@
     "run_id"
   ],
   "properties": {
+    "provenance": {
+      "enum": ["transfer", "backfill"]
+    },
+    "source_checked": {
+      "type": "boolean"
+    },
+    "backfilled_at": {
+      "type": "string"
+    },
+    "scope_counts": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"enum": ["raw", "additional_files"]},
+      "additionalProperties": {
+        "type": "object",
+        "required": ["n_files", "total_bytes"],
+        "properties": {
+          "n_files": {"type": "integer", "minimum": 0},
+          "total_bytes": {"type": "integer", "minimum": 0}
+        },
+        "additionalProperties": false
+      }
+    },
     "version": {
       "const": 1
     },
@@ -102,6 +125,26 @@
       "type": "string"
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "required": ["provenance"],
+        "properties": {"provenance": {"const": "transfer"}}
+      },
+      "then": {"required": ["manifest"]}
+    },
+    {
+      "if": {
+        "required": ["provenance"],
+        "properties": {"provenance": {"const": "backfill"}}
+      },
+      "then": {
+        "required": ["backfilled_at", "scope_counts", "source_checked", "n_files", "total_bytes"],
+        "properties": {"source_checked": {"const": false}, "finished": {"type": "string"}},
+        "not": {"anyOf": [{"required": ["manifest"]}, {"required": ["plan_fingerprint"]}]}
+      }
+    }
+  ],
   "dependentRequired": {
     "manifest": [
       "n_files",

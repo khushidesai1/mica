@@ -330,8 +330,7 @@ class BatchBridge:
 
         if surface_name not in {"slack", "email"}:
             raise ValueError("Unknown intake surface")
-        if surface_name == "slack":
-            payload = await scrub_password_paste(self, payload)
+        payload = await scrub_password_paste(self, payload)
         event = payload["event"]
         thread = event.get("thread_ts") or event["ts"]
         thread_key = digest(f"{payload.get('team_id')}:{event['channel']}:{thread}")

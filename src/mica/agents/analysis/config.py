@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     storage: Literal["gcs", "local"] = "gcs"
     local_storage_root: Path = Path(".local-storage")
     transfers_enabled: bool = False
+    transfer_host: str = "na.export.atomx.nanostring.com"
+    transfer_port: int = Field(default=22, ge=1, le=65535)
+    transfer_host_key: str = ""
+    transfer_max_disk_gb: int = Field(default=2048, ge=50, le=10000)
     transfer_image: str = ""
     transfer_service_account: str = ""
     transfer_projects: dict[str, TransferProject] = Field(default_factory=dict)

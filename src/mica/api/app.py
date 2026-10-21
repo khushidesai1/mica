@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from mica.agents.context import ContextBuilder
 from mica.agents.harness import AgentHarness
 from mica.agents.memory import MemoryManager, ProjectCompactor
+from mica.api.atomx import router as atomx_router
 from mica.api.dependencies import Services
 from mica.api.errors import install_error_handlers
 from mica.api.routes import router as api_router
@@ -71,6 +72,12 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+        from mica.agents.analysis.atomx_connections import Connections
+        from mica.agents.analysis.config import Settings as AnalysisSettings
+
+        analysis = AnalysisSettings()
+        if analysis.transfers_enabled:
+            Connections(config, analysis, store).validate_runtime()
         await ensure_bootstrap_tools(store)
         yield
 
@@ -83,6 +90,7 @@ def create_app(
     )
     app.state.services = services
     app.include_router(api_router)
+    app.include_router(atomx_router)
     app.include_router(slack_router)
     app.include_router(slack_analysis_router)
     app.include_router(gmail_router)

@@ -313,13 +313,23 @@ async def test_terminal_stop_is_one_email_without_progress_spam(mail, phase):
     assert "The request stopped" in sent_messages(mail)[-1].get_content()
 
 
-async def test_transfers_refused_below_router(mail):
+async def test_personal_transfer_link_email_is_private_and_redacted(mail):
     from mica.agents.analysis.transfers import Transfers
 
     eid, record = await email_record(mail)
+    mail.app.signed_link_secret = "synthetic-email-connection-key-0123456789"
+    mail.app.control_plane_url = "https://mica.test"
+    mail.settings.transfers_enabled = True
     grant = access.resolve(mail.app, mail.settings, mail.store, record)
-    with pytest.raises(PermissionError, match="Slack"):
-        await Transfers(mail, mail.store).request(grant, record, eid, None)
+    reply = await Transfers(mail, mail.store).request(grant, record, eid, None)
+    assert "private link" in reply and "#" not in reply
+    messages = sent_messages(mail)
+    assert len(messages) == 1 and str(messages[0]["To"]) == SENDER
+    assert "/integrations/atomx#" in messages[0].get_content()
+    for key in mail.store.keys("projects/_gmail/outbox/"):
+        assert b"/integrations/atomx#" not in mail.store.get(key)[0]
+    await mail.notify(eid, record, "complete", "Ready for your next request")
+    assert len(sent_messages(mail)) == 2
 
 
 async def test_worker_callback_accepts_current_result_and_returns_saved_delivery(mail, monkeypatch):

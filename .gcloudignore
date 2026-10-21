@@ -10,6 +10,7 @@
 !scripts/check_worker_compatibility.py
 !scripts/check_headless_api.py
 !scripts/check_slack_release.py
+!scripts/check_atomx_release.py
 !scripts/check_compute_release.py
 !scripts/check_spatial_release.py
 !src/
@@ -21,5 +22,8 @@
 !deploy/
 !deploy/requirements-bot.txt
 !deploy/requirements-email.txt
+!deploy/requirements-transfer.txt
+!deploy/atomx/
+!deploy/atomx/**
 src/**/__pycache__/
 src/**/*.pyc

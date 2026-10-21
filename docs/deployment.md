@@ -206,3 +206,11 @@ Run `tools/memory_smoke.py --github-cli` with the deployed memory repository set
 and confirm cleanup of the exact `projects/_smoke/` folder. Never create a real project or send
 user-facing messages for this store check. After archives exist, retain archive-compatible API
 and workers when rolling back. See [project memory](project-memory.md) for limits and controls.
+
+## AtoMx personal connections
+
+The coordinated release now packages the AtoMx tool on the existing worker and adds private
+connection/approval links for Slack and email. Enable the runtime settings only after the
+normal release checks pass. See [AtoMx transfers](atomx-transfers.md) for the existing-key,
+trusted-host, writer-prefix and worker-identity requirements. The initial rollout skips a live
+SFTP canary by explicit owner request; the owner will start the real-data transfer.

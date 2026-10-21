@@ -81,12 +81,13 @@ New files need no extra confirmation. Confirm overwrites before each run; no sep
 You must belong to the project. Use approved folders in that project's linked bucket.
 Only designated write admins can grant or revoke. Grants apply to future runs.
 
-*AtoMx transfers — configured projects*
+*AtoMx transfers — personal connections*
 • `transfer <sample> [as <name>] [from <export_root>]` — Preview, then Confirm or Cancel.
 • `transfers` — Show markers and the last published source inventory.
 • `cancel transfer <sample>` — Stop an active transfer.
-• `atomx login status` — Show saved-login details (never the password).
-• `replace atomx login` / `forget atomx login` — Owner or login saver only.
+• `connect atomx` — Get a private link to enter your existing SFTP login.
+• `atomx login status` — Show your personal connection status.
+• `replace atomx login` / `forget atomx login` — Manage your connection through the private form.
 Enter credentials only through the login button's form, never in chat.
 
 *Help*

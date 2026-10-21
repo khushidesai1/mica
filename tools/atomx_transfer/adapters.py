@@ -9,14 +9,14 @@ import stat
 from collections.abc import Iterator
 from typing import Any
 
-from .core import Object
+from .core import Busy, Object
 
 
 class GCS:
-    def __init__(self, bucket: str) -> None:
+    def __init__(self, bucket: str, credentials=None) -> None:
         from google.cloud import storage
 
-        self.bucket = storage.Client().bucket(bucket)
+        self.bucket = storage.Client(credentials=credentials).bucket(bucket)
 
     def read(self, name: str) -> tuple[dict[str, Any], str] | None:
         from google.api_core.exceptions import NotFound
@@ -31,12 +31,17 @@ class GCS:
             return None
 
     def write(self, name: str, body: dict[str, Any], generation: str | None) -> str:
+        from google.api_core.exceptions import PreconditionFailed
+
         blob = self.bucket.blob(name)
-        blob.upload_from_string(
-            json.dumps(body),
-            content_type="application/json",
-            if_generation_match=int(generation) if generation else 0,
-        )
+        try:
+            blob.upload_from_string(
+                json.dumps(body),
+                content_type="application/json",
+                if_generation_match=int(generation) if generation else 0,
+            )
+        except PreconditionFailed:
+            raise Busy("Marker generation changed") from None
         return str(blob.generation)
 
     def delete(self, name: str, generation: str) -> None:
@@ -48,6 +53,13 @@ class GCS:
 
     def list(self, prefix: str) -> list[Object]:
         return [Object(b.name, b.size, b.crc32c) for b in self.bucket.list_blobs(prefix=prefix)]
+
+    def folders(self, prefix: str) -> list[str]:
+        listing = self.bucket.list_blobs(prefix=prefix, delimiter="/")
+        # Prefixes are populated lazily, including those on later pages.
+        for _ in listing:
+            pass
+        return sorted(listing.prefixes)
 
     def copy(self, name: str, chunks: Iterator[bytes]) -> None:
         with self.bucket.blob(name).open(
