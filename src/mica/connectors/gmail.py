@@ -191,6 +191,9 @@ async def gmail_push(
     services: Services = request.app.state.services
     if principal.id != services.settings.cloud_tasks_service_account.lower():
         raise HTTPException(403, "Untrusted Pub/Sub principal")
+    from mica.api.migration import admit
+
+    await admit(request)
     if not client.enabled(services.settings):
         return {"ok": True}
     try:

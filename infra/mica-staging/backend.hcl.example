@@ -1,0 +1,2 @@
+bucket = "REPLACE_WITH_VERIFIED_ADMIN_ONLY_STATE_BUCKET"
+prefix = "mica-staging/terraform"

@@ -455,6 +455,9 @@ async def slack_actions(request: Request) -> dict[str, object]:
     ):
         raise HTTPException(status_code=401, detail="invalid Slack signature")
     encoded_payload = parse_qs(body.decode()).get("payload", [""])[0]
+    from mica.api.migration import admit
+
+    await admit(request)
     try:
         payload = json.loads(encoded_payload)
     except json.JSONDecodeError as exc:
@@ -786,6 +789,15 @@ async def slack_events(request: Request) -> dict[str, object]:
     payload = json.loads(body)
     if payload.get("type") == "url_verification":
         return {"challenge": payload.get("challenge", "")}
+    from mica.api.migration import buffer_slack
+
+    if await buffer_slack(request, payload):
+        return {"ok": True, "maintenance": True}
+    return await dispatch_slack_event(services, payload)
+
+
+async def dispatch_slack_event(services: Services, payload: dict[str, Any]) -> dict[str, object]:
+    """Dispatch a verified live event or an authenticated durable migration receipt."""
     if services.settings.slack_agent_backend == "claude_batch":
         from mica.api.slack_analysis import receive
 

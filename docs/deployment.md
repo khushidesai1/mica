@@ -1,5 +1,11 @@
 # Deployment
 
+For the staged move from the existing deployment to `mica-staging`, follow the
+[resource migration runbook](mica-resource-migration.md). Its separate Terraform root creates
+the replacement stack without renaming resources in the existing state. Foundation and preview
+do not switch Slack or Gmail traffic; admission, storage verification and the coordinated
+cutover must complete before old resources can be retired.
+
 ## Build immutable images
 
 Resolve the Python base image tag to a digest, pass it through `PYTHON_IMAGE`, and publish both

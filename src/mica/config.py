@@ -94,6 +94,10 @@ class Settings(BaseSettings):
     cloud_tasks_queue: str = "mica-tasks"
     cloud_tasks_service_account: str = ""
     completion_topic: str = ""
+    # Set explicitly on each stack while migrating. A missing control record uses
+    # this default, allowing a new preview service to start safely frozen.
+    migration_service: str = Field(default="", pattern=r"^[a-zA-Z0-9_-]{0,63}$")
+    migration_default_mode: Literal["open", "draining", "frozen"] = "open"
 
     slack_bot_token: str = ""
     # Both Slack backends share the headless control plane.

@@ -18,6 +18,7 @@ from mica.agents.analysis.batch import BatchBridge
 from mica.agents.analysis.storage import GCSStorage
 from mica.agents.analysis.transfers import Transfers
 from mica.api.dependencies import Services
+from mica.api.migration import require
 
 router = APIRouter(prefix="/integrations/atomx", include_in_schema=False)
 COOKIE = "mica_atomx_session"
@@ -83,6 +84,8 @@ async def exchange(request: Request) -> Response:
     try:
         origin(request, connections.app.control_plane_url)
         value = await body(request, 512)
+        await connections.validate_link(str(value.get("token", "")))
+        await require(connections.app, connections.repo)
         token = await connections.exchange(str(value.get("token", "")))
         result = response({"status": "ready"})
         result.set_cookie(
@@ -151,6 +154,8 @@ async def action(request: Request) -> Response:
             request.headers.get("x-csrf-token", ""), connections.mac("csrf", token)
         ):
             raise ValueError("Invalid form session")
+        await connections.session(token)
+        await require(connections.app, connections.repo)
         key = "atomx-session:" + hashlib.sha256(token.encode()).hexdigest()
         async with connections.locked(key):
             value = await connections.session(token)
@@ -211,6 +216,7 @@ async def worker(request: Request, run: str) -> tuple[Transfers, dict[str, Any]]
             transfer.settings.transfer_service_account or transfer.app.batch_service_account
         ) or not claims.get("email_verified"):
             raise ValueError("Untrusted worker")
+        await require(transfer.app, transfer.bridge.repository, draining=True)
         pending = await atomx_worker.authorize(
             transfer, run, request.headers.get("x-mica-transfer-grant", "")
         )

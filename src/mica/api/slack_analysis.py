@@ -30,6 +30,7 @@ from mica.agents.analysis.data_links import message_text
 from mica.agents.analysis.storage import GCSStorage
 from mica.api.auth import get_principal
 from mica.api.dependencies import Services
+from mica.api.migration import admit
 
 router = APIRouter(prefix="/api/v1/internal/slack-analysis", tags=["internal"])
 log = logging.getLogger(__name__)
@@ -139,6 +140,7 @@ async def process(event_id: str, tick: int, request: Request) -> dict[str, str]:
     principal = await get_principal(request)
     if principal.id != services.settings.cloud_tasks_service_account.lower():
         raise HTTPException(403, "Untrusted task dispatcher")
+    await admit(request, draining=True)
     if not re.fullmatch(r"[a-f0-9]{32}", event_id) or tick < 0:
         raise HTTPException(400, "Invalid event")
     try:
@@ -160,6 +162,7 @@ async def process_memory(event_id: str, request: Request) -> dict[str, str]:
     principal = await get_principal(request)
     if principal.id != services.settings.cloud_tasks_service_account.lower():
         raise HTTPException(403, "Untrusted task dispatcher")
+    await admit(request, draining=True)
     if not re.fullmatch(r"[a-f0-9]{32}", event_id):
         raise HTTPException(400, "Invalid event")
     try:
@@ -185,6 +188,7 @@ async def compact_memory(project_id: str, head_oid: str, request: Request) -> di
     principal = await get_principal(request)
     if principal.id != services.settings.cloud_tasks_service_account.lower():
         raise HTTPException(403, "Untrusted task dispatcher")
+    await admit(request, draining=True)
     if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", project_id) or not re.fullmatch(
         r"[a-f0-9]{40}", head_oid
     ):
@@ -209,6 +213,7 @@ async def process_transfer(pending_id: str, tick: int, request: Request) -> dict
     principal = await get_principal(request)
     if principal.id != services.settings.cloud_tasks_service_account.lower():
         raise HTTPException(403, "Untrusted task dispatcher")
+    await admit(request, draining=True)
     if not re.fullmatch(r"[a-f0-9]{32}", pending_id) or tick < 0:
         raise HTTPException(400, "Invalid transfer request")
     bridge = BatchBridge(services.settings, services.repository)
@@ -252,6 +257,7 @@ async def worker_context(
         "email_verified"
     ):
         raise HTTPException(403, "Untrusted worker")
+    await admit(request, draining=True)
     record = await services.repository.get_connector_state(f"claude-event:{event_id}")
     if not record or record["status"] not in {"submitting", "running"}:
         raise HTTPException(403, "This worker grant is inactive")

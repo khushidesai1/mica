@@ -11,8 +11,9 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
-from mica.api.auth import Principal, get_principal
+from mica.api.auth import Principal
 from mica.api.dependencies import Services, get_services
+from mica.api.migration import api_principal, replay_slack
 from mica.connectors.github_catalog import GitHubCatalog
 from mica.connectors.gmail import renew_watch
 from mica.models import (
@@ -45,7 +46,7 @@ from mica.services.tasks import TaskInteractionConflict
 from mica.services.uploads import UploadRejected
 
 router = APIRouter(prefix="/api/v1")
-PrincipalDep = Annotated[Principal, Depends(get_principal)]
+PrincipalDep = Annotated[Principal, Depends(api_principal)]
 ServicesDep = Annotated[Services, Depends(get_services)]
 
 
@@ -535,3 +536,13 @@ async def tool_build_completion(
 @router.get("/healthz", include_in_schema=False)
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.post("/internal/maintenance/replay-slack/{identifier}", include_in_schema=False)
+async def replay_migration_slack(
+    identifier: str, request: Request, principal: PrincipalDep, services: ServicesDep
+) -> dict[str, str]:
+    # This operator route never inherits the local-development internal-auth exception.
+    if principal.id != services.settings.cloud_tasks_service_account.lower():
+        raise HTTPException(403, "Untrusted migration dispatcher")
+    return await replay_slack(request, identifier)

@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 
 from mica.agents.context import ContextBuilder
 from mica.agents.harness import AgentHarness
@@ -14,6 +14,7 @@ from mica.agents.memory import MemoryManager, ProjectCompactor
 from mica.api.atomx import router as atomx_router
 from mica.api.dependencies import Services
 from mica.api.errors import install_error_handlers
+from mica.api.migration import mode
 from mica.api.routes import router as api_router
 from mica.api.slack_analysis import router as slack_analysis_router
 from mica.config import Settings, get_settings
@@ -78,7 +79,12 @@ def create_app(
         analysis = AnalysisSettings()
         if analysis.transfers_enabled:
             Connections(config, analysis, store).validate_runtime()
-        await ensure_bootstrap_tools(store)
+        try:
+            writable = await mode(config, store) == "open"
+        except HTTPException:
+            writable = False
+        if writable:
+            await ensure_bootstrap_tools(store)
         yield
 
     app = FastAPI(
