@@ -358,10 +358,11 @@ async def test_long_direct_context_uses_single_email(mail):
     mail.test_slack.chat_postMessage.assert_not_awaited()
 
 
-async def test_worker_uses_semantic_callback_once_with_all_artifacts(bot):
+@pytest.mark.parametrize("notice_ts", [None, "email"])
+async def test_worker_uses_semantic_callback_once_with_all_artifacts(bot, notice_ts):
     bot.terminal_delivery = AsyncMock(return_value=("Final text", ["plot.png"]))
     bot.transport = EmailWorkerTransport()
-    await send(bot, event("make a plot", _notice_ts="email"))
+    await send(bot, event("make a plot", _notice_ts=notice_ts))
     assert bot.completed
     bot.terminal_delivery.assert_awaited_once()
     text, uploads, error = bot.terminal_delivery.call_args.args
