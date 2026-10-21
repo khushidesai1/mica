@@ -16,6 +16,18 @@ first/last occurrence, and event/incident IDs. They exclude request/response con
 filenames, credentials and private action links. Background work does not invent an originating user.
 A summary with several occurrences shows the latest requester, not everyone affected.
 
+Request processing saves the authorized working project before its first acknowledgement or command
+reply. Existing thread context takes precedence over a user's default for new threads. An authorized
+explicit command target (such as `use` or `owners`) replaces that diagnostic context; newly created or
+routed project context takes precedence for the resulting work. Account replies retain their private
+scope. Retries do not substitute a later default project, and missing or denied access never invents
+one. These diagnostic fields grant no access and are not consulted for routing.
+
+Slack responses, including command help and project lists, use bounded parts in the original thread.
+Each confirmed part is saved before continuing, so retries resume unfinished delivery without repeating
+confirmed parts. The full response is only marked delivered after every part succeeds; email continues
+to receive its single final response.
+
 The existing five-minute `reconcile-batch` schedule delivers at most five due incident messages per
 invocation, independently of the shared task reconciler. Expect up to five minutes of latency in normal
 operation; backlog, rate limiting or outages can add delay. Repeated occurrences update the same

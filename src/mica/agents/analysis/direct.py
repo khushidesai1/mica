@@ -19,6 +19,7 @@ from . import (
     access,
     attachments,
     commands,
+    observability,
     project_memory,
     surface,
     thread_history,
@@ -662,6 +663,8 @@ async def handle(
     event = record["payload"]["event"]
     text = message_text(event.get("text", ""))
     grant = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
+    if observability.capture_project(record, grant):
+        await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
     if not grant.email:
         return await finish(bridge, event_id, record, access.deny_text(grant))
     cmd = commands.parse(event.get("text", ""))

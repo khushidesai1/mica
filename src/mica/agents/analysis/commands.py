@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-from . import surface
+from . import observability, surface
 from .access import Grant
 from .config import Settings
 from .data_links import data_uri, init_args, message_text
@@ -288,6 +288,7 @@ def run(
             operation,
             lambda d: checked(d).set_data_uri(d.find(cmd.args[0], email), email, cmd.args[1]),
         )
+        observability.capture_project(record, grant, target=pid)
         current = registry.load().projects[pid]
         return (
             f"{current.name}'s default data location is {current.data_uri}. "
@@ -303,6 +304,8 @@ def run(
             operation,
             lambda d: checked(d).rename(d.find(cmd.args[0], email), email, cmd.args[1]),
         )
+        observability.capture_project(record, grant, target=record["renamed_project"])
+        record["failure_project_name"] = cmd.args[1]
         return (
             f"Project renamed to {cmd.args[1]}. "
             "Its data, sharing, channel links, and existing threads are unchanged."
@@ -313,6 +316,7 @@ def run(
         if not grant.private:
             raise ValueError("Choose an authorized project in your DM first.") from None
         raise
+    observability.capture_project(record, grant, target=pid)
     if cmd.name == "owners":
         entry = doc.projects[pid]
         return f"Owners of {entry.name}:\n" + "\n".join(
