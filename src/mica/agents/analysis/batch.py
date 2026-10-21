@@ -25,6 +25,7 @@ from mica.storage.base import Repository
 from . import (
     access,
     memory_tasks,
+    observability,
     project_memory,
     surface,
     thread_history,
@@ -223,6 +224,16 @@ class BatchBridge:
         from .email_delivery import deliver
         from .transport import SlackTransport
 
+        if phase == "failed" and not record.get("cancel_requested"):
+            cause = record.get("failure_cause")
+            if record.get("stop_reason") == "access_unverifiable":
+                cause = "access_unverifiable"
+            elif record.get("stop_reason") == "compute_time_allowance":
+                cause = "compute_deadline"
+            elif record.get("worker_stopped") and not record.get("stop_reason"):
+                cause = "compute_failed"
+            if cause in observability.CATALOG:
+                await observability.report(self, cause, event_id, record)
         if surface.is_email(record):
             terminal = phase in {"complete", "failed", "denied", "cancelled"}
             if terminal:
@@ -265,6 +276,7 @@ class BatchBridge:
             if record["status"] not in {"complete", "failed"}:
                 await self.repository.set_connector_state(f"claude-event:{event_id}", record)
         except Exception:
+            await observability.report(self, "slack_delivery_failed", event_id, record, unit=phase)
             log.warning("Slack status delivery failed for %s", event_id, exc_info=True)
 
     def resolve_data(
@@ -430,7 +442,7 @@ class BatchBridge:
                 except RoutingUnavailable:
                     record["routing_failures"] = int(record.get("routing_failures", 0)) + 1
                     if record["routing_failures"] >= 3:
-                        record["status"] = "failed"
+                        record.update(status="failed", failure_cause="routing_exhausted")
                         await self.notify(
                             event_id,
                             record,
@@ -527,6 +539,11 @@ class BatchBridge:
                     await self.notify_stop(event_id, record)
                 await self.repository.set_connector_state(key, record)
             raise
+        except GoogleAPICallError:
+            await observability.report(
+                self, "compute_control_failed", event_id, record or {}, unit=claim.token
+            )
+            raise
         finally:
             await self.repository.release_event(mutex, claim.token)
 
@@ -620,7 +637,7 @@ class BatchBridge:
                         "No need to resend your message.",
                     )
                 else:
-                    record["status"] = "failed"
+                    record.update(status="failed", failure_cause="routing_exhausted")
                     await self.notify(
                         event_id,
                         record,
@@ -630,7 +647,7 @@ class BatchBridge:
                     )
                 return
             except ValidationError:
-                record["status"] = "failed"
+                record.update(status="failed", failure_cause="conversation_failed")
                 log.warning("conversation_validation_failed event=%s", event_id)
                 await self.notify(
                     event_id,
@@ -642,6 +659,8 @@ class BatchBridge:
                 return
             except (ValueError, httpx.HTTPError, GoogleAPICallError) as exc:
                 record["status"] = "failed"
+                if not isinstance(exc, ValueError):
+                    record["failure_cause"] = "conversation_failed"
                 # Never fall back to a costly worker because conversation handling failed.
                 detail = (
                     str(exc).splitlines()[0][:250]
@@ -748,7 +767,7 @@ class BatchBridge:
                 return
             except GoogleAPICallError:
                 log.exception("Could not verify data bucket for %s", event_id)
-                record["status"] = "failed"
+                record.update(status="failed", failure_cause="bucket_unavailable")
                 await self.notify(
                     event_id,
                     record,

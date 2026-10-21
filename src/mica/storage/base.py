@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Any, Literal, Protocol
 
 from mica.models import MemoryItem, Project, ProjectSummary, TaskRecord, ToolRecord
+from mica.storage.failures import Incident, Observation
 
 
 def preserve_conversation(current: TaskRecord, incoming: TaskRecord) -> None:
@@ -77,3 +78,19 @@ class Repository(Protocol):
     async def get_channel_project(self, key: str) -> str | None: ...
     async def set_connector_state(self, key: str, value: dict[str, Any]) -> None: ...
     async def get_connector_state(self, key: str) -> dict[str, Any] | None: ...
+
+    async def record_failure(self, observation: Observation, now: float) -> Incident: ...
+    async def due_failures(self, now: float, limit: int = 20) -> list[Incident]: ...
+    async def claim_failure(self, key: str, channel: str, now: float) -> Incident | None: ...
+    async def finish_failure(
+        self,
+        key: str,
+        token: str,
+        now: float,
+        *,
+        slack_ts: str = "",
+        sent_count: int = 0,
+        retry_after: float = 0,
+        uncertain: bool = False,
+    ) -> None: ...
+    async def purge_failures(self, now: float, limit: int = 200) -> int: ...

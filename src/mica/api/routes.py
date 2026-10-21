@@ -384,14 +384,21 @@ async def compact_idle_projects(principal: PrincipalDep, services: ServicesDep) 
         principal.id != services.settings.cloud_tasks_service_account.lower()
     ):
         raise HTTPException(status_code=403, detail="untrusted scheduler")
-    return {"compacted_projects": await services.tasks.close_idle_projects()}
+    from mica.agents.analysis import observability
+
+    failures = await observability.maintenance(services.repository, services.settings, purge=True)
+    return {"compacted_projects": await services.tasks.close_idle_projects(), **failures}
 
 
 @router.post("/internal/maintenance/reconcile-batch", include_in_schema=False)
 async def reconcile_batch_jobs(principal: PrincipalDep, services: ServicesDep) -> dict[str, int]:
     _require_internal_principal(principal, services)
+    from mica.agents.analysis import observability
+
+    # The shared Batch reconciler may be disabled or fail; incident delivery still runs.
+    failures = await observability.maintenance(services.repository, services.settings)
     result = await services.tasks.reconcile_batch_jobs()
-    return result
+    return {**result, **failures}
 
 
 @router.post("/internal/batch/completion", include_in_schema=False)

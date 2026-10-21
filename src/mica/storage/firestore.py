@@ -16,7 +16,9 @@ from mica.models import (
     ToolProposal,
     ToolRecord,
 )
+from mica.storage import failures
 from mica.storage.base import EventClaim, preserve_conversation
+from mica.storage.failures import Incident, Observation
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -304,3 +306,124 @@ class FirestoreRepository:
     async def get_connector_state(self, key: str) -> dict[str, Any] | None:
         snapshot = await self.client.collection("connector_state").document(key).get()
         return snapshot.to_dict() if snapshot.exists else None
+
+    async def record_failure(self, observation: Observation, now: float) -> Incident:
+        from google.cloud import firestore
+
+        collection = self.client.collection("failures")
+        receipt = self.client.collection("failure_occurrences").document(observation.receipt)
+        group = self.client.collection("failure_groups").document(observation.fingerprint)
+        episode = secrets.token_hex(16)
+
+        @firestore.async_transactional
+        async def record(transaction):  # type: ignore[no-untyped-def]
+            seen = await receipt.get(transaction=transaction)
+            pointer = await group.get(transaction=transaction)
+            prior = seen.to_dict() or {}
+            if prior.get("expires_at", 0) > now:
+                saved = await collection.document(prior["incident"]).get(transaction=transaction)
+                if saved.exists:
+                    return Incident.model_validate(saved.to_dict())
+            data = pointer.to_dict() or {}
+            old = None
+            if data.get("incident"):
+                snapshot = await collection.document(data["incident"]).get(transaction=transaction)
+                if snapshot.exists:
+                    old = Incident.model_validate(snapshot.to_dict())
+            row = failures.observed(old, observation, now, episode)
+            transaction.set(collection.document(row.id), row.model_dump())
+            transaction.set(group, {"incident": row.id, "expires_at": row.expires_at})
+            transaction.set(receipt, {"incident": row.id, "expires_at": now + failures.RETENTION})
+            return row
+
+        return cast(Incident, await record(self.client.transaction()))
+
+    async def due_failures(self, now: float, limit: int = 20) -> list[Incident]:
+        from google.cloud.firestore_v1.base_query import FieldFilter
+
+        query = (
+            self.client.collection("failures")
+            .where(filter=FieldFilter("next_attempt", "<=", now))  # type: ignore[no-untyped-call]
+            .order_by("next_attempt")
+            .limit(limit)
+        )
+        return [Incident.model_validate(doc.to_dict()) async for doc in query.stream()]
+
+    async def claim_failure(self, key: str, channel: str, now: float) -> Incident | None:
+        from google.cloud import firestore
+
+        reference = self.client.collection("failures").document(key)
+        token = secrets.token_hex(16)
+
+        @firestore.async_transactional
+        async def claim(transaction):  # type: ignore[no-untyped-def]
+            snapshot = await reference.get(transaction=transaction)
+            if not snapshot.exists:
+                return None
+            row = failures.claimed(Incident.model_validate(snapshot.to_dict()), channel, token, now)
+            if row:
+                transaction.set(reference, row.model_dump())
+            return row
+
+        return cast(Incident | None, await claim(self.client.transaction()))
+
+    async def finish_failure(
+        self,
+        key: str,
+        token: str,
+        now: float,
+        *,
+        slack_ts: str = "",
+        sent_count: int = 0,
+        retry_after: float = 0,
+        uncertain: bool = False,
+    ) -> None:
+        from google.cloud import firestore
+
+        reference = self.client.collection("failures").document(key)
+
+        @firestore.async_transactional
+        async def finish(transaction):  # type: ignore[no-untyped-def]
+            snapshot = await reference.get(transaction=transaction)
+            if not snapshot.exists:
+                return
+            row = failures.finished(
+                Incident.model_validate(snapshot.to_dict()),
+                token,
+                now,
+                slack_ts=slack_ts,
+                sent_count=sent_count,
+                retry_after=retry_after,
+                uncertain=uncertain,
+            )
+            if row:
+                transaction.set(reference, row.model_dump())
+
+        await finish(self.client.transaction())
+
+    async def purge_failures(self, now: float, limit: int = 200) -> int:
+        from google.cloud import firestore
+        from google.cloud.firestore_v1.base_query import FieldFilter
+
+        @firestore.async_transactional
+        async def remove(transaction, reference):  # type: ignore[no-untyped-def]
+            snapshot = await reference.get(transaction=transaction)
+            data = snapshot.to_dict() or {}
+            if data and data["expires_at"] < now and data.get("lease_until", 0) < now:
+                transaction.delete(reference)
+                return 1
+            return 0
+
+        count = 0
+        for name in ("failures", "failure_groups", "failure_occurrences"):
+            if count >= limit:
+                break
+            query = (
+                self.client.collection(name)
+                .where(filter=FieldFilter("expires_at", "<", now))  # type: ignore[no-untyped-call]
+                .order_by("expires_at")
+                .limit(limit - count)
+            )
+            async for doc in query.stream():
+                count += await remove(self.client.transaction(), doc.reference)
+        return count

@@ -28,3 +28,11 @@ Artifact bucket lifecycle removes unpinned objects after 30 days. Pinning copies
 versioned pinned bucket. Budget alerts are warnings; configure an organization-level billing policy
 if a hard spend stop is required.
 
+
+## Operator failure summaries
+
+The [failure log](failure-log.md) stores fixed operational cause codes and bounded correlation metadata
+in Firestore, and renders summaries into a private operator Slack channel. Project names, IDs and the
+latest verified requester's email are intentional operator-visible metadata. Restrict channel membership
+accordingly. No message bodies, raw exceptions, model output, filenames, SFTP credentials or private
+connection/approval links are copied into incidents. Worker access and credentials are unchanged.

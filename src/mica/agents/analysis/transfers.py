@@ -22,6 +22,7 @@ from . import (
     atomx_connections,
     atomx_delivery,
     job_lifecycle,
+    observability,
     project_memory,
     transfer_destinations,
 )
@@ -515,6 +516,9 @@ class Transfers:
                     await self.release(p)
                     await self.transition(p, "failed")
                 await self.notify(p, escape(str(exc))[:2500])
+            except Exception:
+                await self.report_failure(p, "atomx_control_failed", unit=str(tick))
+                raise
             return str(p["state"])
 
     async def advance(self, p: dict[str, Any]) -> None:
@@ -697,7 +701,34 @@ class Transfers:
             await self.transition(p, "failed")
             await self.notify(p, "AtoMx job failed. Check its status markers before retrying.")
 
+    async def report_failure(
+        self, p: dict[str, Any], cause: observability.Cause, *, unit: str = ""
+    ) -> None:
+        # Only already-verified identity metadata enters the incident record.
+        await observability.report(
+            self.bridge,
+            cause,
+            p["id"],
+            {
+                "project_id": p["project"],
+                "principal": p["requested_by"],
+                "surface": p.get("surface", ""),
+            },
+            unit=unit or p.get("job_run", str(p.get("attempt", 0))),
+        )
+
     async def write_failure(self, p: dict[str, Any], error: str) -> None:
+        if error in {"auth_failed", "job_failed"}:
+            await self.report_failure(
+                p,
+                "atomx_auth_failed"
+                if error == "auth_failed"
+                else (
+                    "atomx_inventory_failed"
+                    if p.get("job_kind") == "inventory"
+                    else "atomx_pull_failed"
+                ),
+            )
         if p.get("job_kind") != "pull":
             return
         # Controller audit remains available even when revoked writer access prevents a

@@ -214,3 +214,11 @@ connection/approval links for Slack and email. Enable the runtime settings only 
 normal release checks pass. See [AtoMx transfers](atomx-transfers.md) for the existing-key,
 trusted-host, writer-prefix and worker-identity requirements. The initial rollout skips a live
 SFTP canary by explicit owner request; the owner will start the real-data transfer.
+
+## Failure channel
+
+Set `AGENT_FAILURE_CHANNEL` to the private operator channel ID after inviting Mica. This is an API-only
+change using `cloudbuild/build-slack-api.yaml`; preserve both worker image pins. The existing five-minute
+reconciliation endpoint delivers summaries; the daily maintenance endpoint expires old incident state.
+Verify those schedules remain enabled. See [failure-log.md](failure-log.md) for coverage, delivery
+recovery and retention. Empty channel configuration still records incidents in Firestore.
