@@ -7,7 +7,7 @@ import json
 from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import HTTPException, Response
@@ -178,6 +178,35 @@ async def test_transfer_email_sends_required_links_and_terminal_results_only(mai
     await transfers.notify(pending, "Transfer verified")
     assert len(sent_messages(mail)) == 4
     assert "Transfer verified" in sent_messages(mail)[-1].get_content()
+
+
+async def test_transfer_handoff_does_not_email_preparation_receipt(mail, monkeypatch):
+    from mica.agents.analysis.transfer_config import TransferRequest
+    from mica.agents.analysis.transfers import Transfers
+
+    eid, record = await email_record(mail)
+    record["payload"]["event"]["text"] = "Transfer sample to gs://lab-data/liver/raw/"
+    grant = access.resolve(mail.app, mail.settings, mail.store, record)
+    transfers = Transfers(mail, mail.store)
+    monkeypatch.setattr(transfers, "authorize", Mock())
+    monkeypatch.setattr(transfers, "login", AsyncMock(return_value={"status": "valid"}))
+    monkeypatch.setattr(transfers, "schedule", AsyncMock())
+    request = TransferRequest(sample="sample", destination="gs://lab-data/liver/raw/")
+    reply = await transfers.request(grant, record, eid, request)
+    assert "Preparing" in reply
+    assert await direct.finish(mail, eid, record, reply)
+    pending = await transfers.pending(eid)
+    assert pending["state"] == "prepare"
+    assert sent_messages(mail) == []
+    # A retry of the routing turn still hands delivery to the saved transfer controller.
+    record.pop("reply_handoff")
+    reply = await transfers.request(grant, record, eid, request)
+    assert await direct.finish(mail, eid, record, reply)
+    assert sent_messages(mail) == []
+    pending["state"] = "done"
+    await transfers.notify(pending, "Transfer verified")
+    assert len(sent_messages(mail)) == 1
+    assert "Transfer verified" in sent_messages(mail)[0].get_content()
 
 
 async def test_one_final_contains_answer_and_artifact_and_checks_ownership(mail):
@@ -428,8 +457,9 @@ async def test_personal_transfer_link_email_is_private_and_redacted(mail):
     assert "/integrations/atomx#" in messages[0].get_content()
     for key in mail.store.keys("projects/_gmail/outbox/"):
         assert b"/integrations/atomx#" not in mail.store.get(key)[0]
-    await mail.notify(eid, record, "complete", "Ready for your next request")
-    assert len(sent_messages(mail)) == 2
+    assert await direct.finish(mail, eid, record, reply)
+    assert record["status"] == "complete"
+    assert len(sent_messages(mail)) == 1
 
 
 async def test_worker_callback_accepts_current_result_and_returns_saved_delivery(mail, monkeypatch):
