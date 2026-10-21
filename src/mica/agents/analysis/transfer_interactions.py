@@ -20,8 +20,7 @@ def is_transfer(payload: dict[str, Any]) -> bool:
             prefix + "login_submit" for prefix in ACTION_PREFIXES
         }
     return any(
-        str(a.get("action_id", "")).startswith(ACTION_PREFIXES)
-        for a in payload.get("actions", [])
+        str(a.get("action_id", "")).startswith(ACTION_PREFIXES) for a in payload.get("actions", [])
     )
 
 
@@ -52,63 +51,15 @@ async def handle(service: Transfers, payload: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("This action belongs to a different channel.")
         service.authorize(p["project"], email, p)
         if modal:
-            values = payload["view"]["state"]["values"]
-            await service.save_login(
-                pid,
-                email,
-                values["username"]["value"]["value"],
-                values["password"]["value"]["value"],
-                str(payload["view"]["id"]),
-            )
+            # Retired forms never persist or use raw Slack password fields.
             return {"response_action": "clear"}
         if action == "login":
-            login = await service.login(p["project"])
-            if login:
-                service.can_manage(p["project"], email, login)
-            elif email != p["requested_by"]:
-                raise ValueError("Only the requester can enter the first login.")
-            if p["state"] != "login":
-                raise ValueError("This login request is no longer active.")
-            view = {
-                "type": "modal",
-                "callback_id": "mica_transfer_login_submit",
-                "title": {"type": "plain_text", "text": "Save AtoMx login"},
-                "submit": {"type": "plain_text", "text": "Save"},
-                "close": {"type": "plain_text", "text": "Cancel"},
-                "private_metadata": json.dumps({"project_id": p["project"], "pending_id": pid}),
-                "blocks": [
-                    {
-                        "type": "section",
-                        "text": {
-                            "type": "plain_text",
-                            "text": (
-                                "Saved for future transfers by project members. "
-                                "The login is not sent to the agent. Slack's input is not masked."
-                            ),
-                        },
-                    },
-                    *[
-                        {
-                            "type": "input",
-                            "block_id": name,
-                            "label": {"type": "plain_text", "text": label},
-                            "element": {
-                                "type": "plain_text_input",
-                                "action_id": "value",
-                                "max_length": maximum,
-                            },
-                        }
-                        for name, label, maximum in (
-                            ("username", "AtoMx username", 320),
-                            ("password", "AtoMx password", 3000),
-                        )
-                    ],
-                ],
-            }
-            await AsyncWebClient(token=service.app.slack_bot_token, timeout=5).views_open(
-                trigger_id=payload["trigger_id"],
-                view=view,
-            )
+            if email != p["requested_by"]:
+                raise ValueError("Only the requester can manage their personal connection.")
+            record = await service.repo.get_connector_state(f"claude-event:{pid}")
+            if not record:
+                raise ValueError("Conversation unavailable")
+            await service.connection_link(email, record, pid, pid)
         elif action == "confirm":
             if p["slack_user"] != user:
                 raise ValueError("Only the requesting Slack user can confirm.")

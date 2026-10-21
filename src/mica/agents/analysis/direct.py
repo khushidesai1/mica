@@ -90,7 +90,12 @@ replaced but its path is unclear. The application checks existing files and asks
 to approve replacements before starting a worker. Do not claim approval has been given.
 The supplied transfer_tool describes whether AtoMx/AtomX SFTP transfers are available.
 When unavailable, choose reply for transfer requests and explain the reported limitation.
-When available, choose transfer to propose an AtoMx sample transfer. Fill transfer_request with
+When available, choose transfer to propose an AtoMx sample transfer. Resolve the raw import
+base from explicit request gs:// paths first, otherwise a clear raw folder in PROJECT.md.
+If neither is unambiguous, ask for the destination. Never assume the analysis mount or processed
+folder is an import destination. Supply destination and additional_destination only from the
+request or project guide. Both Slack and email support private connection and approval links.
+Fill transfer_request with
 sample, optional export_root, and optional as_sample. The application presents the source and
 destinations for confirmation; never claim the transfer has started from a route decision.
 Choose reply for status questions using transfer_tool samples and inventory with their ages.
@@ -539,16 +544,17 @@ async def dispatch_command(
         "connect atomx",
     }:
         command_intent.private_reply(record, grant)
-    if cmd.name == "connect atomx" or (
-        cmd.name == "atomx login status" and surface.is_email(record)
-    ):
-        return await finish(
-            bridge,
-            event_id,
-            record,
-            "Secure AtoMx connection entry is not available in this release. "
-            "Please don't send credentials in Slack or email.",
-        )
+    if cmd.name in {
+        "connect atomx",
+        "atomx login status",
+        "replace atomx login",
+        "forget atomx login",
+    }:
+        if not grant.email:
+            return await finish(bridge, event_id, record, access.deny_text(grant))
+        command_intent.private_reply(record, grant)
+        connection_reply = await Transfers(bridge, storage).command(cmd, grant, record, event_id)
+        return await finish(bridge, event_id, record, connection_reply)
     if cmd.name == "cancel":
         if not (grant.private or grant.allowed):
             return await finish(bridge, event_id, record, access.deny_text(grant))
@@ -818,8 +824,8 @@ async def handle(
             bridge,
             event_id,
             record,
-            "Please use the AtoMx login button instead, and consider changing that password. "
-            "The original message is still in Slack.",
+            "Please use the private AtoMx connection link and consider changing that password. "
+            "Your original message still exists in Slack or your mailbox.",
         )
     state = access.read_state(storage, grant)
     ctx = state.get("context")
@@ -920,11 +926,7 @@ async def handle(
             "data_path": ctx["data_path"],
             "data_uri": grant.project.data_uri,
             "project_name": grant.project.name,
-            "transfer_tool": (
-                {"available": False, "reason": surface.EMAIL_READ_ONLY}
-                if surface.is_email(record)
-                else await transfer_service.context(grant.project_id)
-            ),
+            "transfer_tool": await transfer_service.context(grant.project_id, grant.email),
             "analysis_tools": [spatial_analysis_capability()],
             "write_access": (
                 surface.EMAIL_READ_ONLY
@@ -1062,7 +1064,7 @@ async def handle(
         record["direct_decision_pending"] = False
         record["decision_access"] = grant.signature
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
-    if surface.is_email(record) and (decision.route == "transfer" or decision.write_paths):
+    if surface.is_email(record) and decision.write_paths:
         return await finish(bridge, event_id, record, surface.EMAIL_READ_ONLY)
     current = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
     # Init's binding may have moved in another thread, but this turn is fixed to its created ID.

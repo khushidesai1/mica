@@ -13,10 +13,10 @@ from .core import Busy, Object
 
 
 class GCS:
-    def __init__(self, bucket: str) -> None:
+    def __init__(self, bucket: str, credentials=None) -> None:
         from google.cloud import storage
 
-        self.bucket = storage.Client().bucket(bucket)
+        self.bucket = storage.Client(credentials=credentials).bucket(bucket)
 
     def read(self, name: str) -> tuple[dict[str, Any], str] | None:
         from google.api_core.exceptions import NotFound

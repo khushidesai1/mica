@@ -70,9 +70,10 @@ ID, recipient/channel, scope, duration, and current project settings. They expir
 minutes. Duplicate clicks use existing durable operation receipts, and interrupted memory
 synchronization or notification can resume without repeating the change.
 
-AtoMx secure connection entry and transfers remain a separate capability. This release does
-not enable them or deploy a transfer worker. Mica gives an availability explanation rather than
-promising a connection link. Never send credentials in Slack or email.
+AtoMx personal connections and transfers use the same requests in Slack and email. Ask to
+connect, replace or forget your AtoMx login to receive a private form link; never send credentials
+in chat or email. Named sample transfers use a worker tool and require a source/destination
+preview and explicit confirmation. See [AtoMx transfers](atomx-transfers.md).
 
 Email replies retain the saved conversation's worker session key across messages. Signatures
 and quoted reply history are removed during email intake; the resulting original request text

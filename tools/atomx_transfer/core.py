@@ -128,6 +128,11 @@ def render_marker(body: dict[str, Any], scope: str, counts: dict[str, Any]) -> s
         "requested_by": body["requested_by"],
         "record": f"transfer_status/{body['sample']}.done.json",
     }
+    destinations = body.get("destinations")
+    if destinations:
+        fields["record"] = (
+            f"gs://{destinations['bucket']}/{destinations['status_prefix']}{body['sample']}.done.json"
+        )
     prose = "Both sample scopes were compared with the source by size and crc32c at completion."
     if backfilled:
         fields.update(source_checked="no", backfilled_at=body["backfilled_at"])
@@ -300,6 +305,7 @@ class Transfer:
         self.last_beat = 0.0
         self.marker: dict[str, Any] = {
             "version": 1,
+            "destinations": request.get("destinations", {}),
             "sample": self.sample,
             "remote_sample": request["sample"],
             "export_root": request["export_root"],
@@ -353,6 +359,10 @@ class Transfer:
             if self.request.get("plan_fingerprint") != fingerprint(run, files):
                 raise ValueError("Source changed since confirmation; request a new preview")
             self.beat(force=True)
+            stage = getattr(self.remote, "stage", None)
+            if stage is not None:
+                step = "download"
+                stage(files, self.beat)
             step = "copy"
             manifest = []
             for file in files:
@@ -438,6 +448,8 @@ def inventory(remote: Remote, bucket: Bucket, request: dict[str, Any]) -> dict[s
         except FileNotFoundError:
             continue
         for sample in samples:
+            if request.get("sample") and sample != request["sample"]:
+                continue
             sample_name(sample)
             target = (
                 (request.get("as_sample") or sample) if sample == request.get("sample") else sample

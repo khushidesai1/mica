@@ -64,7 +64,9 @@ into a project switch. Stop/cancel this analysis means cancel; cancelled histori
 not a new cancellation. Brief/project guide and saved project memory can use brief/memory.
 Scripts on/off only controls returning generated code, never running a script.
 Transfers/status and my AtoMx connection status are read operations. Connecting AtoMx means
-connect atomx. Never ask for or return passwords, usernames, connection URLs or secret values.
+connect atomx. Requests to replace or forget a personal AtoMx connection also choose
+connect atomx, which opens the private management form. Never ask for or return passwords,
+usernames, connection URLs or secret values.
 For administrative changes choose the corresponding operation; code will require approval.
 Making someone an owner/co-owner means add-owner, never share. Removing only their owner
 role means remove-owner and retains collaboration access. Listing owners means owners.

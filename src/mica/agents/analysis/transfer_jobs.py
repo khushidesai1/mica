@@ -2,13 +2,9 @@
 
 from __future__ import annotations
 
-import base64
-import json
+import math
 import re
-from typing import Any
 
-from google.auth import default
-from google.auth.transport.requests import AuthorizedSession
 from google.cloud import batch_v1
 
 from mica.config import Settings as AppSettings
@@ -16,46 +12,26 @@ from mica.config import Settings as AppSettings
 from .config import Settings
 
 
-class LoginSecrets:
-    """Write-only to this process. Error messages never include provider response bodies."""
-
-    def call(self, resource: str, method: str, body: dict[str, Any]) -> dict[str, Any]:
-        try:
-            credentials, _ = default(scopes=["https://www.googleapis.com/auth/cloud-platform"])  # type: ignore[no-untyped-call]
-            with AuthorizedSession(credentials) as session:  # type: ignore[no-untyped-call]
-                response = session.post(
-                    f"https://secretmanager.googleapis.com/v1/{resource}:{method}",
-                    json=body,
-                    timeout=10,
-                )
-                if response.status_code != 200:
-                    raise ValueError("Secret operation failed")
-                return dict(response.json())
-        except Exception:
-            raise ValueError(
-                "Could not save or disable the AtoMx login. Please retry the form."
-            ) from None
-
-    def add(self, secret: str, username: str, password: str) -> str:
-        body = base64.b64encode(json.dumps({"username": username, "password": password}).encode())
-        result = self.call(secret, "addVersion", {"payload": {"data": body.decode()}})
-        version = str(result["name"])
-        if not re.fullmatch(re.escape(secret) + r"/versions/[0-9]+", version):
-            raise ValueError("Secret Manager returned an invalid version")
-        return version
-
-    def disable(self, version: str) -> None:
-        self.call(version, "disable", {})
-
-
-def job_spec(app: AppSettings, settings: Settings, run_id: str, kind: str) -> batch_v1.Job:
-    if not re.fullmatch(r"[^\s]+@sha256:[a-f0-9]{64}", settings.transfer_image):
+def job_spec(
+    app: AppSettings,
+    settings: Settings,
+    run_id: str,
+    kind: str,
+    *,
+    grant_token: str = "",
+    source_bytes: int = 0,
+) -> batch_v1.Job:
+    image = settings.transfer_image or app.slack_agent_image
+    account = settings.transfer_service_account or app.batch_service_account
+    if not re.fullmatch(r"[^\s]+@sha256:[a-f0-9]{64}", image):
         raise ValueError("Configure a digest-pinned transfer image")
-    if (
-        not settings.transfer_service_account
-        or settings.transfer_service_account == app.batch_service_account
-    ):
-        raise ValueError("Configure a dedicated transfer service account")
+    if not account:
+        raise ValueError("Configure a worker service account")
+    disk = max(50, math.ceil(source_bytes * 1.15 / 1_000_000_000) + 40)
+    if disk > settings.transfer_max_disk_gb:
+        raise ValueError(
+            "This transfer exceeds the configured worker disk limit; split the request."
+        )
     if not re.fullmatch(r"[a-f0-9]{32}", run_id) or kind not in {"inventory", "pull"}:
         raise ValueError("Invalid transfer job")
     network, subnet = app.batch_network, app.batch_subnetwork
@@ -71,13 +47,22 @@ def job_spec(app: AppSettings, settings: Settings, run_id: str, kind: str) -> ba
                     runnables=[
                         batch_v1.Runnable(
                             container=batch_v1.Runnable.Container(
-                                image_uri=settings.transfer_image,
+                                image_uri=image,
+                                entrypoint="python",
                                 commands=[
+                                    "-m",
+                                    "atomx_transfer.cli",
                                     "job",
                                     "--request",
                                     f"gs://{app.gcs_bucket}/tasks/transfers/{run_id}/{kind}-request.json",
                                 ],
-                            )
+                            ),
+                            environment=batch_v1.Environment(
+                                variables={
+                                    "MICA_ATOMX_GRANT": grant_token,
+                                    "MICA_ATOMX_CONTROL_URL": app.control_plane_url,
+                                }
+                            ),
                         )
                     ],
                     max_retry_count=0,
@@ -92,11 +77,11 @@ def job_spec(app: AppSettings, settings: Settings, run_id: str, kind: str) -> ba
                     policy=batch_v1.AllocationPolicy.InstancePolicy(
                         machine_type="n2-standard-4",
                         provisioning_model=batch_v1.AllocationPolicy.ProvisioningModel.STANDARD,
-                        boot_disk=batch_v1.AllocationPolicy.Disk(type_="pd-balanced", size_gb=50),
+                        boot_disk=batch_v1.AllocationPolicy.Disk(type_="pd-balanced", size_gb=disk),
                     )
                 )
             ],
-            service_account=batch_v1.ServiceAccount(email=settings.transfer_service_account),
+            service_account=batch_v1.ServiceAccount(email=account),
             network=batch_v1.AllocationPolicy.NetworkPolicy(
                 network_interfaces=[
                     batch_v1.AllocationPolicy.NetworkInterface(

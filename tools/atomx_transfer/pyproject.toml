@@ -22,4 +22,4 @@ packages = ["atomx_transfer"]
 package-dir = {atomx_transfer = "."}
 
 [tool.setuptools.package-data]
-atomx_transfer = ["schema/*.json"]
+atomx_transfer = ["schema/*.json", "scripts/*.sh"]
