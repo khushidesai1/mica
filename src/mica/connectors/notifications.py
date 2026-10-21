@@ -226,7 +226,8 @@ class ChannelNotifier:
         )
         delivered = state.get("delivered_ids", [])
         pending = [item for item in task.conversation
-                   if item.role == "assistant" and item.id not in delivered]
+                   if item.role == "assistant" and item.id not in delivered
+                   and item.kind in {"result", "failure", "cancelled", "input", "approval"}]
         if not pending:
             return
         message.set_content("\n\n".join(item.text for item in pending))

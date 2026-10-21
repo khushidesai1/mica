@@ -238,10 +238,12 @@ class BatchBridge:
             terminal = phase in {"complete", "failed", "denied", "cancelled"}
             if terminal:
                 record["terminal_reply"] = text
-            if terminal or phase == "received":
-                handle = await deliver(
-                    self, event_id, record, text, kind="final" if terminal else "ack"
-                )
+                if phase == "complete" and record.get("reply_handoff") == "atomx":
+                    # The transfer controller sends action links and its actual outcome.
+                    # Finishing this routing turn is not the completion of the transfer.
+                    record.update(notice_phase=phase, notice_text=text)
+                    return
+                handle = await deliver(self, event_id, record, text, kind="final")
                 record.update(notice_ts=handle, notice_phase=phase, notice_text=text)
             return
 
