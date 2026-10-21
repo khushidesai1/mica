@@ -173,7 +173,14 @@ class Connections:
         identifier = self.mac("link-id", json.dumps([owner, purpose, event, pending, revision]))
         key = "atomx-link:" + identifier
         async with self.locked(key):
-            link = await self.repo.get_connector_state(key)
+            original = await self.repo.get_connector_state(key)
+            link = original
+            if original and original.get("replacement"):
+                identifier = original["replacement"]
+                link = await self.repo.get_connector_state("atomx-link:" + identifier)
+            if link and not link.get("used") and time.time() >= link["expires"]:
+                # A delayed delivery needs a fresh link, never a renewed old bearer token.
+                identifier, link = secrets.token_hex(32), None
             if not link:
                 token = self.mac("links", identifier)
                 link = {
@@ -186,7 +193,11 @@ class Connections:
                     "key_version": self.key_version(),
                     "used": False,
                 }
-                await self.repo.set_connector_state(key, link)
+                await self.repo.set_connector_state("atomx-link:" + identifier, link)
+                if "atomx-link:" + identifier != key:
+                    await self.repo.set_connector_state(
+                        key, {**(original or {}), "replacement": identifier}
+                    )
         # Reconstruct an identical private delivery on retry without storing its bearer token.
         return (
             self.app.control_plane_url.rstrip("/")

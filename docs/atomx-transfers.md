@@ -77,3 +77,10 @@ a stale `.in_progress.json` marker until the next authorized transfer checks its
 The initial rollout deliberately omits a live SFTP canary at the owner's request. Users will
 enter credentials and confirm real-data transfers themselves; offline checks do not establish
 provider connectivity or effective write access to an arbitrary project bucket.
+
+Private Slack links reuse the requester's existing one-to-one DM. Connecting from that DM requires
+Mica's existing posting permission; it does not require permission to open another DM. Requests from
+shared conversations can only send a link through a separate one-to-one DM. If Slack permanently
+refuses that delivery, Mica gives a safe instruction to continue in its DM instead of retrying forever.
+A delivery delayed past the link lifetime receives a fresh, unused link; the expired bearer stays
+invalid. Already-consumed links are never revived or silently reissued by the same request.
