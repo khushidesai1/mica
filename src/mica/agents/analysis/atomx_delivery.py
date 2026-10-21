@@ -54,7 +54,13 @@ async def deliver(
                 unfurl_media=False,
             )
         await bridge.repository.complete_event(receipt, claim.token)
-    except Exception:
+    except Exception as exc:
+        if not surface.is_email(record) and not isinstance(exc, PermissionError):
+            from . import observability
+
+            await observability.report(
+                bridge, "atomx_delivery_failed", event_id, record, unit=stage
+            )
         await bridge.repository.release_event(receipt, claim.token)
         # No provider exceptions or link text in request error logs.
         raise RuntimeError("Private AtoMx delivery needs retry.") from None

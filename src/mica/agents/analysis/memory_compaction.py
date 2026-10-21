@@ -395,6 +395,18 @@ async def process(bridge: BatchBridge, pid: str, head: str, storage: Storage) ->
             outcome = "retry:transport"
             raise
     finally:
+        if outcome.startswith(("failed:", "retry:", "exhausted:")):
+            from . import observability
+
+            await observability.report(
+                bridge,
+                "memory_compaction_exhausted"
+                if outcome.startswith("exhausted:")
+                else "memory_compaction_retry",
+                head,
+                {"project_id": pid},
+                unit=cache_key if outcome.startswith("exhausted:") and cache_key else claim.token,
+            )
         try:
             if cache_key and cached:
                 await asyncio.to_thread(storage.put, cache_key, json.dumps(cached).encode())

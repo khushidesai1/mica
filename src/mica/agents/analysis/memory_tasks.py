@@ -128,6 +128,7 @@ async def process(bridge: BatchBridge, event_id: str, storage: Storage) -> None:
     if claim.status != "claimed":
         raise RuntimeError("Memory editor busy; retry")
     outcome = "failed:CancelledError"
+    record: dict[str, Any] | None = None
     try:
         async with asyncio.timeout(150):
             record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
@@ -242,6 +243,12 @@ async def process(bridge: BatchBridge, event_id: str, storage: Storage) -> None:
         outcome = f"failed:{type(exc).__name__}"
         raise
     finally:
+        if outcome.startswith("failed:"):
+            from . import observability
+
+            await observability.report(
+                bridge, "memory_editor_failed", event_id, record or {}, unit=claim.token
+            )
         project_memory.log_event(
             logging.WARNING if outcome.startswith("failed:") else logging.INFO,
             "memory_editor event=%s outcome=%s",

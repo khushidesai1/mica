@@ -25,6 +25,7 @@ class Settings(BaseSettings):
     slack_app_token: SecretStr = Field(default=SecretStr(""), alias="SLACK_APP_TOKEN")
     model: str = "claude-opus-5-5"
     loading_emoji: str = ":hourglass_flowing_sand:"  # AGENT_LOADING_EMOJI; custom emoji supported.
+    failure_channel: str = Field(default="", pattern=r"^(?:[CG][A-Z0-9]+)?$")
     memory_repo: str = ""
     memory_branch: str = "main"
     memory_token_secret: str = ""  # Control-plane-only Secret Manager version.

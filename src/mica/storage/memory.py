@@ -9,7 +9,9 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from mica.models import MemoryItem, Project, ProjectSummary, TaskRecord, ToolRecord
+from mica.storage import failures
 from mica.storage.base import EventClaim, preserve_conversation
+from mica.storage.failures import Incident, Observation
 
 
 class InMemoryRepository:
@@ -24,6 +26,9 @@ class InMemoryRepository:
         self.event_claims: dict[str, tuple[str, datetime]] = {}
         self.channel_projects: dict[str, tuple[str, datetime | None]] = {}
         self.connector_state: dict[str, dict[str, Any]] = {}
+        self.failures: dict[str, Incident] = {}
+        self.failure_groups: dict[str, tuple[str, float]] = {}
+        self.failure_receipts: dict[str, tuple[str, float]] = {}
         self._lock = asyncio.Lock()
 
     async def create_project(self, project: Project) -> Project:
@@ -219,3 +224,75 @@ class InMemoryRepository:
     async def get_connector_state(self, key: str) -> dict[str, Any] | None:
         value = self.connector_state.get(key)
         return deepcopy(value) if value else None
+
+    async def record_failure(self, observation: Observation, now: float) -> Incident:
+        async with self._lock:
+            receipt = self.failure_receipts.get(observation.receipt)
+            if receipt and receipt[1] > now and receipt[0] in self.failures:
+                return self.failures[receipt[0]].model_copy(deep=True)
+            group = self.failure_groups.get(observation.fingerprint)
+            old = self.failures.get(group[0]) if group else None
+            row = failures.observed(old, observation, now, secrets.token_hex(16))
+            self.failures[row.id] = row
+            self.failure_groups[observation.fingerprint] = (row.id, row.expires_at)
+            self.failure_receipts[observation.receipt] = (row.id, now + failures.RETENTION)
+            return row.model_copy(deep=True)
+
+    async def due_failures(self, now: float, limit: int = 20) -> list[Incident]:
+        async with self._lock:
+            return [
+                r.model_copy(deep=True)
+                for r in sorted(self.failures.values(), key=lambda r: r.next_attempt)
+                if r.next_attempt <= now
+            ][:limit]
+
+    async def claim_failure(self, key: str, channel: str, now: float) -> Incident | None:
+        async with self._lock:
+            row = self.failures.get(key)
+            update = failures.claimed(row, channel, secrets.token_hex(16), now) if row else None
+            if update:
+                self.failures[key] = update
+            return update.model_copy(deep=True) if update else None
+
+    async def finish_failure(
+        self,
+        key: str,
+        token: str,
+        now: float,
+        *,
+        slack_ts: str = "",
+        sent_count: int = 0,
+        retry_after: float = 0,
+        uncertain: bool = False,
+    ) -> None:
+        async with self._lock:
+            row = self.failures.get(key)
+            update = (
+                failures.finished(
+                    row,
+                    token,
+                    now,
+                    slack_ts=slack_ts,
+                    sent_count=sent_count,
+                    retry_after=retry_after,
+                    uncertain=uncertain,
+                )
+                if row
+                else None
+            )
+            if update:
+                self.failures[key] = update
+
+    async def purge_failures(self, now: float, limit: int = 200) -> int:
+        async with self._lock:
+            count = 0
+            for key, row in list(self.failures.items()):
+                if row.expires_at < now and row.lease_until < now and count < limit:
+                    del self.failures[key]
+                    count += 1
+            for store in (self.failure_groups, self.failure_receipts):
+                for key, value in list(store.items()):
+                    if value[1] < now and count < limit:
+                        del store[key]
+                        count += 1
+            return count

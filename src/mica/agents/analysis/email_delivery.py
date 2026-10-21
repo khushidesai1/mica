@@ -123,7 +123,7 @@ def sent_match(api: Any, saved: dict[str, Any], thread_id: str) -> str | None:
     return str(matches[0]) if len(matches) == 1 else None
 
 
-async def deliver(
+async def _deliver(
     bridge: BatchBridge,
     event_id: str,
     record: dict[str, Any],
@@ -157,7 +157,7 @@ async def deliver(
             saved.update(status="sent", gmail_id=matched)
             await asyncio.to_thread(storage.put_if, key, json.dumps(saved).encode(), generation)
             return matched
-        raise RuntimeError(f"Email {kind} send is unconfirmed; reconcile outbox {event_id}")
+        raise UnconfirmedDelivery(f"Email {kind} send is unconfirmed; reconcile outbox {event_id}")
 
     grant = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
     sender = record.get("intake_principal", "")
@@ -305,3 +305,35 @@ async def deliver(
     saved.update(status="sent", gmail_id=response["id"])
     await asyncio.to_thread(storage.put_if, key, json.dumps(saved).encode(), generation)
     return str(response["id"])
+
+
+class UnconfirmedDelivery(RuntimeError):
+    """The provider may have accepted the send; inspect the existing outbox."""
+
+
+async def deliver(
+    bridge: BatchBridge,
+    event_id: str,
+    record: dict[str, Any],
+    text: str,
+    *,
+    kind: str,
+    result: TerminalResult | None = None,
+) -> str:
+    from . import observability
+
+    try:
+        return await _deliver(bridge, event_id, record, text, kind=kind, result=result)
+    except PermissionError:
+        raise  # Expected revocation is not an operational incident.
+    except Exception as exc:
+        await observability.report(
+            bridge,
+            "email_delivery_unconfirmed"
+            if isinstance(exc, UnconfirmedDelivery)
+            else "email_delivery_failed",
+            event_id,
+            record,
+            unit=kind,
+        )
+        raise
