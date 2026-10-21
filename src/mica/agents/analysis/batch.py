@@ -38,7 +38,7 @@ from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .data_links import init_args
 from .identity import IdentityUnavailable
-from .slack_format import status_blocks
+from .slack_format import chunks, status_blocks
 from .storage import GCSStorage, Storage
 from .tiers import Provisioning
 
@@ -258,24 +258,43 @@ class BatchBridge:
             if phase in STATUS_PHASES
             else {}
         )
+        # Use the same bounded messages as guide display for every response, including
+        # built-in commands. Save each confirmed part so a retry resumes the delivery.
+        parts = list(chunks(text)) or [""]
+        delivery_id = digest(f"{phase}:{text}")
+        progress = record.get("notice_chunks", {})
+        sent = int(progress.get("sent", 0)) if progress.get("id") == delivery_id else 0
         try:
-            if record.get("notice_ts"):
-                await client.update(
-                    channel=event["channel"], ts=record["notice_ts"], text=text, **status
-                )
-            else:
-                response = await client.post(
-                    channel=event["channel"],
-                    thread_ts=event.get("thread_ts") or event["ts"],
-                    text=text,
-                    unfurl_links=False,
-                    unfurl_media=False,
-                    client_msg_id=str(uuid5(NAMESPACE_URL, f"pistachio-receipt:{event_id}")),
-                    **status,
-                )
-                record["notice_ts"] = response["ts"]
+            for index, part in enumerate(parts):
+                if index < sent:
+                    continue
+                if index == 0 and record.get("notice_ts"):
+                    await client.update(
+                        channel=event["channel"], ts=record["notice_ts"], text=part, **status
+                    )
+                else:
+                    message_id = (
+                        f"pistachio-receipt:{event_id}"
+                        if index == 0
+                        else f"mica-reply:{event_id}:{delivery_id}:{index}"
+                    )
+                    response = await client.post(
+                        channel=event["channel"],
+                        thread_ts=event.get("thread_ts") or event["ts"],
+                        text=part,
+                        unfurl_links=False,
+                        unfurl_media=False,
+                        client_msg_id=str(uuid5(NAMESPACE_URL, message_id)),
+                        **status,
+                    )
+                    if index == 0:
+                        record["notice_ts"] = response["ts"]
+                if len(parts) > 1:
+                    record["notice_chunks"] = {"id": delivery_id, "sent": index + 1}
+                    await self.repository.set_connector_state(f"claude-event:{event_id}", record)
             record.update(notice_phase=phase, notice_text=text)
-            if record["status"] not in {"complete", "failed"}:
+            record.pop("notice_chunks", None)
+            if record.get("status") not in {"complete", "failed"}:
                 await self.repository.set_connector_state(f"claude-event:{event_id}", record)
         except Exception:
             await observability.report(self, "slack_delivery_failed", event_id, record, unit=phase)
@@ -416,6 +435,12 @@ class BatchBridge:
                 await memory_tasks.enqueue(self, event_id, record)
 
                 return str(record["status"])
+            if not record.get("failure_project_id") and not record.get("project_id"):
+                grant = await asyncio.to_thread(
+                    access.resolve, self.app, self.settings, self.storage, record
+                )
+                if observability.capture_project(record, grant):
+                    await self.repository.set_connector_state(key, record)
             if not record.get("notice_ts"):
                 await self.notify(event_id, record, "received", "On it…")
             from . import command_intent, commands
@@ -497,6 +522,7 @@ class BatchBridge:
                     GCSStorage(self.app.gcs_bucket),
                     record,
                 )
+                observability.capture_project(record, grant)
                 if grant.email and (grant.private or grant.allowed):
                     await self.cancel(event_id, record)
                 else:

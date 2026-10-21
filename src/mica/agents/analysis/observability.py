@@ -19,6 +19,7 @@ from .config import Settings
 from .project_memory import SECRET
 
 if TYPE_CHECKING:
+    from .access import Grant
     from .batch import BatchBridge
 
 log = logging.getLogger("mica.failure_reporter")
@@ -86,6 +87,35 @@ def reference(value: str) -> str:
     return value if re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value) else digest(value)[:32]
 
 
+def capture_project(record: dict[str, Any], grant: Grant, *, target: str = "") -> bool:
+    """Snapshot authorized request context, including early account/command replies.
+
+    Diagnostic fields never grant access or change routing. A retry must not replace
+    the original context with a newly selected default project.
+    """
+    if target:
+        if not grant.doc.can_use(target, grant.email):
+            return False
+        if (
+            not grant.private
+            and grant.channel_key not in grant.doc.projects[target].published_channels
+        ):
+            return False
+    elif not grant.allowed or "failure_project_id" in record:
+        return False
+    changed = bool(target) and not record.get("failure_project_target", False)
+    if target:
+        record["failure_project_target"] = True
+    project_id = target or grant.project_id
+    if record.get("failure_project_id") != project_id:
+        record.update(
+            failure_project_id=project_id,
+            failure_project_name=grant.doc.projects[project_id].name,
+        )
+        return True
+    return bool(changed)
+
+
 async def record_failure(
     repository: Repository,
     app: AppSettings,
@@ -102,14 +132,24 @@ async def record_failure(
         actor = str(record.get("principal") or record.get("intake_principal") or "")
         if not re.fullmatch(r"[^\s<>@]{1,64}@[^\s<>@]{1,190}", actor):
             actor = ""
+        if record.get("failure_project_target") and record.get("failure_project_id"):
+            project_id = record["failure_project_id"]
+            project_name = record.get("failure_project_name")
+        else:
+            project_id = record.get("project_id") or record.get("failure_project_id")
+            project_name = (
+                record.get("project_name")
+                if record.get("project_id")
+                else record.get("failure_project_name") or record.get("project_name")
+            )
         observation = Observation(
             scope=f"{app.gcp_project}:{app.env}:{app.control_plane_url}",
             kind=kind,
             cause=cause,
             occurrence=digest(occurrence),
             event_id=reference(event_id) if event_id else "",
-            project_id=reference(str(record["project_id"])) if record.get("project_id") else "",
-            project_name=label(record.get("project_name", "")),
+            project_id=reference(str(project_id)) if project_id else "",
+            project_name=label(project_name),
             actor=label(actor, 254),
             surface=(
                 record["surface"]
