@@ -237,3 +237,30 @@ change using `cloudbuild/build-slack-api.yaml`; preserve both worker image pins.
 reconciliation endpoint delivers summaries; the daily maintenance endpoint expires old incident state.
 Verify those schedules remain enabled. See [failure-log.md](failure-log.md) for coverage, delivery
 recovery and retention. Empty channel configuration still records incidents in Firestore.
+
+## Folder and script delivery
+
+Both conversation surfaces use the same attachment policy. New or modified reports,
+text/configuration files, source scripts and ZIPs in `outputs/` are eligible at any depth;
+`outputs/gcs/` is exclusively bucket staging. Unsupported files produce an explicit delivery
+failure, rather than being silently skipped. Prepared ZIPs and source files are retained with
+run provenance for resends.
+
+For a folder containing scripts, the worker's `prepare_folder_attachment` tool creates a
+complete ZIP from `code/` or an `outputs/` subfolder. It includes every regular file and empty
+subdirectory, including unchanged helpers and binary results, and preserves relative paths.
+The tool returns the package path, file count, sizes and a bounded path inventory. It refuses
+links, special files, changing trees, over 10,000 entries, or a tree/package exceeding the
+surface's budget (200 MB Slack; 17 MB email). It never returns a partial archive as success.
+Existing credential checks for source scripts remain in force. Large folders use the approved
+recursive GCS publisher; packaging does not grant bucket write access.
+
+ZIPs are for script-containing folders. Ordinary reports and figures remain direct attachments.
+When a folder is packaged, only its figure/PDF previews accompany the ZIP; contained scripts
+and tables are not sent again individually. Email's combined attachment/MIME limit still
+applies, and any omitted attachments are named in the final reply. Model text and tool results
+say a package is prepared, not delivered; actual delivery is recorded after the transport succeeds.
+
+This behavior runs in the conversation worker, so an API-only rollout is insufficient. Use the
+coordinated Slack release pipeline and its complete-folder image gate, preserving existing jobs
+and immutable worker references during rollout.

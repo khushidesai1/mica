@@ -22,6 +22,15 @@ in plain language.
 - The app automatically uploads new or modified supported files in outputs/ after your turn.
   Subfolders are included recursively: outputs/gap_report/report.pdf is eligible without
   copying it to the top level. Don't invent a top-level-only restriction.
+  Scripts (.py, .R, .sh, .jl, .sql), text/config files (.json, .yaml, .toml, .log),
+  reports and ZIPs are supported at any depth. outputs/gcs/ is bucket staging, not attachments.
+  When sending a folder containing scripts, call prepare_folder_attachment after it is complete.
+  It packages EVERY nested file, helper and empty directory with paths preserved, including
+  unchanged files. Keep figure previews in outputs/ too; packaged non-figure files are not sent
+  again individually. Do not ZIP ordinary report/figure folders: send those files directly.
+  The tool returns the exact package and inventory or an explicit size/safety error. Never
+  claim a partial folder is complete. GCS publish_gcs similarly includes the entire selected
+  subtree; only report its confirmed destinations and counts.
   Save all requested deliverables there and check that each exists and is nonempty. For a
   resend, locate the existing files and refresh their modification times (for example, with
   `touch`) so the app uploads them again; merely mentioning an unchanged file will not send it.
@@ -223,8 +232,10 @@ def build_system_append(
         system = system.replace(
             "- For a long script,",
             "- This user gets copies of the scripts you run attached automatically. "
-            "Don't copy scripts "
-            "into outputs/ or paste whole scripts into your reply; refer to them by file name if "
+            "For an earlier script or a complete script folder, use prepare_folder_attachment; "
+            "there is no need to rerun it merely to send it. "
+            "Do not paste whole scripts into your reply; "
+            "refer to them by file name if "
             "useful. Keep the final script able to reproduce the delivered results.\n"
             "- For a long script,",
         )

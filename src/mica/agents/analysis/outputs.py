@@ -50,6 +50,8 @@ TEXT_SUFFIXES = {
     ".tsv",
 }
 REPORT_SUFFIXES = {".png", ".jpg", ".jpeg", ".pdf", ".svg", ".csv", ".tsv", ".md", ".txt"}
+ATTACHMENT_SUFFIXES = REPORT_SUFFIXES | TEXT_SUFFIXES | {".zip"}
+MAX_ATTACHMENT_BYTES = 200_000_000
 ARTIFACT_BUDGET = 1024**3
 
 
@@ -77,6 +79,14 @@ def retain_tool_outputs(work: Path, session_id: str | None) -> None:
 
 def retention_reason(relative: Path, size: int, *, recovery: bool = False) -> str:
     """One policy for workspace archives and provenance; paths are workspace-relative."""
+    if (
+        relative.parts
+        and relative.parts[0] == "outputs"
+        and relative.parts[:2] != ("outputs", "gcs")
+        and relative.suffix.lower() == ".zip"
+        and not any(Path(p).suffix.lower() in DATA_SUFFIXES for p in relative.parts[:-1])
+    ):
+        return "" if size <= MAX_ATTACHMENT_BYTES else "large-or-unsupported-output"
     if any(Path(p).suffix.lower() in DATA_SUFFIXES for p in relative.parts):
         return "dataset"
     if relative.parts[:2] == ("outputs", "gcs"):
@@ -88,7 +98,7 @@ def retention_reason(relative: Path, size: int, *, recovery: bool = False) -> st
     if relative.parts[0] == "outputs":
         return (
             ""
-            if relative.suffix.lower() in REPORT_SUFFIXES and size <= 200_000_000
+            if relative.suffix.lower() in ATTACHMENT_SUFFIXES and size <= MAX_ATTACHMENT_BYTES
             else "large-or-unsupported-output"
         )
     if relative.suffix.lower() not in TEXT_SUFFIXES:
