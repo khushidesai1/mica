@@ -237,3 +237,31 @@ change using `cloudbuild/build-slack-api.yaml`; preserve both worker image pins.
 reconciliation endpoint delivers summaries; the daily maintenance endpoint expires old incident state.
 Verify those schedules remain enabled. See [failure-log.md](failure-log.md) for coverage, delivery
 recovery and retention. Empty channel configuration still records incidents in Firestore.
+
+### Read-only project reference repositories
+
+Set these nonsecret settings on the control-plane API only (never worker environment variables):
+
+```text
+AGENT_REFERENCE_GITHUB_ORG=azizilab
+AGENT_REFERENCE_GITHUB_APP_ID=5405671
+AGENT_REFERENCE_GITHUB_INSTALLATION_ID=173616981
+AGENT_REFERENCE_GITHUB_KEY_SECRET=projects/azizilab-aml/secrets/mica-github-secret/versions/<verified-version>
+```
+
+The existing Mica AziziLab GitHub App must be installed on the selected AziziLab repositories with
+Contents read permission. Store the app-generated RSA PEM private key as a verified numeric Secret Manager version;
+a client secret or webhook secret is not a private key. The RSA private key stays in Secret Manager, readable by the API
+identity. No new secret is required. Do not reuse `AGENT_MEMORY_TOKEN_SECRET` or a worker credential.
+If a newly requested repository is unavailable, an organization administrator adds it to the app's
+installation selection; project owners cannot expand that ceiling through chat or project metadata.
+The API requests short-lived installation tokens narrowed to one repository and read-only contents.
+See [GitHub's installation-token documentation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
+
+Deploy the API and Slack worker together so the API's pinned snapshots can be materialized by the
+worker. Existing projects with no selected references remain unchanged. Verify offline fetch,
+authorization, snapshot, read-only and failed-fetch tests before release. For the live owner check,
+add a permitted repository in your own private Slack conversation, confirm the selection, and ask
+about a known source parameter; the answer should cite `inputs/repos/<repo>/...` and its pinned
+commit. Remove the selection and confirm a subsequent compute request has no restored reference
+folder. Do not send synthetic messages to another user's conversation.

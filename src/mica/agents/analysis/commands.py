@@ -56,6 +56,20 @@ def parse(raw: str) -> Command | None:
     if not words:
         return None
     action = words[0].lower()
+    if action == "repos":
+        if len(words) == 1 or (len(words) == 2 and words[1].lower() not in {"add", "remove"}):
+            return Command("repos", tuple(words[1:]))
+        if len(words) in {3, 4} and words[1].lower() in {"add", "remove"}:
+            from .reference_repos import valid_repo
+
+            return Command(
+                "repos " + words[1].lower(),
+                (words[3] if len(words) == 4 else "", valid_repo(words[2])),
+            )
+        raise ValueError(
+            "Use repos [project], repos add azizilab/repo [project], "
+            "or repos remove azizilab/repo [project]."
+        )
     if action == "data-root":
         words = message_text(text).split()
         if len(words) != 3:
@@ -195,6 +209,8 @@ def run(
             "unpublish",
             "rename",
             "data-root",
+            "repos add",
+            "repos remove",
         }
     ):
         return surface.EMAIL_READ_ONLY
@@ -214,6 +230,9 @@ def run(
         return command(cmd, grant, registry.storage, record, event_id, settings)
     if cmd.name not in {
         "projects",
+        "repos",
+        "repos add",
+        "repos remove",
         "use",
         "rename",
         "data-root",
@@ -281,6 +300,34 @@ def run(
             raise ValueError("Project settings changed. Request a fresh confirmation.")
         return current
 
+    if cmd.name.startswith("repos"):
+        selector = cmd.args[0] if cmd.args and cmd.args[0] else grant.project_id
+        pid = doc.find(selector, email)
+        observability.capture_project(record, grant, target=pid)
+        if cmd.name == "repos":
+            names = sorted(doc.projects[pid].reference_repos)
+            return f"Reference repositories for {doc.projects[pid].name}:\n" + (
+                "\n".join(names) or "None. An owner can add one in a private Slack conversation."
+            )
+        if not record.get("command_expected_project"):
+            raise ValueError("Reference repository changes require a private Slack confirmation.")
+        registry.update(
+            event_id,
+            email,
+            operation,
+            lambda d: checked(d).set_reference_repo(
+                pid,
+                email,
+                cmd.args[1],
+                remove=cmd.name == "repos remove",
+                org=settings.reference_github_org,
+            ),
+        )
+        return (
+            f"{'Removed' if cmd.name == 'repos remove' else 'Added'} {cmd.args[1]} "
+            f"{'from' if cmd.name == 'repos remove' else 'to'} {doc.projects[pid].name}'s "
+            "reference repositories. Future compute requests use the updated selection."
+        )
     if cmd.name == "data-root":
         pid = registry.update(
             event_id,

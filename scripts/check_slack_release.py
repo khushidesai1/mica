@@ -22,6 +22,7 @@ from mica.agents.analysis import (
     memory_archive,
     memory_workspace,
     project_memory,
+    reference_repos,
     write_access,
 )
 from mica.agents.analysis.config import Settings
@@ -93,6 +94,34 @@ def check(source: Path, mode: str) -> None:
             direct.Decision(route="view", reply="Look", view_ids=[uploaded[0].id]).route == "view"
         )
         print("ATTACHMENT_TRANSPORT_VERIFIED")
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+
+        synthetic_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = synthetic_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        ).decode()
+        assert len(reference_repos.app_jwt(pem, "123").split(".")) == 3
+        reference_work = work / "reference-work"
+        reference_repos.materialize(
+            reference_work,
+            [
+                reference_repos.RepoSnapshot(
+                    repo="azizilab/image-gate",
+                    commit="a" * 40,
+                    files={"nested/script.py": "print('synthetic offline check')"},
+                )
+            ],
+        )
+        reference_root = reference_work / "inputs/repos/image-gate"
+        assert (reference_root / "nested/script.py").is_file()
+        assert (reference_root / ".pin").read_text() == "azizilab/image-gate@" + "a" * 40 + "\n"
+        assert memory_workspace.scan(reference_work, settings)[0] == {}
+        reference_repos.materialize(reference_work, [])
+        assert not (reference_work / "inputs/repos").exists()
+        print("REFERENCE_REPO_APP_SIGNING_AND_WORKER_SNAPSHOT_VERIFIED")
         doc = Registry(store).load()
         pid = doc.create("test@example.com", "test", "gs://test/data/")
         grant = access.Grant("test@example.com", True, {}, doc, pid, True, "T:D")
