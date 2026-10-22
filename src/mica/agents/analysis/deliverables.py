@@ -10,9 +10,10 @@ import stat
 import uuid
 import zipfile
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import TYPE_CHECKING, Any, BinaryIO
 
-from claude_agent_sdk import SdkMcpTool, tool
+if TYPE_CHECKING:
+    from claude_agent_sdk import SdkMcpTool
 
 from .outputs import ATTACHMENT_SUFFIXES, MAX_ATTACHMENT_BYTES
 from .script_capture import SUFFIXES, checked_content
@@ -165,6 +166,8 @@ def package_folder(work: Path, folder: str, *, limit: int = MAX_ATTACHMENT_BYTES
 def folder_tool(
     work: Path, prepared: dict[Path, dict[Path, str]], *, limit: int = MAX_ATTACHMENT_BYTES
 ) -> SdkMcpTool[Any]:
+    from claude_agent_sdk import tool
+
     @tool(
         "prepare_folder_attachment",
         "Prepare a complete ZIP of a script-containing code/ or outputs/ subfolder for delivery. "
