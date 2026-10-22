@@ -213,6 +213,16 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         files = await asyncio.to_thread(
             attachments.materialize, storage, data["workdir"], saved.get("thread_files", [])
         )
+    from . import reference_repos
+
+    await asyncio.to_thread(
+        reference_repos.materialize,
+        Path(saved["context"]["workdir"]),
+        [
+            reference_repos.RepoSnapshot.model_validate(item)
+            for item in request.get("reference_repos", [])
+        ],
+    )
     memory_base = project_memory.Snapshot.model_validate(
         request.get("memory", {"head_oid": "", "files": {}})
     )
@@ -460,6 +470,13 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
     elif attempt:
         payload["event"]["_recovery_restart"] = True
     payload["event"]["_attachments"] = attachments.worker_listing(files, current_ids)
+    if request.get("reference_repos_unavailable"):
+        payload["event"]["_attachments"] += (
+            "\nReference repositories unavailable for this request: "
+            + ", ".join(request["reference_repos_unavailable"])
+            + ". Do not claim to have inspected their code; "
+            "explain the missing reference if needed."
+        )
     present_ids = {f.id for f in files}
     unavailable = [f for f in saved.get("thread_files", []) if f["id"] not in present_ids]
     if unavailable:

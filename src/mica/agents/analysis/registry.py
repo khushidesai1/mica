@@ -9,7 +9,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from .data_links import data_uri
 from .identity import normalize
@@ -38,6 +38,14 @@ class ProjectEntry(BaseModel):
     access_revision: int = 0
     name_revision: int = 0
     published_channels: set[str] = Field(default_factory=set)
+    reference_repos: set[str] = Field(default_factory=set, max_length=5)
+
+    @field_validator("reference_repos")
+    @classmethod
+    def repo_names(cls, values: set[str]) -> set[str]:
+        from .reference_repos import valid_repo
+
+        return {valid_repo(value) for value in values}
 
 
 class Binding(BaseModel):
@@ -152,6 +160,31 @@ class RegistryDoc(BaseModel):
         if not self.owns(project_id, owner):
             raise ValueError("Only the project owner can change its data location.")
         self.projects[project_id].data_uri = data_uri(uri)
+        return project_id
+
+    def set_reference_repo(
+        self,
+        project_id: str,
+        owner: str,
+        repo: str,
+        *,
+        remove: bool = False,
+        org: str = "azizilab",
+    ) -> str:
+        from .reference_repos import valid_repo
+
+        if not self.owns(project_id, owner):
+            raise ValueError("Only a project owner can change reference repositories.")
+        repo = valid_repo(repo, org)
+        entry = self.projects[project_id]
+        if remove:
+            if repo in entry.reference_repos:
+                entry.reference_repos.remove(repo)
+                entry.access_revision += 1
+        elif repo not in entry.reference_repos:
+            if len(entry.reference_repos) >= 5:
+                raise ValueError("A project can have at most five reference repositories.")
+            entry.reference_repos.add(repo)
         return project_id
 
     def bind(

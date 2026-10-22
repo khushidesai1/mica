@@ -887,6 +887,34 @@ class BatchBridge:
                 )
                 memory = loaded_memory or project_memory.Snapshot(head_oid="")
                 await asyncio.to_thread(storage.put, memory_key, memory.model_dump_json().encode())
+            from . import reference_repos
+
+            references_key = f"{PREFIX}/events/{event_id}/reference-repos.json"
+            try:
+                references = json.loads((await asyncio.to_thread(storage.get, references_key))[0])
+            except FileNotFoundError:
+                references = {"snapshots": [], "unavailable": []}
+                references_started = time.monotonic()
+                for repo in sorted(grant.project.reference_repos):
+                    try:
+                        async with asyncio.timeout(
+                            max(0.01, 60 - (time.monotonic() - references_started))
+                        ):
+                            snapshot = await reference_repos.fetch(self.settings, repo)
+                        references["snapshots"].append(snapshot.model_dump())
+                    except Exception:
+                        references["unavailable"].append(repo)
+                        await observability.record_failure(
+                            self.repository,
+                            self.app,
+                            "reference_repo_failed",
+                            occurrence=f"{event_id}:{repo}",
+                            event_id=event_id,
+                            record=record,
+                        )
+                await asyncio.to_thread(
+                    storage.put, references_key, json.dumps(references).encode()
+                )
             manifest = {
                 "event_id": event_id,
                 "payload": record["payload"],
@@ -916,6 +944,9 @@ class BatchBridge:
                 if record["private"]
                 else "",
             }
+            if references["snapshots"] or references["unavailable"]:
+                manifest["reference_repos"] = references["snapshots"]
+                manifest["reference_repos_unavailable"] = references["unavailable"]
             if surface.is_email(record):
                 manifest["surface"] = "email"
             if record["return_scripts"]:

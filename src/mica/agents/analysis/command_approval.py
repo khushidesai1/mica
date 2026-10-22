@@ -29,6 +29,8 @@ ADMIN = {
     "unpublish",
     "rename",
     "data-root",
+    "repos add",
+    "repos remove",
     "write grant",
     "write revoke",
 }
@@ -105,6 +107,14 @@ async def propose(
         grant.doc.model_copy(deep=True).set_co_owner(
             cmd.args[0], grant.email, cmd.args[1], remove=cmd.name == "remove-owner"
         )
+    if cmd.name in {"repos add", "repos remove"}:
+        grant.doc.model_copy(deep=True).set_reference_repo(
+            cmd.args[0],
+            grant.email,
+            cmd.args[1],
+            remove=cmd.name == "repos remove",
+            org=bridge.settings.reference_github_org,
+        )
     proposal = {
         "command": asdict(cmd),
         "event_id": event_id,
@@ -137,6 +147,17 @@ async def propose(
         + (": " + " · ".join(saved["args"][1:]) if len(saved["args"]) > 1 else "")
         + ". This request expires in 10 minutes."
     )
+    if saved["name"] == "repos add":
+        text += (
+            " Project members and published channel audiences may receive content from this "
+            "repository. Mica reads only repositories enabled for its AziziLab GitHub App; "
+            "no GitHub write access is granted."
+        )
+    if saved["name"] == "repos remove":
+        text += (
+            " New requests omit this repository; running requests may stop. "
+            "Previously delivered content is not recalled."
+        )
     if saved["name"] == "data-root":
         text += (
             f" Current location: {proposal['project']['data_uri']}. "

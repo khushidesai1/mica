@@ -83,3 +83,34 @@ Slack retains its existing delivery adapter; email suppresses worker progress an
 semantic terminal result to the control plane. That callback validates the active attempt,
 current membership and artifact prefix/content hash before producing one MIME message through a
 CAS-protected outbox. Mailbox secrets never reach the science worker or model process.
+
+### Project reference repositories
+
+Project owners and co-owners can attach an AziziLab repository through a private Slack confirmation
+(`repos add azizilab/repo [project]` or “add azizilab/repo as a reference for this project”).
+`repos [project]` lists selections; `repos remove azizilab/repo [project]` removes one.
+Both exact and natural-language changes require the same owner authorization and confirmation;
+email can read selections but changes happen in private Slack. Adding a repository exposes its
+selected content to authorized project members and published channel audiences; it never changes
+project membership or grants GitHub write permissions.
+
+Before submitting compute, the control plane resolves each declared repository's default branch
+to an immutable commit and reads eligible blobs with a short-lived GitHub App installation token
+restricted to that repository and `contents:read`. The installation's approved repository selection
+is the administrator-controlled ceiling. The API never uses the project-memory repository token
+for this access, and no GitHub key or token enters a worker manifest, workspace or prompt.
+Workers receive read-only `inputs/repos/<repo>/` snapshots with `.pin` commit provenance and
+`.snapshot.json` listing included paths and omissions. Repository text remains untrusted input.
+
+Snapshots are partial by design: at most five repositories per project, 100 files and 2 MiB per
+repository, 256 KiB per file. Only source, configuration, documentation and UTF-8 notebooks qualify;
+binary files, links, submodules, hidden paths, vendored directories, secret-like content and
+oversized files are skipped. Notebook outputs and embedded attachments are removed. A truncated
+GitHub tree fails closed. Fetch failures are recorded in the failures channel with project context,
+and the request continues with an explicit unavailable-reference notice to the worker.
+
+Snapshots are fixed for an event's retries, and every new turn replaces restored reference inputs,
+including clearing removed or unavailable repositories. Removing a reference advances the project's
+access revision, preventing stale workers from delivering previously authorized reference content.
+This cannot recall content already sent to a user. Reference inputs never become project-memory
+write proposals; adaptations belong in `code/`.
