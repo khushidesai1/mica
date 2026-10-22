@@ -414,6 +414,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             runtime_manager=runtimes,
             history=thread_history.History(storage, thread_key, request["project_id"]),
             return_scripts=request.get("return_scripts") is True,
+            attachment_limit=(17_000_000 if surface.is_email(request) else 200_000_000),
             script_manifest=resume.get("script_manifest") if resume else None,
             compute_manager=compute,
             gcs_publisher=publisher if current_write_grant else None,

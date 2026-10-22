@@ -94,6 +94,22 @@ def check(source: Path, mode: str) -> None:
             direct.Decision(route="view", reply="Look", view_ids=[uploaded[0].id]).route == "view"
         )
         print("ATTACHMENT_TRANSPORT_VERIFIED")
+        from mica.agents.analysis.deliverables import package_folder
+        from mica.agents.analysis.outputs import retention_reason
+        import zipfile
+
+        folder = work / "outputs/package"
+        (folder / "nested/helpers").mkdir(parents=True)
+        (folder / "nested/helpers/run.py").write_text("print(1)")
+        (folder / "nested/results.bin").write_bytes(b"result")
+        package = package_folder(work, "outputs/package")
+        archive = work / package["attachment"]
+        with zipfile.ZipFile(archive) as zipped:
+            assert zipped.read("package/nested/helpers/run.py") == b"print(1)"
+            assert zipped.read("package/nested/results.bin") == b"result"
+        assert package["files"] == 2
+        assert not retention_reason(archive.relative_to(work), archive.stat().st_size)
+        print("COMPLETE_NESTED_SCRIPT_FOLDER_ATTACHMENT_VERIFIED")
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric import rsa
 

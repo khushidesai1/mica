@@ -372,8 +372,9 @@ class Capture:
             uploads.append({"file": str(target), "filename": name})
         return uploads
 
-    def notes(self) -> list[str]:
+    def notes(self, provided: set[str] | None = None) -> list[str]:
         return [
             f"I didn't attach `{'script' if SECRET.search(path) else Path(path).name}` ({reason})."
             for path, reason in self.skipped.items()
+            if path not in (provided or set())
         ]

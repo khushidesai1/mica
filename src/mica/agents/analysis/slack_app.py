@@ -19,7 +19,8 @@ from . import attachments, script_capture, thread_history, write_access
 from .access import AccessMonitor, run_root
 from .config import Settings
 from .data_links import message_text
-from .outputs import publish, retention_reason
+from .deliverables import attachment_issue
+from .outputs import ATTACHMENT_SUFFIXES, MAX_ATTACHMENT_BYTES, publish, retention_reason
 from .progress import ProgressUpdate, TaskProgress, check_in_due, run_check_in
 from .runner import Context, Runner, TurnResult
 from .sessions import Sessions
@@ -29,8 +30,8 @@ from .transport import EmailWorkerTransport, SlackTransport, Transport
 from .write_worker import Publication
 
 log = logging.getLogger(__name__)
-EXTENSIONS = {".png", ".jpg", ".jpeg", ".pdf", ".svg", ".csv", ".tsv", ".md", ".txt"}
-MAX_UPLOAD_BYTES = 200_000_000
+EXTENSIONS = ATTACHMENT_SUFFIXES
+MAX_UPLOAD_BYTES = MAX_ATTACHMENT_BYTES
 HEARTBEAT_SECONDS = 10
 
 
@@ -454,10 +455,18 @@ class SlackAgent:
                     "GCS delivery could not be confirmed; unpublished datasets must be regenerated."
                 )
 
-        for path in result.files:
-            if ".previews" in path.relative_to(ctx.workdir).parts:
+        packaged = {p for members in result.delivery_packages.values() for p in members}
+        figure_types = {".png", ".jpg", ".jpeg", ".pdf", ".svg"}
+        for path in sorted(result.files, key=lambda p: p not in result.delivery_packages):
+            if path in packaged and path.suffix.lower() not in figure_types:
                 continue
-            if path.suffix.lower() not in EXTENSIONS:
+            issue = await asyncio.to_thread(attachment_issue, path, ctx.workdir)
+            if issue == "bucket-staging-or-preview":
+                continue
+            if issue:
+                delivery_issues.append(
+                    f"Could not attach `{path.relative_to(ctx.workdir)}`: {issue}."
+                )
                 continue
             if path.stat().st_size > MAX_UPLOAD_BYTES:
                 delivery_issues.append(
@@ -475,7 +484,20 @@ class SlackAgent:
                 extra = []
                 for path in list(capture.scripts):
                     capture.skip(path, "attachment copy could not be prepared")
-            script_notes = capture.notes()
+            script_notes = capture.notes(
+                {path.relative_to(ctx.workdir).as_posix() for path in packaged}
+            )
+            packaged_hashes = {
+                digest
+                for members in result.delivery_packages.values()
+                for digest in members.values()
+            }
+            unique_extra = []
+            for upload in extra:
+                digest = await asyncio.to_thread(attachments.file_hash, Path(upload["file"]))
+                if digest not in packaged_hashes:
+                    unique_extra.append(upload)
+            extra = unique_extra
             for upload in extra:
                 path = Path(upload["file"])
                 root = self.run_prefix or run_root(False, "", ctx.project_slug, "", ctx.thread_ts)
@@ -506,7 +528,8 @@ class SlackAgent:
         omitted = [
             str(path.relative_to(ctx.workdir))
             for path in result.files
-            if path.relative_to(ctx.workdir).parts[:2] != ("outputs", "gcs")
+            if path not in packaged
+            and path.relative_to(ctx.workdir).parts[:2] != ("outputs", "gcs")
             and retention_reason(path.relative_to(ctx.workdir), path.stat().st_size)
         ]
         if omitted:
@@ -514,7 +537,7 @@ class SlackAgent:
                 "\n\nNot retained for follow-up: "
                 + ", ".join(f"`{p[:160]}`" for p in omitted[:5])
                 + (f" and {len(omitted) - 5} more" if len(omitted) > 5 else "")
-                + ". Large datasets need a verified bucket publication; otherwise regenerate them."
+                + ". Retain these through a supported attachment or verified bucket publication."
             )
         if delivery_issues:
             reply += "\n\n" + "\n\n".join(delivery_issues)

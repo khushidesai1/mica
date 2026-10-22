@@ -33,8 +33,9 @@ from claude_agent_sdk.types import HookContext, HookInput, HookJSONOutput, Sandb
 from . import prompts, script_capture, write_worker
 from .attachments import classify
 from .config import Settings
+from .deliverables import folder_tool
 from .limits import MAX_VISUAL_READS, PREVIEW_MAX_BYTES, SDK_MAX_BUFFER_BYTES
-from .outputs import changed_files, retain_tool_outputs, snapshot_outputs
+from .outputs import MAX_ATTACHMENT_BYTES, changed_files, retain_tool_outputs, snapshot_outputs
 from .progress import ProgressUpdate, TaskProgress
 from .recovery_tools import RecoveryManager, restored_cost
 from .recovery_tools import run_query as recovery_query
@@ -93,6 +94,7 @@ class TurnResult:
     duration: float = 0
     summary_generated: bool = False
     runtimes: list[RuntimeEvent] = field(default_factory=list)
+    delivery_packages: dict[Path, dict[Path, str]] = field(default_factory=dict)
 
 
 def build_options(
@@ -110,6 +112,8 @@ def build_options(
     compute_manager: RecoveryManager | None = None,
     gcs_publisher: write_worker.Publisher | None = None,
     history: History | None = None,
+    delivery_packages: dict[Path, dict[Path, str]] | None = None,
+    attachment_limit: int = MAX_ATTACHMENT_BYTES,
 ) -> ClaudeAgentOptions:
     if not sandbox and platform.system() != "Darwin":
         raise ValueError("--no-sandbox is available only for local macOS development")
@@ -121,6 +125,14 @@ def build_options(
         tools.append(TOOL_NAME)
     compute = compute_manager if not ctx.survey_only else None
     compute_tools = compute.tools() if compute else []
+    if not ctx.survey_only:
+        compute_tools.append(
+            folder_tool(
+                ctx.workdir,
+                delivery_packages if delivery_packages is not None else {},
+                limit=attachment_limit,
+            )
+        )
     if gcs_publisher and gcs_publisher.grant and not ctx.survey_only:
         compute_tools.append(gcs_publisher.tool(ctx))
     if history and not ctx.survey_only:
@@ -455,10 +467,12 @@ class Runner:
         compute_manager: RecoveryManager | None = None,
         gcs_publisher: write_worker.Publisher | None = None,
         history: History | None = None,
+        attachment_limit: int = MAX_ATTACHMENT_BYTES,
     ) -> None:
         self.settings, self.sandbox = settings, sandbox
         self.project_name = project_name
         self.return_scripts = return_scripts
+        self.attachment_limit = attachment_limit
         self.script_manifest = script_manifest
         self.script_capture: script_capture.Capture | None = None
         self.memory_context = memory_context
@@ -509,6 +523,7 @@ class Runner:
             self.script_manifest = None
         before, start = snapshot_outputs(ctx.workdir / "outputs"), time.monotonic()
         result = TurnResult(session_id=ctx.session_id)
+        delivery_packages: dict[Path, dict[Path, str]] = {}
         manager = self.runtime_manager if not ctx.survey_only else None
         if manager:
             manager.begin_turn()
@@ -541,6 +556,8 @@ class Runner:
                         compute_manager=self.compute,
                         gcs_publisher=self.gcs_publisher,
                         history=self.history,
+                        delivery_packages=delivery_packages,
+                        attachment_limit=self.attachment_limit,
                     )
                     options.max_budget_usd = self.settings.max_budget_usd_per_turn - summary_budget
                     baseline = restored_cost(ctx.session_id) if self.compute else 0.0
@@ -683,6 +700,7 @@ class Runner:
                 with suppress(OSError):
                     retain_tool_outputs(ctx.workdir, result.session_id)
         result.files = changed_files(ctx.workdir / "outputs", before)
+        result.delivery_packages = delivery_packages
         if self.compute:
             # Tar restore can round mtimes. Carry only this request's pending outputs,
             # never compare restored file timestamps to the previous machine's baseline.
