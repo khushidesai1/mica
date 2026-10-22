@@ -277,3 +277,15 @@ async def test_concurrent_hooks_consume_once_and_wrong_access_cannot_consume(tmp
         *[asyncio.to_thread(amendments.consume, storage, target, "alice", "sig") for _ in range(2)]
     )
     assert sum(bool(text) for text in outputs) == 1
+
+
+async def test_follow_up_long_final_reply_uses_normal_chunks_and_clears_buttons(bridge):  # noqa: F811
+    _, second, record = await start(bridge)
+    await bridge.notify(second, record, "complete", "Result line.\n" * 1000)
+    deliveries = [
+        *bridge.test_slack.chat_update.call_args_list,
+        *bridge.test_slack.chat_postMessage.call_args_list,
+    ]
+    final_parts = [call.kwargs for call in deliveries if "Result line." in call.kwargs["text"]]
+    assert len(final_parts) > 1
+    assert all(part["blocks"] == [] for part in final_parts)

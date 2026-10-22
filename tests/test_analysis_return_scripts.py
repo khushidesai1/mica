@@ -472,7 +472,9 @@ def test_secret_shaped_filename_is_not_echoed_in_skip_note(tmp_path):
 def test_capture_merges_existing_compute_hooks(tmp_path):
     from types import SimpleNamespace
 
-    compute = SimpleNamespace(tools=lambda: [], prompt=lambda: "\nCompute policy")
+    compute = SimpleNamespace(
+        tools=lambda: [], prompt=lambda: "\nCompute policy", poll_addenda=None
+    )
     ctx = Context(tmp_path, tmp_path / "data")
     settings = Settings(_env_file=None)
     old = build_options(ctx, settings, compute_manager=compute)
