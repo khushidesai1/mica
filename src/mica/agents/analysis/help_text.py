@@ -59,6 +59,8 @@ project". Co-owners manage project settings and access; the original owner canno
 • `brief` — Show the current shared project guide.
 Guide corrections save automatically when you describe them in ordinary chat.
 • `cancel` — Stop queued or running computation.
+When offered in Slack, “Add this to it” adds context to your running task; ignoring the buttons
+keeps your message as a separate follow-up. Email always queues follow-ups.
 
 *Reference repositories*
 Ask “add azizilab/my-repo as a reference for this project” or use

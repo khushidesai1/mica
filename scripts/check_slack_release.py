@@ -16,6 +16,7 @@ import httpx
 import mica
 from mica.agents.analysis import (
     access,
+    amendments,
     attachments,
     commands,
     direct,
@@ -58,6 +59,7 @@ def check(source: Path, mode: str) -> None:
     assert settings.long_run_threshold_seconds == 600
     assert settings.long_run_update_seconds == 7200
     assert settings.max_run_seconds == 604800
+    assert not settings.amendments
     assert not settings.transfers_enabled
     assert not check_in_due(0, None, 599, 600, 7200)
     assert check_in_due(0, None, 600, 600, 7200)
@@ -72,6 +74,13 @@ def check(source: Path, mode: str) -> None:
     with tempfile.TemporaryDirectory() as temporary:
         work = Path(temporary).resolve()
         store = LocalStorage(work / "storage")
+        amendments.add(store, "a" * 32, "b" * 32, amendments.Addendum(
+            text="Label both axes", principal="test@example.com", signature="test", created=1,
+        ))
+        assert "Label both axes" in amendments.consume(store, "a" * 32, "test@example.com", "test")
+        assert not amendments.consume(store, "a" * 32, "test@example.com", "test")
+        assert amendments.close(store, "a" * 32).items["b" * 32].consumed
+        print("BOUNDED_AMENDMENT_HANDOFF_VERIFIED")
         png = b"\x89PNG\r\n\x1a\nsynthetic"
         client = httpx.Client(
             transport=httpx.MockTransport(lambda request: httpx.Response(200, content=png))
@@ -94,9 +103,10 @@ def check(source: Path, mode: str) -> None:
             direct.Decision(route="view", reply="Look", view_ids=[uploaded[0].id]).route == "view"
         )
         print("ATTACHMENT_TRANSPORT_VERIFIED")
+        import zipfile
+
         from mica.agents.analysis.deliverables import package_folder
         from mica.agents.analysis.outputs import retention_reason
-        import zipfile
 
         folder = work / "outputs/package"
         (folder / "nested/helpers").mkdir(parents=True)
