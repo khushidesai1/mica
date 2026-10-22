@@ -23,6 +23,11 @@ class Observation(BaseModel):
     actor: str = ""
     surface: str = "background"
     event_id: str = ""
+    source: Literal["application", "cloud_run"] = "application"
+    service: str = ""
+    route: str = ""
+    http_status: int = 0
+    revision: str = ""
 
     @property
     def fingerprint(self) -> str:

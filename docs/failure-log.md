@@ -45,8 +45,8 @@ One failed attempt and a replay of its observation count once. A fresh failed at
 For response delivery, the occurrence is the affected message stage; repeated attempts to deliver that
 same response remain one incident occurrence.
 
-This does not capture infrastructure failures before application handlers run, arbitrary worker stderr,
-or every exception in the older shared task pipeline. Those remain in Cloud Logging. Failure recording
+Optional Cloud Run log intake below covers platform/request failures. Arbitrary worker stderr and
+every exception in the older shared task pipeline remain outside this index. Application failure recording
 has a three-second budget and cannot change the originating request's outcome. If Firestore is
 unavailable, a sanitized `failure_reporter persistence_unavailable` warning remains in Cloud Logging;
 there is no claim that the incident index survives an outage of its own store without gaps.
@@ -77,3 +77,58 @@ Daily `compact-idle` maintenance deletes expired incident history, pointers and 
 in bounded batches after 30 days of inactivity. Active episodes remain. A delayed duplicate beyond
 receipt retention can count anew. Cleanup never changes jobs, project data or credentials. All queries
 use ordinary single-field indexes; no custom Firestore index or TTL policy is required.
+
+## Optional Cloud Run infrastructure coverage
+
+The authenticated `/api/v1/internal/maintenance/log-failure` Pub/Sub receiver accepts Cloud Run
+request-log HTTP 5xx (including 503) and platform `varlog/system` ERROR or higher entries. It checks
+the Cloud project and the receiver's own `K_SERVICE`; other services and log streams are ignored.
+Request status alone never proves that application code did or did not record an error.
+Infrastructure observations are labeled separately rather than pretending to correlate them with
+application incidents. Platform logs do not reliably identify an authorized project or requester;
+the summary says that context is unavailable. Raw URLs, queries, exception text and payloads never
+enter Firestore or Slack. Only fixed route templates, HTTP status, service/revision and counts do.
+
+The sink and receiver both exclude incident intake and the two maintenance delivery routes. All
+container stdout/stderr is excluded, so inline reporter warnings cannot feed back into the log sink.
+This intentionally excludes maintenance request failures too; operators inspect those in Cloud Logging.
+A system ERROR is reported as a platform error, not classified from arbitrary text as OOM or startup.
+Cloud Tasks dispatch failures and Batch infrastructure logs are not claimed as covered by this sink.
+
+Durable intake uses the existing transactional occurrence receipts, keyed by logName and insertId.
+If insertId is absent, the stable Pub/Sub messageId is the fallback; independently published copies
+without insertId cannot be deduplicated. Receipt writes must succeed before acknowledgment. Storage
+failure returns 503 for Pub/Sub retry; malformed, oversized (512 KB), and out-of-scope envelopes are
+acknowledged as ignored. This intake sends no Slack messages itself. Existing maintenance delivers
+summaries and expires both incidents and receipts. Times/counts describe ingestion, not proof of job
+failure or recovery; silence never turns an incident green.
+
+### Operator activation
+
+Application deployment alone does not enable the sink. `infra/failure-logging` is a separate,
+additive Terraform stack with four resources: a Pub/Sub topic, logging sink, sink-writer topic IAM
+binding and authenticated push subscription. It consumes the existing service URL and control
+service account and never manages either Cloud Run service or the infrastructure migration state.
+The existing Pub/Sub service agent must already be able to mint tokens for that account, as it does
+for the Gmail/completion subscriptions. Use administrator-only Terraform state, outside runtime
+bucket access. Do not run the old root infrastructure stack to activate this addition.
+
+Copy its example variables to private operator inputs, fill the current control service account,
+and run `terraform init`, `terraform plan -out=<private-plan>` in that stack. Review exactly four
+creates and no changes to existing resources before the separately authorized apply. The subscription
+retains unacknowledged messages for seven days with retry backoff; it cannot notify Slack while this
+same API or Firestore is unavailable. Cloud Logging remains the independent investigation path.
+The Pub/Sub topic temporarily carries full exported log entries under restricted GCP access; only
+the bounded metadata described above reaches the incident index. Do not grant user/project workers
+read access to this topic.
+
+After apply, verify sink publisher IAM, push OIDC audience/principal, and subscription backlog.
+Offline fixture tests cover failure injection; never force an error in a colleague's request.
+Use a separately authorized labeled integration event for end-to-end wiring, then remove its exact
+incident/receipt/message artifacts. No live smoke data is created by a routine API deployment.
+At service migration, provision this additive stack for the replacement API and review retirement
+of the old sink/subscription only after its backlog is drained.
+
+Cloud Run's [logging documentation](https://docs.cloud.google.com/run/docs/logging) distinguishes
+request, platform and container streams; [log routing documentation](https://docs.cloud.google.com/logging/docs/export/configure_export_v2)
+describes the sink publisher permission.

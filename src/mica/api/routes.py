@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
+import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
@@ -389,6 +391,35 @@ async def compact_idle_projects(principal: PrincipalDep, services: ServicesDep) 
 
     failures = await observability.maintenance(services.repository, services.settings, purge=True)
     return {"compacted_projects": await services.tasks.close_idle_projects(), **failures}
+
+
+@router.post("/internal/maintenance/log-failure", include_in_schema=False)
+async def ingest_failure_log(
+    request: Request, principal: PrincipalDep, services: ServicesDep
+) -> dict[str, str]:
+    _require_internal_principal(principal, services)
+    from mica.services import failure_logs
+
+    # Stream with a hard cap so a malformed authenticated envelope cannot grow memory unbounded.
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > failure_logs.MAX_ENVELOPE:
+            return {"status": "ignored"}
+    observation = failure_logs.parse(
+        bytes(body),
+        project=services.settings.gcp_project,
+        service=os.environ.get("K_SERVICE", ""),
+    )
+    if observation is None:
+        return {"status": "ignored"}
+    try:
+        async with asyncio.timeout(3):
+            await services.repository.record_failure(observation, time.time())
+    except Exception:
+        # Pub/Sub must retry: unlike application best-effort reporting, this is the sole intake.
+        raise HTTPException(status_code=503, detail="incident persistence unavailable") from None
+    return {"status": "recorded"}
 
 
 @router.post("/internal/maintenance/reconcile-batch", include_in_schema=False)
