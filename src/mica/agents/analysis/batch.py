@@ -261,8 +261,8 @@ class BatchBridge:
         )
         if phase == "waiting" and text == amendments.WAITING:
             status = {"blocks": amendments.buttons(event_id)}
-        elif record.get("amendable"):
-            status = {"blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": text}}]}
+        elif record.get("amendable") and not status:
+            status = {"blocks": []}  # Remove old buttons without bypassing text chunk limits.
         # Use the same bounded messages as guide display for every response, including
         # built-in commands. Save each confirmed part so a retry resumes the delivery.
         parts = list(chunks(text)) or [""]
