@@ -36,3 +36,10 @@ in Firestore, and renders summaries into a private operator Slack channel. Proje
 latest verified requester's email are intentional operator-visible metadata. Restrict channel membership
 accordingly. No message bodies, raw exceptions, model output, filenames, SFTP credentials or private
 connection/approval links are copied into incidents. Worker access and credentials are unchanged.
+
+Optional infrastructure incident ingestion accepts authenticated Cloud Run log exports only for its
+own configured project and service. The Pub/Sub topic carries original log entries temporarily;
+Firestore/Slack receive only fixed route templates, status, service/revision, hashed occurrence IDs
+and counts. Request bodies, arbitrary URLs/queries and exception payloads are not copied into the
+incident index. The additive log-sink infrastructure requires a separate reviewed operator apply.
+See [failure log](failure-log.md) for scope, retention and outage limitations.
