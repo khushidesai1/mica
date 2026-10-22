@@ -108,6 +108,9 @@ For requested analyses, choose compute after any input inventory needed for sizi
 Read-only file contents require a worker unless supplied below as an attachment head or media
 block. Listing names
 and object sizes does not. Never invent results or claim to see content that was not supplied.
+Project reference_repos lists owner-declared read-only code repositories. Their contents are
+available only to compute workers at inputs/repos/, as bounded snapshots; route questions that
+require inspecting their code or parameters to compute. Do not claim to have read them here.
 Files: attachments lists this thread's files, both what people attached and what you delivered,
 with ids, names, kinds, sizes, and turns. Files on this message have current: true. Images and
 PDFs you can see follow this JSON as content blocks labeled with their ids. Text/table files
@@ -705,6 +708,8 @@ async def handle(
                 "remove-owner",
                 "rename",
                 "data-root",
+                "repos add",
+                "repos remove",
                 "atomx login status",
                 "connect atomx",
                 "publish",
@@ -764,13 +769,15 @@ async def handle(
                 "unpublish",
                 "rename",
                 "data-root",
+                "repos add",
+                "repos remove",
                 "write grant",
                 "write revoke",
             }:
                 from . import command_approval
 
                 return await command_approval.propose(bridge, event_id, record, storage, cmd, grant)
-    if cmd and cmd.name in {"data-root", "add-owner", "remove-owner"}:
+    if cmd and cmd.name in {"data-root", "add-owner", "remove-owner", "repos add", "repos remove"}:
         from . import command_approval, command_intent
 
         if surface.is_email(record):
@@ -778,7 +785,7 @@ async def handle(
             return await finish(bridge, event_id, record, surface.EMAIL_READ_ONLY)
         if not grant.private:
             raise ValueError("Change project settings in your private Slack conversation.")
-        pid = grant.doc.find(cmd.args[0], grant.email)
+        pid = grant.doc.find(cmd.args[0] or grant.project_id, grant.email)
         cmd = commands.Command(cmd.name, (pid, cmd.args[1]))
         return await command_approval.propose(bridge, event_id, record, storage, cmd, grant)
     if cmd and cmd.name != "init":
@@ -947,6 +954,7 @@ async def handle(
             "data_path": ctx["data_path"],
             "data_uri": grant.project.data_uri,
             "project_name": grant.project.name,
+            "reference_repos": sorted(grant.project.reference_repos),
             "transfer_tool": await transfer_service.context(grant.project_id, grant.email),
             "analysis_tools": [spatial_analysis_capability()],
             "write_access": (

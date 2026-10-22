@@ -60,6 +60,11 @@ project". Co-owners manage project settings and access; the original owner canno
 Guide corrections save automatically when you describe them in ordinary chat.
 • `cancel` — Stop queued or running computation.
 
+*Reference repositories*
+Ask “add azizilab/my-repo as a reference for this project” or use
+`repos`, `repos add azizilab/my-repo [project]`, `repos remove azizilab/my-repo [project]`.
+Owners confirm changes in private Slack; project members can read the selected code.
+
 *Script attachments*
 • `scripts` — Show your setting (off by default).
 • `scripts on` / `scripts off` — Attach scripts you run, or stop attaching them (DM or channel).

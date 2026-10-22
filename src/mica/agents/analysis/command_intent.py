@@ -38,6 +38,9 @@ Operation = Literal[
     "unpublish",
     "rename",
     "data-root",
+    "repos",
+    "repos add",
+    "repos remove",
     "write status",
     "write grant",
     "write revoke",
@@ -62,6 +65,10 @@ old messages when identifying the current request. Help about Mica means help.
 Use/select/switch to a project means use. Do not turn a request to analyze a different dataset
 into a project switch. Stop/cancel this analysis means cancel; cancelled historical work is
 not a new cancellation. Brief/project guide and saved project memory can use brief/memory.
+List project reference repositories means repos. Explicitly adding/removing a reference GitHub
+repository means repos add/repos remove, with target exactly owner/repo supplied by the user
+and selector for their project ("this project" when explicitly current). Reading a repo or
+asking about its code does not authorize adding it. Never infer a repository from project metadata.
 Scripts on/off only controls returning generated code, never running a script.
 Transfers/status and my AtoMx connection status are read operations. Connecting AtoMx means
 connect atomx. Requests to replace or forget a personal AtoMx connection also choose
@@ -318,6 +325,19 @@ def command(proposal: Proposal, grant: access.Grant, *, source_text: str = "") -
         raise ValueError("Which project should I use? You can ask me to list your projects.")
     # Resolve to an ID before any operation or approval; later name reuse cannot retarget it.
     pid = grant.doc.find(selector, grant.email)
+    if op == "repos":
+        return commands.Command(op, (pid,))
+    if op in {"repos add", "repos remove"}:
+        from .reference_repos import valid_repo
+
+        repo = valid_repo(proposal.target.strip())
+        if not re.search(
+            r"(?<![A-Za-z0-9_.-])" + re.escape(repo) + r"(?:\.git)?(?=$|[\s<>`\"'.,;)])",
+            source_text,
+            re.I,
+        ):
+            raise ValueError("Please supply the exact azizilab/repository to add or remove.")
+        return commands.Command(op, (pid, repo))
     if op == "data-root":
         from .data_links import data_uri, message_text
 

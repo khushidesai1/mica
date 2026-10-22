@@ -31,6 +31,7 @@ Cause = Literal[
     "compute_failed",
     "compute_control_failed",
     "compute_deadline",
+    "reference_repo_failed",
     "memory_editor_failed",
     "memory_compaction_retry",
     "memory_compaction_exhausted",
@@ -55,6 +56,10 @@ CATALOG: dict[str, tuple[str, str]] = {
     "compute_failed": ("compute", "The worker stopped without completing the request."),
     "compute_control_failed": ("compute", "The service could not submit or inspect its worker."),
     "compute_deadline": ("compute", "The request exhausted its computation time allowance."),
+    "reference_repo_failed": (
+        "reference",
+        "A project reference repository could not be loaded; the request continues without it.",
+    ),
     "memory_editor_failed": ("memory", "Project memory editing failed; its task may retry."),
     "memory_compaction_retry": ("memory", "Project memory compaction failed and needs a retry."),
     "memory_compaction_exhausted": (
