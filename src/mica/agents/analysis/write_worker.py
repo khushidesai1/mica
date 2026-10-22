@@ -433,7 +433,10 @@ class Publisher:
         @tool(
             "publish_gcs",
             "Publish a completed, checked folder under outputs/gcs/ to this turn's GCS grant. "
-            "Preserves paths, creating files or replacing versions approved for this run. "
+            "Includes ALL regular files at every depth, including scripts and unchanged helpers, "
+            "without extension filtering; preserves each path relative to outputs/gcs/. "
+            "For example outputs/gcs/run/code/helper.py becomes <grant>/run/code/helper.py. "
+            "Creates files or replaces only versions approved for this run. "
             "Returns folder totals and errors; "
             "the manifest links to per-batch publication details.",
             {

@@ -483,7 +483,8 @@ def test_publish_tool_is_registered_only_with_current_grant(worker, granted):
         worker.request["write_grant"] = None
     options = build_options(worker.ctx, Settings(_env_file=None), gcs_publisher=publisher(worker))
     assert (write_worker.TOOL_NAME in options.allowed_tools) is granted
-    assert bool(options.mcp_servers) is granted
+    assert "mcp__pistachio__prepare_folder_attachment" in options.allowed_tools
+    assert options.mcp_servers  # Local packaging does not grant GCS publication.
     if granted:
         assert int(options.env["MCP_TOOL_TIMEOUT"]) >= 840_000
 
