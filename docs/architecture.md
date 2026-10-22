@@ -114,3 +114,14 @@ including clearing removed or unavailable repositories. Removing a reference adv
 access revision, preventing stale workers from delivering previously authorized reference content.
 This cannot recall content already sent to a user. Reference inputs never become project-memory
 write proposals; adaptations belong in `code/`.
+
+Slack amendments (`AGENT_AMENDMENTS`, default off) optionally deliver same-requester text through
+the trusted worker's existing post-tool hook. One bounded, generation-checked addenda record
+serializes consumption against fallback; the original follow-up queue slot remains pending until
+the running turn ends, so later turns cannot overtake it. Unconsumed text stays a follow-up,
+attachments and commands keep the normal flow, and email is unchanged. Only new workers launched
+with support enabled offer buttons; an existing worker is never assumed to support the feature.
+Consumption records handoff to the SDK hook, not confirmed execution or inclusion in the final
+answer. If that worker fails or restarts after handoff, the amendment is marked failed with a
+check-and-resend notice rather than automatically repeating possible side effects. A process crash
+between its durable handoff record and SDK receipt remains an acknowledgment ambiguity.
