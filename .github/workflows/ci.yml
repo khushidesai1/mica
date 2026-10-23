@@ -18,7 +18,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install -e '.[dev,slack,analysis-test]'
+      - run: python -m pip install -e '.[dev,slack,analysis-test,transfer-test]'
       - run: ruff check src tests
       - run: mypy src/mica src/pistachio
       - run: pytest --cov=mica --cov-report=term-missing
