@@ -1,10 +1,7 @@
-"""Print the reviewed implementation digest, or validate/configure an image build."""
+"""Print or validate the reviewed implementation digest for a layout-independent image."""
 
-import base64
 import hashlib
-import json
 import os
-import re
 from pathlib import Path
 
 
@@ -28,24 +25,3 @@ if __name__ == "__main__":
     else:
         if os.environ["ATOMX_IMPLEMENTATION_SHA"] != digest:
             raise SystemExit("Implementation digest does not match reviewed code")
-        host_key = os.environ["ATOMX_HOST_KEY"]
-        parts = host_key.split()
-        if len(parts) != 2 or parts[0] not in {"ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256"}:
-            raise SystemExit("Provide an independently verified SSH host key")
-        base64.b64decode(parts[1], validate=True)
-        bucket = os.environ["ATOMX_BUCKET"]
-        if not re.fullmatch(r"[a-z0-9][a-z0-9._-]+[a-z0-9]", bucket):
-            raise SystemExit("Invalid destination bucket")
-        # JSON is valid YAML; no shell interpretation of the public host key or bucket.
-        Path("deploy/atomx/alchemy.yaml").write_text(
-            json.dumps(
-                {
-                    "bucket": bucket,
-                    "sftp": {
-                        "host": "na.export.atomx.nanostring.com",
-                        "port": 22,
-                        "host_key": host_key,
-                    },
-                }
-            )
-        )

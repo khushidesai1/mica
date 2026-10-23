@@ -41,6 +41,45 @@ an unverified `ssh-keyscan`. The default image and service account are the exist
 `MICA_SLACK_AGENT_IMAGE` and `MICA_BATCH_SERVICE_ACCOUNT`; optional transfer overrides remain
 available. No per-user cloud secret, VM or service account is needed.
 
+The controller resolves and authorizes destination prefixes per request, then supplies them
+through authenticated worker bootstrap. Workers use those destinations as their only layout
+source and check the request bucket, run ID and job kind against the authorized job. They do not
+read a per-bucket YAML file from the image. The offline release gate runs a layout-free inventory
+request through this entrypoint as well as checking the installed source.
+
+Failures include a bounded step (`config`, `bootstrap`, `sftp_auth`, `sftp_listing`, `staging`,
+`upload`, `verify`, or `markers`) and an allow-listed error class in the job result and log.
+Private failure notices use those categories; raw exception messages, server text and credentials
+are never included. A failure before the marker stage may have no data-bucket status record.
+
+## Manual verification and backfill
+
+Operator commands use the same destination mapping with your Application Default Credentials.
+Supply a local `--config` YAML file with the exact destinations from the request:
+
+```yaml
+destinations:
+  bucket: your-data-bucket
+  raw_prefix: project/raw/
+  additional_prefix: project/raw/.additional_files/
+  status_prefix: project/raw/.mica-transfers/
+```
+
+`atomx-transfer verify --config /path/to/config.yaml --sample SAMPLE` checks the recorded manifest
+against the configured sample folders. `atomx-transfer backfill --config /path/to/config.yaml`
+previews listing-only completion records; add `--yes` to write them. A backfilled record is not
+source verification and `verify` only accepts it with `--allow-backfilled`. Both commands work
+without SFTP credentials and exclude nested additional/status directories from sample discovery.
+Backfill can also repair missing text markers from an immutable completed record.
+
+Manual `inventory` and `pull` use this same `destinations` block plus an `sftp` block containing
+`host`, `port` and an independently verified `host_key` (`key-type base64-key`). They prompt for
+the login; never store a password in this file. No example host-key placeholder is shipped as a
+usable configuration. Job inventory remains read-only; job pulls always use the controller's
+downscoped writer, independent of these operator commands.
+
+## Credentials and authorization
+
 Credentials are AES-GCM encrypted in private Firestore connector records, keyed by normalized
 verified email plus provider. HKDF derives a separate encryption key from the existing
 `MICA_SIGNED_LINK_SECRET` (legacy setting aliases still work). The configured value must have

@@ -12,8 +12,6 @@ steps:
   - name: python:3.12.12-slim
     entrypoint: python
     env:
-      - ATOMX_HOST_KEY=${_SFTP_HOST_KEY}
-      - ATOMX_BUCKET=${_BUCKET}
       - ATOMX_IMPLEMENTATION_SHA=${_IMPLEMENTATION_SHA}
     args: [tools/atomx_build.py]
   - name: gcr.io/cloud-builders/docker
@@ -33,9 +31,7 @@ steps:
 images: ['${_IMAGE_URI}']
 substitutions:
   _SOURCE_COMMIT: 5d864b6cd13f1873364aa70b9ac1939f4c656616
-  _IMPLEMENTATION_SHA: 83bb16ef502637b558f88970d766f0a3cb7671fddab7fd4306f13902e6de5133
-  _SFTP_HOST_KEY: REPLACE_WITH_INDEPENDENTLY_VERIFIED_HOST_KEY
-  _BUCKET: REPLACE_WITH_SCRATCH_BUCKET_FOR_CANARY
+  _IMPLEMENTATION_SHA: e86e2f2434bfa8393fc5af5f44dfb6ddb54a2abed4fe324f92f8fc81fb0708a2
   _IMAGE_URI: us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/atomx-transfer:reviewed
 options:
   logging: CLOUD_LOGGING_ONLY

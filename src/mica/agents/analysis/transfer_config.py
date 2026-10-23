@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field, field_validator
 
 class TransferProject(BaseModel):
     bucket: str = Field(pattern=r"^[a-z0-9][a-z0-9._-]+[a-z0-9]$")
-    layout: str = Field(default="", pattern=r"^(?:[a-zA-Z0-9_-]+\.yaml)?$")
     login_secret: str = ""  # Legacy configuration only; never used for personal connections.
     raw_prefix: str = "raw_outputs/raw/"
     additional_prefix: str = "raw_outputs/additional_files/"
