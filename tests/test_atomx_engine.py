@@ -15,7 +15,7 @@ import google_crc32c
 import jsonschema
 import pytest
 
-from tools.atomx_transfer import cli, core
+from tools.atomx_transfer import cli, core, worker
 from tools.atomx_transfer.adapters import GCS
 
 ROOT = "/MyExport"
@@ -147,10 +147,22 @@ def backfill(bucket, **extra):
     )
 
 
-def run_cli(monkeypatch, tmp_path, bucket, command, *args):
+def run_cli(monkeypatch, tmp_path, bucket, command, *args, destinations=None):
     config = tmp_path / "config.yaml"
-    config.write_text("bucket: scratch\n")  # No SFTP configuration or login needed.
-    monkeypatch.setattr(cli, "GCS", lambda _: bucket)
+    config.write_text(
+        json.dumps(
+            {
+                "destinations": destinations
+                or {
+                    "bucket": "scratch",
+                    "raw_prefix": "raw_outputs/raw/",
+                    "additional_prefix": "raw_outputs/additional_files/",
+                    "status_prefix": "transfer_status/",
+                }
+            }
+        )
+    )  # No SFTP configuration or login needed.
+    monkeypatch.setattr(worker, "GCS", lambda _: bucket)
 
     def no_sftp(*_):
         pytest.fail("Bucket-only operation tried to open SFTP or prompt for login")

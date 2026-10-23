@@ -1,6 +1,0 @@
-bucket: alchemy-breast-cancer
-sftp:
-  host: na.export.atomx.nanostring.com
-  port: 22
-  # Required at image build time: independently verify this public host key.
-  host_key: REPLACE_WITH_VERIFIED_HOST_KEY
