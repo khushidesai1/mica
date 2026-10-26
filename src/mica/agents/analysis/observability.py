@@ -46,6 +46,7 @@ Cause = Literal[
     "smoke_test",
 ]
 CATALOG: dict[str, tuple[str, str]] = {
+    "github_catalog_failed": ("catalog", "The scheduled GitHub tool-catalog refresh failed."),
     "infra_http_error": ("infrastructure", "Cloud Run recorded a failed HTTP request."),
     "infra_platform_error": ("infrastructure", "Cloud Run reported a platform error."),
     "routing_exhausted": ("routing", "Request routing exhausted its automatic retries."),

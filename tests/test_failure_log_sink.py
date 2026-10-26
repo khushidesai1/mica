@@ -203,3 +203,29 @@ async def test_disabled_and_oversize_are_bounded(repository, settings, monkeypat
     assert await invoke(json.dumps(envelope()).encode(), services) == {"status": "ignored"}
     assert await invoke(b"x" * (failure_logs.MAX_ENVELOPE + 1), services) == {"status": "ignored"}
     assert not repository.failures
+
+
+def test_catalog_failure_names_the_background_job_without_raw_log_content():
+    observation = parse(
+        envelope(
+            httpRequest={
+                "status": 500,
+                "requestUrl": "https://mica.example/api/v1/internal/tools/catalog?token=secret",
+            }
+        )
+    )
+    assert observation.cause == "github_catalog_failed"
+    assert observation.route == "/api/v1/internal/tools/catalog"
+    from mica.storage.failures import Incident
+
+    summary = observability.summarize(
+        Incident(
+            id="fixture",
+            observation=observation,
+            first_seen=1,
+            last_seen=1,
+            expires_at=100,
+        )
+    )
+    assert "scheduled GitHub tool-catalog refresh" in summary
+    assert "unmatched" not in summary and "secret" not in summary
