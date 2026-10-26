@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     gmail_refresh_token: SecretStr = SecretStr("")
     signed_link_secret: str = ""
     github_org: str = "azizilab"
-    github_app_token: str = ""
+    github_app_token: str = ""  # Legacy setting; catalog authentication uses the GitHub App.
     tool_build_trigger: str = ""
     tool_image_repository: str = ""
 

@@ -27,6 +27,7 @@ ROUTES = {
     r"/integrations/slack/events": "/integrations/slack/events",
     r"/integrations/gmail/push": "/integrations/gmail/push",
     r"/api/v1/internal/batch/completion": "/api/v1/internal/batch/completion",
+    r"/api/v1/internal/tools/catalog": "/api/v1/internal/tools/catalog",
 }
 
 
@@ -73,7 +74,11 @@ def parse(body: bytes, *, project: str, service: str) -> Observation | None:
                 (template for pattern, template in ROUTES.items() if re.fullmatch(pattern, path)),
                 "unmatched route",
             )
-            cause = "infra_http_error"
+            cause = (
+                "github_catalog_failed"
+                if route == "/api/v1/internal/tools/catalog"
+                else "infra_http_error"
+            )
         elif entry.get("severity") not in {"ERROR", "CRITICAL", "ALERT", "EMERGENCY"}:
             return None
         # Trusted platform metadata only, with bounds even for authenticated publisher mistakes.

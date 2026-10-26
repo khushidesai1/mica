@@ -290,6 +290,18 @@ installation selection; project owners cannot expand that ceiling through chat o
 The API requests short-lived installation tokens narrowed to one repository and read-only contents.
 See [GitHub's installation-token documentation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app).
 
+The weekly `/api/v1/internal/tools/catalog` refresh uses the same GitHub App settings and key,
+minting a fresh read-only installation token on every run. It lists the installation's approved
+repositories through `/installation/repositories`; it does not use the legacy
+`MICA_GITHUB_APP_TOKEN`/`PISTACHIO_GITHUB_APP_TOKEN` or the memory repository credential.
+Changing that old static token is unnecessary. The job catalogs repository metadata and commit
+IDs only; it does not install or run tools. GitHub reads finish before catalog updates begin, and
+existing proposed, approved, building, available or failed tool records are preserved. Failures
+are labeled as the scheduled GitHub tool-catalog refresh in the existing failure channel.
+After a code release, run the existing `*-tool-catalog` Cloud Scheduler job once and verify an
+HTTP 200 and its catalog count. This exercises the actual API identity and configured GitHub App
+without changing credentials, IAM or the weekly schedule.
+
 Deploy the API and Slack worker together so the API's pinned snapshots can be materialized by the
 worker. Existing projects with no selected references remain unchanged. Verify offline fetch,
 authorization, snapshot, read-only and failed-fetch tests before release. For the live owner check,
