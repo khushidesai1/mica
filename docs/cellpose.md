@@ -100,13 +100,17 @@ build alone does not verify GPU access.
 
 Use the coordinated release pipeline with `_VERIFY_CELLPOSE=1`, the CPU base as `_SLACK_BASE`,
 and `_GPU_BASE` / `_GPU_IMAGE` set for the GPU worker. The pipeline uses `E2_HIGHCPU_32` for
-model-loading gates. Before promotion, run `scripts/check_cellpose_gpu.py` on the final GPU image
-in a bounded Batch job for each enabled GPU model with `VERIFY_GPU=1` and
+model-loading gates. When the GPU image, inference or sandbox changes, run
+`scripts/check_cellpose_gpu.py` on the final GPU image in a bounded Batch job with `VERIFY_GPU=1` and
 `VERIFY_GPU_TYPE=t4` or `VERIFY_GPU_TYPE=l4`, and the fake test marker
 `MICA_SANDBOX_PARENT_SENTINEL=sentinel-not-a-credential` in the controller environment.
 The launcher receives only PATH, matching production; the probe verifies that the controller's
 marker is absent from the tool's procfs. It checks the actual device and precision, CUDA
 inside the tool sandbox, isolation and synthetic masks. T4 quota is separate from L4 quota.
+Keep per-hardware inference evidence explicit. Controller-only changes can reuse the exact
+verified worker image and test capacity fallback with simulated provider failures; do not spend
+another deployment waiting on a stockout. Unobserved L4 inference remains a verification gap,
+while compatible T4 execution can proceed under the approved fallback policy.
 
 GPU approvals and startup receipts use `write-access/compute-approvals/`, the existing
 control-plane-only storage prefix. They must never use worker-writable task/project prefixes.

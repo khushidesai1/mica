@@ -77,7 +77,11 @@ When a host or container runtime fails during startup, isolate that boundary wit
 targeted probe before rebuilding the application images. Reuse an already verified immutable
 image when only an operator check changes; lint and validate that check against the actual
 production launch behavior. A verifier-only correction does not require another image build.
-GPU rollout still requires actual CUDA inference and isolation checks on each enabled GPU model.
+Changes to GPU images, inference or isolation still require actual CUDA and sandbox checks.
+Controller-only placement or approval changes can reuse the exact verified worker images after
+contract checks and focused failure/race tests. A provider stockout should exercise compatible
+GPU fallback, rather than block that controller release. Record hardware not yet observed in
+live inference separately; do not claim that a fallback test verifies its scientific execution.
 Run live Slack smoke checks only in the owner's private DM, never in shared project channels.
 Simulate malformed model output, outages, and retry timing locally with fakes; do not inject
 failures into collaborators' conversations. Remove synthetic DM messages after verification.
