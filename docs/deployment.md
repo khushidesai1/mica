@@ -73,6 +73,11 @@ changed behavior. Prefer fakes for large file counts, large object sizes and fai
 Do not run lengthy model conversations or full-scale data transfers for routine releases;
 reserve those for explicit scale validation or a specific unresolved production issue.
 Keep build, authentication and worker compatibility gates, and clean up synthetic outputs.
+When a host or container runtime fails during startup, isolate that boundary with a small
+targeted probe before rebuilding the application images. Reuse an already verified immutable
+image when only an operator check changes; lint and validate that check against the actual
+production launch behavior. A verifier-only correction does not require another image build.
+GPU rollout still requires actual CUDA inference and isolation checks on each enabled GPU model.
 Run live Slack smoke checks only in the owner's private DM, never in shared project channels.
 Simulate malformed model output, outages, and retry timing locally with fakes; do not inject
 failures into collaborators' conversations. Remove synthetic DM messages after verification.

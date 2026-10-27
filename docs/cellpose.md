@@ -94,7 +94,10 @@ Use the coordinated release pipeline with `_VERIFY_CELLPOSE=1`, the CPU base as 
 and `_GPU_BASE` / `_GPU_IMAGE` set for the GPU worker. The pipeline uses `E2_HIGHCPU_32` for
 model-loading gates. Before promotion, run `scripts/check_cellpose_gpu.py` on the final GPU image
 in a bounded Batch job for each enabled GPU model with `VERIFY_GPU=1` and
-`VERIFY_GPU_TYPE=t4` or `VERIFY_GPU_TYPE=l4`. It checks the actual device and precision, CUDA
+`VERIFY_GPU_TYPE=t4` or `VERIFY_GPU_TYPE=l4`, and the fake test marker
+`MICA_SANDBOX_PARENT_SENTINEL=sentinel-not-a-credential` in the controller environment.
+The launcher receives only PATH, matching production; the probe verifies that the controller's
+marker is absent from the tool's procfs. It checks the actual device and precision, CUDA
 inside the tool sandbox, isolation and synthetic masks. T4 quota is separate from L4 quota.
 
 Deploy immutable CPU/GPU image pins together. Enable `AGENT_GPU_TIER_ENABLED`, set

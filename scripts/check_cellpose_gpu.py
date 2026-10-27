@@ -17,6 +17,9 @@ async def main():
     gpu_type = os.environ.get("VERIFY_GPU_TYPE", "")
     if gpu:
         assert gpu_type in {"t4", "l4"}, "Specify the GPU hardware being verified"
+        assert os.environ.get("MICA_SANDBOX_PARENT_SENTINEL") == "sentinel-not-a-credential", (
+            "Start the trusted controller with the fake parent credential for isolation checks"
+        )
     assert os.geteuid() == 65532, "Worker must remain unprivileged"
     capabilities = next(
         line.split()[1]
@@ -75,15 +78,21 @@ async def main():
                 + repr(gpu)
             )
             if gpu:
-                probe += "\nfor environ in Path('/proc').glob('[0-9]*/environ'):\n    try:\n        assert b'sentinel-not-a-credential' not in environ.read_bytes(), 'Parent environment exposed through proc'\n    except (PermissionError, FileNotFoundError, ProcessLookupError):\n        pass"
+                probe += (
+                    "\nfor environ in Path('/proc').glob('[0-9]*/environ'):"
+                    "\n    try:"
+                    "\n        assert b'sentinel-not-a-credential' not in environ.read_bytes(), "
+                    "'Parent environment exposed through proc'"
+                    "\n    except (PermissionError, FileNotFoundError, ProcessLookupError):"
+                    "\n        pass"
+                )
             subprocess.run(
                 args[: start + 1] + [python, "-I", "-c", probe],
                 check=True,
                 timeout=60,
-                env={
-                    "PATH": "/usr/local/bin:/usr/bin:/bin",
-                    "ANTHROPIC_API_KEY": "sentinel-not-a-credential",
-                },
+                # Match segment(): credentials stay in this trusted controller;
+                # the bwrap supervisor and tool both receive a sanitized environment.
+                env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
             )
             try:
                 result = await segment(request, work, work / "data", settings)
