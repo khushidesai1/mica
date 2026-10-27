@@ -979,8 +979,14 @@ class BatchBridge:
             except FileNotFoundError:
                 references = {"snapshots": [], "unavailable": []}
                 references_started = time.monotonic()
-                for repo in sorted(grant.project.reference_repos):
+                available = grant.project.reference_repos | await reference_repos.shared_repos(
+                    self.repository, self.settings
+                )
+                selected = record.get("reference_repos", sorted(grant.project.reference_repos))
+                for repo in selected:
                     try:
+                        if repo not in available:
+                            raise ValueError("Reference repository is no longer available")
                         async with asyncio.timeout(
                             max(0.01, 60 - (time.monotonic() - references_started))
                         ):

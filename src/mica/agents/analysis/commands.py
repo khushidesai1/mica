@@ -306,6 +306,14 @@ def run(
         observability.capture_project(record, grant, target=pid)
         if cmd.name == "repos":
             names = sorted(doc.projects[pid].reference_repos)
+            shared = record.get("shared_reference_repos", [])
+            if shared:
+                return (
+                    "Shared reference repositories (available across projects):\n"
+                    + "\n".join(shared)
+                    + f"\n\nProject defaults for {doc.projects[pid].name}:\n"
+                    + ("\n".join(names) or "None needed; request any shared repository by name.")
+                )
             return f"Reference repositories for {doc.projects[pid].name}:\n" + (
                 "\n".join(names) or "None. An owner can add one in a private Slack conversation."
             )

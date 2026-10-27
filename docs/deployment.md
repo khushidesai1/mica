@@ -317,10 +317,13 @@ After a code release, run the existing `*-tool-catalog` Cloud Scheduler job once
 HTTP 200 and its catalog count. This exercises the actual API identity and configured GitHub App
 without changing credentials, IAM or the weekly schedule.
 
-Deploy the API and Slack worker together so the API's pinned snapshots can be materialized by the
-worker. Existing projects with no selected references remain unchanged. Verify offline fetch,
+The catalog also makes the approved AziziLab repositories discoverable across every project;
+per-project registration is optional. A compute request selects only the references it needs.
+This controller-only selection change uses the existing snapshot format and can retain verified
+worker image pins after compatibility checks. Verify offline fetch,
 authorization, snapshot, read-only and failed-fetch tests before release. For the live owner check,
-add a permitted repository in your own private Slack conversation, confirm the selection, and ask
+ask about a catalog repository from a project with no default references, without registering it,
+or add a permitted default in your own private Slack conversation and confirm the selection. Ask
 about a known source parameter; the answer should cite `inputs/repos/<repo>/...` and its pinned
 commit. Remove the selection and confirm a subsequent compute request has no restored reference
 folder. Do not send synthetic messages to another user's conversation.

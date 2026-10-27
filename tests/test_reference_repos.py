@@ -15,6 +15,7 @@ from mica.agents.analysis import (
     command_approval,
     command_intent,
     commands,
+    direct,
     memory_workspace,
     observability,
     project_memory,
@@ -25,6 +26,102 @@ from mica.agents.analysis import (
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.registry import ProjectEntry, Registry
 from mica.agents.analysis.runner import build_options
+from mica.models import ToolRecord, ToolStatus
+
+
+async def catalog_repo(agent, name="nympheas", number=1):
+    await agent.repository.put_tool(
+        ToolRecord(
+            id=f"github-{number}",
+            name=name,
+            source_url=f"https://github.com/azizilab/{name}",
+            version="a" * 12,
+            commit_sha="a" * 40,
+            install_recipe="catalog metadata only",
+            status=ToolStatus.CATALOGED,
+        )
+    )
+
+
+async def test_shared_catalog_repo_reaches_worker_without_project_registration(bridge, monkeypatch):  # noqa: F811
+    await catalog_repo(bridge)
+    await catalog_repo(bridge, "decipher", 2)
+    before = Registry(bridge.store).load().projects[bridge.pid]
+    assert not before.reference_repos
+    decide = AsyncMock(
+        return_value=direct.Decision(
+            route="compute",
+            reply="Inspect the source and write the README.",
+            reference_repos=["azizilab/nympheas"],
+        )
+    )
+    monkeypatch.setattr(direct, "decide", decide)
+    fetch = AsyncMock(
+        return_value=refs.RepoSnapshot(
+            repo="azizilab/nympheas",
+            commit="a" * 40,
+            files={"src/preprocess.py": "def qc(min_counts=20): pass\n"},
+        )
+    )
+    monkeypatch.setattr(refs, "fetch", fetch)
+    eid = await bridge.accept(payload(text="Read nympheas and document basic preprocessing"))
+    assert await bridge.process(eid, 0) == "running"
+    assert decide.call_args.args[2]["reference_repos"] == [
+        "azizilab/decipher",
+        "azizilab/nympheas",
+    ]
+    fetch.assert_awaited_once_with(bridge.settings, "azizilab/nympheas")
+    manifest = json.loads(bridge.store.get(f"tasks/slack-analysis/events/{eid}/request.json")[0])
+    assert manifest["reference_repos"][0]["files"]["src/preprocess.py"].startswith("def qc")
+    assert Registry(bridge.store).load().projects[bridge.pid] == before
+
+
+async def test_router_cannot_select_a_repo_outside_available_catalog(bridge, monkeypatch):  # noqa: F811
+    await catalog_repo(bridge)
+    monkeypatch.setattr(
+        direct,
+        "decide",
+        AsyncMock(
+            return_value=direct.Decision(
+                route="compute",
+                reply="Read a repo.",
+                reference_repos=["azizilab/not-approved"],
+            )
+        ),
+    )
+    fetch = AsyncMock()
+    monkeypatch.setattr(refs, "fetch", fetch)
+    eid = await bridge.accept(payload(text="Inspect code"))
+    assert await bridge.process(eid, 0) == "failed"
+    fetch.assert_not_called()
+    bridge.test_client.create_job.assert_not_called()
+
+
+async def test_repos_lists_shared_catalog_without_owner_setup(bridge):  # noqa: F811
+    await catalog_repo(bridge)
+    eid = await bridge.accept(payload(text="repos"))
+    assert await bridge.process(eid, 0) == "complete"
+    assert "azizilab/nympheas" in bridge.test_slack.chat_update.call_args.kwargs["text"]
+    assert "available across projects" in bridge.test_slack.chat_update.call_args.kwargs["text"]
+    bridge.test_client.create_job.assert_not_called()
+
+
+async def test_shared_catalog_excludes_other_org_and_non_catalog_entries(bridge):  # noqa: F811
+    await catalog_repo(bridge)
+    for ident, url in [
+        ("github-2", "https://github.com/another/private"),
+        ("custom", "https://github.com/azizilab/not-approved"),
+    ]:
+        await bridge.repository.put_tool(
+            ToolRecord(
+                id=ident,
+                name="other",
+                source_url=url,
+                version="1",
+                install_recipe="none",
+            )
+        )
+    assert await refs.shared_repos(bridge.repository, bridge.settings) == {"azizilab/nympheas"}
 
 
 @pytest.mark.parametrize(

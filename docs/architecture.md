@@ -86,15 +86,21 @@ CAS-protected outbox. Mailbox secrets never reach the science worker or model pr
 
 ### Project reference repositories
 
-Project owners and co-owners can attach an AziziLab repository through a private Slack confirmation
+AziziLab repositories in the GitHub App catalog are available read-only across all projects,
+without another project-owner registration. The router sees the shared catalog and selects up
+to five repositories needed by a compute request. Catalog metadata discovers the repositories;
+each content fetch still checks the App's current installation access with a scoped token.
+
+Project owners and co-owners can also set default references through a private Slack confirmation
 (`repos add azizilab/repo [project]` or “add azizilab/repo as a reference for this project”).
-`repos [project]` lists selections; `repos remove azizilab/repo [project]` removes one.
+`repos [project]` lists shared repositories and project defaults;
+`repos remove azizilab/repo [project]` removes a default, not the shared catalog entry.
 Both exact and natural-language changes require the same owner authorization and confirmation;
 email can read selections but changes happen in private Slack. Adding a repository exposes its
 selected content to authorized project members and published channel audiences; it never changes
 project membership or grants GitHub write permissions.
 
-Before submitting compute, the control plane resolves each declared repository's default branch
+Before submitting compute, the control plane resolves each selected repository's default branch
 to an immutable commit and reads eligible blobs with a short-lived GitHub App installation token
 restricted to that repository and `contents:read`. The installation's approved repository selection
 is the administrator-controlled ceiling. The API never uses the project-memory repository token
@@ -102,7 +108,7 @@ for this access, and no GitHub key or token enters a worker manifest, workspace 
 Workers receive read-only `inputs/repos/<repo>/` snapshots with `.pin` commit provenance and
 `.snapshot.json` listing included paths and omissions. Repository text remains untrusted input.
 
-Snapshots are partial by design: at most five repositories per project, 100 files and 2 MiB per
+Snapshots are partial by design: at most five repositories per request, 100 files and 2 MiB per
 repository, 256 KiB per file. Only source, configuration, documentation and UTF-8 notebooks qualify;
 binary files, links, submodules, hidden paths, vendored directories, secret-like content and
 oversized files are skipped. Notebook outputs and embedded attachments are removed. A truncated

@@ -16,6 +16,8 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, Field
 
+from mica.storage.base import Repository
+
 from . import project_memory
 from .config import Settings
 
@@ -43,6 +45,23 @@ SUFFIXES = {
     ".cfg",
 }
 NAMES = {"Dockerfile", "Makefile", "Snakefile", "LICENSE"}
+
+
+async def shared_repos(repository: Repository, settings: Settings) -> set[str]:
+    """Discover lab-wide references from the existing App catalog, without credentials."""
+    names = set()
+    prefix = "https://github.com/"
+    for tool in await repository.list_tools():
+        if re.fullmatch(r"github-[0-9]+", tool.id) and tool.source_url.startswith(prefix):
+            try:
+                names.add(
+                    valid_repo(tool.source_url.removeprefix(prefix), settings.reference_github_org)
+                )
+            except ValueError:
+                continue
+    # Catalog entries can outlive installation access. fetch() rechecks the App's current
+    # selection with a token narrowed to one repo before any content reaches a worker.
+    return names
 
 
 def valid_repo(value: str, org: str = "azizilab") -> str:

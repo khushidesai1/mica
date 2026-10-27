@@ -21,6 +21,7 @@ from . import (
     commands,
     observability,
     project_memory,
+    reference_repos,
     surface,
     thread_history,
     tiers,
@@ -109,9 +110,12 @@ For requested analyses, choose compute after any input inventory needed for sizi
 Read-only file contents require a worker unless supplied below as an attachment head or media
 block. Listing names
 and object sizes does not. Never invent results or claim to see content that was not supplied.
-Project reference_repos lists owner-declared read-only code repositories. Their contents are
-available only to compute workers at inputs/repos/, as bounded snapshots; route questions that
-require inspecting their code or parameters to compute. Do not claim to have read them here.
+reference_repos lists available read-only code repositories, including the lab-wide GitHub App
+catalog shared across every project. They do not need another project-owner registration.
+For code/parameter inspection, route to compute and set reference_repos in your decision to
+the needed full repo names from that list (at most five). Workers receive bounded snapshots at
+inputs/repos/. Project defaults are used when no repos are selected. Do not claim to have read
+repo contents here or confuse read-only source access with an installed runnable package.
 Files: attachments lists this thread's files, both what people attached and what you delivered,
 with ids, names, kinds, sizes, and turns. Files on this message have current: true. Images and
 PDFs you can see follow this JSON as content blocks labeled with their ids. Text/table files
@@ -223,6 +227,11 @@ class Decision(BaseModel):
     route: Literal["reply", "inventory", "view", "compute", "transfer"]
     transfer_request: TransferRequest | None = None
     view_ids: list[str] = Field(default_factory=list, max_length=4)
+    reference_repos: list[Annotated[str, Field(max_length=150)]] = Field(
+        default_factory=list,
+        max_length=5,
+        description="Available full repository names needed by this compute request.",
+    )
     reply: str = Field(min_length=1, max_length=3500)
     guide: str | None = Field(
         default=None,
@@ -626,6 +635,10 @@ async def dispatch_command(
             raise ValueError("Only the project owner can change its data location.")
         await asyncio.to_thread(bridge.resolve_data, record, uri=cmd.args[1])
     if cmd.name != "init":
+        if cmd.name == "repos":
+            record["shared_reference_repos"] = sorted(
+                await reference_repos.shared_repos(bridge.repository, bridge.settings)
+            )
         reply = await asyncio.to_thread(
             commands.run, cmd, grant, registry, bridge.app, record, event_id, bridge.settings
         )
@@ -969,7 +982,10 @@ async def handle(
             "data_path": ctx["data_path"],
             "data_uri": grant.project.data_uri,
             "project_name": grant.project.name,
-            "reference_repos": sorted(grant.project.reference_repos),
+            "reference_repos": sorted(
+                grant.project.reference_repos
+                | await reference_repos.shared_repos(bridge.repository, bridge.settings)
+            ),
             "transfer_tool": await transfer_service.context(grant.project_id, grant.email),
             "analysis_tools": [spatial_analysis_capability()],
             "cellpose_tools": {
@@ -1175,6 +1191,18 @@ async def handle(
     if decision.route == "compute":
         from .tiers import launch_choice
 
+        selected = {
+            reference_repos.valid_repo(name, bridge.settings.reference_github_org)
+            for name in decision.reference_repos
+        } or current.project.reference_repos
+        available = current.project.reference_repos | await reference_repos.shared_repos(
+            bridge.repository, bridge.settings
+        )
+        if not selected <= available:
+            raise ValueError(
+                "The requested repository is not in Mica's available reference catalog."
+            )
+        record["reference_repos"] = sorted(selected)
         record["launch"] = launch_choice(decision.worker, bridge.settings)
         record["route"] = "compute"
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
