@@ -3,16 +3,46 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import time
 from importlib.metadata import version
 from pathlib import Path
 
 
+def validate_shape(shape, kind):
+    if (
+        kind not in "uif"
+        or len(shape) not in (2, 3)
+        or min(shape) < 1
+        or math.prod(shape) > 64_000_000
+    ):
+        raise ValueError("Use one 2D numeric image crop with at most 64 million values")
+
+
+def load_image(source):
+    import numpy as np
+    import tifffile
+
+    if source.suffix.lower() == ".npy":
+        image = np.load(source, allow_pickle=False, mmap_mode="r")
+        validate_shape(image.shape, image.dtype.kind)
+        return image
+    with tifffile.TiffFile(source) as handle:
+        series = handle.series[0]
+        validate_shape(series.shape, series.dtype.kind)
+        return series.asarray()
+
+
 def run(request):
     os.environ["CELLPOSE_LOCAL_MODELS_PATH"] = request["model_dir"]
     import numpy as np
     import tifffile
+
+    image = load_image(Path(request["input_path"]))
+    if not np.isfinite(image).all():
+        raise ValueError("Image contains non-finite values")
+
     import torch
     from cellpose import models
 
@@ -23,15 +53,6 @@ def run(request):
     if gpu and not torch.cuda.is_available():
         raise RuntimeError("CUDA is unavailable inside the segmentation sandbox")
     torch.set_num_threads(min(8, os.cpu_count() or 1))
-    source = Path(request["input_path"])
-    if source.suffix.lower() == ".npy":
-        image = np.load(source, allow_pickle=False)
-    else:
-        image = tifffile.imread(source)
-    if image.dtype.kind not in "uif" or image.ndim not in (2, 3) or image.size > 64_000_000:
-        raise ValueError("Use one 2D numeric image crop with at most 64 million values")
-    if not np.isfinite(image).all():
-        raise ValueError("Image contains non-finite values")
     if image.ndim == 3:
         axis = request["channel_axis"]
         if axis is None:
