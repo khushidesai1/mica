@@ -63,6 +63,9 @@ async def main():
                 raise
             assert result["version"] == version and result["model"] == model
             assert result["device"] == ("gpu" if gpu else "cpu")
+            assert result["model_device"] == ("cuda" if gpu else "cpu")
+            if gpu:
+                assert "L4" in result["gpu_name"]
             assert result["input_shape"] == [64, 64]
             print(
                 json.dumps(
@@ -70,6 +73,8 @@ async def main():
                         "version": version,
                         "model": model,
                         "device": result["device"],
+                        "model_device": result["model_device"],
+                        "gpu_name": result["gpu_name"],
                         "sandbox_segmentation": "passed",
                         "isolation": "passed",
                         "cell_count": result["cell_count"],

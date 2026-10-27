@@ -78,6 +78,9 @@ def run(request):
     else:
         model = models.Cellpose(model_type="cyto3", gpu=gpu)
         channels = [1, 2] if image.ndim == 3 and image.shape[-1] == 2 else [0, 0]
+    actual_device = model.device.type
+    if actual_device != ("cuda" if gpu else "cpu"):
+        raise RuntimeError("Cellpose selected a different device; fallback is disabled")
     started = time.monotonic()
     result = model.eval(
         image,
@@ -99,6 +102,8 @@ def run(request):
         "model": request["model"],
         "model_sha256": weight_hash,
         "device": request["device"],
+        "model_device": actual_device,
+        "gpu_name": torch.cuda.get_device_name(model.device) if gpu else None,
         "torch_version": torch.__version__,
         "input_shape": list(image.shape),
         "cell_count": int(len(np.unique(masks)) - (0 in masks)),
