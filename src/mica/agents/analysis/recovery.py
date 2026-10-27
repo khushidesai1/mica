@@ -15,7 +15,7 @@ from pydantic import Field
 
 from .config import CHECKPOINT_PREFIX, Settings
 from .storage import Storage
-from .tiers import ORDER, TIERS, Record, resolve
+from .tiers import ORDER, TIERS, Record, resolve, selected_gpu
 
 if TYPE_CHECKING:
     from .batch import BatchBridge
@@ -234,11 +234,7 @@ async def prepare_attempt(
 def worker_manifest(record: dict[str, Any], settings: Settings) -> dict[str, Any]:
     return {
         "recovery": {
-            **(
-                {"gpu_type": record["launch"].get("gpu_type", "l4")}
-                if record["tier"] == "gpu"
-                else {}
-            ),
+            **({"gpu_type": selected_gpu(record)} if record["tier"] == "gpu" else {}),
             **{
                 key: record[key]
                 for key in (

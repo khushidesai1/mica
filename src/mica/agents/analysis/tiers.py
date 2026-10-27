@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -80,6 +80,16 @@ def gpu_estimate(settings: Settings, shape: Tier) -> float:
     )
 
 
+def gpu_choices(record: dict[str, Any]) -> list[str]:
+    """Approved alternatives; old requests remain bound to their single GPU."""
+    launch = record["launch"]
+    return list(launch.get("gpu_candidates", [launch.get("gpu_type", "l4")]))
+
+
+def selected_gpu(record: dict[str, Any]) -> str:
+    return str(record.get("gpu_type", record.get("launch", {}).get("gpu_type", "l4")))
+
+
 def resolve(name: str, settings: Settings, gpu_type: str = "l4") -> Tier:
     if name == "gpu":
         if not settings.gpu_tier_enabled or not settings.gpu_image:
@@ -105,23 +115,40 @@ def launch_choice(worker: WorkerChoice | None, settings: Settings) -> dict[str, 
     if worker.category != "analysis" and tier == "standard" and not worker.tier_explicit:
         tier = settings.launch_heavy_tier
     gpu_type = worker.gpu_type or settings.gpu_default_type
-    resolve(tier, settings, gpu_type)
     if worker.gpu_type and tier != "gpu":
         raise ValueError("A GPU model requires the GPU worker tier.")
     constraints: dict[str, object] = {}
     if tier == "gpu":
         if worker.max_tier:
             raise ValueError("A GPU request cannot satisfy an explicit CPU-only tier ceiling.")
+        candidates = [gpu_type] + (
+            [name for name in available_gpus(settings) if name != gpu_type]
+            if worker.allow_gpu_fallback
+            else []
+        )
+        candidates = [
+            name
+            for name in candidates
+            if name in available_gpus(settings)
+            and GPU_TIERS[name].gpu_memory_gib >= worker.min_gpu_memory_gib
+        ]
+        if not candidates:
+            resolve(tier, settings, gpu_type)
+            raise ValueError("No enabled GPU satisfies this request's memory requirement.")
         mode = "SPOT" if worker.on_demand is False else "STANDARD"
         return {
             "tier": "gpu",
-            "gpu_type": gpu_type,
+            "gpu_type": candidates[0],
+            "requested_gpu_type": gpu_type,
+            "gpu_candidates": candidates,
+            "min_gpu_memory_gib": worker.min_gpu_memory_gib,
             "provisioning": mode,
             "category": worker.category,
             "reason": worker.reason,
             "constraints": {"provisioning": mode},
             **({"workload": worker.workload} if worker.workload else {}),
         }
+    resolve(tier, settings, gpu_type)
     if worker.max_tier:
         constraints["max_tier"] = worker.max_tier
         if ORDER.index(tier) > ORDER.index(worker.max_tier):

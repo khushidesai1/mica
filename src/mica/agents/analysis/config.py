@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     gpu_tier_enabled: bool = False
     gpu_types: str = Field(default="t4,l4", pattern=r"^(?:t4|l4)(?:,(?:t4|l4))*$")
     gpu_default_type: Literal["t4", "l4"] = "t4"
+    gpu_queue_wait_seconds: int = Field(default=600, ge=60, le=3600)
     gpu_image: str = Field(default="", pattern=r"^(?:[a-z0-9./_-]+@sha256:[0-9a-f]{64})?$")
     gpu_max_seconds: int = Field(default=7200, ge=600, le=43200)
     gpu_hourly_estimate_usd: float = Field(default=2.0, gt=0, le=100)

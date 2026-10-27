@@ -46,10 +46,18 @@ The optional `gpu` tier supports a per-request `gpu_type` of `t4` or `l4`:
 | T4 | `n1-standard-8` + one `nvidia-tesla-t4` | 16 GiB | 8 / 30 GiB | 500 GB |
 | L4 | `g2-standard-8` | 24 GiB | 8 / 32 GiB | 500 GB |
 
-Ask “Run Cellpose-SAM on a T4” or “Use an L4 for this segmentation.” Mica honors an explicit
-model; the default for an unspecified GPU is T4. The router sees the currently enabled choices
-and can select L4 for work needing more GPU memory. A hardware change requires a new confirmed
-request; Spot retries retain the approved model. GPU eligibility is separate from CPU tier
+Ask “Run Cellpose-SAM on a T4” or “Prefer L4 for this segmentation.” GPU choices are preferences
+by default; the confirmation covers the preferred GPU and compatible alternatives, at the highest
+of their hourly estimates. If the provider reports a capacity error, or a job remains queued for
+`AGENT_GPU_QUEUE_WAIT_SECONDS` (default 600), Mica tries the alternative once within the original
+time/model allowance. It confirms deletion of the first job before starting another and reports
+the actual GPU. An atomic control-plane receipt prevents fallback once worker credentials have
+been issued, so computation cannot run twice. Spot restarts retain the selected hardware.
+
+Say “L4 only” to require that hardware. A known requirement above 16 GiB excludes T4. The default
+preference is T4; if a preferred GPU is disabled, Mica offers an enabled compatible GPU in the
+initial confirmation. Existing approvals remain bound to their original choices. GPU eligibility
+is separate from CPU tier
 ceilings. CPU jobs never escalate automatically to GPU, and GPU jobs never resize.
 
 SAM uses FP32 on T4 and BF16 on GPUs with native BF16 support, including L4. CPU inference
@@ -100,7 +108,11 @@ The launcher receives only PATH, matching production; the probe verifies that th
 marker is absent from the tool's procfs. It checks the actual device and precision, CUDA
 inside the tool sandbox, isolation and synthetic masks. T4 quota is separate from L4 quota.
 
-Deploy immutable CPU/GPU image pins together. Enable `AGENT_GPU_TIER_ENABLED`, set
+GPU approvals and startup receipts use `write-access/compute-approvals/`, the existing
+control-plane-only storage prefix. They must never use worker-writable task/project prefixes.
+
+Deploy immutable CPU/GPU image pins together when changing worker code. Controller-only placement
+updates can retain the verified worker images after compatibility checks. Enable `AGENT_GPU_TIER_ENABLED`, set
 `AGENT_GPU_IMAGE` to the verified digest, and set `AGENT_GPU_TYPES` to the comma-separated models
 whose live checks passed. Set `AGENT_GPU_DEFAULT_TYPE` to an enabled model (default `t4`).
 Configure `AGENT_GPU_MAX_SECONDS` and the operator-reviewed hourly compute/disk estimates:

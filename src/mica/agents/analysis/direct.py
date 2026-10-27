@@ -183,10 +183,12 @@ Cellpose-SAM is a separate versioned segmentation tool. For new Cellpose-SAM seg
 select gpu when gpu_available is true, unless the user explicitly requests CPU. The application
 will obtain run-specific confirmation before allocating a GPU. Existing-result questions or
 plots do not need a GPU. Cellpose 3 remains available and is never silently replaced by SAM.
-Set gpu_type to t4 or l4, honoring the user's explicit choice. Choose only from gpu_types in
-context: T4 has 16 GiB GPU memory and L4 has 24 GiB. Prefer T4 for bounded crops that fit;
-choose L4 when the workload needs its extra memory. Do not substitute for an explicit GPU
-choice that is unavailable; explain availability. Hardware changes need a new confirmed run.
+Set gpu_type to the preferred t4 or l4: T4 has 16 GiB GPU memory and L4 has 24 GiB.
+Prefer T4 for bounded crops that fit. GPU preferences allow an available alternative by default;
+the confirmation covers the alternatives and Mica reports the actual GPU used. Set
+allow_gpu_fallback=false only for an explicit strict hardware requirement. Set
+min_gpu_memory_gib when the workload has an established minimum GPU memory requirement;
+work needing more than 16 GiB must not fall back to T4. Do not invent a memory requirement.
 If GPU is unavailable, explain it; CPU Cellpose-SAM is available for bounded crops but slower.
 """
 
@@ -195,6 +197,8 @@ class WorkerChoice(BaseModel):
     category: Literal["training", "full_segmentation", "full_ingest", "analysis"]
     tier: Literal["standard", "large", "xlarge", "gpu"] = "standard"
     gpu_type: Literal["t4", "l4"] | None = None
+    allow_gpu_fallback: bool = True
+    min_gpu_memory_gib: int = Field(default=0, ge=0, le=24)
     on_demand: bool | None = None
     workload: str = Field(default="", max_length=200)
     tier_explicit: bool = False

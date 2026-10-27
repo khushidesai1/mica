@@ -14,7 +14,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from . import access, surface
 from .storage import Conflict, Storage
-from .tiers import gpu_estimate, resolve
+from .tiers import gpu_choices, gpu_estimate, resolve, selected_gpu
 
 if TYPE_CHECKING:
     from .batch import BatchBridge
@@ -41,7 +41,8 @@ class Approval(BaseModel):
 def key(event_id: str) -> str:
     if not re.fullmatch(r"[a-f0-9]{32}", event_id):
         raise ValueError("Invalid GPU request")
-    return f"compute-approvals/{event_id}.json"
+    # Existing control-plane-only prefix; task/project prefixes are worker-writable.
+    return f"write-access/compute-approvals/{event_id}.json"
 
 
 def load(storage: Storage, event_id: str) -> tuple[Approval, str] | None:
@@ -59,7 +60,8 @@ def choices(record: dict[str, Any]) -> str:
 def validate(
     bridge: BatchBridge, storage: Storage, record: dict[str, Any], approval: Approval
 ) -> None:
-    shape = resolve("gpu", bridge.settings, record["launch"].get("gpu_type", "l4"))
+    shapes = [resolve("gpu", bridge.settings, name) for name in gpu_choices(record)]
+    shape = shapes[0]
     current = access.resolve(bridge.app, bridge.settings, storage, record)
     if (
         not current.allowed
@@ -73,14 +75,16 @@ def validate(
         choices(record) != approval.choices
         or bridge.settings.gpu_image != approval.image
         or shape.max_seconds != approval.seconds
-        or gpu_estimate(bridge.settings, shape) != approval.hourly_estimate
+        or max(gpu_estimate(bridge.settings, item) for item in shapes) != approval.hourly_estimate
+        or selected_gpu(record) not in gpu_choices(record)
         or bridge.settings.max_budget_usd_per_turn != approval.model_allowance
     ):
         raise ValueError("GPU execution choices changed. Request fresh confirmation.")
     if record.get("recovery_version") and (
         record["tier"] != "gpu"
         or record["provisioning"] != record["launch"]["provisioning"]
-        or record["attempt"] > 1
+        or record.get("gpu_fallback_count", 0) > len(shapes) - 1
+        or record["attempt"] > 1 + record.get("gpu_fallback_count", 0)
         or record["resize_count"]
         or record["request_deadline"] > approval.approved_at + approval.seconds + 1
     ):
@@ -108,7 +112,10 @@ async def ready(
             choices=choices(record),
             image=bridge.settings.gpu_image,
             seconds=shape.max_seconds,
-            hourly_estimate=gpu_estimate(bridge.settings, shape),
+            hourly_estimate=max(
+                gpu_estimate(bridge.settings, resolve("gpu", bridge.settings, name))
+                for name in gpu_choices(record)
+            ),
             model_allowance=bridge.settings.max_budget_usd_per_turn,
             expires_at=time.time() + 3600,
         )
@@ -138,18 +145,33 @@ async def ready(
         return False
     mode = record["launch"]["provisioning"]
     compute = approval.hourly_estimate * approval.seconds / 3600
+    alternatives = gpu_choices(record)[1:]
+    fallback = (
+        "If unavailable, automatically try "
+        + ", ".join("NVIDIA " + name.upper() for name in alternatives)
+        + " within this same time and cost estimate. "
+        if alternatives
+        else ""
+    )
+    requested = record["launch"].get("requested_gpu_type", shape.gpu_type)
+    if requested != shape.gpu_type:
+        fallback = (
+            f"{str(requested).upper()} is unavailable; using {str(shape.gpu_type).upper()}. "
+            + fallback
+        )
     text = (
         f"Approve this GPU run on 1 NVIDIA {str(shape.gpu_type).upper()} "
         f"({shape.gpu_memory_gib} GiB GPU memory, {shape.vcpus} CPUs, "
         f"{shape.memory_gib} GiB RAM)? "
-        f"Time allowance: {approval.seconds / 3600:g} hours including startup/retries. "
+        + fallback
+        + f"Time allowance: {approval.seconds / 3600:g} hours including startup/retries. "
         f"Estimated compute and disk: ${compute:.2f}; "
         f"model allowance: ${approval.model_allowance:.2f}. "
         "This is an estimate, not a billing cap. Startup can take several minutes. "
         + (
             "Spot may restart once on Spot within the same allowance."
             if mode == "SPOT"
-            else "On-demand; no automatic restart or resize."
+            else "On-demand; no restart after computation begins and no resize."
         )
     )
     record.update(status="awaiting_approval", gpu_approval=True)

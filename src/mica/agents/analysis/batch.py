@@ -26,6 +26,7 @@ from . import (
     access,
     amendments,
     compute_approval,
+    gpu_capacity,
     memory_tasks,
     observability,
     project_memory,
@@ -42,7 +43,7 @@ from .data_links import init_args
 from .identity import IdentityUnavailable
 from .slack_format import chunks, status_blocks
 from .storage import GCSStorage, Storage
-from .tiers import Provisioning
+from .tiers import Provisioning, selected_gpu
 
 log = logging.getLogger(__name__)
 STATUS_PHASES = {"received", "waiting", "starting", "replying", "cancelling"}
@@ -923,7 +924,7 @@ class BatchBridge:
                 from .tiers import GPU_TIERS, TIERS
 
                 shape = (
-                    GPU_TIERS[record.get("launch", {}).get("gpu_type", "l4")]
+                    GPU_TIERS[selected_gpu(record)]
                     if record["tier"] == "gpu"
                     else TIERS[record["tier"]]
                 )
@@ -1069,7 +1070,7 @@ class BatchBridge:
                 await self.notify(event_id, record, "failed", str(exc))
                 return
             await self.repository.set_connector_state(f"claude-event:{event_id}", record)
-            with suppress(AlreadyExists):
+            try:
                 await asyncio.to_thread(
                     client.create_job,
                     parent=parent,
@@ -1086,7 +1087,7 @@ class BatchBridge:
                         ),
                         event_id,
                         set(record["mount_buckets"]) if "mount_buckets" in record else None,
-                        gpu_type=record.get("launch", {}).get("gpu_type", "l4"),
+                        gpu_type=selected_gpu(record),
                         **(
                             {
                                 "tier": record["tier"],
@@ -1100,13 +1101,38 @@ class BatchBridge:
                         ),
                     ),
                 )
+            except AlreadyExists:
+                pass
+            except GoogleAPICallError as exc:
+                if not gpu_capacity.capacity_error(str(exc)):
+                    raise
+                try:
+                    existing = await asyncio.to_thread(client.get_job, name=name)
+                except NotFound:
+                    existing = None
+                if await gpu_capacity.fallback(
+                    self,
+                    event_id,
+                    record,
+                    client,
+                    existing,
+                    existing.status.state.name if existing else "MISSING",
+                    submission_error=str(exc),
+                ):
+                    return
+                raise
             record.update(status="running", started=record.get("submitted", time.time()))
             await self.repository.set_connector_state(f"claude-event:{event_id}", record)
         try:
             job = await asyncio.to_thread(client.get_job, name=name)
             state = job.status.state.name
         except NotFound:
+            job = None
             state = "FAILED"
+        if await gpu_capacity.fallback(
+            self, event_id, record, client, job, state if job else "MISSING"
+        ):
+            return
         if (
             record.get("cancel_requested")
             and record.get("cooperative_stop")

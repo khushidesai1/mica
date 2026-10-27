@@ -1,13 +1,24 @@
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import pytest
-from google.api_core.exceptions import NotFound
+from fastapi import HTTPException, Response
+from google.api_core.exceptions import Forbidden, NotFound, ServiceUnavailable
+from google.cloud import batch_v1
 from test_analysis_batch import bridge, payload  # noqa: F401
 
-from mica.agents.analysis import compute_approval, direct, gpu_runtime, recovery, tiers
+from mica.agents.analysis import (
+    compute_approval,
+    direct,
+    gpu_capacity,
+    gpu_runtime,
+    recovery,
+    tiers,
+)
 from mica.agents.analysis.batch import GPU_BOOT_IMAGE, job_spec
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.recovery_tools import RecoveryManager
+from mica.api import slack_analysis
 
 GPU_IMAGE = "us-docker.pkg.dev/project/images/gpu@sha256:" + "b" * 64
 
@@ -204,7 +215,11 @@ async def test_gpu_hardware_choice_reaches_approval_and_submission(
                 route="compute",
                 reply="Segment this crop.",
                 worker=direct.WorkerChoice(
-                    category="analysis", tier="gpu", gpu_type=gpu_type, reason="Requested GPU model"
+                    category="analysis",
+                    tier="gpu",
+                    gpu_type=gpu_type,
+                    allow_gpu_fallback=False,
+                    reason="Requested GPU model",
                 ),
             )
         ),
@@ -230,13 +245,17 @@ async def test_gpu_hardware_choice_reaches_approval_and_submission(
     assert recovery.worker_manifest(saved, gpu.settings)["recovery"]["gpu_type"] == gpu_type
 
 
-def test_explicit_gpu_choice_is_not_replaced_by_an_enabled_model():
+def test_gpu_preference_can_use_available_model_but_strict_choice_is_preserved():
     settings = Settings(_env_file=None, gpu_tier_enabled=True, gpu_image=GPU_IMAGE, gpu_types="t4")
     assert tiers.available_gpus(settings) == ["t4"]
     with pytest.raises(ValueError, match="l4 is unavailable"):
         tiers.launch_choice(
             direct.WorkerChoice(
-                category="analysis", tier="gpu", gpu_type="l4", reason="Use L4 please"
+                category="analysis",
+                tier="gpu",
+                gpu_type="l4",
+                allow_gpu_fallback=False,
+                reason="Use L4 only",
             ),
             settings,
         )
@@ -252,6 +271,168 @@ def test_explicit_gpu_choice_is_not_replaced_by_an_enabled_model():
         settings,
     )
     assert choice["gpu_type"] == "t4"
+    choice = tiers.launch_choice(
+        direct.WorkerChoice(category="analysis", tier="gpu", gpu_type="l4", reason="Prefer L4"),
+        settings,
+    )
+    assert choice["gpu_type"] == "t4" and choice["requested_gpu_type"] == "l4"
+
+
+def test_gpu_memory_requirement_excludes_smaller_fallback():
+    settings = Settings(_env_file=None, gpu_tier_enabled=True, gpu_image=GPU_IMAGE)
+    choice = tiers.launch_choice(
+        direct.WorkerChoice(
+            category="analysis",
+            tier="gpu",
+            gpu_type="l4",
+            min_gpu_memory_gib=20,
+            reason="Measured twenty GiB requirement",
+        ),
+        settings,
+    )
+    assert choice["gpu_candidates"] == ["l4"]
+
+
+def test_approval_and_start_receipts_use_existing_control_only_prefix():
+    assert compute_approval.key("a" * 32) == "write-access/compute-approvals/" + "a" * 32 + ".json"
+
+
+async def approved(gpu):
+    event_id, record = await start(gpu)
+    assert "automatically try NVIDIA T4" in gpu.test_slack.chat_update.call_args.kwargs["text"]
+    await compute_approval.handle(gpu, gpu.store, click(event_id, record))
+    await gpu.process(event_id, record["tick"])
+    return event_id, await gpu.repository.get_connector_state("claude-event:" + event_id)
+
+
+@pytest.mark.parametrize("trigger", ["capacity", "timeout"])
+async def test_l4_falls_back_once_after_deletion_preserving_approval_and_limits(gpu, trigger):
+    event_id, record = await approved(gpu)
+    original_job, deadline = record["job"], record["request_deadline"]
+    approval = compute_approval.load(gpu.store, event_id)[0]
+    if trigger == "timeout":
+        record["submitted"] -= gpu.settings.gpu_queue_wait_seconds + 1
+    job = batch_v1.Job(
+        status=batch_v1.JobStatus(
+            state="SCHEDULED",
+            status_events=[
+                batch_v1.StatusEvent(
+                    description="ZONE_RESOURCE_POOL_EXHAUSTED"
+                    if trigger == "capacity"
+                    else "Scheduling"
+                )
+            ],
+        )
+    )
+
+    gpu.test_client.get_job.side_effect = lambda **kw: job
+    await gpu.repository.set_connector_state("claude-event:" + event_id, record)
+    assert await gpu.process(event_id, record["tick"]) == "running"
+    gpu.test_client.delete_job.assert_called_once_with(name=original_job)
+    assert gpu.test_client.create_job.call_count == 1  # No overlap with the old job.
+    assert not gpu_capacity.claim_start(gpu.store, event_id, 0, "start")
+    # Deletion in progress cannot create another job, including across duplicate polls.
+    job.status.state = "DELETION_IN_PROGRESS"
+    record = await gpu.repository.get_connector_state("claude-event:" + event_id)
+    await gpu.process(event_id, record["tick"])
+    assert gpu.test_client.create_job.call_count == 1
+    gpu.test_client.get_job.side_effect = NotFound("deleted")
+    record = await gpu.repository.get_connector_state("claude-event:" + event_id)
+    assert await gpu.process(event_id, record["tick"]) == "pending"
+    record = await gpu.repository.get_connector_state("claude-event:" + event_id)
+    assert record["gpu_type"] == "t4" and record["attempt"] == 1
+    assert record["request_deadline"] == deadline and record["model_spent"] == 0
+    assert compute_approval.load(gpu.store, event_id)[0] == approval
+    gpu.test_client.get_job.side_effect = lambda **kw: batch_v1.Job(
+        status=batch_v1.JobStatus(state="RUNNING")
+    )
+    assert await gpu.process(event_id, record["tick"]) == "running"
+    created = gpu.test_client.create_job.call_args.kwargs
+    assert created["job_id"].endswith("-r1")
+    assert created["job"].allocation_policy.instances[0].policy.machine_type == "n1-standard-8"
+    assert created["job"].task_groups[0].task_spec.max_run_duration.total_seconds() <= 7200
+    saved = await gpu.repository.get_connector_state("claude-event:" + event_id)
+    assert recovery.worker_manifest(saved, gpu.settings)["recovery"]["gpu_type"] == "t4"
+    assert not await gpu_capacity.fallback(gpu, event_id, saved, gpu.test_client, job, "SCHEDULED")
+
+
+async def test_gpu_approval_with_deployed_control_plane_storage_scope(gpu, monkeypatch):
+    put = gpu.store.put_if
+
+    def scoped_put(key, data, generation):
+        if not key.startswith(("tasks/", "projects/", "write-access/")):
+            raise Forbidden("Control-plane object prefix is outside its IAM condition")
+        return put(key, data, generation)
+
+    monkeypatch.setattr(gpu.store, "put_if", scoped_put)
+    event_id, record = await start(gpu)
+    await compute_approval.handle(gpu, gpu.store, click(event_id, record))
+    assert compute_approval.load(gpu.store, event_id)[0].status == "approved"
+
+
+@pytest.mark.parametrize("first", ["start", "fallback"])
+async def test_gpu_credential_endpoint_and_fallback_are_mutually_exclusive(gpu, monkeypatch, first):
+    event_id, record = await approved(gpu)
+    monkeypatch.setattr(
+        slack_analysis, "worker_context", AsyncMock(return_value=(gpu, gpu.store, record))
+    )
+    request = SimpleNamespace(
+        app=SimpleNamespace(state=SimpleNamespace(services=SimpleNamespace(settings=gpu.app)))
+    )
+    assert gpu_capacity.claim_start(gpu.store, event_id, 0, first)
+    if first == "fallback":
+        with pytest.raises(HTTPException) as error:
+            await slack_analysis.credentials(event_id, request, Response())
+        assert error.value.status_code == 403
+    else:
+        gpu.app.anthropic_api_key = Mock(get_secret_value=lambda: "fake-key")
+        result = await slack_analysis.credentials(event_id, request, Response())
+        assert result["ANTHROPIC_API_KEY"] == "fake-key"
+        assert not gpu_capacity.claim_start(gpu.store, event_id, 0, "fallback")
+
+
+@pytest.mark.parametrize(
+    "block", ["started", "cancelled", "expired", "strict", "legacy", "unknown"]
+)
+async def test_gpu_fallback_never_replays_started_or_unapproved_work(gpu, block):
+    event_id, record = await approved(gpu)
+    if block == "started":
+        assert gpu_capacity.claim_start(gpu.store, event_id, 0, "start")
+    elif block == "cancelled":
+        record["cancel_requested"] = True
+    elif block == "expired":
+        record["request_deadline"] = 0
+    elif block == "strict":
+        record["launch"]["gpu_candidates"] = ["l4"]
+    elif block == "legacy":
+        record["launch"].pop("gpu_candidates")
+    job = batch_v1.Job(
+        status=batch_v1.JobStatus(
+            state="SCHEDULED",
+            status_events=[
+                batch_v1.StatusEvent(
+                    description="permission denied"
+                    if block == "unknown"
+                    else "ZONE_RESOURCE_POOL_EXHAUSTED"
+                )
+            ],
+        )
+    )
+    assert not await gpu_capacity.fallback(gpu, event_id, record, gpu.test_client, job, "SCHEDULED")
+    gpu.test_client.delete_job.assert_not_called()
+    assert record["attempt"] == 0
+
+
+async def test_gpu_submission_capacity_rejection_uses_distinct_fallback_job(gpu):
+    event_id, record = await start(gpu)
+    await compute_approval.handle(gpu, gpu.store, click(event_id, record))
+    create = gpu.test_client.create_job.side_effect
+    gpu.test_client.create_job.side_effect = ServiceUnavailable("ZONE_RESOURCE_POOL_EXHAUSTED")
+    assert await gpu.process(event_id, record["tick"]) == "pending"
+    record = await gpu.repository.get_connector_state("claude-event:" + event_id)
+    gpu.test_client.create_job.side_effect = create
+    assert await gpu.process(event_id, record["tick"]) == "running"
+    assert gpu.test_client.create_job.call_args.kwargs["job_id"].endswith("-r1")
 
 
 @pytest.mark.parametrize("existing_job", [False, True])

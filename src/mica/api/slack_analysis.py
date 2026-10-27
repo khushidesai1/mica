@@ -225,7 +225,14 @@ async def process_transfer(pending_id: str, tick: int, request: Request) -> dict
 
 @router.get("/credentials/{event_id}", include_in_schema=False)
 async def credentials(event_id: str, request: Request, response: Response) -> dict[str, str]:
-    await worker_context(event_id, request)
+    bridge, storage, record = await worker_context(event_id, request)
+    if record.get("launch", {}).get("gpu_candidates"):
+        from mica.agents.analysis.gpu_capacity import claim_start
+
+        if not await asyncio.to_thread(
+            claim_start, storage, event_id, record.get("attempt", 0), "start"
+        ):
+            raise HTTPException(403, "This GPU placement is being replaced")
     services: Services = request.app.state.services
     # Only the trusted worker bootstrap receives these. Never put them in GCS or job metadata.
     response.headers["Cache-Control"] = "no-store"
