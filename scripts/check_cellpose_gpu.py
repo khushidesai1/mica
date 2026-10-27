@@ -14,6 +14,9 @@ from mica.agents.analysis.runtime_sandbox import PROBE
 
 async def main():
     gpu = os.environ.get("VERIFY_GPU") == "1"
+    gpu_type = os.environ.get("VERIFY_GPU_TYPE", "")
+    if gpu:
+        assert gpu_type in {"t4", "l4"}, "Specify the GPU hardware being verified"
     assert os.geteuid() == 65532, "Worker must remain unprivileged"
     capabilities = next(
         line.split()[1]
@@ -77,7 +80,11 @@ async def main():
             assert result["device"] == ("gpu" if gpu else "cpu")
             assert result["model_device"] == ("cuda" if gpu else "cpu")
             if gpu:
-                assert "L4" in result["gpu_name"]
+                assert gpu_type.upper() in result["gpu_name"]
+            expected_precision = (
+                "bfloat16" if gpu and gpu_type == "l4" and version.startswith("4.") else "float32"
+            )
+            assert result["model_precision"] == expected_precision
             assert result["input_shape"] == [64, 64]
             print(
                 json.dumps(
@@ -87,6 +94,7 @@ async def main():
                         "device": result["device"],
                         "model_device": result["model_device"],
                         "gpu_name": result["gpu_name"],
+                        "model_precision": result["model_precision"],
                         "sandbox_segmentation": "passed",
                         "isolation": "passed",
                         "cell_count": result["cell_count"],

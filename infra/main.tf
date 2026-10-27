@@ -1,5 +1,5 @@
 locals {
-  name = "pistachio-${var.environment}"
+  name                   = "pistachio-${var.environment}"
   slack_agent_configured = var.slack_agent_image != ""
   apis = toset([
     "artifactregistry.googleapis.com",
@@ -362,6 +362,14 @@ resource "google_cloud_run_v2_service" "api" {
       env {
         name  = "AGENT_GPU_IMAGE"
         value = var.slack_agent_gpu_image
+      }
+      env {
+        name  = "AGENT_GPU_TYPES"
+        value = join(",", sort(tolist(var.slack_agent_gpu_types)))
+      }
+      env {
+        name  = "AGENT_GPU_DEFAULT_TYPE"
+        value = var.slack_agent_gpu_default_type
       }
       env {
         name  = "AGENT_ACCESS_MODE"

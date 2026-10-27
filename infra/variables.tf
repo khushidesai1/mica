@@ -117,6 +117,24 @@ variable "slack_agent_gpu_image" {
     error_message = "slack_agent_gpu_image must be an immutable image digest."
   }
 }
+variable "slack_agent_gpu_types" {
+  description = "GPU models that passed the live image gate."
+  type        = set(string)
+  default     = ["t4", "l4"]
+  validation {
+    condition     = length(var.slack_agent_gpu_types) > 0 && alltrue([for model in var.slack_agent_gpu_types : contains(["t4", "l4"], model)])
+    error_message = "GPU choices must be t4 or l4."
+  }
+}
+variable "slack_agent_gpu_default_type" {
+  description = "Default GPU for requests that omit a model; must be enabled at rollout."
+  type        = string
+  default     = "t4"
+  validation {
+    condition     = contains(["t4", "l4"], var.slack_agent_gpu_default_type)
+    error_message = "The default GPU must be t4 or l4."
+  }
+}
 variable "slack_agent_data_buckets" {
   description = "Explicit read-only data buckets for the Slack agent."
   type        = set(string)

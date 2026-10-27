@@ -34,7 +34,10 @@ def gpu(bridge, monkeypatch):  # noqa: F811
                 route="compute",
                 reply="Segment this crop with Cellpose-SAM.",
                 worker=direct.WorkerChoice(
-                    category="analysis", tier="gpu", reason="Cellpose-SAM segmentation"
+                    category="analysis",
+                    tier="gpu",
+                    gpu_type="l4",
+                    reason="Cellpose-SAM segmentation",
                 ),
             )
         ),
@@ -143,7 +146,9 @@ async def test_gpu_confirmation_is_bound_to_original_requester(gpu, field):
     gpu.test_client.create_job.assert_not_called()
 
 
-@pytest.mark.parametrize("change", ["image", "duration", "access", "cancel", "expire"])
+@pytest.mark.parametrize(
+    "change", ["image", "duration", "access", "cancel", "expire", "hardware", "disabled", "price"]
+)
 async def test_changed_expired_or_declined_gpu_request_never_submits(gpu, monkeypatch, change):
     event_id, record = await start(gpu)
     if change == "cancel":
@@ -154,11 +159,86 @@ async def test_changed_expired_or_declined_gpu_request_never_submits(gpu, monkey
         gpu.settings.gpu_max_seconds = 3600
     elif change == "access":
         gpu.app.slack_user_map["T1:U1"] = "other@example.com"
+    elif change == "hardware":
+        record["launch"]["gpu_type"] = "t4"
+        await gpu.repository.set_connector_state("claude-event:" + event_id, record)
+    elif change == "disabled":
+        gpu.settings.gpu_types = "t4"
+    elif change == "price":
+        gpu.settings.gpu_hourly_estimate_usd = 3.0
     else:
         approval = compute_approval.load(gpu.store, event_id)[0]
         monkeypatch.setattr(compute_approval.time, "time", lambda: approval.expires_at + 1)
     assert await gpu.process(event_id, record["tick"]) == "failed"
     gpu.test_client.create_job.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "gpu_type,machine,memory,accelerator",
+    [
+        ("t4", "n1-standard-8", 30, "nvidia-tesla-t4"),
+        ("l4", "g2-standard-8", 32, ""),
+    ],
+)
+async def test_gpu_hardware_choice_reaches_approval_and_submission(
+    gpu, monkeypatch, gpu_type, machine, memory, accelerator
+):
+    monkeypatch.setattr(
+        direct,
+        "decide",
+        AsyncMock(
+            return_value=direct.Decision(
+                route="compute",
+                reply="Segment this crop.",
+                worker=direct.WorkerChoice(
+                    category="analysis", tier="gpu", gpu_type=gpu_type, reason="Requested GPU model"
+                ),
+            )
+        ),
+    )
+    event_id, record = await start(gpu)
+    assert record["launch"]["gpu_type"] == gpu_type
+    text = gpu.test_slack.chat_update.call_args.kwargs["text"]
+    assert "NVIDIA " + gpu_type.upper() in text
+    assert f"{memory} GiB RAM" in text
+    assert ("$3.00" if gpu_type == "t4" else "$4.00") in text
+    await compute_approval.handle(gpu, gpu.store, click(event_id, record))
+    # Changing the default after approval must not change the selected hardware.
+    gpu.settings.gpu_default_type = "l4" if gpu_type == "t4" else "t4"
+    assert await gpu.process(event_id, record["tick"]) == "running"
+    job = gpu.test_client.create_job.call_args.kwargs["job"]
+    policy = job.allocation_policy.instances[0].policy
+    assert policy.machine_type == machine
+    assert [(a.type_, a.count) for a in policy.accelerators] == (
+        [(accelerator, 1)] if accelerator else []
+    )
+    assert job.task_groups[0].task_spec.compute_resource.memory_mib == memory * 1024
+    saved = await gpu.repository.get_connector_state("claude-event:" + event_id)
+    assert recovery.worker_manifest(saved, gpu.settings)["recovery"]["gpu_type"] == gpu_type
+
+
+def test_explicit_gpu_choice_is_not_replaced_by_an_enabled_model():
+    settings = Settings(_env_file=None, gpu_tier_enabled=True, gpu_image=GPU_IMAGE, gpu_types="t4")
+    assert tiers.available_gpus(settings) == ["t4"]
+    with pytest.raises(ValueError, match="l4 is unavailable"):
+        tiers.launch_choice(
+            direct.WorkerChoice(
+                category="analysis", tier="gpu", gpu_type="l4", reason="Use L4 please"
+            ),
+            settings,
+        )
+    with pytest.raises(ValueError, match="requires the GPU"):
+        tiers.launch_choice(
+            direct.WorkerChoice(
+                category="analysis", tier="standard", gpu_type="t4", reason="Invalid CPU request"
+            ),
+            settings,
+        )
+    choice = tiers.launch_choice(
+        direct.WorkerChoice(category="analysis", tier="gpu", reason="Unspecified GPU model"),
+        settings,
+    )
+    assert choice["gpu_type"] == "t4"
 
 
 @pytest.mark.parametrize("existing_job", [False, True])

@@ -66,12 +66,13 @@ def job_spec(
     budget: float | None = None,
     duration: int | None = None,
     provisioning: Provisioning = "SPOT",
+    gpu_type: str = "l4",
 ) -> batch_v1.Job:
     import math
 
     from .tiers import resolve
 
-    shape = resolve(tier, settings)
+    shape = resolve(tier, settings, gpu_type)
     gpu = tier == "gpu"
     if provisioning not in {"SPOT", "STANDARD"}:
         raise ValueError("Invalid worker provisioning mode.")
@@ -190,6 +191,11 @@ def job_spec(
     )
     policy = batch_v1.AllocationPolicy.InstancePolicy(
         machine_type=shape.machine,
+        accelerators=(
+            [batch_v1.AllocationPolicy.Accelerator(type_=shape.accelerator_type, count=1)]
+            if shape.accelerator_type
+            else []
+        ),
         # Proto-plus enums support name lookup; their stubs omit EnumMeta.__getitem__.
         provisioning_model=(
             batch_v1.AllocationPolicy.ProvisioningModel[provisioning]  # type: ignore[misc]
@@ -902,15 +908,21 @@ class BatchBridge:
         if record["status"] == "submitting":
             starting = "Spinning up a compute worker (usually a few minutes)…"
             if record.get("provisioning") == "STANDARD":
-                from .tiers import TIERS
+                from .tiers import GPU_TIERS, TIERS
 
-                shape = TIERS[record["tier"]]
+                shape = (
+                    GPU_TIERS[record.get("launch", {}).get("gpu_type", "l4")]
+                    if record["tier"] == "gpu"
+                    else TIERS[record["tier"]]
+                )
                 reason = (
                     record.get("launch_reason") or "on-demand selected for this request"
                 ).rstrip(".")
                 starting = (
                     f"Starting an on-demand worker ({shape.name}: {shape.vcpus} CPUs, "
-                    f"{shape.memory_gib} GiB): {reason}."
+                    f"{shape.memory_gib} GiB"
+                    + (f", NVIDIA {str(shape.gpu_type).upper()}" if shape.gpu_type else "")
+                    + f"): {reason}."
                 )
             await self.notify(
                 event_id,
@@ -1062,6 +1074,7 @@ class BatchBridge:
                         ),
                         event_id,
                         set(record["mount_buckets"]) if "mount_buckets" in record else None,
+                        gpu_type=record.get("launch", {}).get("gpu_type", "l4"),
                         **(
                             {
                                 "tier": record["tier"],

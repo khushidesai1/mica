@@ -18,7 +18,7 @@ from claude_agent_sdk.types import Message
 from .config import Settings
 from .recovery import RecoverCall
 from .resources import Sampler
-from .tiers import TIERS
+from .tiers import GPU_TIERS, TIERS
 
 REQUEST_TOOL = "mcp__pistachio__recover_worker"
 STAGE_TOOL = "mcp__pistachio__checkpoint_stage"
@@ -93,7 +93,11 @@ class RecoveryManager:
             self.stop.set()
 
     def prompt(self) -> str:
-        shape = TIERS[self.tier]
+        shape = (
+            GPU_TIERS[self.manifest.get("gpu_type", "l4")]
+            if self.tier == "gpu"
+            else TIERS[self.tier]
+        )
         mode = "on-demand" if self.manifest["provisioning"] == "STANDARD" else "Spot"
         history = "\n".join(self.manifest.get("worker_history", []))
         recovery_policy = (

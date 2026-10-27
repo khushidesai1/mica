@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 
 TierName = Literal["standard", "large", "xlarge", "gpu"]
 Provisioning = Literal["SPOT", "STANDARD"]
+GPUType = Literal["t4", "l4"]
 
 
 class Record(BaseModel):
@@ -29,6 +30,9 @@ class Tier:
     max_seconds: int
     machine_type: str = ""
     escalatable: bool = True
+    gpu_type: GPUType | None = None
+    gpu_memory_gib: int = 0
+    accelerator_type: str = ""
 
     @property
     def machine(self) -> str:
@@ -44,17 +48,49 @@ TIERS: dict[str, Tier] = {
     "standard": Tier("standard", 8, 64, 500, "pd-balanced", 604800),
     "large": Tier("large", 32, 256, 1000, "pd-balanced", 604800),
     "xlarge": Tier("xlarge", 64, 512, 2000, "pd-ssd", 604800),
-    "gpu": Tier("gpu", 8, 32, 500, "pd-balanced", 7200, "g2-standard-8", False),
+    "gpu": Tier("gpu", 8, 32, 500, "pd-balanced", 7200, "g2-standard-8", False, "l4", 24),
+}
+GPU_TIERS = {
+    "l4": TIERS["gpu"],
+    "t4": replace(
+        TIERS["gpu"],
+        machine_type="n1-standard-8",
+        memory_gib=30,
+        gpu_type="t4",
+        gpu_memory_gib=16,
+        accelerator_type="nvidia-tesla-t4",
+    ),
 }
 ORDER = tuple(name for name, tier in TIERS.items() if tier.escalatable)
 
 
-def resolve(name: str, settings: Settings) -> Tier:
+def available_gpus(settings: Settings) -> list[str]:
+    return (
+        sorted(settings.csv("gpu_types"))
+        if settings.gpu_tier_enabled and settings.gpu_image
+        else []
+    )
+
+
+def gpu_estimate(settings: Settings, shape: Tier) -> float:
+    return (
+        settings.gpu_t4_hourly_estimate_usd
+        if shape.gpu_type == "t4"
+        else settings.gpu_hourly_estimate_usd
+    )
+
+
+def resolve(name: str, settings: Settings, gpu_type: str = "l4") -> Tier:
     if name == "gpu":
         if not settings.gpu_tier_enabled or not settings.gpu_image:
             raise ValueError("GPU workers require an enabled tier and a verified GPU image.")
+        if gpu_type not in GPU_TIERS or gpu_type not in available_gpus(settings):
+            raise ValueError(
+                f"GPU {gpu_type} is unavailable; "
+                f"enabled choices: {', '.join(available_gpus(settings))}."
+            )
         return replace(
-            TIERS[name], max_seconds=min(settings.max_run_seconds, settings.gpu_max_seconds)
+            GPU_TIERS[gpu_type], max_seconds=min(settings.max_run_seconds, settings.gpu_max_seconds)
         )
     if name not in TIERS or ORDER.index(name) > ORDER.index(settings.max_tier):
         raise ValueError("This worker tier is unavailable.")
@@ -68,7 +104,10 @@ def launch_choice(worker: WorkerChoice | None, settings: Settings) -> dict[str, 
     tier = worker.tier
     if worker.category != "analysis" and tier == "standard" and not worker.tier_explicit:
         tier = settings.launch_heavy_tier
-    resolve(tier, settings)
+    gpu_type = worker.gpu_type or settings.gpu_default_type
+    resolve(tier, settings, gpu_type)
+    if worker.gpu_type and tier != "gpu":
+        raise ValueError("A GPU model requires the GPU worker tier.")
     constraints: dict[str, object] = {}
     if tier == "gpu":
         if worker.max_tier:
@@ -76,6 +115,7 @@ def launch_choice(worker: WorkerChoice | None, settings: Settings) -> dict[str, 
         mode = "SPOT" if worker.on_demand is False else "STANDARD"
         return {
             "tier": "gpu",
+            "gpu_type": gpu_type,
             "provisioning": mode,
             "category": worker.category,
             "reason": worker.reason,

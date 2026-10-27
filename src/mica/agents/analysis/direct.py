@@ -23,6 +23,7 @@ from . import (
     project_memory,
     surface,
     thread_history,
+    tiers,
     write_access,
 )
 from .data_links import message_text
@@ -182,6 +183,10 @@ Cellpose-SAM is a separate versioned segmentation tool. For new Cellpose-SAM seg
 select gpu when gpu_available is true, unless the user explicitly requests CPU. The application
 will obtain run-specific confirmation before allocating a GPU. Existing-result questions or
 plots do not need a GPU. Cellpose 3 remains available and is never silently replaced by SAM.
+Set gpu_type to t4 or l4, honoring the user's explicit choice. Choose only from gpu_types in
+context: T4 has 16 GiB GPU memory and L4 has 24 GiB. Prefer T4 for bounded crops that fit;
+choose L4 when the workload needs its extra memory. Do not substitute for an explicit GPU
+choice that is unavailable; explain availability. Hardware changes need a new confirmed run.
 If GPU is unavailable, explain it; CPU Cellpose-SAM is available for bounded crops but slower.
 """
 
@@ -189,6 +194,7 @@ If GPU is unavailable, explain it; CPU Cellpose-SAM is available for bounded cro
 class WorkerChoice(BaseModel):
     category: Literal["training", "full_segmentation", "full_ingest", "analysis"]
     tier: Literal["standard", "large", "xlarge", "gpu"] = "standard"
+    gpu_type: Literal["t4", "l4"] | None = None
     on_demand: bool | None = None
     workload: str = Field(default="", max_length=200)
     tier_explicit: bool = False
@@ -968,7 +974,8 @@ async def handle(
                 "tool": "cellpose_segment",
                 "input": "one 2D image crop; tile large images",
             },
-            "gpu_available": bridge.settings.gpu_tier_enabled and bool(bridge.settings.gpu_image),
+            "gpu_available": bool(tiers.available_gpus(bridge.settings)),
+            "gpu_types": tiers.available_gpus(bridge.settings),
             "write_access": (
                 surface.EMAIL_READ_ONLY
                 if surface.is_email(record)

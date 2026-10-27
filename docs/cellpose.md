@@ -23,7 +23,7 @@ Example requests:
 
 Each invocation writes `masks.tif` and `provenance.json` in a new `outputs/` folder. Provenance
 records the Cellpose and torch versions, model SHA256, device, channel selection, thresholds,
-diameter and timing. It is an execution record, not scientific validation of the segmentation.
+diameter, model precision and timing. It is an execution record, not scientific validation of the segmentation.
 Existing result folders are never overwritten by the tool.
 
 Inputs are TIFF or non-pickled NumPy arrays: one 2D numeric crop, optionally with channels, at
@@ -39,9 +39,22 @@ SAP workflow and its cached Cellpose 3 model remain available.
 
 ## GPU execution
 
-The optional `gpu` tier uses `g2-standard-8`: one NVIDIA L4, eight vCPUs, 32 GiB RAM and 500 GB
-disk. GPU eligibility is separate from CPU tier ceilings. CPU jobs never escalate automatically
-to GPU, and GPU jobs never resize.
+The optional `gpu` tier supports a per-request `gpu_type` of `t4` or `l4`:
+
+| GPU | Machine | GPU memory | CPUs / system RAM | Disk |
+| --- | --- | --- | --- | --- |
+| T4 | `n1-standard-8` + one `nvidia-tesla-t4` | 16 GiB | 8 / 30 GiB | 500 GB |
+| L4 | `g2-standard-8` | 24 GiB | 8 / 32 GiB | 500 GB |
+
+Ask “Run Cellpose-SAM on a T4” or “Use an L4 for this segmentation.” Mica honors an explicit
+model; the default for an unspecified GPU is T4. The router sees the currently enabled choices
+and can select L4 for work needing more GPU memory. A hardware change requires a new confirmed
+request; Spot retries retain the approved model. GPU eligibility is separate from CPU tier
+ceilings. CPU jobs never escalate automatically to GPU, and GPU jobs never resize.
+
+SAM uses FP32 on T4 and BF16 on GPUs with native BF16 support, including L4. CPU inference
+remains FP32. The adapter records the precision and actual GPU name in provenance. Supported
+hardware does not guarantee immediate provider capacity or that an arbitrary crop fits memory.
 
 GPU jobs use the pinned public Batch Debian 12 host image in `batch.py`. Batch installs and
 connects the NVIDIA driver; Mica does not inject its own `--gpus` or privileged Docker flag.
@@ -49,7 +62,7 @@ The live gate verifies the worker's non-root identity and absence of effective c
 in addition to the analysis sandbox's network, credential and device boundaries.
 
 GPU submission requires confirmation in the requester's Slack conversation. Confirmation binds
-the requester, project access, immutable image, launch choices, time allowance, compute/disk
+the requester, project access, immutable image, GPU model, launch choices, time allowance, compute/disk
 estimate and model allowance. Defaults are on-demand and two hours. An explicit Spot choice
 allows one same-tier, same-mode restart within the original deadline. Displayed cost is an
 estimate, not a provider billing cap. Email GPU requests explain the Slack confirmation
@@ -72,12 +85,21 @@ build alone does not verify GPU access.
 Use the coordinated release pipeline with `_VERIFY_CELLPOSE=1`, the CPU base as `_SLACK_BASE`,
 and `_GPU_BASE` / `_GPU_IMAGE` set for the GPU worker. The pipeline uses `E2_HIGHCPU_32` for
 model-loading gates. Before promotion, run `scripts/check_cellpose_gpu.py` on the final GPU image
-in a bounded L4 Batch job with `VERIFY_GPU=1`. It checks CUDA inside the actual tool sandbox,
-isolation and synthetic masks.
+in a bounded Batch job for each enabled GPU model with `VERIFY_GPU=1` and
+`VERIFY_GPU_TYPE=t4` or `VERIFY_GPU_TYPE=l4`. It checks the actual device and precision, CUDA
+inside the tool sandbox, isolation and synthetic masks. T4 quota is separate from L4 quota.
 
 Deploy immutable CPU/GPU image pins together. Enable `AGENT_GPU_TIER_ENABLED`, set
-`AGENT_GPU_IMAGE` to the verified digest, and configure `AGENT_GPU_MAX_SECONDS` plus the
-operator-reviewed `AGENT_GPU_HOURLY_ESTIMATE_USD`. GPU execution refuses an unset image.
+`AGENT_GPU_IMAGE` to the verified digest, and set `AGENT_GPU_TYPES` to the comma-separated models
+whose live checks passed. Set `AGENT_GPU_DEFAULT_TYPE` to an enabled model (default `t4`).
+Configure `AGENT_GPU_MAX_SECONDS` and the operator-reviewed hourly compute/disk estimates:
+`AGENT_GPU_T4_HOURLY_ESTIMATE_USD` for T4 (default $1.50), and
+`AGENT_GPU_HOURLY_ESTIMATE_USD` for L4 (default $2). GPU execution refuses an unset image or a
+model excluded from `AGENT_GPU_TYPES`.
 Future source releases must update both worker images when their application code changes.
 To roll back, disable the GPU tier and restore prior API/worker pins; retain images referenced
 by existing jobs.
+
+Hardware configuration follows [Google's GPU machine types](https://docs.cloud.google.com/compute/docs/gpus/)
+and [Batch GPU configuration](https://docs.cloud.google.com/batch/docs/create-run-job-gpus).
+Precision uses Cellpose's [documented `use_bfloat16` option](https://cellpose.readthedocs.io/en/latest/api.html).

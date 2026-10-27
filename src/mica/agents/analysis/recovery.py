@@ -234,18 +234,25 @@ async def prepare_attempt(
 def worker_manifest(record: dict[str, Any], settings: Settings) -> dict[str, Any]:
     return {
         "recovery": {
-            key: record[key]
-            for key in (
-                "tier",
-                "provisioning",
-                "attempt",
-                "request_deadline",
-                "launch_reason",
-                "resize_count",
-                "preemption_count",
-                "worker_history",
-                "constraints",
-            )
+            **(
+                {"gpu_type": record["launch"].get("gpu_type", "l4")}
+                if record["tier"] == "gpu"
+                else {}
+            ),
+            **{
+                key: record[key]
+                for key in (
+                    "tier",
+                    "provisioning",
+                    "attempt",
+                    "request_deadline",
+                    "launch_reason",
+                    "resize_count",
+                    "preemption_count",
+                    "worker_history",
+                    "constraints",
+                )
+            },
         },
         "resume": record.get("resume"),
         "turn_start": record["turn_start"],

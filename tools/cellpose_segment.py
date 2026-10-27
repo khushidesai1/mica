@@ -9,6 +9,8 @@ import time
 from importlib.metadata import version
 from pathlib import Path
 
+MODEL_MANIFEST = Path("/opt/cellpose/manifest.json")
+
 
 def validate_shape(shape, kind):
     if (
@@ -69,11 +71,16 @@ def run(request):
         raise ValueError("The requested model weights are not installed; downloading is disabled")
     with weights.open("rb") as handle:
         weight_hash = hashlib.file_digest(handle, "sha256").hexdigest()
+    use_bfloat16 = False
     if actual.startswith("4."):
-        manifest = json.loads(Path("/opt/cellpose/manifest.json").read_text())
+        manifest = json.loads(MODEL_MANIFEST.read_text())
         if weight_hash != manifest["models"][request["model"]]["sha256"]:
             raise ValueError("Model checksum differs from the reviewed model")
-        model = models.CellposeModel(gpu=gpu, pretrained_model=str(weights), use_bfloat16=gpu)
+        # T4 has no native BF16. Keep CPU/T4 on FP32; use BF16 on capable GPUs such as L4.
+        use_bfloat16 = gpu and torch.cuda.is_bf16_supported(including_emulation=False)
+        model = models.CellposeModel(
+            gpu=gpu, pretrained_model=str(weights), use_bfloat16=use_bfloat16
+        )
         channels = None
     else:
         model = models.Cellpose(model_type="cyto3", gpu=gpu)
@@ -104,6 +111,7 @@ def run(request):
         "device": request["device"],
         "model_device": actual_device,
         "gpu_name": torch.cuda.get_device_name(model.device) if gpu else None,
+        "model_precision": "bfloat16" if use_bfloat16 else "float32",
         "torch_version": torch.__version__,
         "input_shape": list(image.shape),
         "cell_count": int(len(np.unique(masks)) - (0 in masks)),

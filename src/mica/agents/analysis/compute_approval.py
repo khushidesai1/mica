@@ -14,7 +14,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from . import access, surface
 from .storage import Conflict, Storage
-from .tiers import resolve
+from .tiers import gpu_estimate, resolve
 
 if TYPE_CHECKING:
     from .batch import BatchBridge
@@ -59,7 +59,7 @@ def choices(record: dict[str, Any]) -> str:
 def validate(
     bridge: BatchBridge, storage: Storage, record: dict[str, Any], approval: Approval
 ) -> None:
-    shape = resolve("gpu", bridge.settings)
+    shape = resolve("gpu", bridge.settings, record["launch"].get("gpu_type", "l4"))
     current = access.resolve(bridge.app, bridge.settings, storage, record)
     if (
         not current.allowed
@@ -73,7 +73,7 @@ def validate(
         choices(record) != approval.choices
         or bridge.settings.gpu_image != approval.image
         or shape.max_seconds != approval.seconds
-        or bridge.settings.gpu_hourly_estimate_usd != approval.hourly_estimate
+        or gpu_estimate(bridge.settings, shape) != approval.hourly_estimate
         or bridge.settings.max_budget_usd_per_turn != approval.model_allowance
     ):
         raise ValueError("GPU execution choices changed. Request fresh confirmation.")
@@ -92,7 +92,7 @@ async def ready(
 ) -> bool:
     if record.get("launch", {}).get("tier") != "gpu":
         return True
-    shape = resolve("gpu", bridge.settings)
+    shape = resolve("gpu", bridge.settings, record["launch"].get("gpu_type", "l4"))
     if surface.is_email(record):
         raise ValueError(
             "GPU execution needs confirmation in your private Slack conversation with Mica. "
@@ -108,7 +108,7 @@ async def ready(
             choices=choices(record),
             image=bridge.settings.gpu_image,
             seconds=shape.max_seconds,
-            hourly_estimate=bridge.settings.gpu_hourly_estimate_usd,
+            hourly_estimate=gpu_estimate(bridge.settings, shape),
             model_allowance=bridge.settings.max_budget_usd_per_turn,
             expires_at=time.time() + 3600,
         )
@@ -139,7 +139,9 @@ async def ready(
     mode = record["launch"]["provisioning"]
     compute = approval.hourly_estimate * approval.seconds / 3600
     text = (
-        f"Approve this GPU run on 1 NVIDIA L4 (8 CPUs, 32 GiB RAM)? "
+        f"Approve this GPU run on 1 NVIDIA {str(shape.gpu_type).upper()} "
+        f"({shape.gpu_memory_gib} GiB GPU memory, {shape.vcpus} CPUs, "
+        f"{shape.memory_gib} GiB RAM)? "
         f"Time allowance: {approval.seconds / 3600:g} hours including startup/retries. "
         f"Estimated compute and disk: ${compute:.2f}; "
         f"model allowance: ${approval.model_allowance:.2f}. "
