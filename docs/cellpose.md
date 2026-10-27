@@ -56,10 +56,16 @@ SAM uses FP32 on T4 and BF16 on GPUs with native BF16 support, including L4. CPU
 remains FP32. The adapter records the precision and actual GPU name in provenance. Supported
 hardware does not guarantee immediate provider capacity or that an arbitrary crop fits memory.
 
-GPU jobs use the pinned public Batch Debian 12 host image in `batch.py`. Batch installs and
-connects the NVIDIA driver; Mica does not inject its own `--gpus` or privileged Docker flag.
-The live gate verifies the worker's non-root identity and absence of effective capabilities,
-in addition to the analysis sandbox's network, credential and device boundaries.
+GPU jobs use the pinned public Batch Debian 12 host image in `batch.py`. Batch installs the
+NVIDIA driver and toolkit. A fixed, bounded host setup on the dedicated VM configures NVIDIA
+JIT-CDI and skips only `disable-device-node-modification`, whose `/proc` overmount prevents
+nested private procfs. This follows NVIDIA's [hook configuration](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html).
+Docker device cgroups still restrict device access. The worker explicitly runs as UID 65532,
+drops all capabilities including MKNOD, and cannot gain privileges; the fixed segmentation
+sandbox exposes only the allocated device nodes. Mica adds no privileged Docker flag.
+The live gate verifies effective and bounding capabilities, no-new-privileges, and absence of
+parent credentials through procfs, in addition to network and device isolation. CPU jobs do
+not run this host setup.
 
 GPU submission requires confirmation in the requester's Slack conversation. Confirmation binds
 the requester, project access, immutable image, GPU model, launch choices, time allowance, compute/disk

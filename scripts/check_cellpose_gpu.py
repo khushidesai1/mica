@@ -24,6 +24,14 @@ async def main():
         if line.startswith("CapEff:")
     )
     assert int(capabilities, 16) == 0, "Worker unexpectedly has effective Linux capabilities"
+    if gpu:
+        status = dict(
+            line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines()
+        )
+        assert int(status["CapBnd"].strip(), 16) == 0, (
+            "GPU worker must drop all bounding capabilities"
+        )
+        assert status["NoNewPrivs"].strip() == "1", "GPU worker must not gain privileges"
     with tempfile.TemporaryDirectory(prefix="cellpose-tool-gate-") as temp:
         work = Path(temp)
         # The trusted controller doesn't import scientific packages from the base interpreter.
@@ -60,6 +68,8 @@ async def main():
                 + "\nimport torch\nassert torch.cuda.is_available() == "
                 + repr(gpu)
             )
+            if gpu:
+                probe += "\nfor environ in Path('/proc').glob('[0-9]*/environ'):\n    try:\n        assert b'sentinel-not-a-credential' not in environ.read_bytes(), 'Parent environment exposed through proc'\n    except (PermissionError, FileNotFoundError, ProcessLookupError):\n        pass"
             subprocess.run(
                 args[: start + 1] + [python, "-I", "-c", probe],
                 check=True,

@@ -4,7 +4,7 @@ import pytest
 from google.api_core.exceptions import NotFound
 from test_analysis_batch import bridge, payload  # noqa: F401
 
-from mica.agents.analysis import compute_approval, direct, recovery, tiers
+from mica.agents.analysis import compute_approval, direct, gpu_runtime, recovery, tiers
 from mica.agents.analysis.batch import GPU_BOOT_IMAGE, job_spec
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.recovery_tools import RecoveryManager
@@ -69,10 +69,23 @@ def test_gpu_job_uses_gpu_image_drivers_and_bounded_duration(gpu):
     assert instance.policy.machine_type == "g2-standard-8" and instance.install_gpu_drivers
     assert instance.policy.boot_disk.image == GPU_BOOT_IMAGE
     task = job.task_groups[0].task_spec
-    assert task.runnables[0].container.image_uri == GPU_IMAGE
-    assert "--gpus" not in task.runnables[0].container.options
-    assert "--privileged" not in task.runnables[0].container.options
-    assert task.runnables[0].environment.variables["AGENT_GPU_WORKER"] == "true"
+    assert task.runnables[0].script.text == gpu_runtime.SETUP
+    assert task.runnables[0].timeout.total_seconds() == 120
+    worker = task.runnables[-1]
+    assert worker.container.image_uri == GPU_IMAGE
+    assert "--gpus" not in worker.container.options
+    assert "--privileged" not in worker.container.options
+    for required in (
+        "--runtime=nvidia",
+        "--user=65532:65532",
+        "--cap-drop=ALL",
+        "no-new-privileges",
+    ):
+        assert required in worker.container.options
+    assert worker.environment.variables["AGENT_GPU_WORKER"] == "true"
+    cpu = job_spec(gpu.app, gpu.settings, "a" * 32)
+    assert len(cpu.task_groups[0].task_spec.runnables) == 1
+    assert "--runtime=nvidia" not in cpu.task_groups[0].task_spec.runnables[0].container.options
     assert task.max_run_duration.total_seconds() == 600
     with pytest.raises(ValueError, match="duration"):
         job_spec(gpu.app, gpu.settings, "a" * 32, tier="gpu", duration=7201)

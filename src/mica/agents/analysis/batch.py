@@ -70,6 +70,7 @@ def job_spec(
 ) -> batch_v1.Job:
     import math
 
+    from . import gpu_runtime
     from .tiers import resolve
 
     shape = resolve(tier, settings, gpu_type)
@@ -109,6 +110,8 @@ def job_spec(
                 "The proc-mount exception requires the existing staging sandbox opt-in"
             )
         options += " --security-opt systempaths=unconfined"
+    if gpu:
+        options += gpu_runtime.OPTIONS
     environment = {
         "HOME": "/srv/pistachio",
         "MICA_GCS_BUCKET": app.gcs_bucket,
@@ -166,7 +169,16 @@ def job_spec(
         environment=batch_v1.Environment(variables=environment),
     )
     task = batch_v1.TaskSpec(
-        runnables=[runnable],
+        runnables=(
+            [
+                batch_v1.Runnable(
+                    script=batch_v1.Runnable.Script(text=gpu_runtime.SETUP), timeout="120s"
+                )
+            ]
+            if gpu
+            else []
+        )
+        + [runnable],
         max_retry_count=0,
         max_run_duration=f"{seconds}s",
         compute_resource=batch_v1.ComputeResource(
