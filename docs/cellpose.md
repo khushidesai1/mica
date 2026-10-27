@@ -43,6 +43,11 @@ The optional `gpu` tier uses `g2-standard-8`: one NVIDIA L4, eight vCPUs, 32 GiB
 disk. GPU eligibility is separate from CPU tier ceilings. CPU jobs never escalate automatically
 to GPU, and GPU jobs never resize.
 
+GPU jobs use the pinned public Batch Debian 12 host image in `batch.py`. Batch installs and
+connects the NVIDIA driver; Mica does not inject its own `--gpus` or privileged Docker flag.
+The live gate verifies the worker's non-root identity and absence of effective capabilities,
+in addition to the analysis sandbox's network, credential and device boundaries.
+
 GPU submission requires confirmation in the requester's Slack conversation. Confirmation binds
 the requester, project access, immutable image, launch choices, time allowance, compute/disk
 estimate and model allowance. Defaults are on-demand and two hours. An explicit Spot choice

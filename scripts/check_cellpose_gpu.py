@@ -14,6 +14,13 @@ from mica.agents.analysis.runtime_sandbox import PROBE
 
 async def main():
     gpu = os.environ.get("VERIFY_GPU") == "1"
+    assert os.geteuid() == 65532, "Worker must remain unprivileged"
+    capabilities = next(
+        line.split()[1]
+        for line in Path("/proc/self/status").read_text().splitlines()
+        if line.startswith("CapEff:")
+    )
+    assert int(capabilities, 16) == 0, "Worker unexpectedly has effective Linux capabilities"
     with tempfile.TemporaryDirectory(prefix="cellpose-tool-gate-") as temp:
         work = Path(temp)
         # The trusted controller doesn't import scientific packages from the base interpreter.
@@ -44,7 +51,12 @@ async def main():
             args = command(request, work / "crop.tif", output, settings)
             start = args.index("--")
             python = args[start + 1]
-            probe = PROBE + "\nimport torch\nassert torch.cuda.is_available() == " + repr(gpu)
+            probe = (
+                PROBE
+                + "\nassert not Path('/dev/sda').exists() and not Path('/dev/nvme0n1').exists()"
+                + "\nimport torch\nassert torch.cuda.is_available() == "
+                + repr(gpu)
+            )
             subprocess.run(
                 args[: start + 1] + [python, "-I", "-c", probe],
                 check=True,

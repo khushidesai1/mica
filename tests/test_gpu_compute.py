@@ -5,7 +5,7 @@ from google.api_core.exceptions import NotFound
 from test_analysis_batch import bridge, payload  # noqa: F401
 
 from mica.agents.analysis import compute_approval, direct, recovery, tiers
-from mica.agents.analysis.batch import job_spec
+from mica.agents.analysis.batch import GPU_BOOT_IMAGE, job_spec
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.recovery_tools import RecoveryManager
 
@@ -64,9 +64,11 @@ def test_gpu_job_uses_gpu_image_drivers_and_bounded_duration(gpu):
     )
     instance = job.allocation_policy.instances[0]
     assert instance.policy.machine_type == "g2-standard-8" and instance.install_gpu_drivers
+    assert instance.policy.boot_disk.image == GPU_BOOT_IMAGE
     task = job.task_groups[0].task_spec
     assert task.runnables[0].container.image_uri == GPU_IMAGE
-    assert "--gpus all" in task.runnables[0].container.options
+    assert "--gpus" not in task.runnables[0].container.options
+    assert "--privileged" not in task.runnables[0].container.options
     assert task.runnables[0].environment.variables["AGENT_GPU_WORKER"] == "true"
     assert task.max_run_duration.total_seconds() == 600
     with pytest.raises(ValueError, match="duration"):

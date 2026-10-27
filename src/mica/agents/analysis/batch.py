@@ -46,6 +46,9 @@ from .tiers import Provisioning
 
 log = logging.getLogger(__name__)
 STATUS_PHASES = {"received", "waiting", "starting", "replying", "cancelling"}
+GPU_BOOT_IMAGE = (
+    "projects/batch-custom-image/global/images/batch-debian-12-official-20261016-00-p00"
+)
 
 
 def digest(value: str) -> str:
@@ -105,8 +108,6 @@ def job_spec(
                 "The proc-mount exception requires the existing staging sandbox opt-in"
             )
         options += " --security-opt systempaths=unconfined"
-    if gpu:
-        options += " --gpus all"
     environment = {
         "HOME": "/srv/pistachio",
         "MICA_GCS_BUCKET": app.gcs_bucket,
@@ -193,7 +194,13 @@ def job_spec(
         provisioning_model=(
             batch_v1.AllocationPolicy.ProvisioningModel[provisioning]  # type: ignore[misc]
         ),
-        boot_disk=batch_v1.AllocationPolicy.Disk(type_=shape.disk_type, size_gb=shape.disk_gb),
+        boot_disk=batch_v1.AllocationPolicy.Disk(
+            type_=shape.disk_type,
+            size_gb=shape.disk_gb,
+            # Batch owns GPU/container integration. COS currently injects a privileged
+            # launch that conflicts with its CDI hook; use the supported Debian host.
+            image=GPU_BOOT_IMAGE if gpu else "",
+        ),
     )
     return batch_v1.Job(
         task_groups=[batch_v1.TaskGroup(task_count=1, task_spec=task)],
