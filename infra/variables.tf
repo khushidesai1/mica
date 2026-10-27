@@ -103,6 +103,20 @@ variable "slack_agent_image" {
     error_message = "slack_agent_image must be an immutable image digest."
   }
 }
+variable "slack_agent_gpu_enabled" {
+  description = "Enable requester-confirmed GPU jobs only after the live GPU image gate."
+  type        = bool
+  default     = false
+}
+variable "slack_agent_gpu_image" {
+  description = "Verified GPU worker digest; never fall back to a CPU worker."
+  type        = string
+  default     = ""
+  validation {
+    condition     = var.slack_agent_gpu_image == "" || can(regex("@sha256:[a-f0-9]{64}$", var.slack_agent_gpu_image))
+    error_message = "slack_agent_gpu_image must be an immutable image digest."
+  }
+}
 variable "slack_agent_data_buckets" {
   description = "Explicit read-only data buckets for the Slack agent."
   type        = set(string)

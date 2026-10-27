@@ -13,6 +13,8 @@
 !scripts/check_atomx_release.py
 !scripts/check_compute_release.py
 !scripts/check_spatial_release.py
+!scripts/check_cellpose_release.py
+!scripts/check_cellpose_gpu.py
 !src/
 !src/**
 !tools/
@@ -23,5 +25,6 @@
 !deploy/requirements-bot.txt
 !deploy/requirements-email.txt
 !deploy/requirements-transfer.txt
+!deploy/cellpose-models.json
 src/**/__pycache__/
 src/**/*.pyc

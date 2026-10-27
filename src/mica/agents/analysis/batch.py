@@ -25,6 +25,7 @@ from mica.storage.base import Repository
 from . import (
     access,
     amendments,
+    compute_approval,
     memory_tasks,
     observability,
     project_memory,
@@ -68,6 +69,7 @@ def job_spec(
     from .tiers import resolve
 
     shape = resolve(tier, settings)
+    gpu = tier == "gpu"
     if provisioning not in {"SPOT", "STANDARD"}:
         raise ValueError("Invalid worker provisioning mode.")
     seconds = shape.max_seconds if duration is None else duration
@@ -103,6 +105,8 @@ def job_spec(
                 "The proc-mount exception requires the existing staging sandbox opt-in"
             )
         options += " --security-opt systempaths=unconfined"
+    if gpu:
+        options += " --gpus all"
     environment = {
         "HOME": "/srv/pistachio",
         "MICA_GCS_BUCKET": app.gcs_bucket,
@@ -121,6 +125,7 @@ def job_spec(
         "AGENT_LONG_RUN_THRESHOLD_SECONDS": str(settings.long_run_threshold_seconds),
         "AGENT_LONG_RUN_UPDATE_SECONDS": str(settings.long_run_update_seconds),
         "AGENT_MAX_RUN_SECONDS": str(seconds),
+        "AGENT_GPU_WORKER": "true" if gpu else "false",
     }
     environment.update(
         {
@@ -151,7 +156,7 @@ def job_spec(
         )
     runnable = batch_v1.Runnable(
         container=batch_v1.Runnable.Container(
-            image_uri=app.slack_agent_image,
+            image_uri=settings.gpu_image if gpu else app.slack_agent_image,
             commands=["python", "-m", "mica.agents.analysis.batch_worker", event_id],
             options=options,
             volumes=[f"/mnt/stateful_partition/gcs/{b}:/mnt/gcs/{b}:ro" for b in sorted(buckets)],
@@ -193,7 +198,11 @@ def job_spec(
     return batch_v1.Job(
         task_groups=[batch_v1.TaskGroup(task_count=1, task_spec=task)],
         allocation_policy=batch_v1.AllocationPolicy(
-            instances=[batch_v1.AllocationPolicy.InstancePolicyOrTemplate(policy=policy)],
+            instances=[
+                batch_v1.AllocationPolicy.InstancePolicyOrTemplate(
+                    policy=policy, install_gpu_drivers=gpu
+                )
+            ],
             service_account=batch_v1.ServiceAccount(email=app.batch_service_account),
             network=batch_v1.AllocationPolicy.NetworkPolicy(
                 network_interfaces=[
@@ -728,7 +737,15 @@ class BatchBridge:
         name = f"{parent}/jobs/claude-{event_id}"
         name = record.get("job", name)
         if record["status"] == "awaiting_approval":
-            if record.get("overwrite_approval"):
+            if record.get("gpu_approval"):
+                try:
+                    if not await compute_approval.ready(self, event_id, record, self.storage):
+                        return
+                except (ValueError, PermissionError) as exc:
+                    record["status"] = "failed"
+                    await self.notify(event_id, record, "failed", str(exc))
+                    return
+            elif record.get("overwrite_approval"):
                 try:
                     if not await write_approval.ready(self, event_id, record, self.storage):
                         return
@@ -794,6 +811,13 @@ class BatchBridge:
             # without creating late work after cancellation or the original deadline.
             record.update(status="running", started=record.get("started", time.time()))
         if record["status"] == "pending":
+            try:
+                if not await compute_approval.ready(self, event_id, record, self.storage):
+                    return
+            except (ValueError, PermissionError) as exc:
+                record["status"] = "failed"
+                await self.notify(event_id, record, "failed", str(exc))
+                return
             if "write_grant" not in record:
                 writable = await asyncio.to_thread(
                     write_access.active, self.storage, record["project_id"], self.settings
@@ -851,8 +875,10 @@ class BatchBridge:
                         max_run_seconds=seconds,
                     )
                     record.update(slot_pool=pool, submitted=time.time())
-                    record.setdefault("amendments_enabled", self.settings.amendments
-                                      and not surface.is_email(record))
+                    record.setdefault(
+                        "amendments_enabled",
+                        self.settings.amendments and not surface.is_email(record),
+                    )
                     # Persist before submission: an HTTP retry uses the same job and slot.
                     await self.repository.set_connector_state(f"claude-event:{event_id}", record)
                     break
@@ -991,6 +1017,26 @@ class BatchBridge:
             record["cooperative_stop"] = True
             record["retention_version"] = 1
             record.pop("worker_stopped", None)
+            # Revalidate after snapshot preparation, immediately before creating a GPU job.
+            try:
+                if not await compute_approval.ready(self, event_id, record, self.storage):
+                    return
+            except (ValueError, PermissionError) as exc:
+                # A prior submission may have reached Batch before its response was lost.
+                # Reconcile/delete it and retain the slot until deletion is observed.
+                try:
+                    await asyncio.to_thread(client.delete_job, name=name)
+                except NotFound:
+                    await self.repository.release_event(
+                        f"{record.get('slot_pool', 'claude-slot')}:{record['slot']}",
+                        record["slot_token"],
+                    )
+                    record.update(status="failed", worker_stopped=True)
+                else:
+                    record.update(status="running", started=record.get("started", time.time()))
+                record["cancel_requested"] = True
+                await self.notify(event_id, record, "failed", str(exc))
+                return
             await self.repository.set_connector_state(f"claude-event:{event_id}", record)
             with suppress(AlreadyExists):
                 await asyncio.to_thread(

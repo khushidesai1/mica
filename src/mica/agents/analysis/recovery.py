@@ -53,7 +53,12 @@ def initialize(record: dict[str, Any], settings: Settings, *, now: float) -> Non
         launch_reason=choice.get("reason", ""),
         launch_category=choice.get("category", "analysis"),
         constraints=choice.get("constraints", {}),
-        request_deadline=now + settings.max_run_seconds,
+        request_deadline=record.get("gpu_approved_at", now)
+        + (
+            min(settings.max_run_seconds, settings.gpu_max_seconds)
+            if choice.get("tier") == "gpu"
+            else settings.max_run_seconds
+        ),
         model_limit=settings.max_budget_usd_per_turn,
         model_spent=0.0,
         attempt_ledger=[],
@@ -61,6 +66,12 @@ def initialize(record: dict[str, Any], settings: Settings, *, now: float) -> Non
 
 
 def remaining_recoveries(record: dict[str, Any], settings: Settings) -> int:
+    if record["tier"] == "gpu":
+        return int(
+            record["provisioning"] == "SPOT"
+            and not record["preemption_count"]
+            and record["attempt"] < 2
+        )
     maximum = record.get("constraints", {}).get("max_tier", settings.max_tier)
     maximum = ORDER[min(ORDER.index(maximum), ORDER.index(settings.max_tier))]
     resize = not record["resize_count"] and ORDER.index(record["tier"]) < ORDER.index(maximum)
@@ -124,6 +135,10 @@ def classify(code: int | None, observed: dict[str, Any]) -> str:
 
 
 def destination(record: dict[str, Any], body: RecoverCall, settings: Settings) -> str:
+    if record["tier"] == "gpu":
+        raise ValueError(
+            "GPU workers do not resize. Use a smaller crop or batch size and request a new run."
+        )
     if record["resize_count"] or record["attempt"] >= 2:
         raise ValueError("The automatic capacity recovery has already been used.")
     maximum = record.get("constraints", {}).get("max_tier", settings.max_tier)

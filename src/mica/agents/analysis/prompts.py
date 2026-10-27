@@ -243,6 +243,21 @@ def build_system_append(
             "useful. Keep the final script able to reproduce the delivered results.\n"
             "- For a long script,",
         )
+    system += """
+
+Cellpose tools:
+- Call cellpose_versions to inspect installed versions. Use cellpose_segment with an explicit
+  version and model: 3.1.1.3/cyto3, or 4.2.1.1/cpsam or cpsam_v2. Honor a requested version/model;
+  never substitute another. Use cpsam for an unspecified Cellpose-SAM model. The versions are
+  isolated; selecting one does not upgrade/downgrade the existing SAP environment.
+- The tool segments one 2D TIFF or NumPy crop and returns masks.tif and provenance.json in a new
+  outputs/ folder. Select channel_axis and zero-based channels explicitly for multichannel data.
+  Prepare/crop/tile larger images with ordinary analysis tools. Preserve coordinates when
+  combining masks. Record the version, model and parameters in the methods and delivered result.
+- GPU access is supplied only to this segmentation tool on an approved GPU worker. General Bash
+  runs remain CPU sandboxed. Never report GPU use unless the tool provenance says gpu. CPU SAM
+  is slower; use bounded crops. Do not install, replace or download Cellpose or model weights.
+"""
     if settings.runtimes_enabled:
         system = system.replace(
             "- Use only packages already installed in {sci_python}. You cannot install packages "

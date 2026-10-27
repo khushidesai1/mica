@@ -95,6 +95,12 @@ resource "google_cloud_run_v2_service" "api" {
       can(regex("@sha256:[a-f0-9]{64}$", lookup(var.runtime_environment, key, "")))])
       error_message = "Preserve both immutable worker image pins."
     }
+    precondition {
+      condition = lower(lookup(var.runtime_environment, "AGENT_GPU_TIER_ENABLED", "false")) != "true" || can(
+        regex("@sha256:[a-f0-9]{64}$", lookup(var.runtime_environment, "AGENT_GPU_IMAGE", ""))
+      )
+      error_message = "An enabled GPU tier requires its separately verified immutable worker image."
+    }
   }
   depends_on = [google_project_iam_member.runtime, google_secret_manager_secret.runtime]
 }

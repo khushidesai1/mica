@@ -270,6 +270,12 @@ say a package is prepared, not delivered; actual delivery is recorded after the 
 This behavior runs in the conversation worker, so an API-only rollout is insufficient. Use the
 coordinated Slack release pipeline and its complete-folder image gate, preserving existing jobs
 and immutable worker references during rollout.
+### Versioned Cellpose tools
+
+See [Cellpose versions](cellpose.md) for isolated Cellpose 3 / Cellpose-SAM runtimes, coordinated
+CPU/GPU releases and the live GPU gate. Preserve the GPU image pin during API-only releases and
+update both workers together when worker source changes.
+
 ### Read-only project reference repositories
 
 Set these nonsecret settings on the control-plane API only (never worker environment variables):

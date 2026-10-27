@@ -126,6 +126,9 @@ def build_options(
     compute = compute_manager if not ctx.survey_only else None
     compute_tools = compute.tools() if compute else []
     if not ctx.survey_only:
+        from . import cellpose_tools
+
+        compute_tools.extend(cellpose_tools.tools(ctx.workdir, ctx.data_path, settings))
         compute_tools.append(
             folder_tool(
                 ctx.workdir,

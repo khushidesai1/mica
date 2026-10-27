@@ -356,6 +356,14 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.slack_agent_image
       }
       env {
+        name  = "AGENT_GPU_TIER_ENABLED"
+        value = tostring(var.slack_agent_gpu_enabled)
+      }
+      env {
+        name  = "AGENT_GPU_IMAGE"
+        value = var.slack_agent_gpu_image
+      }
+      env {
         name  = "AGENT_ACCESS_MODE"
         value = var.slack_agent_access_mode
       }

@@ -1,5 +1,10 @@
 # Security and operations
 
+The versioned Cellpose tool uses a dedicated networkless, PID-isolated process with its selected
+input read-only and a new output folder writable. Only an approved GPU worker supplies the
+allocated NVIDIA devices. GPU confirmation binds the requester, project, image, duration, retry
+terms and estimated cost; these are checked again at submission. See [Cellpose tooling](cellpose.md).
+
 V1 is for private, non-PHI research data. Do not use it for PHI until a separate compliance and
 threat-model review is complete.
 

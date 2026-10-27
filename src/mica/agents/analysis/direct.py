@@ -178,12 +178,17 @@ resizing. Recovery is a bounded exception, never a reason to start small. Honor 
 mode and size preferences: set tier_explicit for an explicit initial tier, max_tier for a hard
 ceiling, allow_resize=false only for an explicit no-resize constraint. Set on_demand only for an
 explicit provisioning request (true for on-demand, false for Spot). Give a short launch reason.
+Cellpose-SAM is a separate versioned segmentation tool. For new Cellpose-SAM segmentation,
+select gpu when gpu_available is true, unless the user explicitly requests CPU. The application
+will obtain run-specific confirmation before allocating a GPU. Existing-result questions or
+plots do not need a GPU. Cellpose 3 remains available and is never silently replaced by SAM.
+If GPU is unavailable, explain it; CPU Cellpose-SAM is available for bounded crops but slower.
 """
 
 
 class WorkerChoice(BaseModel):
     category: Literal["training", "full_segmentation", "full_ingest", "analysis"]
-    tier: Literal["standard", "large", "xlarge"] = "standard"
+    tier: Literal["standard", "large", "xlarge", "gpu"] = "standard"
     on_demand: bool | None = None
     workload: str = Field(default="", max_length=200)
     tier_explicit: bool = False
@@ -957,6 +962,13 @@ async def handle(
             "reference_repos": sorted(grant.project.reference_repos),
             "transfer_tool": await transfer_service.context(grant.project_id, grant.email),
             "analysis_tools": [spatial_analysis_capability()],
+            "cellpose_tools": {
+                "versions": ["3.1.1.3", "4.2.1.1"],
+                "sam_models": ["cpsam", "cpsam_v2"],
+                "tool": "cellpose_segment",
+                "input": "one 2D image crop; tile large images",
+            },
+            "gpu_available": bridge.settings.gpu_tier_enabled and bool(bridge.settings.gpu_image),
             "write_access": (
                 surface.EMAIL_READ_ONLY
                 if surface.is_email(record)

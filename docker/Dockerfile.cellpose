@@ -1,0 +1,27 @@
+# syntax=docker/dockerfile:1
+# Extend the verified spatial worker. Existing /opt/sap is preserved byte-for-byte.
+ARG SLACK_AGENT_IMAGE
+FROM ${SLACK_AGENT_IMAGE} AS cpu
+USER root
+COPY deploy/cellpose-models.json /opt/cellpose/manifest.json
+COPY cellpose-assets /opt/cellpose/models
+COPY docker/requirements-cellpose-sam-cpu.txt /opt/cellpose/requirements-cpu.txt
+RUN python -m venv /opt/cellpose/4.2.1.1 && \
+    uv pip install --python /opt/cellpose/4.2.1.1/bin/python --torch-backend cpu --require-hashes --only-binary :all: --no-cache \
+      -r /opt/cellpose/requirements-cpu.txt && \
+    uv pip check --python /opt/cellpose/4.2.1.1/bin/python
+COPY tools/cellpose_segment.py /opt/pistachio/tools/cellpose_segment.py
+USER 65532:65532
+
+FROM cpu AS gpu
+USER root
+COPY docker/requirements-cellpose-sam-gpu.txt /opt/cellpose/requirements-gpu.txt
+COPY docker/requirements-cellpose3-gpu.txt /opt/cellpose/requirements3-gpu.txt
+RUN uv pip sync --python /opt/cellpose/4.2.1.1/bin/python --torch-backend cu126 --require-hashes --only-binary :all: --no-cache \
+      /opt/cellpose/requirements-gpu.txt && \
+    python -m venv /opt/cellpose/3.1.1.3 && \
+    uv pip install --python /opt/cellpose/3.1.1.3/bin/python --torch-backend cu126 --require-hashes --only-binary :all: --no-cache \
+      -r /opt/cellpose/requirements3-gpu.txt && \
+    uv pip check --python /opt/cellpose/4.2.1.1/bin/python && \
+    uv pip check --python /opt/cellpose/3.1.1.3/bin/python
+USER 65532:65532
