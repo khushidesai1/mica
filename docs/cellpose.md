@@ -65,7 +65,7 @@ Cellpose 3, then repeat the SAP regression. CUDA wheels run these build gates on
 build alone does not verify GPU access.
 
 Use the coordinated release pipeline with `_VERIFY_CELLPOSE=1`, the CPU base as `_SLACK_BASE`,
-and `_GPU_BASE` / `_GPU_IMAGE` set for the GPU worker. Select `_MACHINE_TYPE=E2_HIGHCPU_32` for
+and `_GPU_BASE` / `_GPU_IMAGE` set for the GPU worker. The pipeline uses `E2_HIGHCPU_32` for
 model-loading gates. Before promotion, run `scripts/check_cellpose_gpu.py` on the final GPU image
 in a bounded L4 Batch job with `VERIFY_GPU=1`. It checks CUDA inside the actual tool sandbox,
 isolation and synthetic masks.
