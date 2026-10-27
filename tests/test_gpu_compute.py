@@ -7,8 +7,18 @@ from test_analysis_batch import bridge, payload  # noqa: F401
 from mica.agents.analysis import compute_approval, direct, recovery, tiers
 from mica.agents.analysis.batch import job_spec
 from mica.agents.analysis.config import Settings
+from mica.agents.analysis.recovery_tools import RecoveryManager
 
 GPU_IMAGE = "us-docker.pkg.dev/project/images/gpu@sha256:" + "b" * 64
+
+
+def test_gpu_worker_prompt_does_not_promise_cpu_resize():
+    manager = object.__new__(RecoveryManager)
+    manager.tier = "gpu"
+    manager.manifest = {"provisioning": "STANDARD"}
+    prompt = manager.prompt()
+    assert "cannot resize or move to a CPU tier" in prompt
+    assert "suitable larger worker" not in prompt
 
 
 @pytest.fixture

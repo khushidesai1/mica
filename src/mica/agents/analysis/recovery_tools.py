@@ -96,6 +96,19 @@ class RecoveryManager:
         shape = TIERS[self.tier]
         mode = "on-demand" if self.manifest["provisioning"] == "STANDARD" else "Spot"
         history = "\n".join(self.manifest.get("worker_history", []))
+        recovery_policy = (
+            "This GPU worker cannot resize or move to a CPU tier. Chunk work within the "
+            "confirmed resources; save progress and explain if the request cannot fit. "
+            "Only an explicit Spot run can restart once, on the same GPU tier and mode "
+            "within the original deadline. "
+            if self.tier == "gpu"
+            else (
+                "If measured input requirements or resource feedback show the next step cannot "
+                "fit, "
+                "call recover_worker with the evidence and remaining steps. The application can "
+                "automatically continue the same request on a suitable larger worker once. "
+            )
+        )
         return (
             "\n## Worker (trusted application policy)\n"
             f"Worker: {shape.name}, {shape.machine}, {shape.vcpus} CPUs, "
@@ -103,9 +116,7 @@ class RecoveryManager:
             f"Launch reason: {self.manifest.get('launch_reason') or 'ordinary analysis'}.\n"
             "This worker was sized to finish the job. Run the requested work directly. "
             "Set explicit Bash timeouts within the remaining request deadline. "
-            "If measured input requirements or resource feedback show the next step cannot fit, "
-            "call recover_worker with the evidence and remaining steps. The application can "
-            "automatically continue the same request on a suitable larger worker once. "
+            f"{recovery_policy}"
             "Never deliberately start undersized, silently reduce scientific scope, or ask the "
             "user to resubmit for a larger worker. "
             "High RAM alone is not proof of insufficient capacity. "
