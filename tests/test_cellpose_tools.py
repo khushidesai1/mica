@@ -6,6 +6,7 @@ from pydantic import ValidationError
 
 from mica.agents.analysis import cellpose_tools as tools
 from mica.agents.analysis.config import Settings
+from mica.agents.analysis.runner import Context, build_options
 
 
 def request(**changes):
@@ -26,6 +27,14 @@ def test_versions_select_separate_interpreters():
     assert tools.interpreter("4.2.1.1", gpu=False) == Path("/opt/cellpose/4.2.1.1/bin/python")
     with pytest.raises(ValueError):
         tools.interpreter("latest", gpu=False)
+
+
+def test_tools_are_available_without_dynamic_package_installation(tmp_path):
+    settings = Settings(_env_file=None, runtimes_enabled=False)
+    options = build_options(Context(tmp_path, tmp_path / "data"), settings)
+    assert "mcp__pistachio__cellpose_segment" in options.allowed_tools
+    assert "mcp__pistachio__cellpose_versions" in options.allowed_tools
+    assert options.env["MCP_TOOL_TIMEOUT"] == "1200000"
 
 
 @pytest.mark.parametrize("output", ["/tmp/out", "outputs/../code/out", "code/out", "outputs"])

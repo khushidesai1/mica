@@ -335,7 +335,7 @@ def build_options(
                     if gcs_publisher
                     else "1200000"
                 }
-                if runtimes or gcs_publisher
+                if runtimes or gcs_publisher or not ctx.survey_only
                 else {}
             ),
             "ANTHROPIC_API_KEY": settings.anthropic_api_key.get_secret_value(),
@@ -425,6 +425,14 @@ def build_options(
 
 def describe_tool(block: ToolUseBlock) -> str:
     args = block.input
+    if block.name == "mcp__pistachio__cellpose_segment":
+        return (
+            "Segmenting cells with Cellpose-SAM"
+            if str(args.get("version", "")).startswith("4.")
+            else "Segmenting cells with Cellpose 3"
+        )
+    if block.name == "mcp__pistachio__cellpose_versions":
+        return "Checking available Cellpose versions"
     if block.name == TOOL_NAME:
         packages = args.get("packages") or ["packages"]
         return f"Setting up {str(packages[0])[:60]}…"
