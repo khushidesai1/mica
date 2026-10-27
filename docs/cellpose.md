@@ -58,13 +58,15 @@ hardware does not guarantee immediate provider capacity or that an arbitrary cro
 
 GPU jobs use the pinned public Batch Debian 12 host image in `batch.py`. Batch installs the
 NVIDIA driver and toolkit. A fixed, bounded host setup on the dedicated VM configures NVIDIA
-JIT-CDI and skips only `disable-device-node-modification`, whose `/proc` overmount prevents
-nested private procfs. This follows NVIDIA's [hook configuration](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html).
+JIT-CDI and the generated CDI file used by newer Docker versions, skipping only
+`disable-device-node-modification`, whose `/proc` overmount prevents nested private procfs.
+The refresh service keeps the same setting, and setup verifies the generated spec before
+starting the worker. This follows NVIDIA's [hook configuration](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html).
 Docker device cgroups still restrict device access. The worker explicitly runs as UID 65532,
 drops all capabilities including MKNOD, and cannot gain privileges; the fixed segmentation
 sandbox exposes only the allocated device nodes. Mica adds no privileged Docker flag.
 The live gate verifies effective and bounding capabilities, no-new-privileges, and absence of
-parent credentials through procfs, in addition to network and device isolation. CPU jobs do
+parent credentials through procfs, absence of conflicting proc submounts, and network/device isolation. CPU jobs do
 not run this host setup.
 
 GPU submission requires confirmation in the requester's Slack conversation. Confirmation binds

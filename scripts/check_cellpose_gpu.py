@@ -32,6 +32,12 @@ async def main():
             "GPU worker must drop all bounding capabilities"
         )
         assert status["NoNewPrivs"].strip() == "1", "GPU worker must not gain privileges"
+        proc_mounts = [
+            line.split()[4]
+            for line in Path("/proc/self/mountinfo").read_text().splitlines()
+            if line.split()[4].startswith("/proc/")
+        ]
+        assert not proc_mounts, f"GPU runtime blocks private procfs with submounts: {proc_mounts}"
     with tempfile.TemporaryDirectory(prefix="cellpose-tool-gate-") as temp:
         work = Path(temp)
         # The trusted controller doesn't import scientific packages from the base interpreter.
