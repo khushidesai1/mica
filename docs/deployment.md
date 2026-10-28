@@ -77,7 +77,12 @@ When a host or container runtime fails during startup, isolate that boundary wit
 targeted probe before rebuilding the application images. Reuse an already verified immutable
 image when only an operator check changes; lint and validate that check against the actual
 production launch behavior. A verifier-only correction does not require another image build.
-Changes to GPU images, inference or isolation still require actual CUDA and sandbox checks.
+A worker image rebuild for Slack presentation, read-only routing or request-authorization metadata
+alone does not require a live GPU job when the pinned GPU runtime, scientific dependencies,
+inference code, device setup and isolation are unchanged. Use focused behavior tests plus packaged
+source/compatibility gates and record the previous runtime validation being reused. Run actual CUDA
+and sandbox checks for changes to those GPU execution components or new hardware compatibility
+claims; do not launch a GPU simply because application source was repackaged.
 Controller-only placement or approval changes can reuse the exact verified worker images after
 contract checks and focused failure/race tests. A provider stockout should exercise compatible
 GPU fallback, rather than block that controller release. Record hardware not yet observed in
