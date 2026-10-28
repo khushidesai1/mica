@@ -7,80 +7,116 @@ from typing import Any
 from .progress import TaskProgress
 
 
+def _rich_text(text: str) -> dict[str, Any]:
+    return {
+        "type": "rich_text",
+        "elements": [{"type": "rich_text_section", "elements": [{"type": "text", "text": text}]}],
+    }
+
+
 def activity_blocks(
     tasks: Sequence[TaskProgress],
     *,
     finished: bool = False,
     error: str | None = None,
     check_in: str = "",
+    headline: str = "Mica is working",
+    summary: str = "",
+    emoji: str = "",
 ) -> list[dict[str, Any]]:
-    """Slack's expandable plan; keep two cards, always including the active task."""
+    """One initially collapsed control; only public activity summaries go inside."""
     active = next((task for task in reversed(tasks) if task.status == "in_progress"), None)
-    title = active.phase if active else "Reviewing the latest results…"
+    thinking = headline in {"Thinking…", "Mica is thinking"}
+    title = "Mica is thinking" if thinking else "Mica is working"
     if finished:
-        title = f"Stopped: {error}" if error else "Finished"
-    cards = []
+        title = "Mica stopped" if error else "Mica finished"
     visible = list(tasks[-2:])
     if active is not None and active not in visible:
         visible = [visible[-1], active]
+    lines = []
+    if error:
+        lines.append(f"Stopped: {error[:300]}")
+    if thinking and not finished:
+        lines.append(
+            "Thinking: " + ("Reviewing the latest results." if tasks else "Reviewing your request.")
+        )
     for task in visible:
-        card: dict[str, Any] = {
-            "task_id": task.task_id,
-            "title": task.title[:150] or "Working on the request",
-            "status": task.status,
+        label = " ".join(task.title.split())[:150] or "Working on the request"
+        if task.status == "complete":
+            lines.append(f"✓ {label}")
+        elif task.status == "error" or finished:
+            lines.append(f"⚠ {label} — completion was not confirmed.")
+        else:
+            lines.append(f"Working: {label}")
+    if summary and not thinking and not active:
+        lines.append(
+            ("Last activity: " if finished else "Working: ") + " ".join(summary.split())[:150]
+        )
+    if not lines:
+        lines.append("Finished." if finished else "Preparing your request.")
+    if check_in and not finished:
+        lines.append(check_in[:1500])
+    header = _rich_text(title + (" " if emoji and not finished else ""))
+    if emoji and not finished:
+        # The configured loading icon is trusted; model labels remain plain text.
+        name = re.fullmatch(r":([a-zA-Z0-9_+\-]+):", emoji)
+        header["elements"][0]["elements"].append(
+            {"type": "emoji", "name": name[1]} if name else {"type": "text", "text": emoji}
+        )
+    return [
+        {
+            "type": "container",
+            "title": {"type": "plain_text", "text": title, "emoji": False},
+            "rich_text_title": header,
+            "width": "narrow",
+            "is_collapsible": True,
+            "default_collapsed": True,
+            "child_blocks": [_rich_text("\n".join(lines))],
         }
-        if check_in and not finished and task == (active or tasks[-1]):
-            card["details"] = {
-                "type": "rich_text",
-                "elements": [
-                    {
-                        "type": "rich_text_section",
-                        "elements": [{"type": "text", "text": check_in[:1500]}],
-                    }
-                ],
-            }
-        if finished and task.status == "in_progress":
-            # Do not infer tool success from the overall turn finishing.
-            card["status"] = "error"
-            card["details"] = {
-                "type": "rich_text",
-                "elements": [
-                    {
-                        "type": "rich_text_section",
-                        "elements": [{"type": "text", "text": "Completion was not confirmed."}],
-                    }
-                ],
-            }
-        cards.append(card)
-    return [{"type": "plan", "title": title[:150], "tasks": cards}]
+    ]
+
+
+def activity_fallback(blocks: Sequence[dict[str, Any]], *, plain: bool) -> list[dict[str, Any]]:
+    """Older Slack clients retain a native plan before falling back to plain status."""
+    result = []
+    for block in blocks:
+        if block.get("type") != "container":
+            result.append(block)
+            continue
+        title = block["title"]["text"]
+        details = block["child_blocks"][0]
+        if plain:
+            result.extend([_rich_text(title), details])
+        else:
+            result.append(
+                {
+                    "type": "plan",
+                    "title": title,
+                    "tasks": [
+                        {
+                            "task_id": "mica-activity",
+                            "title": "Activity summary",
+                            "status": (
+                                "complete"
+                                if title == "Mica finished"
+                                else "error"
+                                if title == "Mica stopped"
+                                else "in_progress"
+                            ),
+                            "details": details,
+                        }
+                    ],
+                }
+            )
+    return result
 
 
 def status_blocks(emoji: str, headline: str, steps: Sequence[str] = ()) -> list[dict[str, Any]]:
-    """Show the current action and recent steps without parsing model-derived labels."""
-    thinking = headline in {"Thinking…", "Mica is thinking"}
-    label = "Mica is thinking" if thinking else "Mica is working"
-    elements = [
-        {"type": "plain_text", "text": label, "emoji": False},
-        {"type": "mrkdwn", "text": emoji},
-    ]
-    blocks: list[dict[str, Any]] = [{"type": "context", "elements": elements}]
+    """Queue, startup and model activity share the same expandable control."""
     current = steps[-1] if steps else headline
-    if current not in {"Thinking…", "Working on it…", "Mica is thinking", "Mica is working"}:
-        elements = [{"type": "plain_text", "text": current[:150], "emoji": False}]
-        blocks.append({"type": "context", "elements": elements})
-    return blocks
-
-
-def done_blocks(steps: Sequence[str], error: str | None = None) -> list[dict[str, Any]]:
-    """Collapse progress to one context line without a duration."""
-    text = (
-        f"⚠️ Stopped: {error}"
-        if error
-        else "✓ " + (" · ".join(s[:80] for s in steps[-3:]) or "Finished")
-    )
-    return [
-        {"type": "context", "elements": [{"type": "plain_text", "text": text[:300], "emoji": True}]}
-    ]
+    if current in {"Thinking…", "Working on it…", "Mica is thinking", "Mica is working"}:
+        current = ""
+    return activity_blocks([], headline=headline, summary=current, emoji=emoji)
 
 
 def to_mrkdwn(text: str) -> str:

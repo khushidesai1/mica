@@ -50,6 +50,7 @@ from .sessions import Sessions
 from .slack_app import SlackAgent
 from .slack_format import status_blocks
 from .storage import GCSStorage
+from .transport import SlackTransport
 
 
 def arm_stop_deadline() -> None:
@@ -133,6 +134,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         raise ValueError("Slack credential has not been configured")
     check(settings)
     slack = AsyncWebClient(token=settings.slack_bot_token.get_secret_value())
+    progress_transport = SlackTransport(slack)
     monitor = AccessMonitor(
         lambda: worker_permitted(storage, request, saved, settings=settings),
         settings.access_unavailable_grace_seconds,
@@ -151,7 +153,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             ).encode(),
         )
         if request.get("notice_ts") and not surface.is_email(request):
-            await slack.chat_update(
+            await progress_transport.update(
                 channel=request["payload"]["event"]["channel"],
                 ts=request["notice_ts"],
                 text="Project access is unavailable.",
@@ -194,7 +196,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             )
     if request.get("notice_ts") and not surface.is_email(request):
         try:
-            await slack.chat_update(
+            await progress_transport.update(
                 channel=request["payload"]["event"]["channel"],
                 ts=request["notice_ts"],
                 text="Getting set up…",
@@ -330,7 +332,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         async def compute_status(text: str) -> None:
             if surface.is_email(request):
                 return
-            await slack.chat_update(
+            await progress_transport.update(
                 channel=payload["event"]["channel"],
                 ts=request["notice_ts"],
                 text=text,

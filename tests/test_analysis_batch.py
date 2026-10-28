@@ -549,6 +549,9 @@ async def test_receipt_ack_precedes_worker_and_deduplicates(bridge):
 
     def submit(**kwargs):
         assert bridge.test_slack.chat_postMessage.await_count == 1
+        receipt = bridge.test_slack.chat_postMessage.call_args.kwargs
+        assert receipt["text"] == "Mica is working"
+        assert receipt["blocks"][0]["default_collapsed"]
         seen.append(kwargs["job"])
         return create(**kwargs)
 

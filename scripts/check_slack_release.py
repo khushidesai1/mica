@@ -65,10 +65,11 @@ def check(source: Path, mode: str) -> None:
     assert check_in_due(0, None, 600, 600, 7200)
     assert not check_in_due(0, 600, 7799, 600, 7200)
     assert check_in_due(0, 600, 27 * 3600, 600, 7200)
-    card = activity_blocks(
+    activity = activity_blocks(
         [TaskProgress("job", "Analysis", "Running")], check_in="Run elapsed: 1d 3h 0m"
-    )[0]["tasks"][0]
-    assert card["status"] == "in_progress" and "details" in card
+    )[0]
+    assert activity["is_collapsible"] and activity["default_collapsed"]
+    assert "Run elapsed: 1d 3h 0m" in str(activity["child_blocks"])
     assert {ATOMX_TRANSFER_ID, SPATIAL_ANALYSIS_ID} <= {t.id for t in BOOTSTRAP_TOOLS}
     print("LONG_RUN_PROGRESS_AND_TOOL_CATALOG_VERIFIED")
     with tempfile.TemporaryDirectory() as temporary:

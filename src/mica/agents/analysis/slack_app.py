@@ -12,7 +12,6 @@ from html import escape
 from pathlib import Path
 from typing import Any
 
-from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
 from . import attachments, script_capture, thread_history, write_access
@@ -24,7 +23,7 @@ from .outputs import ATTACHMENT_SUFFIXES, MAX_ATTACHMENT_BYTES, publish, retenti
 from .progress import ActivityState, ProgressUpdate, TaskProgress, check_in_due, run_check_in
 from .runner import Context, Runner, TurnResult
 from .sessions import Sessions
-from .slack_format import activity_blocks, chunks, done_blocks, status_blocks, to_mrkdwn
+from .slack_format import activity_blocks, chunks, status_blocks, to_mrkdwn
 from .storage import Storage
 from .transport import EmailWorkerTransport, SlackTransport, Transport
 from .write_worker import Publication
@@ -255,7 +254,6 @@ class SlackAgent:
         activity = ActivityState("working")
         version = 0
         shown = 0
-        native_progress = True
         status_lock = asyncio.Lock()
 
         async def render(
@@ -267,52 +265,16 @@ class SlackAgent:
             error: str | None = None,
             check_in: str = "",
         ) -> None:
-            nonlocal native_progress
-            fallback = (
-                done_blocks(pending, error)
-                if finished
-                else status_blocks(
-                    emoji, activity.label, pending if activity.state == "working" else ()
-                )
+            blocks = activity_blocks(
+                task_snapshot,
+                finished=finished,
+                error=error,
+                check_in=check_in,
+                headline=activity.label,
+                summary=pending[-1] if pending else "",
+                emoji=emoji,
             )
-            if check_in and not finished:
-                fallback.append(
-                    {
-                        "type": "context",
-                        "elements": [
-                            {"type": "plain_text", "text": check_in[:1500], "emoji": False}
-                        ],
-                    }
-                )
-            blocks = (
-                ([] if finished else status_blocks(emoji, activity.label))
-                + activity_blocks(task_snapshot, finished=finished, error=error, check_in=check_in)
-                if native_progress and task_snapshot
-                else fallback
-            )
-            try:
-                await self.transport.update(
-                    channel=key[0],
-                    ts=status["ts"],
-                    text=text,
-                    blocks=blocks,
-                )
-            except SlackApiError as exc:
-                if not (
-                    native_progress
-                    and task_snapshot
-                    and exc.response.get("error") == "invalid_blocks"
-                ):
-                    raise
-                # Older Slack surfaces may reject plan blocks. Keep the answer usable.
-                native_progress = False
-                log.warning("Slack rejected native progress; using compact status")
-                await self.transport.update(
-                    channel=key[0],
-                    ts=status["ts"],
-                    text=text,
-                    blocks=fallback,
-                )
+            await self.transport.update(channel=key[0], ts=status["ts"], text=text, blocks=blocks)
 
         async def flush() -> None:
             nonlocal last, shown, last_check_in

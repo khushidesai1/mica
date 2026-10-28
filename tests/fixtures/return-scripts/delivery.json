@@ -3,18 +3,49 @@
     {
       "blocks": [
         {
-          "elements": [
+          "child_blocks": [
             {
-              "emoji": false,
-              "text": "Mica is working",
-              "type": "plain_text"
-            },
-            {
-              "text": ":hourglass_flowing_sand:",
-              "type": "mrkdwn"
+              "elements": [
+                {
+                  "elements": [
+                    {
+                      "text": "Preparing your request.",
+                      "type": "text"
+                    }
+                  ],
+                  "type": "rich_text_section"
+                }
+              ],
+              "type": "rich_text"
             }
           ],
-          "type": "context"
+          "default_collapsed": true,
+          "is_collapsible": true,
+          "rich_text_title": {
+            "elements": [
+              {
+                "elements": [
+                  {
+                    "text": "Mica is working ",
+                    "type": "text"
+                  },
+                  {
+                    "name": "hourglass_flowing_sand",
+                    "type": "emoji"
+                  }
+                ],
+                "type": "rich_text_section"
+              }
+            ],
+            "type": "rich_text"
+          },
+          "title": {
+            "emoji": false,
+            "text": "Mica is working",
+            "type": "plain_text"
+          },
+          "type": "container",
+          "width": "narrow"
         }
       ],
       "channel": "C123",

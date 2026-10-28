@@ -496,7 +496,7 @@ class BatchBridge:
                 if observability.capture_project(record, grant):
                     await self.repository.set_connector_state(key, record)
             if not record.get("notice_ts"):
-                await self.notify(event_id, record, "received", "On it…")
+                await self.notify(event_id, record, "received", "Mica is working")
             from . import command_intent, commands
             from .direct import RoutingUnavailable, finish
 
