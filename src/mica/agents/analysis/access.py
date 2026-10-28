@@ -198,10 +198,12 @@ def worker_permitted(
     if request.get("recovery"):
         from .config import CHECKPOINT_PREFIX
         from .memory_workspace import cancelled
-        from .recovery import read_json
+        from .recovery import REQUEST_JSON_LIMIT, read_json
 
         event_id = request.get("event_id", "")
-        active = read_json(storage, f"{CHECKPOINT_PREFIX}/events/{event_id}/request.json")
+        active = read_json(
+            storage, f"{CHECKPOINT_PREFIX}/events/{event_id}/request.json", limit=REQUEST_JSON_LIMIT
+        )
         if (
             not event_id
             or not active

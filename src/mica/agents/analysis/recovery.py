@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import Field
 
-from .config import CHECKPOINT_PREFIX, Settings
+from .config import CHECKPOINT_PREFIX, MAX_MEMORY_TOTAL_KB, Settings
+from .reference_repos import MAX_BYTES as REFERENCE_MAX_BYTES
 from .storage import Storage
 from .tiers import ORDER, TIERS, Record, gpu_seconds, resolve, selected_gpu
 
@@ -21,6 +22,12 @@ if TYPE_CHECKING:
     from .batch import BatchBridge
 
 log = logging.getLogger(__name__)
+
+# Request manifests contain up to 16 MiB of project memory and five 2 MiB references,
+# unlike the small telemetry/result records read below. JSON escaping can cost six
+# bytes per source byte; reserve 8 MiB for file metadata and bounded control state.
+# A range read returns only the actual object size, not an allocation of this limit.
+REQUEST_JSON_LIMIT = 6 * (MAX_MEMORY_TOTAL_KB * 1024 + 5 * REFERENCE_MAX_BYTES) + 8 * 1024 * 1024
 
 
 def event_prefix(event_id: str) -> str:
