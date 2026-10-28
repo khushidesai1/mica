@@ -157,7 +157,8 @@ copies, not publication to a project's data bucket. Normal workspace snapshots s
 datasets, masks and scratch. Completed stages from other tools can be explicitly saved with
 `checkpoint_stage`; running processes cannot be checkpointed by that tool.
 
-`saved_checkpoints` lists saved stages in bounded pages and restores an explicitly selected one.
+`saved_checkpoints` lists saved stages in bounded pages and restores an explicitly selected one. Automatic worker handoffs include the latest 32 stages;
+older stages remain available to restore on demand so multi-day runs keep bounded metadata.
 Restoration verifies the archive hash and scoped path, and never overwrites an existing destination.
 Before reusing a tile, compare its input hash, model/version and parameters and preserve tile
 coordinates in a manifest. New requests can resume completed work without repeating segmentation.

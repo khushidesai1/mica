@@ -224,7 +224,14 @@ class Stages:
         self.stages: list[dict[str, Any]] = []
 
     def manifest(self) -> dict[str, Any]:
-        return {"stages": self.stages, "uploaded_bytes": self.uploaded_bytes}
+        # Keep controller/Firestore handoffs bounded during multi-day tiled work. Every
+        # durable receipt remains discoverable; older results can be restored on demand.
+        stages = self.stages[-32:] if self.durable_prefix else self.stages
+        return {
+            "stages": stages,
+            "uploaded_bytes": self.uploaded_bytes,
+            "older_stages_available": len(stages) < len(self.stages),
+        }
 
     def capture(self, args: dict[str, Any]) -> dict[str, Any]:
         if set(args) != {"path", "fingerprint"}:

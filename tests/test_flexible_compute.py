@@ -147,3 +147,19 @@ async def test_cellpose_saves_before_success_and_never_repeats_inference_on_save
     reply = await tool.handler(args)
     assert reply["isError"] and "retry checkpoint_stage" in reply["content"][0]["text"]
     assert segment.await_count == 2  # One inference per invocation; no automatic replay.
+
+
+def test_many_tiles_keep_handoffs_bounded_without_losing_saved_results(tmp_path):
+    storage = LocalStorage(tmp_path / "cloud")
+    work = tmp_path / "work"
+    stages = Stages(storage, work, "a" * 32, 0, thread_key="thread", project_id="project")
+    for index in range(70):
+        path = work / f"checkpoints/tile{index}"
+        path.mkdir(parents=True)
+        (path / "mask.tif").write_bytes(b"mask")
+        stages.capture({"path": str(path.relative_to(work)), "fingerprint": "x" * 1000})
+    assert len(json.dumps(stages.manifest())) < 64 * 1024
+    assert stages.manifest()["older_stages_available"]
+    first = stages.available()
+    second = stages.available(first["next_offset"])
+    assert len(first["checkpoints"]) + len(second["checkpoints"]) == 70

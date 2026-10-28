@@ -139,6 +139,7 @@ class RecoveryManager:
             "validate them before reuse. Scratch and running processes do not survive a restart. "
             "Durable saved stages survive a completed or stopped request in this project/thread. "
             "Use saved_checkpoints to list or restore them before recomputing expensive work. "
+            "Only recent stages are restored automatically; restore older saved results on demand. "
             "Cellpose results save automatically; general scripts must save completed stages. "
             "Runtime estimates are advisory: long healthy processes may continue to the approved "
             "deadline. If more time is needed, save progress and ask for an additional allowance; "
