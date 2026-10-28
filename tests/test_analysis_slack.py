@@ -397,7 +397,10 @@ def test_activity_is_bounded_keeps_active_task_and_does_not_invent_success():
     assert "check 0" not in text and "check 2" not in text
     final = activity_blocks(tasks, finished=True, error="interrupted")[0]
     assert final["title"] == "Mica stopped"
-    assert "✓ <!channel> check 3" in repr(final)
+    assert len(final["tasks"]) == 1 and final["tasks"][0]["hide_title"]
+    assert "• Done: <!channel> check 3" in repr(final)
+    assert "• Stopped: <!channel> check 1" in repr(final)
+    assert "✓" not in repr(final) and "container" not in repr(final)
     assert "not confirmed" in repr(final)
 
 
@@ -430,7 +433,8 @@ async def test_activity_compatibility_preserves_details_and_completion(
     await send(bot, event("check"))
     assert sum(bool(b) and b[0]["type"] == "plan" for b in seen) == (1 if unsupported else 4)
     final = seen[-2]  # Last activity update, before the final answer.
-    assert "Mica finished" in repr(final) and "✓ Check counts" in repr(final)
+    assert "Mica finished" in repr(final) and "• Done: Check counts" in repr(final)
+    assert "✓" not in repr(final)
     if unsupported:
         assert final[0]["type"] == "context"  # Muted fallback, never a bordered card.
     assert bot.client.chat_postMessage.call_args.kwargs["text"] == "Done."

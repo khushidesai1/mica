@@ -144,6 +144,8 @@ transcript. Stored step logs contain tool names, argument sizes and status, neve
 Exact command grammar and handlers share the policy table in `agents/analysis/commands.py`.
 Natural-language cancellation is checked before queueing only when work is already active.
 The old router remains available to other principals during rollout.
+Direct answers and worker answers use the same Markdown-to-Slack conversion, preserving code
+and formatting headings, bold text and links. Saved conversation text and email stay unchanged.
 
 Agent rules live where they are used: code enforces access, sandbox and write constraints; tool
 descriptions explain delivery and operations; a `UserPromptSubmit` hook provides current memory,

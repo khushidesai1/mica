@@ -101,6 +101,35 @@ async def test_plain_reply_private_thinking_and_provider_settings(turn):
     assert record["routing_budget"] <= direct.ROUTING_SECONDS
 
 
+async def test_markdown_reply_is_formatted_for_slack_and_retry_preserves_original(
+    turn, monkeypatch
+):
+    bridge, event_id, record, _ = turn
+    text = (
+        "**1. Run and slide level**\n"
+        "- Compare counts & genes.\n"
+        "- See [source](https://example.org/qc).\n"
+        "- Keep `**literal**` and `<cell>` unchanged.\n"
+        "```python\nvalue = '**literal**'\n```"
+    )
+    sdk = Client(reply(text))
+    monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: sdk)
+    assert await direct.handle(bridge, event_id, record, bridge.store)
+    rendered = bridge.test_slack.chat_update.call_args.kwargs["text"]
+    assert rendered.startswith("*1. Run and slide level*\n- Compare counts &amp; genes.")
+    assert "<https://example.org/qc|source>" in rendered
+    assert "`**literal**` and `<cell>`" in rendered
+    assert "```python\nvalue = '**literal**'\n```" in rendered
+    assert record["direct_decision"]["reply"] == record["memory_reply"] == text
+    state = json.loads(bridge.store.get(access.checkpoint_key(record["thread_key"]))[0])
+    assert state["messages"][-1]["assistant"] == text
+    updates = bridge.test_slack.chat_update.await_count
+    assert await direct.handle(bridge, event_id, record, bridge.store)
+    assert bridge.test_slack.chat_update.await_count == updates
+    assert len(sdk.calls) == 1
+    bridge.test_client.create_job.assert_not_called()
+
+
 async def test_unordered_reads_and_append_only_thinking(turn, monkeypatch):
     first = tool("list_folders", paths=["raw/"])
     first[1].insert(0, {"type": "thinking", "thinking": "private", "signature": "signed"})

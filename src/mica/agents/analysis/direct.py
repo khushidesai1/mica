@@ -1406,6 +1406,10 @@ async def handle(
             + "\n\n"
             + project_memory.PRIVACY
         )
-    completed = await finish(bridge, event_id, record, reply)
+    # Model replies use Markdown, just like worker replies. Convert only at the
+    # Slack boundary so saved decisions/history and email retain the original text.
+    completed = await finish(
+        bridge, event_id, record, reply if surface.is_email(record) else to_mrkdwn(reply)
+    )
     record["memory_reply"] = decision.reply
     return completed

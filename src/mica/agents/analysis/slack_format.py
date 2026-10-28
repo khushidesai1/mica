@@ -42,11 +42,11 @@ def activity_blocks(
     for task in visible:
         label = " ".join(task.title.split())[:150] or "Working on the request"
         if task.status == "complete":
-            lines.append(f"✓ {label}")
+            lines.append(f"• Done: {label}")
         elif task.status == "error" or finished:
-            lines.append(f"⚠ {label} — completion was not confirmed.")
+            lines.append(f"• Stopped: {label} — completion was not confirmed.")
         else:
-            lines.append(f"Working: {label}")
+            lines.append(f"• Working: {label}")
     if summary and not thinking and not active:
         lines.append(
             ("Last activity: " if finished else "Working: ") + " ".join(summary.split())[:150]

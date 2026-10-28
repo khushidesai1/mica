@@ -12,7 +12,7 @@ from test_analysis_direct import chat  # noqa: F401
 from mica.agents.analysis import access, command_intent, direct, observability
 from mica.agents.analysis.help_text import COMMAND_HELP
 from mica.agents.analysis.registry import Registry
-from mica.agents.analysis.slack_format import chunks
+from mica.agents.analysis.slack_format import chunks, to_mrkdwn
 
 
 async def test_help_is_split_without_truncation_or_a_worker(chat):
@@ -56,6 +56,24 @@ async def test_partial_slack_reply_resumes_confirmed_parts_after_reload(bridge):
     assert calls[1].kwargs["client_msg_id"] == calls[2].kwargs["client_msg_id"]
     await bridge.notify("event", saved, "complete", text)
     assert bridge.test_slack.chat_postMessage.await_count == 3
+
+
+async def test_long_direct_markdown_reply_is_converted_before_chunking(chat):
+    text = "**QC workflow**\n" + "- Compare counts & genes across slides.\n" * 150
+    chat.decision.return_value = direct.Decision(route="reply", reply=text)
+    event_id = await chat.accept(payload(text="Explain the QC workflow"))
+    record = await chat.repository.get_connector_state("claude-event:" + event_id)
+    record["notice_ts"] = "9.0"
+    await chat.repository.set_connector_state("claude-event:" + event_id, record)
+    chat.test_slack.reset_mock()
+    assert await chat.process(event_id, 0) == "complete"
+    delivered = [chat.test_slack.chat_update.call_args.kwargs["text"]] + [
+        call.kwargs["text"] for call in chat.test_slack.chat_postMessage.call_args_list
+    ]
+    assert delivered == list(chunks(to_mrkdwn(text)))
+    assert all(len(part) <= 3500 for part in delivered)
+    assert "**QC workflow**" not in delivered[0]
+    chat.test_client.create_job.assert_not_called()
 
 
 async def test_command_delivery_failure_has_active_project_without_changing_reply_scope(chat):
