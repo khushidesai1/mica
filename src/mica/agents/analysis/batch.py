@@ -218,7 +218,8 @@ def job_spec(
             size_gb=shape.disk_gb,
             # Batch owns GPU/container integration. COS currently injects a privileged
             # launch that conflicts with its CDI hook; use the supported Debian host.
-            image=GPU_BOOT_IMAGE if gpu else "",
+            # An empty image selects the protobuf oneof and Batch rejects it.
+            **({"image": GPU_BOOT_IMAGE} if gpu else {}),
         ),
     )
     return batch_v1.Job(

@@ -75,7 +75,8 @@ drops all capabilities including MKNOD, and cannot gain privileges; the fixed se
 sandbox exposes only the allocated device nodes. Mica adds no privileged Docker flag.
 The live gate verifies effective and bounding capabilities, no-new-privileges, and absence of
 parent credentials through procfs, absence of conflicting proc submounts, and network/device isolation. CPU jobs do
-not run this host setup.
+not run this host setup. Their boot disks omit the image selector so Batch chooses its default
+host; explicitly sending an empty image is invalid in the Batch API.
 
 GPU submission requires confirmation in the requester's Slack conversation. Confirmation binds
 the requester, project access, immutable image, GPU model, launch choices, time allowance, compute/disk
