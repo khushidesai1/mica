@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from .transfer_config import TransferProject
 
 CHECKPOINT_PREFIX = "tasks/slack-analysis"
+MAX_MEMORY_TOTAL_KB = 16384
 
 
 class Settings(BaseSettings):
@@ -38,7 +39,7 @@ class Settings(BaseSettings):
     memory_index_chars: int = Field(default=4000, ge=1, le=16000)
     memory_file_kb: int = Field(default=16, ge=1, le=64)
     memory_max_files: int = Field(default=500, ge=1, le=1000)
-    memory_total_kb: int = Field(default=4096, ge=1, le=16384)
+    memory_total_kb: int = Field(default=4096, ge=1, le=MAX_MEMORY_TOTAL_KB)
     memory_router_chars: int = Field(default=12000, ge=1, le=64000)
     memory_auto_edit: bool = True
     memory_compaction_enabled: bool = True

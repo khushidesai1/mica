@@ -60,6 +60,11 @@ deduplicated and updates are throttled without posting extra messages. Older Sla
 back to the native activity plan, then plain status only if both components are rejected. Status
 failures do not prevent work, and webhook/poll deliveries reuse the stored message timestamp.
 
+Worker access checks read the active request with a separate bounded manifest limit that covers
+project memory and reference snapshots, including JSON escaping. Small telemetry and recovery
+result records retain their 256 KiB limit. A valid large source snapshot must not be reported as
+revoked project access; membership, signatures, cancellation and attempt checks still apply.
+
 Firestore receipts deduplicate Slack delivery, order accepted messages within a thread, and
 limit active Claude jobs to three. Named polling tasks use the existing queue without depending
 on its five-attempt retry limit. Separate threads can run concurrently. Registry writes use generation checks to serialize project binding changes. The worker saves SQLite state, Claude transcripts and the
