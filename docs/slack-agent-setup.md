@@ -27,21 +27,21 @@ source snapshots, with exact-path follow-ups for larger repositories. The reply 
 and the commit, distinguishes inspected code from executed/tested behavior, and reports missing
 coverage. Requested README text is delivered directly through the ordinary chunked reply path;
 Mica does not start a worker merely to compose documentation or claim an attachment was created.
-Reads use at most two rounds within the same routing deadline. Source/text/history content has a
-shared 384 KiB budget per round, text attachments are capped at 64 KiB each, and all content remains
-untrusted evidence. Reads are restricted to available catalog/project references, registered thread
-file IDs and the current thread/project's history. Access is checked before reads and delivery. Invalid routing output
-gets one immediate correction attempt with field-level feedback. If that fails, or the model API
-times out, rate-limits, or returns a server error, the original request stays pending and retries
-through the existing queue no earlier than 30 and 60 seconds after each failure. There are at most
-three routing cycles; each decision gets one correction and at most one media fallback. The initial
-decision and any inventory/view/read follow-up share a 120-second routing deadline. Exhaustion reports
-an internal failure and preserves the conversation. Only schema
-field names and error types are logged, never invalid values. Each attempt rechecks access;
-failed routing never invents a computation or bypasses write approval. Display-only worker workload
-and reason labels are truncated to 200 characters; short reasons become "unspecified". Routes,
-resource choices, paths, and replies still require validation. Cancellation bypasses queued work
-and stops the active job without starting a new one.
+Set `AGENT_CONVERSATION_PRINCIPALS` to selected email addresses to enable the conversation tool
+loop. The default empty value preserves the previous router; `*` enables all authorized users.
+Start with the owner account. `AGENT_CONVERSATION_EFFORT` defaults to `medium` and
+`AGENT_CONVERSATION_MAX_CALLS` to 6, plus one final no-tool answer when the call/time reserve is
+reached. The total request budget is 120 seconds across retries. List, view and source-read tools
+can run in any order. Source/text/history content shares a 384 KiB request budget, and text
+attachments remain capped at 64 KiB each. Source inspection never executes code.
+All reads are restricted to authorized catalog/project repositories, registered attachments and
+this thread's history. Access is checked before each tool and again before delivery. Invalid tool
+input is returned to Claude for correction. Timeouts, refusals and truncated responses use the
+existing three-attempt queue recovery; failed routing never invents computation or bypasses
+approval. Terminal actions persist before dispatch and retry without another model call.
+Unselected principals retain the legacy fixed-stage router during this rollout. Cancellation
+bypasses queued work and stops the active job without starting another. Only active predecessors
+need a pre-queue natural-language control check.
 
 A verified user who lacks membership in a project published to the current channel gets a message
 naming its owner and the exact `share` command to run in the owner's DM with Mica. Unpublished
@@ -266,12 +266,13 @@ For ordinary chat, the router resolves descriptive names from the project guide,
 memory, and conversation. It requests all relevant relative folders in one step (at most 50),
 listing the root only when context cannot resolve a needed folder. Every path is checked
 against project access, bucket admission, traversal, and array-store restrictions before listing.
-The reply names the folders used. Incomplete listings and requests for another listing route
-to a worker that can finish the work; missing entries in partial results never prove absence.
+The reply names the folders used. The conversation loop can request another bounded listing;
+incomplete metadata alone never starts a worker or proves that missing entries are absent.
 
 One `inventory event=<id> paths=<n> entries=<n> complete=<bool> ms=<n>` log records each step
-without names. Intermediate routing decisions are saved for failure diagnosis and marked pending
-until a final reply or compute decision is ready. Delivery retries reuse the final decision.
+without names. The conversation loop stores compact tool-step metadata, then a durable final
+reply or action decision. Delivery retries reuse that final decision. The legacy path retains
+pending intermediate routing records for unselected principals.
 The initial guide is generated without a worker even if the listing is unavailable.
 
 Retrying the same project/folder binding preserves its identity and saved brief. Init automatically

@@ -305,16 +305,7 @@ def command(proposal: Proposal, grant: access.Grant, *, source_text: str = "") -
 
         valid_path(proposal.path)
         return commands.Command(op, (proposal.path,))
-    if op in {
-        "projects",
-        "help",
-        "brief",
-        "memory",
-        "cancel",
-        "transfers",
-        "atomx login status",
-        "connect atomx",
-    }:
+    if commands.spec(op).arguments == "none":
         return commands.Command(op)
     if op == "scripts":
         return commands.Command(op, (proposal.preference,) if proposal.preference else ())
@@ -346,7 +337,7 @@ def command(proposal: Proposal, grant: access.Grant, *, source_text: str = "") -
         if not proposal.scope.startswith("gs://") or proposal.scope not in exact_uris:
             raise ValueError("What exact gs:// data location should this project use by default?")
         return commands.Command(op, (pid, data_uri(proposal.scope)))
-    if op in {"use", "owners", "write status", "write revoke"}:
+    if commands.spec(op).arguments == "project":
         return commands.Command(op, (pid,))
     if op == "write grant":
         from .write_access import duration, scope

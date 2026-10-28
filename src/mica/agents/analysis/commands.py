@@ -16,6 +16,192 @@ from .registry import ProjectEntry, Registry, RegistryDoc
 
 
 @dataclass(frozen=True)
+class Spec:
+    """Command policy. Grammar and handlers remain explicit below.
+
+    dm_only is natural-language selection policy; exact_dm_only preserves the
+    existing exact-command channel binding behavior for `use`.
+    """
+
+    approval: bool = False
+    dm_only: bool = False
+    exact_dm_only: bool = False
+    email_read_only: bool = False
+    sender_reply: bool = False
+    recipient: bool = False
+    natural: bool = False
+    bare: bool = False
+    registry: bool = False
+    connection: bool = False
+    transfer: bool = False
+    exact_approval: bool = False
+    arguments: str = "custom"
+    removed: str = ""
+
+
+MEMORY_CHANGED = (
+    "Mica now remembers and tidies project memory itself. Use `memory` to see it, "
+    "or just tell me what's wrong."
+)
+
+COMMANDS: dict[str, Spec] = {
+    "add-owner": Spec(
+        approval=True,
+        exact_dm_only=True,
+        email_read_only=True,
+        recipient=True,
+        natural=True,
+        registry=True,
+        exact_approval=True,
+        dm_only=True,
+    ),
+    "atomx login status": Spec(
+        sender_reply=True,
+        natural=True,
+        bare=True,
+        connection=True,
+        transfer=True,
+        arguments="none",
+        dm_only=True,
+    ),
+    "brief": Spec(natural=True, bare=True, arguments="none"),
+    "cancel": Spec(natural=True, bare=True, arguments="none"),
+    "cancel transfer": Spec(transfer=True),
+    "clean brief": Spec(bare=True, removed=MEMORY_CHANGED),
+    "connect atomx": Spec(
+        sender_reply=True, natural=True, bare=True, connection=True, arguments="none", dm_only=True
+    ),
+    "data-root": Spec(
+        approval=True,
+        exact_dm_only=True,
+        email_read_only=True,
+        natural=True,
+        registry=True,
+        exact_approval=True,
+        dm_only=True,
+    ),
+    "forget": Spec(removed=MEMORY_CHANGED),
+    "forget atomx login": Spec(sender_reply=True, bare=True, connection=True, transfer=True),
+    "forget context": Spec(bare=True, removed=MEMORY_CHANGED),
+    "forget knowledge": Spec(removed=MEMORY_CHANGED),
+    "help": Spec(sender_reply=True, natural=True, bare=True, arguments="none"),
+    "help all": Spec(sender_reply=True, bare=True),
+    "help write": Spec(email_read_only=True, bare=True),
+    "init": Spec(natural=True, dm_only=True),
+    "knowledge": Spec(bare=True, removed=MEMORY_CHANGED),
+    "knowledge github": Spec(removed=MEMORY_CHANGED),
+    "knowledge show": Spec(removed=MEMORY_CHANGED),
+    "memory": Spec(natural=True, bare=True, arguments="none"),
+    "memory context": Spec(bare=True, removed=MEMORY_CHANGED),
+    "owners": Spec(
+        exact_dm_only=True,
+        sender_reply=True,
+        natural=True,
+        registry=True,
+        arguments="project",
+        dm_only=True,
+    ),
+    "projects": Spec(
+        exact_dm_only=True,
+        sender_reply=True,
+        natural=True,
+        bare=True,
+        registry=True,
+        arguments="none",
+        dm_only=True,
+    ),
+    "publish": Spec(
+        approval=True,
+        exact_dm_only=True,
+        email_read_only=True,
+        natural=True,
+        registry=True,
+        dm_only=True,
+    ),
+    "remember": Spec(removed=MEMORY_CHANGED),
+    "remove-owner": Spec(
+        approval=True,
+        exact_dm_only=True,
+        email_read_only=True,
+        recipient=True,
+        natural=True,
+        registry=True,
+        exact_approval=True,
+        dm_only=True,
+    ),
+    "rename": Spec(
+        approval=True,
+        exact_dm_only=True,
+        email_read_only=True,
+        natural=True,
+        registry=True,
+        dm_only=True,
+    ),
+    "replace atomx login": Spec(sender_reply=True, bare=True, connection=True, transfer=True),
+    "repos": Spec(exact_dm_only=True, natural=True, registry=True),
+    "repos add": Spec(
+        approval=True,
+        exact_dm_only=True,
+        email_read_only=True,
+        natural=True,
+        registry=True,
+        exact_approval=True,
+        dm_only=True,
+    ),
+    "repos remove": Spec(
+        approval=True,
+        exact_dm_only=True,
+        email_read_only=True,
+        natural=True,
+        registry=True,
+        exact_approval=True,
+        dm_only=True,
+    ),
+    "save brief": Spec(bare=True, removed=MEMORY_CHANGED),
+    "scripts": Spec(sender_reply=True, natural=True),
+    "share": Spec(
+        approval=True,
+        exact_dm_only=True,
+        email_read_only=True,
+        recipient=True,
+        natural=True,
+        registry=True,
+        dm_only=True,
+    ),
+    "transfer": Spec(transfer=True),
+    "transfers": Spec(natural=True, bare=True, transfer=True, arguments="none"),
+    "undo knowledge": Spec(bare=True, removed=MEMORY_CHANGED),
+    "unpublish": Spec(
+        approval=True,
+        exact_dm_only=True,
+        email_read_only=True,
+        natural=True,
+        registry=True,
+        dm_only=True,
+    ),
+    "unshare": Spec(
+        approval=True,
+        exact_dm_only=True,
+        email_read_only=True,
+        recipient=True,
+        natural=True,
+        registry=True,
+        dm_only=True,
+    ),
+    "use": Spec(sender_reply=True, natural=True, registry=True, arguments="project", dm_only=True),
+    "write grant": Spec(approval=True, email_read_only=True, natural=True, dm_only=True),
+    "write revoke": Spec(
+        approval=True, email_read_only=True, natural=True, arguments="project", dm_only=True
+    ),
+    "write status": Spec(email_read_only=True, natural=True, arguments="project", dm_only=True),
+}
+
+
+def spec(name: str) -> Spec:
+    return COMMANDS.get(name, Spec())
+
+
+@dataclass(frozen=True)
 class Command:
     name: str
     args: tuple[str, ...] = ()
@@ -25,26 +211,7 @@ class Command:
 def parse(raw: str) -> Command | None:
     text = re.sub(r"^(?:\s*<@[A-Z0-9]+>\s*)+", "", raw).strip()
     lower = text.lower()
-    if lower in {
-        "help",
-        "help all",
-        "help write",
-        "projects",
-        "brief",
-        "save brief",
-        "cancel",
-        "memory",
-        "knowledge",
-        "undo knowledge",
-        "memory context",
-        "forget context",
-        "clean brief",
-        "transfers",
-        "atomx login status",
-        "connect atomx",
-        "replace atomx login",
-        "forget atomx login",
-    }:
+    if spec(lower).bare:
         return Command(lower)
     if lower == "switch":
         return Command("projects")
@@ -136,7 +303,7 @@ def parse(raw: str) -> Command | None:
         return Command("use", (words[1],), len(words) == 3)
     if action == "owners" and len(words) == 2:
         return Command("owners", (words[1],))
-    if action in {"share", "unshare", "add-owner", "remove-owner"} and len(words) == 3:
+    if spec(action).recipient and len(words) == 3:
         if re.fullmatch(r"<@[A-Z0-9]+(?:\|[^>]+)?>|<mailto:[^>]+>|[^\s@]+@[^\s@]+", words[2]):
             return Command(action, tuple(words[1:]))
         return None
@@ -162,26 +329,8 @@ def parse(raw: str) -> Command | None:
     return None
 
 
-MEMORY_CHANGED = (
-    "Mica now remembers and tidies project memory itself. Use `memory` to see it, "
-    "or just tell me what's wrong."
-)
-
-
 def removed_memory(cmd: Command) -> bool:
-    return cmd.name in {
-        "remember",
-        "forget",
-        "memory context",
-        "forget context",
-        "knowledge",
-        "knowledge show",
-        "knowledge github",
-        "forget knowledge",
-        "undo knowledge",
-        "save brief",
-        "clean brief",
-    }
+    return bool(spec(cmd.name).removed)
 
 
 def run(
@@ -196,23 +345,7 @@ def run(
     event = record["payload"]["event"]
     team, channel = record["payload"]["team_id"], event["channel"]
     email, doc = grant.email, grant.doc
-    if surface.is_email(record) and (
-        cmd.name.startswith("write ")
-        or cmd.name
-        in {
-            "help write",
-            "share",
-            "unshare",
-            "add-owner",
-            "remove-owner",
-            "publish",
-            "unpublish",
-            "rename",
-            "data-root",
-            "repos add",
-            "repos remove",
-        }
-    ):
+    if surface.is_email(record) and (spec(cmd.name).email_read_only):
         return surface.EMAIL_READ_ONLY
     if cmd.name in {"help", "help all"}:
         return COMMAND_HELP
@@ -228,24 +361,9 @@ def run(
         from .write_access import command
 
         return command(cmd, grant, registry.storage, record, event_id, settings)
-    if cmd.name not in {
-        "projects",
-        "repos",
-        "repos add",
-        "repos remove",
-        "use",
-        "rename",
-        "data-root",
-        "owners",
-        "add-owner",
-        "remove-owner",
-        "share",
-        "unshare",
-        "publish",
-        "unpublish",
-    }:
+    if not spec(cmd.name).registry:
         return None
-    if cmd.name != "use" and not grant.private:
+    if spec(cmd.name).exact_dm_only and not grant.private:
         raise ValueError("Use that command in your DM with Mica.")
     if cmd.name == "projects":
         active = doc.active_for(email, team, channel, private=grant.private)

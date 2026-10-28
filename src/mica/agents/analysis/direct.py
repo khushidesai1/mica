@@ -249,8 +249,7 @@ class WorkerChoice(BaseModel):
         return value
 
 
-class Decision(BaseModel):
-    route: Literal["reply", "inventory", "view", "read", "compute", "transfer"]
+class DecisionFields(BaseModel):
     transfer_request: TransferRequest | None = None
     view_ids: list[str] = Field(default_factory=list, max_length=4)
     reference_repos: list[Annotated[str, Field(max_length=150)]] = Field(
@@ -296,6 +295,10 @@ class Decision(BaseModel):
         description="Requested GCS output file/folder URIs, for pre-run overwrite confirmation.",
     )
     worker: WorkerChoice | None = None
+
+
+class Decision(DecisionFields):
+    route: Literal["reply", "inventory", "view", "read", "compute", "transfer"]
 
 
 class RoutingUnavailable(ValueError):
@@ -613,23 +616,9 @@ async def dispatch_command(
     from .transfers import Transfers
 
     registry = Registry(storage)
-    if cmd.name in {
-        "projects",
-        "owners",
-        "use",
-        "scripts",
-        "help",
-        "help all",
-        "atomx login status",
-        "connect atomx",
-    }:
+    if commands.spec(cmd.name).sender_reply:
         command_intent.private_reply(record, grant)
-    if cmd.name in {
-        "connect atomx",
-        "atomx login status",
-        "replace atomx login",
-        "forget atomx login",
-    }:
+    if commands.spec(cmd.name).connection:
         if not grant.email:
             return await finish(bridge, event_id, record, access.deny_text(grant))
         command_intent.private_reply(record, grant)
@@ -705,14 +694,7 @@ async def dispatch_command(
                     # registry-only rename complete/failed in the generic HTTP handler.
                     raise RuntimeError("Project memory synchronization needs retry") from exc
             return await finish(bridge, event_id, record, reply)
-    if cmd.name in {
-        "transfer",
-        "transfers",
-        "atomx login status",
-        "replace atomx login",
-        "forget atomx login",
-        "cancel transfer",
-    }:
+    if commands.spec(cmd.name).transfer:
         if not grant.allowed:
             return await finish(bridge, event_id, record, access.deny_text(grant))
         if cmd.name == "atomx login status" and not grant.private:
@@ -737,6 +719,8 @@ async def read_information(
     decision: Decision,
     files: list[attachments.ThreadFile],
     snapshots: dict[str, reference_repos.RepoSnapshot],
+    *,
+    max_bytes: int = 384 * 1024,
 ) -> dict[str, Any]:
     """Read only authorized source/attachments/history; never run user code."""
     selected = list(
@@ -754,7 +738,7 @@ async def read_information(
         if any(not reference_repos.eligible(path) for path in paths):
             raise ValueError("Use exact source file paths from the repository snapshot.")
     result: dict[str, Any] = {"references": [], "files": []}
-    remaining = 384 * 1024
+    remaining = max_bytes
     for repo in selected:
         try:
             if repo not in snapshots:
@@ -805,7 +789,31 @@ async def handle(
     if files and cmd and cmd.name == "init":
         raise ValueError("Send files in their own message, not with init.")
     registry = Registry(storage)
-    if cmd is None:
+    from . import conversation
+
+    saved = record.get("direct_decision") or {}
+    new_conversation = conversation.enabled(bridge.settings, grant.email) or bool(
+        saved and not record.get("direct_decision_pending") and "conversation_steps" in record
+    )
+    if new_conversation and cmd is None:
+        if saved and not record.get("direct_decision_pending"):
+            if record.get("decision_access") != grant.signature:
+                return await finish(
+                    bridge, event_id, record, "Project access changed. Send a new request."
+                )
+        elif not grant.allowed:
+            opening = await conversation.run(
+                bridge, event_id, record, storage, grant, {"request": text}, []
+            )
+            saved = opening.model_dump()
+        if saved.get("route") == "command":
+            record["command_intent"] = {"route": "command", "proposal": saved["command_proposal"]}
+            record["intent_actor"] = grant.email
+        elif not grant.allowed:
+            return await finish(
+                bridge, event_id, record, saved.get("reply") or access.deny_text(grant)
+            )
+    if cmd is None and (not new_conversation or record.get("command_intent")):
         from . import command_intent
 
         intent = await command_intent.prepare(bridge, event_id, record, storage)
@@ -817,32 +825,10 @@ async def handle(
             return await finish(bridge, event_id, record, question)
         if intent and intent.route == "command":
             assert intent.proposal is not None
-            from .command_approval import ADMIN
-
-            if surface.is_email(record) and intent.proposal.operation in ADMIN:
+            if surface.is_email(record) and commands.spec(intent.proposal.operation).approval:
                 command_intent.private_reply(record, grant)
                 return await finish(bridge, event_id, record, surface.EMAIL_READ_ONLY)
-            if not grant.private and intent.proposal.operation in {
-                "projects",
-                "owners",
-                "init",
-                "use",
-                "share",
-                "unshare",
-                "add-owner",
-                "remove-owner",
-                "rename",
-                "data-root",
-                "repos add",
-                "repos remove",
-                "atomx login status",
-                "connect atomx",
-                "publish",
-                "unpublish",
-                "write status",
-                "write grant",
-                "write revoke",
-            }:
+            if not grant.private and commands.spec(intent.proposal.operation).dm_only:
                 return await finish(
                     bridge,
                     event_id,
@@ -850,15 +836,7 @@ async def handle(
                     "Please continue in a private conversation with Mica "
                     "for account and project selection requests.",
                 )
-            if intent.proposal.operation in {
-                "projects",
-                "owners",
-                "use",
-                "scripts",
-                "help",
-                "atomx login status",
-                "connect atomx",
-            }:
+            if commands.spec(intent.proposal.operation).sender_reply:
                 command_intent.private_reply(record, grant)
             referents = record.get("intent_referents")
             if referents and (
@@ -885,24 +863,11 @@ async def handle(
                     bridge, record, grant, str(exc), intent.proposal
                 )
                 return await finish(bridge, event_id, record, question)
-            if cmd.name in {
-                "share",
-                "unshare",
-                "add-owner",
-                "remove-owner",
-                "publish",
-                "unpublish",
-                "rename",
-                "data-root",
-                "repos add",
-                "repos remove",
-                "write grant",
-                "write revoke",
-            }:
+            if commands.spec(cmd.name).approval:
                 from . import command_approval
 
                 return await command_approval.propose(bridge, event_id, record, storage, cmd, grant)
-    if cmd and cmd.name in {"data-root", "add-owner", "remove-owner", "repos add", "repos remove"}:
+    if cmd and commands.spec(cmd.name).exact_approval:
         from . import command_approval, command_intent
 
         if surface.is_email(record):
@@ -926,7 +891,13 @@ async def handle(
         raise ValueError("Send files in their own message, not with init.")
     if is_init:
         assert cmd
-        if grant.has_context and not record.get("direct_init"):
+        own_empty_context = (
+            new_conversation
+            and grant.state.get("conversation_origin_event") == event_id
+            and not grant.state.get("messages")
+            and not grant.state.get("turn")
+        )
+        if grant.has_context and not record.get("direct_init") and not own_empty_context:
             raise ValueError("Start init in a new thread.")
         await asyncio.to_thread(bridge.resolve_data, record, uri=cmd.args[1])
         if "init_previous_project_id" not in record:
@@ -950,18 +921,20 @@ async def handle(
                 force=cmd.force,
             ),
         )
+        if new_conversation and record.get("direct_decision", {}).get("route") == "command":
+            record.pop("direct_decision", None)
         record["direct_init"] = True
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
         doc = await asyncio.to_thread(registry.load)
         grant = access.Grant(
             grant.email,
             grant.private,
-            grant.state,
+            {} if own_empty_context else grant.state,
             doc,
             pid,
             doc.can_use(pid, grant.email),
             grant.channel_key,
-            grant.has_context,
+            False if own_empty_context else grant.has_context,
             grant.identity_policy,
         )
     if not grant.allowed:
@@ -1006,6 +979,8 @@ async def handle(
             survey_only=False,
         )
         state.update(context=ctx, turn=0, is_init=is_init, messages=[])
+        if new_conversation:
+            state["conversation_origin_event"] = event_id
         if surface.is_email(record):
             state["private_owner"] = grant.email
         # Bind the thread before a router/memory failure can end its first turn.
@@ -1068,6 +1043,7 @@ async def handle(
             state.get("thread_files", []), record["attachments"]
         )
     current_ids = {f["id"] for f in record.get("attachments", [])}
+    decision: Decision | conversation.Decision
     if record.get("direct_decision") and not record.get("direct_decision_pending"):
         decision = Decision.model_validate(record["direct_decision"])
     else:
@@ -1126,143 +1102,32 @@ async def handle(
             thread_files, current_ids, heads, media=media
         )
 
-        async def save_pending(value: Decision) -> None:
-            # Retain evidence even if validation, listing or the next model call fails.
-            # Pending decisions must never be reused as a completed routing result.
-            record["direct_decision"] = value.model_dump()
-            record["direct_decision_pending"] = True
-            record["decision_access"] = grant.signature
-            await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+        if new_conversation:
+            decision = await conversation.run(
+                bridge,
+                event_id,
+                record,
+                storage,
+                grant,
+                model_context,
+                thread_files,
+                media=media,
+                init=is_init,
+            )
+        else:
 
-        routing_deadline = asyncio.get_running_loop().time() + min(
-            float(record.get("routing_budget", ROUTING_SECONDS)), ROUTING_SECONDS
-        )
-        decision = await decide(
-            bridge.app.anthropic_api_key.get_secret_value(),
-            bridge.settings.model,
-            model_context,
-            event_id=event_id,
-            deadline=routing_deadline,
-            repair_model=bridge.settings.routing_repair_model,
-            **({"media": media} if media else {}),
-        )
-        await save_pending(decision)
-        if not is_init and decision.route == "view":
-            current = await asyncio.to_thread(
-                access.resolve, bridge.app, bridge.settings, storage, record
+            async def save_pending(value: Decision) -> None:
+                # Retain evidence even if validation, listing or the next model call fails.
+                # Pending decisions must never be reused as a completed routing result.
+                record["direct_decision"] = value.model_dump()
+                record["direct_decision_pending"] = True
+                record["decision_access"] = grant.signature
+                await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+
+            routing_deadline = asyncio.get_running_loop().time() + min(
+                float(record.get("routing_budget", ROUTING_SECONDS)), ROUTING_SECONDS
             )
-            if not current.allowed or current.signature != grant.signature:
-                return await finish(
-                    bridge, event_id, record, "Project access changed. Send a new request."
-                )
-            shown = attachments.shown_ids(media)
-            requested = [
-                f
-                for f in thread_files
-                if f.id in decision.view_ids and f.id not in shown and f.kind in {"image", "pdf"}
-            ]
-            await bridge.notify(event_id, record, "replying", "Looking at the file…")
-            viewed = await asyncio.to_thread(attachments.router_media, storage, requested)
-            viewed = attachments.combine_media(viewed, media)
-            context = {
-                **model_context,
-                "attachments": attachments.router_listing(
-                    thread_files, current_ids, heads, media=viewed
-                ),
-                "view_requested": decision.view_ids,
-            }
-            second = await decide(
-                bridge.app.anthropic_api_key.get_secret_value(),
-                bridge.settings.model,
-                context,
-                event_id=event_id,
-                deadline=routing_deadline,
-                repair_model=bridge.settings.routing_repair_model,
-                **({"media": viewed} if viewed else {}),
-            )
-            await save_pending(second)
-            if second.route not in {"reply", "read", "compute"}:
-                raise ValueError("Couldn't finish viewing the file. Please clarify your request.")
-            if not second.write_paths:
-                second.write_paths = decision.write_paths
-            if second.guide is None:
-                second.guide = decision.guide
-            decision = second
-            model_context, media = context, viewed
-        if not is_init and decision.route == "inventory":
-            current = await asyncio.to_thread(
-                access.resolve, bridge.app, bridge.settings, storage, record
-            )
-            if not current.allowed or current.signature != grant.signature:
-                return await finish(
-                    bridge, event_id, record, "Project access changed. Send a new request."
-                )
-            # Validate every path before making any listing request.
-            listing_uris = list(
-                dict.fromkeys(
-                    inventory_uri(grant.project.data_uri, path, bridge.settings)
-                    for path in (decision.inventory_paths or [""])
-                )
-            )
-            settings, _ = await asyncio.to_thread(
-                bridge.resolve_data, record, uri=grant.project.data_uri
-            )
-            await bridge.notify(event_id, record, "replying", "Checking the file list…")
-            metadata = await asyncio.to_thread(inventory, listing_uris, settings, event_id=event_id)
-            listed = await decide(
-                bridge.app.anthropic_api_key.get_secret_value(),
-                bridge.settings.model,
-                {**model_context, "data_inventory": metadata},
-                event_id=event_id,
-                deadline=routing_deadline,
-                repair_model=bridge.settings.routing_repair_model,
-                **({"media": media} if media else {}),
-            )
-            await save_pending(listed)
-            if listed.route not in {"reply", "read", "compute"}:
-                listed = Decision(
-                    route="reply",
-                    reply=(
-                        "I couldn't finish that file lookup in one listing. Please name a narrower "
-                        "folder; no compute worker was started."
-                    ),
-                )
-            model_context = {**model_context, "data_inventory": metadata}
-            if not listed.write_paths:
-                listed.write_paths = decision.write_paths
-            if listed.guide is None:
-                listed.guide = decision.guide
-            decision = listed
-        snapshots: dict[str, reference_repos.RepoSnapshot] = {}
-        for read_round in range(2):
-            if is_init or decision.route != "read":
-                break
-            current = await asyncio.to_thread(
-                access.resolve, bridge.app, bridge.settings, storage, record
-            )
-            if not current.allowed or current.signature != grant.signature:
-                return await finish(
-                    bridge, event_id, record, "Project access changed. Send a new request."
-                )
-            await bridge.notify(event_id, record, "replying", "Reading the requested information…")
-            try:
-                async with asyncio.timeout_at(routing_deadline):
-                    information = await read_information(
-                        bridge, storage, current, record, decision, thread_files, snapshots
-                    )
-            except TimeoutError as exc:
-                raise RoutingUnavailable("Information lookup time budget exhausted.") from exc
-            record["information_repos"] = sorted(
-                set(record.get("information_repos", []))
-                | {ref["repo"] for ref in information["references"] if "commit" in ref}
-            )
-            model_context = {
-                **model_context,
-                "information": information,
-                "read_budget_remaining": 1 - read_round,
-                "read_notes": decision.reply if read_round else "",
-            }
-            read_result = await decide(
+            decision = await decide(
                 bridge.app.anthropic_api_key.get_secret_value(),
                 bridge.settings.model,
                 model_context,
@@ -1271,28 +1136,167 @@ async def handle(
                 repair_model=bridge.settings.routing_repair_model,
                 **({"media": media} if media else {}),
             )
-            await save_pending(read_result)
-            if read_result.route not in {"reply", "read", "compute"}:
-                raise RoutingUnavailable("Couldn't finish the information lookup.")
-            if not read_result.write_paths:
-                read_result.write_paths = decision.write_paths
-            if read_result.guide is None:
-                read_result.guide = decision.guide
-            decision = read_result
-        if decision.route == "read":
-            decision = Decision(
-                route="reply",
-                reply=(
-                    "I reached this request's read limit. Please name the specific source files or "
-                    "question to inspect next; no compute worker was started."
-                ),
-            )
+            await save_pending(decision)
+            if not is_init and decision.route == "view":
+                current = await asyncio.to_thread(
+                    access.resolve, bridge.app, bridge.settings, storage, record
+                )
+                if not current.allowed or current.signature != grant.signature:
+                    return await finish(
+                        bridge, event_id, record, "Project access changed. Send a new request."
+                    )
+                shown = attachments.shown_ids(media)
+                requested = [
+                    f
+                    for f in thread_files
+                    if f.id in decision.view_ids
+                    and f.id not in shown
+                    and f.kind in {"image", "pdf"}
+                ]
+                await bridge.notify(event_id, record, "replying", "Looking at the file…")
+                viewed = await asyncio.to_thread(attachments.router_media, storage, requested)
+                viewed = attachments.combine_media(viewed, media)
+                context = {
+                    **model_context,
+                    "attachments": attachments.router_listing(
+                        thread_files, current_ids, heads, media=viewed
+                    ),
+                    "view_requested": decision.view_ids,
+                }
+                second = await decide(
+                    bridge.app.anthropic_api_key.get_secret_value(),
+                    bridge.settings.model,
+                    context,
+                    event_id=event_id,
+                    deadline=routing_deadline,
+                    repair_model=bridge.settings.routing_repair_model,
+                    **({"media": viewed} if viewed else {}),
+                )
+                await save_pending(second)
+                if second.route not in {"reply", "read", "compute"}:
+                    raise ValueError(
+                        "Couldn't finish viewing the file. Please clarify your request."
+                    )
+                if not second.write_paths:
+                    second.write_paths = decision.write_paths
+                if second.guide is None:
+                    second.guide = decision.guide
+                decision = second
+                model_context, media = context, viewed
+            if not is_init and decision.route == "inventory":
+                current = await asyncio.to_thread(
+                    access.resolve, bridge.app, bridge.settings, storage, record
+                )
+                if not current.allowed or current.signature != grant.signature:
+                    return await finish(
+                        bridge, event_id, record, "Project access changed. Send a new request."
+                    )
+                # Validate every path before making any listing request.
+                listing_uris = list(
+                    dict.fromkeys(
+                        inventory_uri(grant.project.data_uri, path, bridge.settings)
+                        for path in (decision.inventory_paths or [""])
+                    )
+                )
+                settings, _ = await asyncio.to_thread(
+                    bridge.resolve_data, record, uri=grant.project.data_uri
+                )
+                await bridge.notify(event_id, record, "replying", "Checking the file list…")
+                metadata = await asyncio.to_thread(
+                    inventory, listing_uris, settings, event_id=event_id
+                )
+                listed = await decide(
+                    bridge.app.anthropic_api_key.get_secret_value(),
+                    bridge.settings.model,
+                    {**model_context, "data_inventory": metadata},
+                    event_id=event_id,
+                    deadline=routing_deadline,
+                    repair_model=bridge.settings.routing_repair_model,
+                    **({"media": media} if media else {}),
+                )
+                await save_pending(listed)
+                if listed.route not in {"reply", "read", "compute"}:
+                    listed = Decision(
+                        route="reply",
+                        reply=(
+                            "I couldn't finish that file lookup in one listing. "
+                            "Please name a narrower "
+                            "folder; no compute worker was started."
+                        ),
+                    )
+                model_context = {**model_context, "data_inventory": metadata}
+                if not listed.write_paths:
+                    listed.write_paths = decision.write_paths
+                if listed.guide is None:
+                    listed.guide = decision.guide
+                decision = listed
+            snapshots: dict[str, reference_repos.RepoSnapshot] = {}
+            for read_round in range(2):
+                if is_init or decision.route != "read":
+                    break
+                current = await asyncio.to_thread(
+                    access.resolve, bridge.app, bridge.settings, storage, record
+                )
+                if not current.allowed or current.signature != grant.signature:
+                    return await finish(
+                        bridge, event_id, record, "Project access changed. Send a new request."
+                    )
+                await bridge.notify(
+                    event_id, record, "replying", "Reading the requested information…"
+                )
+                try:
+                    async with asyncio.timeout_at(routing_deadline):
+                        information = await read_information(
+                            bridge, storage, current, record, decision, thread_files, snapshots
+                        )
+                except TimeoutError as exc:
+                    raise RoutingUnavailable("Information lookup time budget exhausted.") from exc
+                record["information_repos"] = sorted(
+                    set(record.get("information_repos", []))
+                    | {ref["repo"] for ref in information["references"] if "commit" in ref}
+                )
+                model_context = {
+                    **model_context,
+                    "information": information,
+                    "read_budget_remaining": 1 - read_round,
+                    "read_notes": decision.reply if read_round else "",
+                }
+                read_result = await decide(
+                    bridge.app.anthropic_api_key.get_secret_value(),
+                    bridge.settings.model,
+                    model_context,
+                    event_id=event_id,
+                    deadline=routing_deadline,
+                    repair_model=bridge.settings.routing_repair_model,
+                    **({"media": media} if media else {}),
+                )
+                await save_pending(read_result)
+                if read_result.route not in {"reply", "read", "compute"}:
+                    raise RoutingUnavailable("Couldn't finish the information lookup.")
+                if not read_result.write_paths:
+                    read_result.write_paths = decision.write_paths
+                if read_result.guide is None:
+                    read_result.guide = decision.guide
+                decision = read_result
+            if decision.route == "read":
+                decision = Decision(
+                    route="reply",
+                    reply=(
+                        "I reached this request's read limit. "
+                        "Please name the specific source files or "
+                        "question to inspect next; no compute worker was started."
+                    ),
+                )
         if is_init and (decision.route != "reply" or decision.guide is None):
             raise ValueError("Could not draft the initial brief. Please retry init in this thread.")
         record["direct_decision"] = decision.model_dump()
         record["direct_decision_pending"] = False
         record["decision_access"] = grant.signature
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+    if decision.route == "command":
+        # Re-enter the exact/validated command path using the durable terminal proposal.
+        # No further model call is made, and init retains its existing admission sequence.
+        return await handle(bridge, event_id, record, storage)
     if surface.is_email(record) and decision.write_paths:
         return await finish(bridge, event_id, record, surface.EMAIL_READ_ONLY)
     current = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)

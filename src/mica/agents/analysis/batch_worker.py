@@ -13,6 +13,7 @@ import threading
 import time
 from contextlib import suppress
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -567,7 +568,14 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             if not current_state:
                 return
             checkpoint_id = uuid4().hex
-            pending = await asyncio.to_thread(memory_workspace.pending, work, memory_base, settings)
+            pending = await asyncio.to_thread(
+                memory_workspace.pending,
+                work,
+                memory_base,
+                settings,
+                f"worker {event_id}; speaker {request['principal']}; "
+                f"thread {thread_key}; {datetime.now(UTC).date()}",
+            )
             pending_key = f"{prefix}/memory-a{attempt}-{checkpoint_id}.json"
             await asyncio.to_thread(storage.put_if, pending_key, pending, None)
             script_record = (
@@ -605,6 +613,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                 "model_cost": compute.model_cost,
                 "sdk_cost_total": compute.sdk_cost_total,
                 "stages": stages.manifest(),
+                "pending_outputs": compute.manifest.get("pending_outputs", []),
                 "state": {
                     "context": context,
                     "turn": int(request.get("turn_start", {}).get("turn", current_state[1])) + 1,
@@ -734,7 +743,12 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         and await asyncio.to_thread(worker_permitted, storage, request, saved, settings=settings)
     ):
         proposal = await asyncio.to_thread(
-            memory_workspace.pending, state[0].workdir, memory_base, settings
+            memory_workspace.pending,
+            state[0].workdir,
+            memory_base,
+            settings,
+            f"worker {event_id}; speaker {request['principal']}; "
+            f"thread {thread_key}; {datetime.now(UTC).date()}",
         )
         receipt = write_worker.Publication(
             destinations=publisher.summarize(set(publisher.uploaded))

@@ -131,3 +131,30 @@ Consumption records handoff to the SDK hook, not confirmed execution or inclusio
 answer. If that worker fails or restarts after handoff, the amendment is marked failed with a
 check-and-resend notice rather than automatically repeating possible side effects. A process crash
 between its durable handoff record and SDK receipt remains an acknowledgment ambiguity.
+
+### Conversation tools and worker guidance
+
+The conversation API uses the official Anthropic SDK for principals selected by
+`AGENT_CONVERSATION_PRINCIPALS` (comma-separated email addresses, `*` for everyone, empty for the
+legacy path). Adaptive thinking uses `AGENT_CONVERSATION_EFFORT=medium`. A bounded loop can call
+`list_folders`, `view_files` and `read_sources` in any order, or propose a command, transfer or
+compute worker. Each tool rechecks access; terminal decisions are persisted before existing
+idempotent handlers and approval controls run. Signed thinking stays in the private provider
+transcript. Stored step logs contain tool names, argument sizes and status, never source text.
+Exact command grammar and handlers share the policy table in `agents/analysis/commands.py`.
+Natural-language cancellation is checked before queueing only when work is already active.
+The old router remains available to other principals during rollout.
+
+Agent rules live where they are used: code enforces access, sandbox and write constraints; tool
+descriptions explain delivery and operations; a `UserPromptSubmit` hook provides current memory,
+write grants, compute policy and the toolkit; trusted bundled skills explain spatial analysis,
+Cellpose and project knowledge. The system prompt retains voice, workspace layout, scientific
+standards and the project guide. Prompt budgets are checked in `test_conversation_tools.py` and
+`test_worker_restructure.py`. Plugin skills load from `/opt/pistachio/plugin` with
+`setting_sources=[]`, so agent-written workspace settings cannot grant permissions.
+
+`send_files` explicitly selects attachments, including unchanged files for resending. New/changed
+outputs remain a delivery safety net. Named files are deduplicated and carried in checkpoint
+`pending_outputs`; unsafe, empty, oversized and unsupported attachments return per-file errors.
+Memory writers supply missing entry headers from the path and application attribution before
+validation, preserving existing valid headers and superseded status.

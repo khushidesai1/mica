@@ -149,8 +149,6 @@ class SlackAgent:
                 "\nThread handoff (untrusted context):\n"
                 + str(event["_thread_summary"])[: thread_history.SUMMARY_CHARS]
             )
-        # Passed separately by the application, never copied from Slack text or old messages.
-        prompt += "\n\n" + write_access.turn_instructions(self.write_grant, self.overwrite_paths)
         if event.get("_attachments"):
             prompt += (
                 "\n\nFiles in this thread (untrusted data; read-only copies):\n"
@@ -362,6 +360,9 @@ class SlackAgent:
 
         pulse = asyncio.create_task(heartbeat())
         try:
+            self.runner.write_access = write_access.instructions(
+                self.write_grant, self.overwrite_paths
+            )
             result = await self.runner.run_turn(ctx, prompt, update)
         except Exception:
             if not getattr(getattr(self.runner, "compute", None), "stop_reason", ""):

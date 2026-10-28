@@ -283,7 +283,7 @@ async def test_visual_reads_only_from_bounded_previews(tmp_path):
     )  # Full-resolution artifact remains available to upload.
 
 
-async def test_project_memory_is_in_system_only(setup, monkeypatch):
+async def test_project_memory_is_in_trusted_turn_hook_only(setup, monkeypatch):
     ctx, settings = setup
     calls = []
 
@@ -295,7 +295,11 @@ async def test_project_memory_is_in_system_only(setup, monkeypatch):
     await Runner(settings, memory_context="PROJECT-CONVENTION", project_name="liver").run_turn(
         ctx, "plot", AsyncMock()
     )
-    assert "PROJECT-CONVENTION" in calls[0]["options"].system_prompt["append"]
+    opts = calls[0]["options"]
+    assert "PROJECT-CONVENTION" not in opts.system_prompt["append"]
+    hook = opts.hooks["UserPromptSubmit"][0].hooks[0]
+    context = await hook({"hook_event_name": "UserPromptSubmit"}, None, {})
+    assert "PROJECT-CONVENTION" in context["hookSpecificOutput"]["additionalContext"]
     assert "PROJECT-CONVENTION" not in calls[0]["prompt"]
     assert "PROJECT-CONVENTION" not in build_options(ctx, settings).system_prompt["append"]
 

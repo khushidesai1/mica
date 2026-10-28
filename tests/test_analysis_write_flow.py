@@ -489,7 +489,7 @@ def test_publish_tool_is_registered_only_with_current_grant(worker, granted):
         assert int(options.env["MCP_TOOL_TIMEOUT"]) >= 840_000
 
 
-async def test_current_grant_is_in_each_resumed_turn_prompt(bot):  # noqa: F811
+async def test_current_grant_is_passed_separately_on_each_resumed_turn(bot):  # noqa: F811
     from datetime import UTC, datetime
 
     await send(bot, event("Earlier there was no write grant"))
@@ -512,12 +512,13 @@ async def test_current_grant_is_in_each_resumed_turn_prompt(bot):  # noqa: F811
     session, _, prompt, _ = bot.runner.calls[-1]
     assert session == "session"
     assert "No GCS write grant for this run." in prompt
-    assert "supersedes anything said earlier" in prompt
-    assert "write files under gs://lab-data/results/" in prompt
-    assert prompt.index("GCS write access for this turn") > prompt.index("Current request:")
+    assert "gs://lab-data/results/" not in prompt
+    assert "gs://lab-data/results/" in bot.runner.write_access
+    assert "GCS write access for this turn" not in prompt
     bot.write_grant = None
     await send(bot, event("Try again", ts="3.0", thread="1.0"))
-    assert "in this thread): none." in bot.runner.calls[-1][2]
+    assert "No GCS write grant for this run." in bot.runner.write_access
+    assert "GCS write access" not in bot.runner.calls[-1][2]
 
 
 async def test_upload_mutex_outlives_streaming_deadline(writable, monkeypatch):

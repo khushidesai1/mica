@@ -500,15 +500,43 @@ class BatchBridge:
             from . import command_intent, commands
             from .direct import RoutingUnavailable, finish
 
+            previous = (
+                await self.repository.get_connector_state(f"claude-event:{record['previous']}")
+                if record.get("previous")
+                else None
+            )
+            for _ in range(100):
+                if not previous or not previous.get("control_bypass"):
+                    break
+                previous = (
+                    await self.repository.get_connector_state(
+                        f"claude-event:{previous['previous']}"
+                    )
+                    if previous.get("previous")
+                    else None
+                )
+            else:
+                raise RuntimeError("Control predecessor chain exceeds the safe limit")
             cmd = commands.Command("cancel") if record.get("cancel_control") else None
             if record["status"] == "pending" and record.get("route") != "compute":
                 try:
                     cmd = commands.parse(record["payload"]["event"].get("text", ""))
-                    intent = (
-                        None
-                        if cmd
-                        else await command_intent.prepare(self, event_id, record, self.storage)
+                    from . import conversation
+
+                    grant = await asyncio.to_thread(
+                        access.resolve, self.app, self.settings, self.storage, record
                     )
+                    intent = None
+                    if not cmd and conversation.enabled(self.settings, grant.email):
+                        if previous and previous["status"] not in {"complete", "failed"}:
+                            operation = await conversation.control(self, event_id, record, grant)
+                            if operation == "cancel":
+                                cmd = commands.Command("cancel")
+                            elif operation == "write revoke" and not surface.is_email(record):
+                                record["control_bypass"] = True
+                                await self.repository.set_connector_state(key, record)
+                    elif not cmd:
+                        intent = await command_intent.prepare(self, event_id, record, self.storage)
                     if intent and intent.route == "command" and intent.proposal:
                         if intent.proposal.operation == "cancel":
                             cmd = commands.Command("cancel")
@@ -548,23 +576,6 @@ class BatchBridge:
                     await self.notify(event_id, record, "failed", str(exc).splitlines()[0][:250])
                     await self.repository.set_connector_state(key, record)
                     return "failed"
-            previous = (
-                await self.repository.get_connector_state(f"claude-event:{record['previous']}")
-                if record.get("previous")
-                else None
-            )
-            for _ in range(100):
-                if not previous or not previous.get("control_bypass"):
-                    break
-                previous = (
-                    await self.repository.get_connector_state(
-                        f"claude-event:{previous['previous']}"
-                    )
-                    if previous.get("previous")
-                    else None
-                )
-            else:
-                raise RuntimeError("Control predecessor chain exceeds the safe limit")
             from .data_links import message_text
 
             if cmd and cmd.name == "cancel":

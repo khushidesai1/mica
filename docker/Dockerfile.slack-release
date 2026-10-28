@@ -1,8 +1,10 @@
-# Refresh a pinned deployed image without changing its established runtime dependencies.
+# Refresh pinned application images; scientific runtimes remain in their existing environments.
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 USER root
 ARG INSTALL_BOT_DEPENDENCIES=0
+COPY deploy/requirements-conversation.txt /tmp/mica-requirements-conversation.txt
+RUN pip install --no-cache-dir -r /tmp/mica-requirements-conversation.txt
 COPY deploy/requirements-bot.txt /tmp/mica-requirements-bot.txt
 COPY deploy/requirements-transfer.txt /tmp/mica-requirements-transfer.txt
 COPY deploy/requirements-email.txt /tmp/mica-requirements-email.txt
@@ -21,6 +23,7 @@ COPY src/pistachio /usr/local/lib/python3.12/site-packages/pistachio
 COPY src /app/src
 COPY src /opt/pistachio/src
 COPY tools /opt/pistachio/tools
+COPY skills /opt/pistachio/plugin
 COPY templates /opt/pistachio/templates
 RUN pip install --no-cache-dir --no-deps /opt/pistachio/tools/atomx_transfer
 RUN for name in api analyze worker; do \

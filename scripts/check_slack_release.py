@@ -19,6 +19,7 @@ from mica.agents.analysis import (
     amendments,
     attachments,
     commands,
+    conversation,
     direct,
     memory_archive,
     memory_workspace,
@@ -56,6 +57,8 @@ def check(source: Path, mode: str) -> None:
     legacy = importlib.import_module("pistachio")
     assert Path(legacy.__file__).read_bytes() == (source / "src/pistachio/__init__.py").read_bytes()
     settings = Settings(_env_file=None)
+    assert importlib.metadata.version("anthropic") == "2.3.0"
+    assert all(tool["strict"] for tool in conversation.tools_for(True))
     assert settings.long_run_threshold_seconds == 600
     assert settings.long_run_update_seconds == 7200
     assert settings.max_run_seconds == 604800
@@ -75,9 +78,17 @@ def check(source: Path, mode: str) -> None:
     with tempfile.TemporaryDirectory() as temporary:
         work = Path(temporary).resolve()
         store = LocalStorage(work / "storage")
-        amendments.add(store, "a" * 32, "b" * 32, amendments.Addendum(
-            text="Label both axes", principal="test@example.com", signature="test", created=1,
-        ))
+        amendments.add(
+            store,
+            "a" * 32,
+            "b" * 32,
+            amendments.Addendum(
+                text="Label both axes",
+                principal="test@example.com",
+                signature="test",
+                created=1,
+            ),
+        )
         assert "Label both axes" in amendments.consume(store, "a" * 32, "test@example.com", "test")
         assert not amendments.consume(store, "a" * 32, "test@example.com", "test")
         assert amendments.close(store, "a" * 32).items["b" * 32].consumed
@@ -277,9 +288,47 @@ def check_worker(work: Path, source: Path, settings: Settings) -> None:
         settings,
         memory_context="User hypothesis: unverified; use viridis",
     )
-    assert "# Project knowledge" in opts.system_prompt["append"]
-    assert "User hypothesis: unverified" in opts.system_prompt["append"]
-    assert "viridis" in opts.system_prompt["append"]
+    assert "project-knowledge skill" in opts.system_prompt["append"]
+    assert "User hypothesis: unverified" not in opts.system_prompt["append"]
+    assert opts.setting_sources == []
+    assert opts.skills == ["mica:spatial-analysis", "mica:cellpose", "mica:project-knowledge"]
+    plugin = Path("/opt/pistachio/plugin")
+    for file in (source / "skills").rglob("*"):
+        if file.is_file():
+            assert (plugin / file.relative_to(source / "skills")).read_bytes() == file.read_bytes()
+
+    async def context_check():
+        hook = opts.hooks["UserPromptSubmit"][0].hooks[0]
+        output = await hook({"hook_event_name": "UserPromptSubmit"}, None, None)
+        assert "User hypothesis: unverified" in output["hookSpecificOutput"]["additionalContext"]
+        assert "viridis" in output["hookSpecificOutput"]["additionalContext"]
+
+    asyncio.run(context_check())
+
+    async def plugin_check():
+        from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+
+        isolated = ClaudeAgentOptions(
+            cwd=str(work),
+            setting_sources=[],
+            plugins=opts.plugins,
+            skills=opts.skills,
+            tools=["Read", "Skill"],
+            permission_mode="dontAsk",
+            env={
+                "CLAUDE_CONFIG_DIR": str(work / "init-config"),
+                "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
+                "ANTHROPIC_API_KEY": "initialization-only-not-a-key",
+            },
+        )
+        async with asyncio.timeout(45):
+            async with ClaudeSDKClient(options=isolated) as client:
+                info = await client.get_server_info()
+                names = {item["name"] for item in info["commands"]}
+                assert set(opts.skills) <= names
+
+    asyncio.run(plugin_check())
+    print("TRUSTED_PLUGIN_INITIALIZATION_VERIFIED_WITHOUT_MODEL_CALL")
     assert opts.max_buffer_size == 16 * 1024 * 1024
     assert opts.env["BASH_MAX_TIMEOUT_MS"] == "604800000"
     assert opts.env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"

@@ -20,20 +20,7 @@ if TYPE_CHECKING:
     from .batch import BatchBridge
 
 PREFIX = "mica_command_"
-ADMIN = {
-    "share",
-    "unshare",
-    "add-owner",
-    "remove-owner",
-    "publish",
-    "unpublish",
-    "rename",
-    "data-root",
-    "repos add",
-    "repos remove",
-    "write grant",
-    "write revoke",
-}
+ADMIN = {name for name, policy in commands.COMMANDS.items() if policy.approval}
 
 
 def key(event_id: str) -> str:
@@ -91,7 +78,7 @@ async def propose(
     if cmd.name == "data-root":
         await asyncio.to_thread(bridge.resolve_data, record, uri=cmd.args[1])
     event, team = record["payload"]["event"], record["payload"]["team_id"]
-    if cmd.name in {"share", "unshare", "add-owner", "remove-owner"}:
+    if commands.spec(cmd.name).recipient:
         recipient = await asyncio.to_thread(
             member_email,
             bridge.app,
