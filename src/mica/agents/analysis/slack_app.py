@@ -272,7 +272,6 @@ class SlackAgent:
                 check_in=check_in,
                 headline=activity.label,
                 summary=pending[-1] if pending else "",
-                emoji=emoji,
             )
             await self.transport.update(channel=key[0], ts=status["ts"], text=text, blocks=blocks)
 

@@ -32,16 +32,16 @@ class SlackTransport:
 
     async def _message(self, method: str, kwargs: dict[str, Any]) -> Any:
         blocks = kwargs.get("blocks") or []
-        has_activity = any(b.get("type") == "container" for b in blocks)
+        has_activity = any(b.get("type") == "plan" for b in blocks)
         while True:
             if has_activity and self.activity_format:
-                kwargs["blocks"] = activity_fallback(blocks, plain=self.activity_format == 2)
+                kwargs["blocks"] = activity_fallback(blocks)
             try:
                 return await getattr(self.client, method)(**kwargs)
             except SlackApiError as exc:
                 if not (
                     has_activity
-                    and self.activity_format < 2
+                    and self.activity_format < 1
                     and exc.response.get("error") == "invalid_blocks"
                 ):
                     raise

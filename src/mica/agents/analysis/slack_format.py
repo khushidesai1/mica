@@ -22,9 +22,8 @@ def activity_blocks(
     check_in: str = "",
     headline: str = "Mica is working",
     summary: str = "",
-    emoji: str = "",
 ) -> list[dict[str, Any]]:
-    """One initially collapsed control; only public activity summaries go inside."""
+    """One compact native disclosure; only public activity summaries go inside."""
     active = next((task for task in reversed(tasks) if task.status == "in_progress"), None)
     thinking = headline in {"Thinking…", "Mica is thinking"}
     title = "Mica is thinking" if thinking else "Mica is working"
@@ -56,67 +55,52 @@ def activity_blocks(
         lines.append("Finished." if finished else "Preparing your request.")
     if check_in and not finished:
         lines.append(check_in[:1500])
-    header = _rich_text(title + (" " if emoji and not finished else ""))
-    if emoji and not finished:
-        # The configured loading icon is trusted; model labels remain plain text.
-        name = re.fullmatch(r":([a-zA-Z0-9_+\-]+):", emoji)
-        header["elements"][0]["elements"].append(
-            {"type": "emoji", "name": name[1]} if name else {"type": "text", "text": emoji}
-        )
     return [
         {
-            "type": "container",
-            "title": {"type": "plain_text", "text": title, "emoji": False},
-            "rich_text_title": header,
-            "width": "narrow",
-            "is_collapsible": True,
-            "default_collapsed": True,
-            "child_blocks": [_rich_text("\n".join(lines))],
+            "type": "plan",
+            "title": title,
+            "tasks": [
+                {
+                    "task_id": "mica-activity",
+                    "title": "Activity summary",
+                    "hide_title": True,
+                    "status": "error" if error else "complete" if finished else "in_progress",
+                    "details": _rich_text("\n".join(lines)),
+                }
+            ],
         }
     ]
 
 
-def activity_fallback(blocks: Sequence[dict[str, Any]], *, plain: bool) -> list[dict[str, Any]]:
-    """Older Slack clients retain a native plan before falling back to plain status."""
+def activity_fallback(blocks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Unsupported native disclosures retain a small, muted context status."""
     result = []
     for block in blocks:
-        if block.get("type") != "container":
+        if block.get("type") != "plan":
             result.append(block)
             continue
-        title = block["title"]["text"]
-        details = block["child_blocks"][0]
-        if plain:
-            result.extend([_rich_text(title), details])
-        else:
-            result.append(
-                {
-                    "type": "plan",
-                    "title": title,
-                    "tasks": [
-                        {
-                            "task_id": "mica-activity",
-                            "title": "Activity summary",
-                            "status": (
-                                "complete"
-                                if title == "Mica finished"
-                                else "error"
-                                if title == "Mica stopped"
-                                else "in_progress"
-                            ),
-                            "details": details,
-                        }
-                    ],
-                }
-            )
+        details = block["tasks"][0]["details"]["elements"][0]["elements"][0]["text"]
+        result.append(
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "plain_text",
+                        "text": (block["title"] + "\n" + details)[:3000],
+                        "emoji": False,
+                    }
+                ],
+            }
+        )
     return result
 
 
-def status_blocks(emoji: str, headline: str, steps: Sequence[str] = ()) -> list[dict[str, Any]]:
+def status_blocks(_emoji: str, headline: str, steps: Sequence[str] = ()) -> list[dict[str, Any]]:
     """Queue, startup and model activity share the same expandable control."""
     current = steps[-1] if steps else headline
     if current in {"Thinking…", "Working on it…", "Mica is thinking", "Mica is working"}:
         current = ""
-    return activity_blocks([], headline=headline, summary=current, emoji=emoji)
+    return activity_blocks([], headline=headline, summary=current)
 
 
 def to_mrkdwn(text: str) -> str:

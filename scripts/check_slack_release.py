@@ -68,8 +68,8 @@ def check(source: Path, mode: str) -> None:
     activity = activity_blocks(
         [TaskProgress("job", "Analysis", "Running")], check_in="Run elapsed: 1d 3h 0m"
     )[0]
-    assert activity["is_collapsible"] and activity["default_collapsed"]
-    assert "Run elapsed: 1d 3h 0m" in str(activity["child_blocks"])
+    assert activity["type"] == "plan" and activity["tasks"][0]["hide_title"]
+    assert "Run elapsed: 1d 3h 0m" in str(activity["tasks"])
     assert {ATOMX_TRANSFER_ID, SPATIAL_ANALYSIS_ID} <= {t.id for t in BOOTSTRAP_TOOLS}
     print("LONG_RUN_PROGRESS_AND_TOOL_CATALOG_VERIFIED")
     with tempfile.TemporaryDirectory() as temporary:

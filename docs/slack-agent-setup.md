@@ -60,21 +60,16 @@ built-in Read/Write/Edit/Glob/Grep/Bash tools and the pinned science environment
 A control-service reply acknowledges each accepted input. Direct replies update it in place;
 computation requests update it before any Spot startup. That same
 Slack message reports queue waits, startup elapsed time, worker readiness, and completion/errors.
-The status is one narrow, initially collapsed control titled “Mica is working” followed by
-the configured loading emoji, or “Mica is thinking” during model processing. Click to expand
+The status is one compact native activity disclosure titled “Mica is working” or “Mica is
+thinking”, using Slack's muted progress styling and native status indicator. Expand it to inspect
 concise public activity summaries, the latest tool descriptions and long-run check-ins. Cellpose
-entries name the crop being processed; completion is only shown after confirmation. There is no
-separate “On it…” acknowledgment or duplicate status heading. Slack controls the native container's
-placement and expansion; this is an inline control, not an overlay on the Slack window.
-Phase changes come from SDK lifecycle events, never private reasoning text. Identical states are
-deduplicated and updates are throttled without posting extra messages. Older Slack surfaces fall
-back to the native activity plan, then plain status only if both components are rejected. Status
-failures do not prevent work, and webhook/poll deliveries reuse the stored message timestamp.
-
-Worker access checks read the active request with a separate bounded manifest limit that covers
-project memory and reference snapshots, including JSON escaping. Small telemetry and recovery
-result records retain their 256 KiB limit. A valid large source snapshot must not be reported as
-revoked project access; membership, signatures, cancellation and attempt checks still apply.
+entries name the crop being processed; completion is only shown after confirmation. The disclosure
+has no padded container, large heading, duplicate status line or separate “On it…” acknowledgment.
+Slack owns the disclosure animation and hover styling; no custom border, color or rounded wrapper
+is added. Phase changes come from SDK lifecycle events, never private reasoning text. Identical
+states are deduplicated and updates are throttled without posting extra messages. Unsupported
+surfaces fall back to small context text. Status failures do not prevent work, and webhook/poll
+deliveries reuse the stored message timestamp.
 
 Firestore receipts deduplicate Slack delivery, order accepted messages within a thread, and
 limit active Claude jobs to three. Named polling tasks use the existing queue without depending

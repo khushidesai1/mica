@@ -140,19 +140,16 @@ def test_formatting():
     assert all(len(part) <= 3500 for part in chunks("x" * 8000))
 
 
-def test_status_is_collapsed_and_model_labels_are_plain_text_and_bounded():
+def test_status_uses_compact_native_disclosure_and_bounded_plain_text():
     block = status_blocks(":pistachio-loading:", "h", ["old", "<!channel> " + "b" * 200])[0]
-    assert block["is_collapsible"] and block["default_collapsed"]
-    assert block["width"] == "narrow"
-    header = block["rich_text_title"]["elements"][0]["elements"]
-    assert header == [
-        {"type": "text", "text": "Mica is working "},
-        {"type": "emoji", "name": "pistachio-loading"},
-    ]
-    text = block["child_blocks"][0]["elements"][0]["elements"][0]
+    assert block["type"] == "plan" and block["title"] == "Mica is working"
+    assert "container" not in repr(block) and "rich_text_title" not in block
+    task = block["tasks"][0]
+    assert task["hide_title"] and task["status"] == "in_progress"
+    text = task["details"]["elements"][0]["elements"][0]
     assert text["type"] == "text" and text["text"].startswith("Working: <!channel>")
     assert len(text["text"]) == len("Working: ") + 150
-    assert status_blocks(":x:", "Thinking…")[0]["title"]["text"] == "Mica is thinking"
+    assert status_blocks(":x:", "Thinking…")[0]["title"] == "Mica is thinking"
     assert "Reviewing your request" in repr(status_blocks(":x:", "Thinking…"))
 
 
@@ -180,7 +177,7 @@ async def test_receipt_status_reused_and_heartbeat_stops(bot, monkeypatch):
     await send(bot, event("plot", _notice_ts="9.0"))
     updates = bot.client.chat_update.call_args_list
     assert all(c.kwargs["ts"] == "9.0" for c in updates)
-    assert updates[-1].kwargs["blocks"][0]["title"]["text"] == "Mica finished"
+    assert updates[-1].kwargs["blocks"][0]["title"] == "Mica finished"
     assert not re.search(
         r"\d+m \d+s|Done in|— working", json.dumps([c.kwargs for c in updates], ensure_ascii=False)
     )
@@ -232,8 +229,8 @@ async def test_heartbeat_flushes_throttled_step_and_retries_failure(bot, monkeyp
     await send(bot, event("plot", _notice_ts="9.0"))
     assert attempts == (2 if fail_once else 1)
     final = bot.client.chat_update.call_args.kwargs["blocks"][0]
-    assert final["title"]["text"] == "Mica finished"
-    assert "Last activity: <!channel> b & c" in repr(final["child_blocks"])
+    assert final["title"] == "Mica finished"
+    assert "Last activity: <!channel> b & c" in repr(final["tasks"])
 
 
 async def test_failed_turn_does_not_apply_partial_brief(bot):
@@ -248,7 +245,7 @@ async def test_failed_turn_does_not_apply_partial_brief(bot):
     await send(bot, event("update the brief"))
     assert bot.sessions.get("C123", "1.0")[0].project_md == "# Original"
     assert bot.last_error == "interrupted"
-    assert bot.client.chat_update.call_args.kwargs["blocks"][0]["title"]["text"] == "Mica stopped"
+    assert bot.client.chat_update.call_args.kwargs["blocks"][0]["title"] == "Mica stopped"
 
 
 async def test_help_me_plot_is_computed(bot):
@@ -394,17 +391,17 @@ def test_activity_is_bounded_keeps_active_task_and_does_not_invent_success():
     tasks[2] = replace(tasks[2], status="complete")
     tasks[3] = replace(tasks[3], status="complete")
     blocks = activity_blocks(tasks)
-    assert len(blocks) == 1 and blocks[0]["type"] == "container"
+    assert len(blocks) == 1 and blocks[0]["type"] == "plan"
     text = repr(blocks)
     assert "check 3" in text and "check 1" in text
     assert "check 0" not in text and "check 2" not in text
     final = activity_blocks(tasks, finished=True, error="interrupted")[0]
-    assert final["title"]["text"] == "Mica stopped"
+    assert final["title"] == "Mica stopped"
     assert "✓ <!channel> check 3" in repr(final)
     assert "not confirmed" in repr(final)
 
 
-@pytest.mark.parametrize("unsupported", [set(), {"container"}, {"container", "plan"}])
+@pytest.mark.parametrize("unsupported", [set(), {"plan"}])
 async def test_activity_compatibility_preserves_details_and_completion(
     bot, monkeypatch, unsupported
 ):
@@ -431,11 +428,11 @@ async def test_activity_compatibility_preserves_details_and_completion(
     bot.client.chat_postMessage.side_effect = deliver
     bot.client.chat_update.side_effect = deliver
     await send(bot, event("check"))
-    assert sum(bool(b) and b[0]["type"] == "container" for b in seen) == (1 if unsupported else 4)
+    assert sum(bool(b) and b[0]["type"] == "plan" for b in seen) == (1 if unsupported else 4)
     final = seen[-2]  # Last activity update, before the final answer.
     assert "Mica finished" in repr(final) and "✓ Check counts" in repr(final)
-    if unsupported == {"container"}:
-        assert final[0]["type"] == "plan"  # Keep expansion on older surfaces.
+    if unsupported:
+        assert final[0]["type"] == "context"  # Muted fallback, never a bordered card.
     assert bot.client.chat_postMessage.call_args.kwargs["text"] == "Done."
 
 
@@ -471,14 +468,14 @@ async def test_activity_switches_without_repeating_status_or_posting_messages(bo
     await send(bot, event("segment", _notice_ts="9.0"))
     calls = bot.client.chat_update.call_args_list
     active = [call.kwargs for call in calls[:-1]]
-    assert [row["blocks"][0]["title"]["text"] for row in active] == [
+    assert [row["blocks"][0]["title"] for row in active] == [
         "Mica is working",
         "Mica is thinking",
         "Mica is working",
         "Mica is thinking",
     ]
-    assert all(len(row["blocks"]) == 1 and row["blocks"][0]["default_collapsed"] for row in active)
-    assert "tile_02.npy" in repr(active[2]["blocks"][0]["child_blocks"])
+    assert all(len(row["blocks"]) == 1 and row["blocks"][0]["type"] == "plan" for row in active)
+    assert "tile_02.npy" in repr(active[2]["blocks"][0]["tasks"])
     assert bot.client.chat_postMessage.call_count == 1  # Only the final answer.
 
 
@@ -491,7 +488,7 @@ async def test_unexpected_run_failure_stops_progress(bot):
     with pytest.raises(RuntimeError):
         await send(bot, event("check", _notice_ts="9.0"))
     plan = bot.client.chat_update.call_args.kwargs["blocks"][0]
-    assert plan["title"]["text"] == "Mica stopped"
+    assert plan["title"] == "Mica stopped"
     assert "not confirmed" in repr(plan)
 
 
