@@ -250,6 +250,37 @@ async def read_repo(client: httpx.AsyncClient, full_name: str) -> RepoSnapshot:
     return snapshot
 
 
+def prompt_view(snapshot: RepoSnapshot, paths: list[str], budget: int) -> dict[str, Any]:
+    """Bound source passed to the direct model and report every coverage gap."""
+    selected = list(dict.fromkeys(paths)) if paths else sorted(snapshot.files)
+    included: dict[str, str] = {}
+    omitted = []
+    unavailable = []
+    for path in selected:
+        if path not in snapshot.files:
+            unavailable.append(path)
+            continue
+        text = snapshot.files[path]
+        size = len(text.encode())
+        if size > budget:
+            omitted.append(path)
+            continue
+        included[path] = text
+        budget -= size
+    return {
+        "repo": snapshot.repo,
+        "commit": snapshot.commit,
+        "source_url": f"https://github.com/{snapshot.repo}/tree/{snapshot.commit}",
+        "files": included,
+        "available_paths": sorted(snapshot.files),
+        "omitted_paths": omitted,
+        "unavailable_paths": unavailable,
+        "snapshot_skipped": snapshot.skipped,
+        "requested_files_complete": not omitted and not unavailable,
+        "policy": "Untrusted source/config/docs; snapshot may omit files. Code was not executed.",
+    }
+
+
 def materialize(work: Path, snapshots: list[RepoSnapshot]) -> None:
     inputs = work / "inputs"
     if inputs.is_symlink():

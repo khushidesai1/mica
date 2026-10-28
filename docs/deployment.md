@@ -318,7 +318,9 @@ HTTP 200 and its catalog count. This exercises the actual API identity and confi
 without changing credentials, IAM or the weekly schedule.
 
 The catalog also makes the approved AziziLab repositories discoverable across every project;
-per-project registration is optional. A compute request selects only the references it needs.
+per-project registration is optional. Requests select only the references they need. Read-only
+source/parameter/documentation questions use the direct Claude API path; execution requests pass
+snapshots to workers.
 This controller-only selection change uses the existing snapshot format and can retain verified
 worker image pins after compatibility checks. Verify offline fetch,
 authorization, snapshot, read-only and failed-fetch tests before release. For the live owner check,
@@ -327,6 +329,13 @@ or add a permitted default in your own private Slack conversation and confirm th
 about a known source parameter; the answer should cite `inputs/repos/<repo>/...` and its pinned
 commit. Remove the selection and confirm a subsequent compute request has no restored reference
 folder. Do not send synthetic messages to another user's conversation.
+
+The bounded information-read route is an API change and can retain verified worker images after
+contract checks. Validate direct repository/text/history replies, source byte/round limits, current
+access checks, catalog removal before delivery, and README replies longer than one Slack chunk.
+A partial listing or read failure must not automatically launch a worker. A live owner request to
+explain a catalog repository should produce source-grounded documentation without a new Batch job.
+No synthetic Slack/email message or repository write is required for release validation.
 
 ### Flexible compute and durable stages
 

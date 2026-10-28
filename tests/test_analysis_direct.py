@@ -135,7 +135,7 @@ async def test_file_listing_uses_project_metadata_without_worker_and_caches_repl
 
 
 @pytest.mark.parametrize("route", ["reply", "compute", "inventory"])
-async def test_unavailable_listing_uses_worker_without_dead_end(chat, monkeypatch, route):
+async def test_partial_listing_does_not_automatically_start_worker(chat, monkeypatch, route):
     monkeypatch.setattr(
         direct,
         "inventory",
@@ -146,8 +146,8 @@ async def test_unavailable_listing_uses_worker_without_dead_end(chat, monkeypatc
         direct.Decision(route=route, reply="The file listing timed out. Please try again."),
     ]
     event = await chat.accept(payload(text="What files are in the bucket?"))
-    assert await chat.process(event, 0) == "running"
-    chat.test_client.create_job.assert_called_once()
+    assert await chat.process(event, 0) == ("running" if route == "compute" else "complete")
+    assert chat.test_client.create_job.call_count == (1 if route == "compute" else 0)
 
 
 async def test_inventory_reply_failure_never_falls_back_to_worker(chat, monkeypatch):
@@ -782,16 +782,16 @@ async def test_incident_lists_both_context_folders_in_one_step(chat, monkeypatch
     chat.test_client.create_job.assert_not_called()
 
 
-async def test_second_inventory_routes_to_compute_without_another_listing(chat, monkeypatch):
+async def test_second_inventory_returns_narrowing_request_without_worker(chat, monkeypatch):
     listing = Mock(return_value={"complete": True, "folders": []})
     monkeypatch.setattr(direct, "inventory", listing)
     chat.decision.return_value = direct.Decision(route="inventory", reply="Checking.")
     event = await chat.accept(payload(text="List the raw and processed folders"))
-    assert await chat.process(event, 0) == "running"
+    assert await chat.process(event, 0) == "complete"
     listing.assert_called_once()
-    chat.test_client.create_job.assert_called_once()
+    chat.test_client.create_job.assert_not_called()
     record = await chat.repository.get_connector_state("claude-event:" + event)
-    assert record["direct_decision"]["route"] == "compute"
+    assert record["direct_decision"]["route"] == "reply"
     assert not record["direct_decision_pending"]
 
 
