@@ -12,10 +12,12 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
 )
+from claude_agent_sdk.types import StreamEvent
 
 from mica.agents.analysis import runner
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.outputs import changed_files, snapshot_outputs
+from mica.agents.analysis.progress import ActivityState, TaskProgress
 from mica.agents.analysis.runner import Context, Runner, build_options, describe_tool
 
 
@@ -24,6 +26,12 @@ def test_bash_status_hides_commands_and_limits_descriptions():
     assert describe_tool(block) == "Running code"
     block.input["description"] = "x" * 120
     assert describe_tool(block) == "x" * 80
+    crop = ToolUseBlock(
+        id="tile",
+        name="mcp__pistachio__cellpose_segment",
+        input={"version": "4.2.1.1", "input_path": "scratch/tiles/tile_02.npy"},
+    )
+    assert describe_tool(crop) == "Segmenting cells with Cellpose-SAM: tile_02.npy"
 
 
 def result(**kwargs):
@@ -296,6 +304,19 @@ async def test_tool_lifecycle_tracks_parallel_checks_without_exposing_results(se
     ctx, settings = setup
 
     async def query(**kwargs):
+        assert kwargs["options"].include_partial_messages
+        yield StreamEvent(
+            uuid="thinking",
+            session_id="session",
+            parent_tool_use_id=None,
+            event={
+                "type": "content_block_start",
+                "content_block": {
+                    "type": "thinking",
+                    "thinking": "PRIVATE REASONING",
+                },
+            },
+        )
         yield AssistantMessage(
             content=[
                 ToolUseBlock(
@@ -316,7 +337,13 @@ async def test_tool_lifecycle_tracks_parallel_checks_without_exposing_results(se
     monkeypatch.setattr(runner, "query", query)
     callback = AsyncMock()
     await Runner(settings).run_turn(ctx, "check", callback)
-    updates = [call.args[0] for call in callback.call_args_list]
+    all_updates = [call.args[0] for call in callback.call_args_list]
+    updates = [update for update in all_updates if isinstance(update, TaskProgress)]
+    assert [update.state for update in all_updates if isinstance(update, ActivityState)] == [
+        "thinking",
+        "working",
+        "thinking",
+    ]
     assert [(t.task_id, t.status) for t in updates] == [
         ("one", "in_progress"),
         ("two", "in_progress"),
@@ -325,7 +352,7 @@ async def test_tool_lifecycle_tracks_parallel_checks_without_exposing_results(se
     ]
     assert updates[0].title == "Check cell counts"
     assert updates[1].title == "Reading samples.csv"
-    assert "SECRET" not in repr(updates) and "PRIVATE" not in repr(updates)
+    assert "SECRET" not in repr(all_updates) and "PRIVATE" not in repr(all_updates)
 
 
 async def test_preview_limits_and_read_only_inputs(setup):

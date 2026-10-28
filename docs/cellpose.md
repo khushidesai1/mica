@@ -68,6 +68,7 @@ GPU jobs use the pinned public Batch Debian 12 host image in `batch.py`. Batch i
 NVIDIA driver and toolkit. A fixed, bounded host setup on the dedicated VM configures NVIDIA
 JIT-CDI and the generated CDI file used by newer Docker versions, skipping only
 `disable-device-node-modification`, whose `/proc` overmount prevents nested private procfs.
+CPU jobs omit the boot-image selector entirely so Batch chooses its supported CPU host.
 The refresh service keeps the same setting, and setup verifies the generated spec before
 starting the worker. This follows NVIDIA's [hook configuration](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html).
 Docker device cgroups still restrict device access. The worker explicitly runs as UID 65532,
@@ -79,8 +80,8 @@ not run this host setup.
 
 GPU submission requires confirmation in the requester's Slack conversation. Confirmation binds
 the requester, project access, immutable image, GPU model, launch choices, time allowance, compute/disk
-estimate and model allowance. Defaults are on-demand and two hours. An explicit Spot choice
-allows one same-tier, same-mode restart within the original deadline. Displayed cost is an
+estimate and model allowance. Defaults are on-demand with an eight-hour proposal, adjustable before confirmation.
+Spot recoveries and checkpointed continuations retain the original approved deadline. Displayed cost is an
 estimate, not a provider billing cap. Email GPU requests explain the Slack confirmation
 requirement and do not launch without it.
 
@@ -130,3 +131,36 @@ by existing jobs.
 Hardware configuration follows [Google's GPU machine types](https://docs.cloud.google.com/compute/docs/gpus/)
 and [Batch GPU configuration](https://docs.cloud.google.com/batch/docs/create-run-job-gpus).
 Precision uses Cellpose's [documented `use_bfloat16` option](https://cellpose.readthedocs.io/en/latest/api.html).
+
+## Long runs and saved progress
+
+GPU confirmation now lets the requester choose a total allowance: two hours, eight hours,
+one day, three days or seven days (bounded by deployment policy). The default proposal is eight
+hours. Natural-language requests can specify a different duration or an estimated compute budget;
+Mica converts that budget using the highest hourly estimate among the approved GPUs. The displayed
+cost remains an estimate, not a provider billing cap. Time includes startup and all worker attempts.
+Existing approvals keep their original allowance; deployments do not extend them.
+
+Runtime estimates are advisory. A healthy computation may run continuously throughout its approved
+allowance. `compute_allowance` reports remaining time. At a saved stage boundary, `recover_worker`
+with `cause=continue` can move to a fresh worker without another approval; the controller waits for
+the previous worker to finish and preserves the original deadline and cumulative model allowance.
+New GPU requests permit up to eight verified Spot recoveries and 32 explicit continuations within
+that envelope, without resizing or changing approved hardware. Exhausting an allowance requires a
+new confirmation; Mica asks the requester to continue with an additional allowance.
+
+Each successful Cellpose tool call now automatically saves its output folder, input SHA256 and
+method fingerprint before reporting success. These immutable recovery copies live under
+`projects/_threads/<thread>/stages/<project>/` in the existing artifact bucket. They survive terminal
+temporary cleanup and are scoped to the current project and thread. They are internal recovery
+copies, not publication to a project's data bucket. Normal workspace snapshots still exclude raw
+datasets, masks and scratch. Completed stages from other tools can be explicitly saved with
+`checkpoint_stage`; running processes cannot be checkpointed by that tool.
+
+`saved_checkpoints` lists saved stages in bounded pages and restores an explicitly selected one.
+Restoration verifies the archive hash and scoped path, and never overwrites an existing destination.
+Before reusing a tile, compare its input hash, model/version and parameters and preserve tile
+coordinates in a manifest. New requests can resume completed work without repeating segmentation.
+If a save fails after inference, the tool reports that the local result exists and requests a save
+retry instead of silently rerunning the computation. Failed requests also retain their latest
+available code/notes checkpoint. Saved copies follow artifact-bucket retention policy.

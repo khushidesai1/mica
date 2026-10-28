@@ -5,20 +5,20 @@
         {
           "elements": [
             {
-              "text": ":hourglass_flowing_sand:",
-              "type": "mrkdwn"
+              "emoji": false,
+              "text": "Mica is working",
+              "type": "plain_text"
             },
             {
-              "emoji": false,
-              "text": "Working on it\u2026",
-              "type": "plain_text"
+              "text": ":hourglass_flowing_sand:",
+              "type": "mrkdwn"
             }
           ],
           "type": "context"
         }
       ],
       "channel": "C123",
-      "text": "Working on it\u2026",
+      "text": "Mica is working",
       "thread_ts": "1.0",
       "unfurl_links": false,
       "unfurl_media": false

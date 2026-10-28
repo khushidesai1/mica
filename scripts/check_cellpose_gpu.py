@@ -7,9 +7,11 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from mica.agents.analysis.cellpose_tools import SegmentRequest, command, segment
+from mica.agents.analysis.cellpose_tools import SegmentRequest, command, tools
+from mica.agents.analysis.checkpoints import Stages, cleanup_temporary, digest
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.runtime_sandbox import PROBE
+from mica.agents.analysis.storage import LocalStorage
 
 
 async def main():
@@ -56,6 +58,13 @@ async def main():
             check=True,
         )
         settings = Settings(_env_file=None, gpu_worker=gpu, max_run_seconds=600)
+        storage = LocalStorage(work / "cloud")
+        stages = Stages(storage, work, "a" * 32, 0, thread_key="smoke", project_id="smoke")
+
+        async def save_result(result):
+            return stages.capture_result(result["output_dir"], json.dumps(result, sort_keys=True))
+
+        segment_tool = tools(work, work / "data", settings, save_result)[1]
         for version, model in [("3.1.1.3", "cyto3"), ("4.2.1.1", "cpsam"), ("4.2.1.1", "cpsam_v2")]:
             request = SegmentRequest(
                 input_path="crop.tif",
@@ -95,7 +104,9 @@ async def main():
                 env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
             )
             try:
-                result = await segment(request, work, work / "data", settings)
+                reply = await segment_tool.handler(request.model_dump())
+                assert not reply.get("isError"), reply
+                result = json.loads(reply["content"][0]["text"])
             except Exception:
                 log = work / request.output_dir / "execution.log"
                 if log.exists():
@@ -111,6 +122,19 @@ async def main():
             )
             assert result["model_precision"] == expected_precision
             assert result["input_shape"] == [64, 64]
+            cleanup_temporary(storage, "a" * 32)
+            restored = Stages(
+                storage,
+                work / "restored",
+                "b" * 32,
+                0,
+                thread_key="smoke",
+                project_id="smoke",
+            )
+            restored.restore_saved(result["checkpoint"]["checkpoint_id"])
+            assert digest(work / request.output_dir / "masks.tif") == digest(
+                restored.work / request.output_dir / "masks.tif"
+            )
             print(
                 json.dumps(
                     {
@@ -121,6 +145,7 @@ async def main():
                         "gpu_name": result["gpu_name"],
                         "model_precision": result["model_precision"],
                         "sandbox_segmentation": "passed",
+                        "durable_result_after_cleanup": "passed",
                         "isolation": "passed",
                         "cell_count": result["cell_count"],
                         "synthetic": True,

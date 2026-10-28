@@ -14,7 +14,7 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -28,7 +28,13 @@ from claude_agent_sdk import (
     UserMessage,
     query,
 )
-from claude_agent_sdk.types import HookContext, HookInput, HookJSONOutput, SandboxSettings
+from claude_agent_sdk.types import (
+    HookContext,
+    HookInput,
+    HookJSONOutput,
+    SandboxSettings,
+    StreamEvent,
+)
 
 from . import prompts, script_capture, write_worker
 from .attachments import classify
@@ -36,7 +42,7 @@ from .config import Settings
 from .deliverables import folder_tool
 from .limits import MAX_VISUAL_READS, PREVIEW_MAX_BYTES, SDK_MAX_BUFFER_BYTES
 from .outputs import MAX_ATTACHMENT_BYTES, changed_files, retain_tool_outputs, snapshot_outputs
-from .progress import ProgressUpdate, TaskProgress
+from .progress import ActivityState, ProgressUpdate, TaskProgress
 from .recovery_tools import RecoveryManager, restored_cost
 from .recovery_tools import run_query as recovery_query
 from .runtime_tools import TOOL_NAME, RuntimeEvent, RuntimeManager, create_server
@@ -128,7 +134,14 @@ def build_options(
     if not ctx.survey_only:
         from . import cellpose_tools
 
-        compute_tools.extend(cellpose_tools.tools(ctx.workdir, ctx.data_path, settings))
+        compute_tools.extend(
+            cellpose_tools.tools(
+                ctx.workdir,
+                ctx.data_path,
+                settings,
+                save_result=compute.save_result if compute else None,
+            )
+        )
         compute_tools.append(
             folder_tool(
                 ctx.workdir,
@@ -261,9 +274,15 @@ def build_options(
             with suppress(Exception):
                 text = await compute.poll_addenda()
                 if text:
-                    return cast(HookJSONOutput, {"hookSpecificOutput": {
-                        "hookEventName": event["hook_event_name"], "additionalContext": text,
-                    }})
+                    return cast(
+                        HookJSONOutput,
+                        {
+                            "hookSpecificOutput": {
+                                "hookEventName": event["hook_event_name"],
+                                "additionalContext": text,
+                            }
+                        },
+                    )
         return {}
 
     async def resource_feedback(
@@ -326,6 +345,7 @@ def build_options(
         max_buffer_size=SDK_MAX_BUFFER_BYTES,
         max_turns=settings.max_turns,
         max_budget_usd=settings.max_budget_usd_per_turn,
+        include_partial_messages=True,
         settings=json.dumps({"bashOutputMaxChars": 12000}) if history else None,
         env={
             **({"CLAUDE_CODE_PROMPT_CACHE_TTL": "1h"} if history else {}),
@@ -367,8 +387,11 @@ def build_options(
                             hooks=([resource_feedback] if compute else [])
                             + ([captured_script] if capture else []),
                         ),
-                        *([HookMatcher(hooks=[amendment_feedback])]
-                          if compute and compute.poll_addenda else []),
+                        *(
+                            [HookMatcher(hooks=[amendment_feedback])]
+                            if compute and compute.poll_addenda
+                            else []
+                        ),
                     ],
                     "PostToolUseFailure": [
                         HookMatcher(
@@ -376,8 +399,11 @@ def build_options(
                             hooks=([resource_feedback] if compute else [])
                             + ([captured_script] if capture else []),
                         ),
-                        *([HookMatcher(hooks=[amendment_feedback])]
-                          if compute and compute.poll_addenda else []),
+                        *(
+                            [HookMatcher(hooks=[amendment_feedback])]
+                            if compute and compute.poll_addenda
+                            else []
+                        ),
                     ],
                 }
                 if compute or capture
@@ -426,11 +452,13 @@ def build_options(
 def describe_tool(block: ToolUseBlock) -> str:
     args = block.input
     if block.name == "mcp__pistachio__cellpose_segment":
-        return (
+        label = (
             "Segmenting cells with Cellpose-SAM"
             if str(args.get("version", "")).startswith("4.")
             else "Segmenting cells with Cellpose 3"
         )
+        crop = Path(str(args.get("input_path", ""))).name
+        return f"{label}: {crop[:60]}" if crop else label
     if block.name == "mcp__pistachio__cellpose_versions":
         return "Checking available Cellpose versions"
     if block.name == TOOL_NAME:
@@ -438,6 +466,14 @@ def describe_tool(block: ToolUseBlock) -> str:
         return f"Setting up {str(packages[0])[:60]}…"
     if block.name == write_worker.TOOL_NAME:
         return "Publishing completed results to GCS"
+    operations = {
+        "mcp__pistachio__checkpoint_stage": "Saving completed work",
+        "mcp__pistachio__recover_worker": "Preparing to continue on another worker",
+        "mcp__pistachio__recall_thread": "Reviewing earlier work in this thread",
+        "mcp__pistachio__prepare_folder_attachment": "Preparing files for delivery",
+    }
+    if block.name in operations:
+        return operations[block.name]
     if block.name == "Read" and ".previews" in Path(args.get("file_path", "")).parts:
         return "Looking at a figure preview"
     if block.name == "Bash":
@@ -445,7 +481,7 @@ def describe_tool(block: ToolUseBlock) -> str:
     if block.name in {"Read", "Write", "Edit"}:
         verb = {"Read": "Reading", "Write": "Writing", "Edit": "Editing"}[block.name]
         return f"{verb} {Path(args.get('file_path', '')).name}"
-    return "Searching files"
+    return "Searching files" if block.name in {"Glob", "Grep"} else "Working on the request"
 
 
 def truncate(value: Any) -> Any:
@@ -563,6 +599,15 @@ class Runner:
         # Keep the closing call inside the existing model allowance, including on budget stops.
         summary_budget = min(0.50, self.settings.max_budget_usd_per_turn * 0.1)
         tasks: dict[str, TaskProgress] = {}
+        activity: ActivityState | None = None
+
+        async def signal(state: Literal["working", "thinking"]) -> None:
+            nonlocal activity
+            next_state = ActivityState(state)
+            if next_state != activity:
+                activity = next_state
+                await on_status(next_state)
+
         previews = ctx.workdir / ".previews"
         clear_previews(previews)
         previews.mkdir()
@@ -596,8 +641,18 @@ class Runner:
                         if self.compute
                         else query(prompt=prompt, options=options)
                     )
+                    await signal("thinking")
                     async for msg in stream:
-                        if isinstance(msg, AssistantMessage):
+                        if isinstance(msg, StreamEvent):
+                            # Observe only the phase marker, never reasoning or text deltas.
+                            if (
+                                msg.parent_tool_use_id is None
+                                and msg.event.get("type") == "content_block_start"
+                                and msg.event.get("content_block", {}).get("type") == "thinking"
+                                and not any(t.status == "in_progress" for t in tasks.values())
+                            ):
+                                await signal("thinking")
+                        elif isinstance(msg, AssistantMessage):
                             for block in msg.content:
                                 if isinstance(block, ToolUseBlock):
                                     from .memory_workspace import is_read
@@ -614,6 +669,7 @@ class Runner:
                                     )
                                     task = tool_progress(block)
                                     tasks[block.id] = task
+                                    await signal("working")
                                     await on_status(task)
                                 elif isinstance(block, TextBlock):
                                     result.text = block.text
@@ -642,6 +698,8 @@ class Runner:
                                                 }
                                             )
                                     await on_status(task)
+                            if not any(t.status == "in_progress" for t in tasks.values()):
+                                await signal("thinking")
                         elif isinstance(msg, SystemMessage) and self.compute:
                             session = msg.data.get("session_id")
                             if isinstance(session, str):

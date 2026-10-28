@@ -327,3 +327,17 @@ or add a permitted default in your own private Slack conversation and confirm th
 about a known source parameter; the answer should cite `inputs/repos/<repo>/...` and its pinned
 commit. Remove the selection and confirm a subsequent compute request has no restored reference
 folder. Do not send synthetic messages to another user's conversation.
+
+### Flexible compute and durable stages
+
+Deploy the API and both Claude workers together for the new allowance controls, durable stage
+storage and Slack activity states. Preserve the existing science worker after its execution
+compatibility gate. Set `AGENT_GPU_MAX_SECONDS=604800` and
+`AGENT_GPU_DEFAULT_SECONDS=28800` on the controller; keep hardware/image authorization and
+model-budget settings intact. Approval durations are request-bound; old requests are not extended.
+No Terraform, IAM or secret changes are required. See [Cellpose](cellpose.md#long-runs-and-saved-progress).
+
+Required regression evidence includes requester-bound allowance selection, unchanged cumulative
+limits across continuation, and result restoration after terminal cleanup. Exercise those paths
+in the worker image with synthetic local storage. The final GPU smoke remains a small synthetic
+crop/isolation check; do not rerun a whole-slide workload for deployment.

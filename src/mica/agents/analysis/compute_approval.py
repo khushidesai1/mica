@@ -14,7 +14,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from . import access, surface
 from .storage import Conflict, Storage
-from .tiers import gpu_choices, gpu_estimate, resolve, selected_gpu
+from .tiers import gpu_choices, gpu_estimate, gpu_seconds, resolve, selected_gpu
 
 if TYPE_CHECKING:
     from .batch import BatchBridge
@@ -61,7 +61,6 @@ def validate(
     bridge: BatchBridge, storage: Storage, record: dict[str, Any], approval: Approval
 ) -> None:
     shapes = [resolve("gpu", bridge.settings, name) for name in gpu_choices(record)]
-    shape = shapes[0]
     current = access.resolve(bridge.app, bridge.settings, storage, record)
     if (
         not current.allowed
@@ -74,7 +73,7 @@ def validate(
     if (
         choices(record) != approval.choices
         or bridge.settings.gpu_image != approval.image
-        or shape.max_seconds != approval.seconds
+        or gpu_seconds(record, bridge.settings) != approval.seconds
         or max(gpu_estimate(bridge.settings, item) for item in shapes) != approval.hourly_estimate
         or selected_gpu(record) not in gpu_choices(record)
         or bridge.settings.max_budget_usd_per_turn != approval.model_allowance
@@ -84,7 +83,12 @@ def validate(
         record["tier"] != "gpu"
         or record["provisioning"] != record["launch"]["provisioning"]
         or record.get("gpu_fallback_count", 0) > len(shapes) - 1
-        or record["attempt"] > 1 + record.get("gpu_fallback_count", 0)
+        or record["attempt"]
+        > (
+            32 + 8 + record.get("gpu_fallback_count", 0)
+            if record["launch"].get("flexible_compute")
+            else 1 + record.get("gpu_fallback_count", 0)
+        )
         or record["resize_count"]
         or record["request_deadline"] > approval.approved_at + approval.seconds + 1
     ):
@@ -111,7 +115,7 @@ async def ready(
             access_signature=record["access_signature"],
             choices=choices(record),
             image=bridge.settings.gpu_image,
-            seconds=shape.max_seconds,
+            seconds=gpu_seconds(record, bridge.settings),
             hourly_estimate=max(
                 gpu_estimate(bridge.settings, resolve("gpu", bridge.settings, name))
                 for name in gpu_choices(record)
@@ -134,6 +138,7 @@ async def ready(
         if time.time() >= approval.approved_at + approval.seconds:
             raise ValueError("The confirmed GPU run's time allowance expired.")
         record["gpu_approved_at"] = approval.approved_at
+        record["gpu_approved_seconds"] = approval.seconds
         if record["status"] == "awaiting_approval":
             record["status"] = "pending"
         return True
@@ -145,6 +150,7 @@ async def ready(
         return False
     mode = record["launch"]["provisioning"]
     compute = approval.hourly_estimate * approval.seconds / 3600
+    hourly = approval.hourly_estimate
     alternatives = gpu_choices(record)[1:]
     fallback = (
         "If unavailable, automatically try "
@@ -169,9 +175,9 @@ async def ready(
         f"model allowance: ${approval.model_allowance:.2f}. "
         "This is an estimate, not a billing cap. Startup can take several minutes. "
         + (
-            "Spot may restart once on Spot within the same allowance."
+            "Saved work can continue on replacement Spot workers within this same allowance."
             if mode == "SPOT"
-            else "On-demand; no restart after computation begins and no resize."
+            else "On-demand; completed stages can continue within this same allowance. No resize."
         )
     )
     record.update(status="awaiting_approval", gpu_approval=True)
@@ -183,6 +189,45 @@ async def ready(
             text=text,
             blocks=[
                 {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+                *(
+                    [
+                        {
+                            "type": "actions",
+                            "elements": [
+                                {
+                                    "type": "static_select",
+                                    "action_id": PREFIX + "allowance",
+                                    "placeholder": {
+                                        "type": "plain_text",
+                                        "text": "Change total allowance",
+                                    },
+                                    "options": [
+                                        {
+                                            "text": {
+                                                "type": "plain_text",
+                                                "text": (
+                                                    f"{seconds / 3600:g} hours · "
+                                                    f"~${seconds / 3600 * hourly:.2f}"
+                                                ),
+                                            },
+                                            "value": f"{event_id}:{seconds}",
+                                        }
+                                        for seconds in sorted(
+                                            {approval.seconds, 7200, 28800, 86400, 259200, 604800}
+                                        )
+                                        if seconds
+                                        <= min(
+                                            bridge.settings.max_run_seconds,
+                                            bridge.settings.gpu_max_seconds,
+                                        )
+                                    ],
+                                }
+                            ],
+                        }
+                    ]
+                    if record["launch"].get("flexible_compute")
+                    else []
+                ),
                 {
                     "type": "actions",
                     "elements": [
@@ -212,9 +257,13 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
     if len(actions) != 1 or actions[0].get("action_id") not in {
         PREFIX + "approve",
         PREFIX + "cancel",
+        PREFIX + "allowance",
     }:
         raise ValueError("Invalid GPU action")
-    event_id = str(actions[0].get("value", ""))
+    action = actions[0]
+    changing = action["action_id"] == PREFIX + "allowance"
+    selected = str(action.get("selected_option", {}).get("value", ""))
+    event_id = selected.split(":")[0] if changing else str(action.get("value", ""))
     key(event_id)
     mutex = f"claude-poll:{event_id}"
     claim = await bridge.repository.begin_event(mutex, lease_seconds=60)
@@ -239,6 +288,21 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
             return {}
         if time.time() >= approval.expires_at:
             raise ValueError("This GPU request expired. Send it again.")
+        if changing:
+            seconds = int(selected.split(":", 1)[1])
+            if not record["launch"].get("flexible_compute") or not 600 <= seconds <= min(
+                bridge.settings.max_run_seconds, bridge.settings.gpu_max_seconds
+            ):
+                raise ValueError("Choose an available compute allowance.")
+            record["launch"]["max_seconds"] = seconds
+            approval.seconds, approval.choices = seconds, choices(record)
+            await asyncio.to_thread(
+                storage.put_if, key(event_id), approval.model_dump_json().encode(), generation
+            )
+            await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+            await ready(bridge, event_id, record, storage)
+            await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+            return {}
         approval.status = "approved" if actions[0]["action_id"].endswith("approve") else "cancelled"
         approval.approved_at = time.time() if approval.status == "approved" else 0
         await asyncio.to_thread(

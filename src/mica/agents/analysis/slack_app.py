@@ -21,7 +21,7 @@ from .config import Settings
 from .data_links import message_text
 from .deliverables import attachment_issue
 from .outputs import ATTACHMENT_SUFFIXES, MAX_ATTACHMENT_BYTES, publish, retention_reason
-from .progress import ProgressUpdate, TaskProgress, check_in_due, run_check_in
+from .progress import ActivityState, ProgressUpdate, TaskProgress, check_in_due, run_check_in
 from .runner import Context, Runner, TurnResult
 from .sessions import Sessions
 from .slack_format import activity_blocks, chunks, done_blocks, status_blocks, to_mrkdwn
@@ -240,18 +240,19 @@ class SlackAgent:
                 await self.transport.update(
                     channel=key[0],
                     ts=notice_ts,
-                    text="Working on it…",
-                    blocks=status_blocks(emoji, "Working on it…"),
+                    text="Mica is working",
+                    blocks=status_blocks(emoji, "Mica is working"),
                 )
             except Exception:
                 log.warning("Initial status update failed", exc_info=True)
         else:
-            status = await self.say(key, "Working on it…", status_blocks(emoji, "Working on it…"))
+            status = await self.say(key, "Mica is working", status_blocks(emoji, "Mica is working"))
         last = time.monotonic()
         started = last_activity = last
         last_check_in: float | None = None
         steps: list[str] = []
         tasks: dict[str, TaskProgress] = {}
+        activity = ActivityState("working")
         version = 0
         shown = 0
         native_progress = True
@@ -270,7 +271,9 @@ class SlackAgent:
             fallback = (
                 done_blocks(pending, error)
                 if finished
-                else status_blocks(emoji, "Working on it…", pending)
+                else status_blocks(
+                    emoji, activity.label, pending if activity.state == "working" else ()
+                )
             )
             if check_in and not finished:
                 fallback.append(
@@ -282,7 +285,8 @@ class SlackAgent:
                     }
                 )
             blocks = (
-                activity_blocks(task_snapshot, finished=finished, error=error, check_in=check_in)
+                ([] if finished else status_blocks(emoji, activity.label))
+                + activity_blocks(task_snapshot, finished=finished, error=error, check_in=check_in)
                 if native_progress and task_snapshot
                 else fallback
             )
@@ -336,9 +340,11 @@ class SlackAgent:
                     )
                 try:
                     await render(
-                        escape(
-                            pending[-1] if pending else "Waiting for the analysis result…",
-                            quote=False,
+                        activity.label
+                        + (
+                            ": " + escape(pending[-1], quote=False)
+                            if activity.state == "working" and pending
+                            else ""
                         ),
                         pending,
                         task_snapshot,
@@ -352,13 +358,25 @@ class SlackAgent:
                         last_check_in = now
 
         async def update(update: ProgressUpdate) -> None:
-            nonlocal version, last_activity
+            nonlocal version, last_activity, activity
             if not await self.permitted():
                 raise PermissionError("Project access changed during computation")
+            if isinstance(update, ActivityState):
+                if activity == update:
+                    return
+                activity = update
+                version += 1
+                await flush()
+                return
             if isinstance(update, TaskProgress):
                 if tasks.get(update.task_id) == update:
                     return
                 tasks[update.task_id] = update
+                activity = ActivityState(
+                    "working"
+                    if any(t.status == "in_progress" for t in tasks.values())
+                    else "thinking"
+                )
                 last_activity = time.monotonic()
                 version += 1
                 if update.status != "in_progress":
@@ -367,6 +385,7 @@ class SlackAgent:
                 text = update.title
             else:
                 text = update
+                activity = ActivityState("working")
             if not steps or steps[-1] != text:
                 last_activity = time.monotonic()
                 steps.append(text)

@@ -49,8 +49,13 @@ built-in Read/Write/Edit/Glob/Grep/Bash tools and the pinned science environment
 A control-service reply acknowledges each accepted input. Direct replies update it in place;
 computation requests update it before any Spot startup. That same
 Slack message reports queue waits, startup elapsed time, worker readiness, and completion/errors.
-During analysis it shows tool activity and a heartbeat every 30 seconds. Status failures do not
-prevent work, and repeated webhook/poll deliveries reuse the stored message timestamp.
+During analysis the same message shows “Mica is working” followed by the configured loading
+emoji while tools run, and “Mica is thinking” during model processing. The expandable activity
+list keeps current tool descriptions and confirmed completion states; Cellpose entries name
+the crop being processed. Phase changes come from SDK lifecycle events, never private reasoning
+text. Identical states are deduplicated, updates are throttled, and long-run check-ins report
+elapsed time without posting extra messages. Status failures do not prevent work, and repeated
+webhook/poll deliveries reuse the stored message timestamp.
 
 Firestore receipts deduplicate Slack delivery, order accepted messages within a thread, and
 limit active Claude jobs to three. Named polling tasks use the existing queue without depending

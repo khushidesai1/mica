@@ -194,6 +194,11 @@ allow_gpu_fallback=false only for an explicit strict hardware requirement. Set
 min_gpu_memory_gib when the workload has an established minimum GPU memory requirement;
 work needing more than 16 GiB must not fall back to T4. Do not invent a memory requirement.
 If GPU is unavailable, explain it; CPU Cellpose-SAM is available for bounded crops but slower.
+GPU runtime estimates are advisory. For an explicit user time or estimated compute budget,
+set gpu_hours or compute_budget_usd; otherwise leave them unset so the requester can choose
+the allowance in confirmation. Long or uncertain workloads are allowed; never reject or
+silently reduce scientific scope because a predicted runtime is long. Completed expensive
+stages can be saved durably and continued in later workers within the approved allowance.
 """
 
 
@@ -203,6 +208,8 @@ class WorkerChoice(BaseModel):
     gpu_type: Literal["t4", "l4"] | None = None
     allow_gpu_fallback: bool = True
     min_gpu_memory_gib: int = Field(default=0, ge=0, le=24)
+    gpu_hours: float | None = Field(default=None, gt=0, le=336, allow_inf_nan=False)
+    compute_budget_usd: float | None = Field(default=None, gt=0, le=33600, allow_inf_nan=False)
     on_demand: bool | None = None
     workload: str = Field(default="", max_length=200)
     tier_explicit: bool = False
@@ -974,7 +981,7 @@ async def handle(
     if record.get("direct_decision") and not record.get("direct_decision_pending"):
         decision = Decision.model_validate(record["direct_decision"])
     else:
-        await bridge.notify(event_id, record, "replying", "Thinking…")
+        await bridge.notify(event_id, record, "replying", "Mica is thinking")
         model_context = {
             "request": text,
             "brief": ctx["project_md"],

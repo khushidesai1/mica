@@ -473,7 +473,7 @@ def test_capture_merges_existing_compute_hooks(tmp_path):
     from types import SimpleNamespace
 
     compute = SimpleNamespace(
-        tools=lambda: [], prompt=lambda: "\nCompute policy", poll_addenda=None
+        tools=lambda: [], prompt=lambda: "\nCompute policy", poll_addenda=None, save_result=None
     )
     ctx = Context(tmp_path, tmp_path / "data")
     settings = Settings(_env_file=None)

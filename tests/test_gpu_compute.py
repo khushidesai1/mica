@@ -36,6 +36,8 @@ def test_gpu_worker_prompt_does_not_promise_cpu_resize():
 def gpu(bridge, monkeypatch):  # noqa: F811
     bridge.settings.gpu_tier_enabled = True
     bridge.settings.gpu_image = GPU_IMAGE
+    bridge.settings.gpu_default_seconds = 7200
+    bridge.settings.gpu_max_seconds = 7200
     monkeypatch.setattr(compute_approval, "AsyncWebClient", lambda **kw: bridge.test_slack)
     monkeypatch.setattr(
         direct,
@@ -113,9 +115,10 @@ def test_gpu_recovery_never_resizes_or_extends_original_deadline():
     record = {"launch": choice, "gpu_approved_at": 100}
     recovery.initialize(record, settings, now=120)
     assert (
-        record["request_deadline"] == 7300 and recovery.remaining_recoveries(record, settings) == 1
+        record["request_deadline"] == 100 + settings.gpu_default_seconds
+        and recovery.remaining_recoveries(record, settings) == 1
     )
-    record["preemption_count"] = 1
+    record["preemption_count"] = 8
     assert recovery.remaining_recoveries(record, settings) == 0
     with pytest.raises(ValueError, match="do not resize"):
         recovery.destination(

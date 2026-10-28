@@ -90,6 +90,12 @@ def selected_gpu(record: dict[str, Any]) -> str:
     return str(record.get("gpu_type", record.get("launch", {}).get("gpu_type", "l4")))
 
 
+def gpu_seconds(record: dict[str, Any], settings: Settings) -> int:
+    """A new request's selected envelope; legacy approvals keep their recorded duration."""
+    ceiling = min(settings.max_run_seconds, settings.gpu_max_seconds)
+    return min(int(record["launch"].get("max_seconds", 7200)), ceiling)
+
+
 def resolve(name: str, settings: Settings, gpu_type: str = "l4") -> Tier:
     if name == "gpu":
         if not settings.gpu_tier_enabled or not settings.gpu_image:
@@ -136,11 +142,27 @@ def launch_choice(worker: WorkerChoice | None, settings: Settings) -> dict[str, 
             resolve(tier, settings, gpu_type)
             raise ValueError("No enabled GPU satisfies this request's memory requirement.")
         mode = "SPOT" if worker.on_demand is False else "STANDARD"
+        ceiling = min(settings.max_run_seconds, settings.gpu_max_seconds)
+        seconds = min(
+            ceiling,
+            int(worker.gpu_hours * 3600) if worker.gpu_hours else settings.gpu_default_seconds,
+        )
+        if worker.compute_budget_usd is not None:
+            rate = max(gpu_estimate(settings, GPU_TIERS[name]) for name in candidates)
+            seconds = min(
+                ceiling,
+                int(worker.compute_budget_usd / rate * 3600),
+                seconds if worker.gpu_hours else ceiling,
+            )
+        if seconds < 600:
+            raise ValueError("Choose at least ten minutes of GPU time, including startup.")
         return {
             "tier": "gpu",
             "gpu_type": candidates[0],
             "requested_gpu_type": gpu_type,
             "gpu_candidates": candidates,
+            "max_seconds": seconds,
+            "flexible_compute": True,
             "min_gpu_memory_gib": worker.min_gpu_memory_gib,
             "provisioning": mode,
             "category": worker.category,

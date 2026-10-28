@@ -12,7 +12,16 @@ class TaskProgress:
     status: Literal["in_progress", "complete", "error"] = "in_progress"
 
 
-ProgressUpdate = str | TaskProgress
+@dataclass(frozen=True)
+class ActivityState:
+    state: Literal["working", "thinking"]
+
+    @property
+    def label(self) -> str:
+        return f"Mica is {self.state}"
+
+
+ProgressUpdate = str | TaskProgress | ActivityState
 
 
 def check_in_due(

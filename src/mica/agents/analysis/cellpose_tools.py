@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import signal
 import stat
+from collections.abc import Awaitable, Callable
 from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Any, Literal
@@ -187,6 +189,9 @@ async def segment(
         info = os.fstat(source_fd)
         if not stat.S_ISREG(info.st_mode) or info.st_size > 512 * 1024**2:
             raise ValueError("Image changed during selection; choose a bounded regular image.")
+        with os.fdopen(os.dup(source_fd), "rb") as source_stream:
+            input_sha256 = hashlib.file_digest(source_stream, "sha256").hexdigest()
+        os.lseek(source_fd, 0, os.SEEK_SET)
         parent_out = open_directory(work, output.relative_to(work).parent.parts, create=True)
         stack.callback(os.close, parent_out)
         os.mkdir(output.name, dir_fd=parent_out)
@@ -228,10 +233,15 @@ async def segment(
             result: dict[str, Any] = json.loads(raw)
     if result.get("version") != request.version or result.get("model") != request.model:
         raise ValueError("Cellpose result does not match the requested version and model.")
-    return {**result, "output_dir": str(output.relative_to(work))}
+    return {**result, "input_sha256": input_sha256, "output_dir": str(output.relative_to(work))}
 
 
-def tools(work: Path, data: Path, settings: Settings) -> list[SdkMcpTool[Any]]:
+def tools(
+    work: Path,
+    data: Path,
+    settings: Settings,
+    save_result: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
+) -> list[SdkMcpTool[Any]]:
     @tool("cellpose_versions", "List installed Cellpose versions and models for this worker.", {})
     async def versions(_args: dict[str, Any]) -> dict[str, Any]:
         rows = [
@@ -267,6 +277,29 @@ def tools(work: Path, data: Path, settings: Settings) -> list[SdkMcpTool[Any]]:
     async def run(args: dict[str, Any]) -> dict[str, Any]:
         try:
             result = await segment(SegmentRequest.model_validate(args), work, data, settings)
+            if save_result:
+                try:
+                    result["checkpoint"] = await save_result(result)
+                except Exception as exc:
+                    return {
+                        "isError": True,
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": json.dumps(
+                                    {
+                                        **result,
+                                    "warning": (
+                                        "Segmentation completed but its durable save failed. "
+                                        "Keep this output folder and retry checkpoint_stage "
+                                        "before more computation."
+                                    ),
+                                        "save_error": type(exc).__name__,
+                                    }
+                                ),
+                            }
+                        ],
+                    }
             return {"content": [{"type": "text", "text": json.dumps(result)}]}
         except (ValueError, OSError, TimeoutError) as exc:
             return {"content": [{"type": "text", "text": str(exc)[:2000]}], "isError": True}

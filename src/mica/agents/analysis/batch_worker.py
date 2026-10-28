@@ -260,6 +260,8 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             work,
             event_id,
             attempt,
+            thread_key=thread_key,
+            project_id=request["project_id"],
         )
         if resume:
             try:
@@ -303,6 +305,28 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             await save_partial()
             return value
 
+        async def save_result(result: dict[str, Any]) -> dict[str, Any]:
+            assert stages is not None
+            fingerprint = json.dumps(
+                {
+                    key: result.get(key)
+                    for key in (
+                        "input_sha256",
+                        "version",
+                        "model",
+                        "model_sha256",
+                        "model_precision",
+                        "parameters",
+                    )
+                },
+                sort_keys=True,
+            )
+            value = await asyncio.to_thread(
+                stages.capture_result, result["output_dir"], fingerprint
+            )
+            await save_partial()
+            return value
+
         async def compute_status(text: str) -> None:
             if surface.is_email(request):
                 return
@@ -320,6 +344,8 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             operate,
             save_stage=save_stage,
             status=compute_status,
+            save_result=save_result,
+            stages=stages,
         )
         if request.get("amendments_enabled") and not surface.is_email(request):
             last_addenda_poll = 0.0
@@ -333,8 +359,12 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                 if not await asyncio.to_thread(monitor.check):
                     return ""
                 return await asyncio.to_thread(
-                    amendments.consume, storage, event_id,
-                    request["principal"], request["access_signature"], attempt,
+                    amendments.consume,
+                    storage,
+                    event_id,
+                    request["principal"],
+                    request["access_signature"],
+                    attempt,
                 )
 
             compute.poll_addenda = poll_addenda

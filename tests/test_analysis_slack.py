@@ -12,7 +12,7 @@ from slack_sdk.errors import SlackApiError
 
 from mica.agents.analysis import slack_app
 from mica.agents.analysis.config import Settings
-from mica.agents.analysis.progress import TaskProgress
+from mica.agents.analysis.progress import ActivityState, TaskProgress
 from mica.agents.analysis.runner import Context, TurnResult
 from mica.agents.analysis.sessions import Sessions
 from mica.agents.analysis.slack_app import SlackAgent
@@ -144,14 +144,14 @@ def test_formatting():
 def test_status_labels_are_plain_text_and_bounded():
     blocks = status_blocks(":x:", "h", ["a", "<!channel> b"])
     elements = [element for block in blocks for element in block["elements"]]
-    assert elements[0] == {"type": "mrkdwn", "text": ":x:"}
-    assert all(element["type"] == "plain_text" for element in elements[1:])
-    assert [element["text"] for element in elements[1:]] == ["<!channel> b", "a"]
-    assert status_blocks(":x:", "h")[0]["elements"][1]["text"] == "h"
+    assert elements[0] == {"type": "plain_text", "text": "Mica is working", "emoji": False}
+    assert elements[1] == {"type": "mrkdwn", "text": ":x:"}
+    assert elements[2] == {"type": "plain_text", "text": "<!channel> b", "emoji": False}
+    assert status_blocks(":x:", "Thinking…")[0]["elements"][0]["text"] == "Mica is thinking"
     assert done_blocks([])[0]["elements"][0]["text"] == "✓ Finished"
     assert done_blocks([], "error_max_turns")[0]["elements"][0]["text"].startswith("⚠️ Stopped")
     assert done_blocks(["old", "a", "b", "c"])[0]["elements"][0]["text"] == "✓ a · b · c"
-    assert len(status_blocks(":x:", "x" * 500)[0]["elements"][1]["text"]) == 150
+    assert len(status_blocks(":x:", "x" * 500)[1]["elements"][0]["text"]) == 150
     assert len(done_blocks([], "x" * 500)[0]["elements"][0]["text"]) == 300
 
 
@@ -204,7 +204,7 @@ async def test_heartbeat_flushes_throttled_step_and_retries_failure(bot, monkeyp
 
     async def deliver(**kwargs):
         nonlocal attempts
-        if kwargs["text"] == "&lt;!channel&gt; b &amp; c":
+        if kwargs["text"] == "Mica is working: &lt;!channel&gt; b &amp; c":
             attempts += 1
             if fail_once and attempts == 1:
                 clock.now += 6
@@ -416,10 +416,11 @@ async def test_plan_updates_completion_and_falls_back_only_on_invalid_blocks(
     async def deliver(**kwargs):
         blocks = kwargs["blocks"]
         seen.append(blocks)
-        if blocks[0]["type"] == "plan":
+        plan = next((b for b in blocks if b["type"] == "plan"), None)
+        if plan:
             if reject_plan:
                 raise SlackApiError("Unsupported", {"error": "invalid_blocks"})
-            if blocks[0]["tasks"][0]["status"] == "complete":
+            if plan["tasks"][0]["status"] == "complete":
                 delivered.set()
         elif reject_plan and len(seen) >= 4:
             delivered.set()
@@ -436,7 +437,7 @@ async def test_plan_updates_completion_and_falls_back_only_on_invalid_blocks(
     bot.runner.run_turn = compute
     bot.client.chat_update.side_effect = deliver
     await send(bot, event("check", _notice_ts="9.0"))
-    plans = [b[0] for b in seen if b[0]["type"] == "plan"]
+    plans = [block for blocks in seen for block in blocks if block["type"] == "plan"]
     if reject_plan:
         assert len(plans) == 1
         assert seen[-1][0]["type"] == "context"
@@ -444,6 +445,40 @@ async def test_plan_updates_completion_and_falls_back_only_on_invalid_blocks(
         assert plans[-1]["title"] == "Finished"
         assert plans[-1]["tasks"][0]["status"] == "complete"
     assert bot.client.chat_postMessage.call_args.kwargs["text"] == "Done."
+
+
+async def test_activity_switches_without_repeating_status_or_posting_messages(bot, monkeypatch):
+    now = [0]
+    monkeypatch.setattr(slack_app, "time", type("Clock", (), {"monotonic": lambda: now[0]}))
+
+    async def compute(ctx, prompt, status):
+        now[0] = 6
+        await status(ActivityState("thinking"))
+        now[0] = 12
+        await status(ActivityState("thinking"))
+        task = TaskProgress("tile", "Segmenting Cellpose-SAM: tile_02.npy", "Segmenting cells…")
+        await status(task)
+        now[0] = 18
+        await status(replace(task, status="complete"))
+        now[0] = 24
+        await status(ActivityState("thinking"))
+        return TurnResult("session", "Done.")
+
+    bot.runner.run_turn = compute
+    await send(bot, event("segment", _notice_ts="9.0"))
+    calls = bot.client.chat_update.call_args_list
+    active = [call.kwargs for call in calls if call.kwargs["blocks"][0]["type"] == "context"]
+    assert [row["blocks"][0]["elements"][0]["text"] for row in active] == [
+        "Mica is working",
+        "Mica is thinking",
+        "Mica is working",
+        "Mica is thinking",
+    ]
+    assert all(
+        row["blocks"][0]["elements"][1]["text"] == bot.settings.loading_emoji for row in active
+    )
+    assert active[2]["blocks"][1]["tasks"][0]["title"].endswith("tile_02.npy")
+    assert bot.client.chat_postMessage.call_count == 1  # Only the final answer.
 
 
 async def test_unexpected_run_failure_stops_progress(bot):

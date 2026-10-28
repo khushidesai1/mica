@@ -79,7 +79,7 @@ def job_spec(
     if provisioning not in {"SPOT", "STANDARD"}:
         raise ValueError("Invalid worker provisioning mode.")
     seconds = shape.max_seconds if duration is None else duration
-    if not 1 <= seconds <= shape.max_seconds or not 0 <= attempt <= 20:
+    if not 1 <= seconds <= shape.max_seconds or not 0 <= attempt <= 64:
         raise ValueError("Invalid worker duration or attempt.")
     if budget is not None and (not math.isfinite(budget) or not 0 < budget <= 10000):
         raise ValueError("Invalid reserved model budget.")
@@ -218,7 +218,7 @@ def job_spec(
             size_gb=shape.disk_gb,
             # Batch owns GPU/container integration. COS currently injects a privileged
             # launch that conflicts with its CDI hook; use the supported Debian host.
-            image=GPU_BOOT_IMAGE if gpu else "",
+            **({"image": GPU_BOOT_IMAGE} if gpu else {}),
         ),
     )
     return batch_v1.Job(
@@ -650,6 +650,7 @@ class BatchBridge:
 
     async def record_terminal(self, event_id: str, record: dict[str, Any]) -> None:
         """Fill missing history before a terminal event releases the next turn."""
+        from . import recovery
         from .direct import record_exchange
 
         if record["status"] not in {"complete", "failed"} or record.get("terminal_recorded"):
@@ -666,6 +667,16 @@ class BatchBridge:
                 and record.get("principal", grant.email) == grant.email
             ):
                 state = grant.state
+                if record["status"] == "failed" and record.get("recovery_version"):
+                    partial = await asyncio.to_thread(
+                        recovery.verified_resume, storage, event_id, record["attempt"]
+                    )
+                    if partial:
+                        # Preserve the code/notes handoff too. Large results live in separately
+                        # scoped durable stages, never in the ordinary workspace archive.
+                        state.update(archive=partial["archive"], retention_version=1)
+                        if "script_manifest" in partial:
+                            state["script_manifest"] = partial["script_manifest"]
                 exchange = next(
                     (m for m in state.get("messages", []) if m.get("id") == event_id), None
                 )
@@ -1240,7 +1251,11 @@ class BatchBridge:
                 "Stopped: couldn't confirm your project access with Slack for "
                 f"{self.settings.access_unavailable_grace_seconds / 60:g} min."
             ),
-            "compute_time_allowance": "Stopped: this request reached its time allowance.",
+            "compute_time_allowance": (
+                "This request reached its approved time allowance. Saved stages remain available. "
+                "Reply to continue with an additional allowance; "
+                "completed saved work can be reused."
+            ),
         }.get(reason, "Stopped before finishing.")
         # A generic stop notice is safe; project paths require a verified current grant.
         try:

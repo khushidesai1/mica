@@ -15,7 +15,7 @@ from pydantic import Field
 
 from .config import CHECKPOINT_PREFIX, Settings
 from .storage import Storage
-from .tiers import ORDER, TIERS, Record, resolve, selected_gpu
+from .tiers import ORDER, TIERS, Record, gpu_seconds, resolve, selected_gpu
 
 if TYPE_CHECKING:
     from .batch import BatchBridge
@@ -30,8 +30,8 @@ def event_prefix(event_id: str) -> str:
 
 
 class RecoverCall(Record):
-    attempt: int = Field(ge=0, le=2)
-    cause: Literal["capacity", "oom", "disk"]
+    attempt: int = Field(ge=0, le=64)
+    cause: Literal["capacity", "oom", "disk", "continue"]
     memory_gib: float | None = Field(default=None, gt=0, le=10000)
     task_memory_gib: float | None = Field(default=None, gt=0, le=10000)
     disk_gb: float | None = Field(default=None, gt=0, le=100000)
@@ -48,6 +48,7 @@ def initialize(record: dict[str, Any], settings: Settings, *, now: float) -> Non
         attempt=0,
         resize_count=0,
         preemption_count=0,
+        continuation_count=0,
         tier=choice.get("tier", "standard"),
         provisioning=choice.get("provisioning", "SPOT"),
         launch_reason=choice.get("reason", ""),
@@ -55,7 +56,7 @@ def initialize(record: dict[str, Any], settings: Settings, *, now: float) -> Non
         constraints=choice.get("constraints", {}),
         request_deadline=record.get("gpu_approved_at", now)
         + (
-            min(settings.max_run_seconds, settings.gpu_max_seconds)
+            record.get("gpu_approved_seconds", gpu_seconds(record, settings))
             if choice.get("tier") == "gpu"
             else settings.max_run_seconds
         ),
@@ -69,14 +70,14 @@ def remaining_recoveries(record: dict[str, Any], settings: Settings) -> int:
     if record["tier"] == "gpu":
         return int(
             record["provisioning"] == "SPOT"
-            and not record["preemption_count"]
-            and record["attempt"] < 2
+            and record["preemption_count"]
+            < (8 if record.get("launch", {}).get("flexible_compute") else 1)
         )
     maximum = record.get("constraints", {}).get("max_tier", settings.max_tier)
     maximum = ORDER[min(ORDER.index(maximum), ORDER.index(settings.max_tier))]
     resize = not record["resize_count"] and ORDER.index(record["tier"]) < ORDER.index(maximum)
     preempt = record["provisioning"] == "SPOT" and not record["preemption_count"]
-    return min(int(resize) + int(preempt), 2 - int(record["attempt"]))
+    return int(resize) + int(preempt)
 
 
 def limits(record: dict[str, Any], settings: Settings, *, now: float) -> tuple[int, float]:
@@ -139,7 +140,7 @@ def destination(record: dict[str, Any], body: RecoverCall, settings: Settings) -
         raise ValueError(
             "GPU workers do not resize. Use a smaller crop or batch size and request a new run."
         )
-    if record["resize_count"] or record["attempt"] >= 2:
+    if record["resize_count"]:
         raise ValueError("The automatic capacity recovery has already been used.")
     maximum = record.get("constraints", {}).get("max_tier", settings.max_tier)
     cap = min(ORDER.index(maximum), ORDER.index(settings.max_tier))
@@ -185,6 +186,25 @@ def operate(
             raise ValueError("A different recovery is already pending.")
         return {"status": "checkpoint"}
     limits(record, settings, now=now)
+    if body.cause == "continue":
+        if record["tier"] == "gpu" and not record.get("launch", {}).get("flexible_compute"):
+            raise ValueError("This legacy GPU approval does not include worker continuations.")
+        if record.get("continuation_count", 0) >= 32 or record["attempt"] >= 64:
+            raise ValueError("This request has used its continuation allowance.")
+        # Continue only at a saved boundary; no concurrent replacement or arbitrary resize.
+        saved = verified_resume(storage, event_id, body.attempt)
+        if not saved or not saved.get("stages", {}).get("stages"):
+            raise ValueError("Save a completed stage before requesting continuation.")
+        record["recovery_pending"] = {
+            "id": identity,
+            "attempt": body.attempt,
+            "tier": record["tier"],
+            "provisioning": record["provisioning"],
+            "cause": "continue",
+            "handoff": body.handoff,
+            "evidence": body.evidence,
+        }
+        return {"status": "checkpoint"}
     observed = measurements(storage, event_id, body.attempt)
     if body.cause == "oom" and classify(None, observed) != "oom":
         raise ValueError("An OOM recovery needs the trusted worker's OOM telemetry.")
@@ -354,15 +374,17 @@ async def terminal(
                 pending["provisioning"],
                 pending["cause"],
             )
-            resize, preempt = 1, 0
+            continuation = cause == "continue"
+            resize, preempt = int(not continuation), 0
         elif (
             outcome == "preempted"
             and record["provisioning"] == "SPOT"
-            and not record["preemption_count"]
+            and record["preemption_count"]
+            < (8 if record.get("launch", {}).get("flexible_compute") else 1)
         ):
             destination_tier = record["tier"]
             mode = record.get("constraints", {}).get("provisioning", "STANDARD")
-            cause, resize, preempt = "preempted", 0, 1
+            cause, resize, preempt, continuation = "preempted", 0, 1, False
         elif outcome == "oom":
             body = RecoverCall(
                 attempt=attempt,
@@ -372,7 +394,7 @@ async def terminal(
             )
             destination_tier = destination(record, body, bridge.settings)
             mode = record.get("constraints", {}).get("provisioning", "STANDARD")
-            cause, resize, preempt = "oom", 1, 0
+            cause, resize, preempt, continuation = "oom", 1, 0, False
         else:
             raise ValueError(
                 "The worker stopped before finishing; no supported automatic recovery remains."
@@ -380,7 +402,11 @@ async def terminal(
                 else "The worker stopped without verified capacity or preemption evidence. "
                 "A larger worker has not been inferred from this failure."
             )
-        if attempt >= 2 or (resize and record["resize_count"]):
+        if (
+            attempt >= 64
+            or (resize and record["resize_count"])
+            or (continuation and record.get("continuation_count", 0) >= 32)
+        ):
             raise ValueError("This request has used its automatic recovery allowance.")
         resume = verified_resume(storage, event_id, attempt)
         successor = dict(
@@ -390,6 +416,7 @@ async def terminal(
             attempt=attempt + 1,
             resize_count=record["resize_count"] + resize,
             preemption_count=record["preemption_count"] + preempt,
+            continuation_count=record.get("continuation_count", 0) + int(continuation),
         )
         limits(successor, bridge.settings, now=time.time())
         record.update(successor, resume=resume, recovery_cause=cause)
@@ -399,7 +426,9 @@ async def terminal(
         record["status"] = "pending"
         mode_text = "an on-demand" if mode == "STANDARD" else "a Spot"
         notice = (
-            f"The Spot worker was reclaimed; restarting on {mode_text} worker."
+            "Continuing from saved progress within your approved allowance."
+            if continuation
+            else f"The Spot worker was reclaimed; restarting on {mode_text} worker."
             if preempt
             else "This step needs more capacity than expected. "
             "I'm moving to a larger worker and continuing from saved progress."

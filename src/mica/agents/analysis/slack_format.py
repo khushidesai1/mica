@@ -16,7 +16,7 @@ def activity_blocks(
 ) -> list[dict[str, Any]]:
     """Slack's expandable plan; keep two cards, always including the active task."""
     active = next((task for task in reversed(tasks) if task.status == "in_progress"), None)
-    title = active.phase if active else "Putting the answer together…"
+    title = active.phase if active else "Reviewing the latest results…"
     if finished:
         title = f"Stopped: {error}" if error else "Finished"
     cards = []
@@ -57,15 +57,16 @@ def activity_blocks(
 
 def status_blocks(emoji: str, headline: str, steps: Sequence[str] = ()) -> list[dict[str, Any]]:
     """Show the current action and recent steps without parsing model-derived labels."""
-    current = steps[-1] if steps else headline
+    thinking = headline in {"Thinking…", "Mica is thinking"}
+    label = "Mica is thinking" if thinking else "Mica is working"
     elements = [
+        {"type": "plain_text", "text": label, "emoji": False},
         {"type": "mrkdwn", "text": emoji},
-        {"type": "plain_text", "text": current[:150], "emoji": False},
     ]
     blocks: list[dict[str, Any]] = [{"type": "context", "elements": elements}]
-    if len(steps) > 1:
-        previous = " · ".join(s[:80] for s in steps[-4:-1])
-        elements = [{"type": "plain_text", "text": previous, "emoji": False}]
+    current = steps[-1] if steps else headline
+    if current not in {"Thinking…", "Working on it…", "Mica is thinking", "Mica is working"}:
+        elements = [{"type": "plain_text", "text": current[:150], "emoji": False}]
         blocks.append({"type": "context", "elements": elements})
     return blocks
 

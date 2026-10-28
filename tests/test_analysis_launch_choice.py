@@ -61,7 +61,11 @@ def test_worker_has_long_commands_and_no_quote_gate(tmp_path, tier):
         save_stage=AsyncMock(),
     )
     assert manager.deny("Bash", {"timeout": 6 * 3600 * 1000}) == ""
-    assert {t.name for t in manager.tools()} == {"recover_worker", "checkpoint_stage"}
+    assert {t.name for t in manager.tools()} == {
+        "recover_worker",
+        "checkpoint_stage",
+        "compute_allowance",
+    }
     assert "$" not in manager.prompt() and tier in manager.prompt()
 
 
