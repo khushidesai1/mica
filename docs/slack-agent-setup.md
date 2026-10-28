@@ -13,18 +13,29 @@ token, always-on VM, or Modal account is required.
 
 `Slack DM → signed webhook → Cloud Tasks → Cloud Run conversation → Slack reply`
 
-Only requests that need file contents, code execution, or plots proceed to a sized Batch worker.
-Listing object names, folders, and sizes uses bounded metadata calls on Cloud Run, including
-in ordinary chat. Reading CSV headers or counting cells still requires the worker.
+Requests that need code execution, calculations, scientific data processing or plots proceed to
+a sized Batch worker. Information questions stay in the control service: listing names/folders/sizes,
+inspecting authorized repository source, reading registered text attachments, and recalling earlier
+thread records. CSV/TSV/JSON text can be inspected directly; computing new counts still needs a worker.
+Incomplete listings report their coverage or ask for a narrower folder instead of starting a worker.
 Conversation routing is always enabled. Ordinary questions, planning, brief edits,
 `help`, `brief`, `cancel`, and bounded initial setup run in the control service.
 The direct Claude call has no shell, filesystem, or network tools. It can answer, update the shared guide,
-request a project-scoped metadata listing, or request isolated computation. Invalid routing output
+request a project-scoped metadata listing, request bounded information reads, or request isolated
+computation. Source inspection/README requests use the existing GitHub App to read commit-pinned
+source snapshots, with exact-path follow-ups for larger repositories. The reply cites source paths
+and the commit, distinguishes inspected code from executed/tested behavior, and reports missing
+coverage. Requested README text is delivered directly through the ordinary chunked reply path;
+Mica does not start a worker merely to compose documentation or claim an attachment was created.
+Reads use at most two rounds within the same routing deadline. Source/text/history content has a
+shared 384 KiB budget per round, text attachments are capped at 64 KiB each, and all content remains
+untrusted evidence. Reads are restricted to available catalog/project references, registered thread
+file IDs and the current thread/project's history. Access is checked before reads and delivery. Invalid routing output
 gets one immediate correction attempt with field-level feedback. If that fails, or the model API
 times out, rate-limits, or returns a server error, the original request stays pending and retries
 through the existing queue no earlier than 30 and 60 seconds after each failure. There are at most
 three routing cycles; each decision gets one correction and at most one media fallback. The initial
-decision and any inventory/view follow-up share a 120-second routing deadline. Exhaustion reports
+decision and any inventory/view/read follow-up share a 120-second routing deadline. Exhaustion reports
 an internal failure and preserves the conversation. Only schema
 field names and error types are logged, never invalid values. Each attempt rechecks access;
 failed routing never invents a computation or bypasses write approval. Display-only worker workload
