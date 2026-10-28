@@ -10,7 +10,14 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from test_analysis_batch import bridge, payload  # noqa: F401
 
-from mica.agents.analysis import access, command_intent, conversation, direct, prompts
+from mica.agents.analysis import (
+    access,
+    command_intent,
+    conversation,
+    direct,
+    prompts,
+    reference_repos,
+)
 from mica.agents.analysis.config import Settings
 
 
@@ -99,6 +106,26 @@ async def test_plain_reply_private_thinking_and_provider_settings(turn):
     assert record["conversation_steps"] == [] and not record["direct_decision_pending"]
     assert "private" not in json.dumps(record["direct_decision"])
     assert record["routing_budget"] <= direct.ROUTING_SECONDS
+
+
+async def test_approved_public_reference_is_read_directly_without_project_registration(
+    turn, monkeypatch
+):
+    bridge, event_id, record, grant = turn
+    repo = "khushidesai1/nympheas-temp"
+    assert not grant.project.reference_repos
+    fetch = AsyncMock(return_value=reference_repos.RepoSnapshot(
+        repo=repo, commit="a" * 40, files={"src/qc.py": "def qc(min_counts=20): pass"}
+    ))
+    monkeypatch.setattr(reference_repos, "fetch", fetch)
+    sdk = Client(tool("read_sources", repos=[repo], file_ids=[]), reply("The default is 20."))
+    monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: sdk)
+    assert await direct.handle(bridge, event_id, record, bridge.store)
+    fetch.assert_awaited_once_with(bridge.settings, repo)
+    assert record["information_repos"] == [repo]
+    assert "min_counts=20" in json.dumps(sdk.calls[1]["messages"])
+    assert not grant.project.reference_repos
+    bridge.test_client.create_job.assert_not_called()
 
 
 async def test_markdown_reply_is_formatted_for_slack_and_retry_preserves_original(

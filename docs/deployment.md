@@ -326,8 +326,15 @@ The catalog also makes the approved AziziLab repositories discoverable across ev
 per-project registration is optional. Requests select only the references they need. Read-only
 source/parameter/documentation questions use the direct Claude API path; execution requests pass
 snapshots to workers.
-This controller-only selection change uses the existing snapshot format and can retain verified
-worker image pins after compatibility checks. Verify offline fetch,
+The exact public-reference allowlist in `reference_repos.PUBLIC_REPOS` also makes
+`khushidesai1/nympheas-temp` available across projects. It uses anonymous GitHub reads, checks
+public visibility and repository identity on each fetch, and verifies commit-pinned raw files
+against Git blob hashes under the same snapshot limits. It receives no GitHub App or memory
+credential. Other personal repositories remain excluded; a private or moved repository fails
+closed. This provides source access, not automatic package installation or execution.
+Selection-only controller changes can retain verified worker image pins after compatibility
+checks. Repository-validation changes must reach both API and worker images so materialization
+recognizes the same approved references. Verify offline fetch,
 authorization, snapshot, read-only and failed-fetch tests before release. For the live owner check,
 ask about a catalog repository from a project with no default references, without registering it,
 or add a permitted default in your own private Slack conversation and confirm the selection. Ask

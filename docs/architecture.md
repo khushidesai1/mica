@@ -87,9 +87,10 @@ CAS-protected outbox. Mailbox secrets never reach the science worker or model pr
 ### Project reference repositories
 
 AziziLab repositories in the GitHub App catalog are available read-only across all projects,
+along with explicitly approved public references such as `khushidesai1/nympheas-temp`,
 without another project-owner registration. The router sees the shared catalog and selects up
-to five repositories needed by a compute request. Catalog metadata discovers the repositories;
-each content fetch still checks the App's current installation access with a scoped token.
+to five repositories needed by a compute request. App-backed content fetches check current
+installation access with a scoped token; approved public references recheck public visibility.
 
 Project owners and co-owners can also set default references through a private Slack confirmation
 (`repos add azizilab/repo [project]` or “add azizilab/repo as a reference for this project”).
@@ -102,9 +103,11 @@ project membership or grants GitHub write permissions.
 
 Before submitting compute, the control plane resolves each selected repository's default branch
 to an immutable commit and reads eligible blobs with a short-lived GitHub App installation token
-restricted to that repository and `contents:read`. The installation's approved repository selection
-is the administrator-controlled ceiling. The API never uses the project-memory repository token
-for this access, and no GitHub key or token enters a worker manifest, workspace or prompt.
+restricted to that repository and `contents:read`. Approved public references instead use anonymous
+reads and commit-pinned raw files verified against Git blob hashes. The installation selection
+and exact public allowlist are the administrator-controlled ceiling. The API never uses the
+project-memory repository token for this access, and no GitHub key or token enters a worker
+manifest, workspace or prompt.
 Workers receive read-only `inputs/repos/<repo>/` snapshots with `.pin` commit provenance and
 `.snapshot.json` listing included paths and omissions. Repository text remains untrusted input.
 

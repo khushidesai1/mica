@@ -69,6 +69,7 @@ async def test_shared_catalog_repo_reaches_worker_without_project_registration(b
     assert decide.call_args.args[2]["reference_repos"] == [
         "azizilab/decipher",
         "azizilab/nympheas",
+        "khushidesai1/nympheas-temp",
     ]
     fetch.assert_awaited_once_with(bridge.settings, "azizilab/nympheas")
     manifest = json.loads(bridge.store.get(f"tasks/slack-analysis/events/{eid}/request.json")[0])
@@ -102,6 +103,7 @@ async def test_repos_lists_shared_catalog_without_owner_setup(bridge):  # noqa: 
     eid = await bridge.accept(payload(text="repos"))
     assert await bridge.process(eid, 0) == "complete"
     assert "azizilab/nympheas" in bridge.test_slack.chat_update.call_args.kwargs["text"]
+    assert "khushidesai1/nympheas-temp" in bridge.test_slack.chat_update.call_args.kwargs["text"]
     assert "available across projects" in bridge.test_slack.chat_update.call_args.kwargs["text"]
     bridge.test_client.create_job.assert_not_called()
 
@@ -121,7 +123,9 @@ async def test_shared_catalog_excludes_other_org_and_non_catalog_entries(bridge)
                 install_recipe="none",
             )
         )
-    assert await refs.shared_repos(bridge.repository, bridge.settings) == {"azizilab/nympheas"}
+    assert await refs.shared_repos(bridge.repository, bridge.settings) == {
+        "azizilab/nympheas", "khushidesai1/nympheas-temp"
+    }
 
 
 @pytest.mark.parametrize(
@@ -148,7 +152,9 @@ def test_owner_only_change_and_removal_revokes_stale_workers(bridge):  # noqa: F
     assert doc.projects[pid].access_revision == 1
 
 
-def fixture_github(files, *, extra=(), truncated=False):
+def fixture_github(
+    files, *, extra=(), truncated=False, repo="azizilab/code", private=False, corrupt=False
+):
     entries, blobs, calls = [], {}, []
     for path, raw in files.items():
         sha = hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest()
@@ -158,8 +164,14 @@ def fixture_github(files, *, extra=(), truncated=False):
     def respond(request):
         calls.append(request.url.path)
         path = request.url.path
-        if path.endswith("/repos/azizilab/code"):
-            result = {"full_name": "azizilab/code", "default_branch": "feature/main"}
+        if request.url.host == "raw.githubusercontent.com":
+            assert "Authorization" not in request.headers
+            prefix = f"/{repo}/" + "a" * 40 + "/"
+            assert path.startswith(prefix)
+            content = files[path.removeprefix(prefix)]
+            return httpx.Response(200, content=b"!" + content[1:] if corrupt else content)
+        if path.endswith("/repos/" + repo):
+            result = {"full_name": repo, "default_branch": "feature/main", "private": private}
         elif "/commits/" in path:
             result = {"sha": "a" * 40}
         elif "/git/trees/" in path:
@@ -172,6 +184,54 @@ def fixture_github(files, *, extra=(), truncated=False):
         return httpx.Response(200, json=result)
 
     return httpx.AsyncClient(transport=httpx.MockTransport(respond)), calls
+
+
+async def test_approved_public_reference_needs_no_app_credentials_and_is_commit_pinned(
+    tmp_path, monkeypatch
+):
+    repo = "khushidesai1/nympheas-temp"
+    client, calls = fixture_github({"src/qc.py": b"def qc(): pass\n"}, repo=repo)
+    monkeypatch.setattr(refs.httpx, "AsyncClient", lambda **kwargs: client)
+    token = AsyncMock(side_effect=AssertionError("Public reads must not mint credentials"))
+    monkeypatch.setattr(refs, "installation_token", token)
+    snapshot = await refs.fetch(Settings(_env_file=None), repo)
+    assert snapshot.repo == repo and snapshot.files == {"src/qc.py": "def qc(): pass\n"}
+    assert not any("/git/blobs/" in path for path in calls)
+    assert len(calls) == 4  # Three REST reads plus one bounded public raw download.
+    token.assert_not_called()
+    refs.materialize(tmp_path, [snapshot])
+    pin = (tmp_path / "inputs/repos/nympheas-temp/.pin").read_text()
+    assert pin == repo + "@" + "a" * 40 + "\n"
+    assert ProjectEntry(
+        name="test", owner="a@example.com", data_uri="gs://lab/data", reference_repos={repo}
+    ).reference_repos == {repo}
+
+
+@pytest.mark.parametrize("private", [True, None])
+async def test_public_reference_fails_closed_if_visibility_changes(private):
+    repo = "khushidesai1/nympheas-temp"
+    client, calls = fixture_github({"src/qc.py": b"private content"}, repo=repo, private=private)
+    async with client:
+        with pytest.raises(ValueError, match="no longer public"):
+            await refs.read_repo(client, repo)
+    assert calls == ["/repos/" + repo]
+
+
+async def test_public_raw_content_must_match_pinned_git_blob():
+    repo = "khushidesai1/nympheas-temp"
+    client, _ = fixture_github({"qc.py": b"def qc(): pass\n"}, repo=repo, corrupt=True)
+    async with client:
+        snapshot = await refs.read_repo(client, repo)
+    assert snapshot.files == {} and snapshot.skipped == 1
+
+
+@pytest.mark.parametrize("repo", ["khushidesai1/another-repo", "other/nympheas-temp"])
+async def test_public_approval_does_not_grant_other_personal_repositories(repo, monkeypatch):
+    token = AsyncMock()
+    monkeypatch.setattr(refs, "installation_token", token)
+    with pytest.raises(ValueError, match="belong"):
+        await refs.fetch(Settings(_env_file=None), repo)
+    token.assert_not_called()
 
 
 async def test_pinned_snapshot_skips_unsafe_binary_and_oversize(tmp_path):

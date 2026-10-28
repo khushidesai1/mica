@@ -45,11 +45,14 @@ SUFFIXES = {
     ".cfg",
 }
 NAMES = {"Dockerfile", "Makefile", "Snakefile", "LICENSE"}
+# Operator-approved public references outside the GitHub App's organization.
+# Exact repository names only; these never receive an installation credential.
+PUBLIC_REPOS = frozenset({"khushidesai1/nympheas-temp"})
 
 
 async def shared_repos(repository: Repository, settings: Settings) -> set[str]:
     """Discover lab-wide references from the existing App catalog, without credentials."""
-    names = set()
+    names = set(PUBLIC_REPOS)
     prefix = "https://github.com/"
     for tool in await repository.list_tools():
         if re.fullmatch(r"github-[0-9]+", tool.id) and tool.source_url.startswith(prefix):
@@ -68,7 +71,7 @@ def valid_repo(value: str, org: str = "azizilab") -> str:
     value = value.lower()
     if not re.fullmatch(r"[a-z0-9-]+/[a-z0-9][a-z0-9_.-]{0,99}", value):
         raise ValueError("Use a repository name such as azizilab/my-repo.")
-    if value.split("/")[0] != org.lower():
+    if value.split("/")[0] != org.lower() and value not in PUBLIC_REPOS:
         raise ValueError(f"Reference repositories must belong to {org}.")
     return value
 
@@ -171,14 +174,17 @@ async def installation_token(settings: Settings, *, repositories: list[str] | No
 
 async def fetch(settings: Settings, repo: str) -> RepoSnapshot:
     repo = valid_repo(repo, settings.reference_github_org)
+    if repo in PUBLIC_REPOS:
+        async with httpx.AsyncClient(timeout=25) as client:
+            return await read_repo(client, repo)
     token = await installation_token(settings, repositories=[repo.split("/")[1]])
     async with project_memory.client_for(token) as client:
         return await read_repo(client, repo)
 
 
-async def get_json(
+async def get_bytes(
     client: httpx.AsyncClient, url: str, limit: int = 8 * 1024 * 1024, **kwargs: Any
-) -> Any:
+) -> bytes:
     # Git trees may be huge; bound downloaded bytes before JSON decoding too.
     async with client.stream("GET", url, **kwargs) as response:
         response.raise_for_status()
@@ -187,7 +193,13 @@ async def get_json(
             data.extend(chunk)
             if len(data) > limit:
                 raise ValueError("GitHub response exceeds reference snapshot limit")
-    return json.loads(data)
+    return bytes(data)
+
+
+async def get_json(
+    client: httpx.AsyncClient, url: str, limit: int = 8 * 1024 * 1024, **kwargs: Any
+) -> Any:
+    return json.loads(await get_bytes(client, url, limit, **kwargs))
 
 
 async def read_repo(client: httpx.AsyncClient, full_name: str) -> RepoSnapshot:
@@ -196,6 +208,8 @@ async def read_repo(client: httpx.AsyncClient, full_name: str) -> RepoSnapshot:
     info = await get_json(client, base)
     if str(info.get("full_name", "")).lower() != repo:
         raise ValueError("Repository identity changed")
+    if repo in PUBLIC_REPOS and info.get("private") is not False:
+        raise ValueError("Approved public reference is no longer public")
     commit = await get_json(client, base + "/commits/" + quote(info["default_branch"], safe=""))
     snapshot = RepoSnapshot(repo=repo, commit=commit["sha"])
     tree = await get_json(client, base + "/git/trees/" + snapshot.commit, params={"recursive": "1"})
@@ -219,11 +233,24 @@ async def read_repo(client: httpx.AsyncClient, full_name: str) -> RepoSnapshot:
         sha = entry.get("sha", "")
         if not re.fullmatch(r"[a-f0-9]{40}", sha):
             raise ValueError("Invalid Git blob identity")
-        blob = await get_json(client, base + "/git/blobs/" + sha, limit=MAX_FILE * 2)
+        blob = (
+            {}
+            if repo in PUBLIC_REPOS
+            else await get_json(client, base + "/git/blobs/" + sha, limit=MAX_FILE * 2)
+        )
         try:
-            if blob.get("encoding") != "base64" or blob.get("sha") != sha:
-                raise ValueError("Invalid Git blob")
-            raw = base64.b64decode(blob["content"])
+            if repo in PUBLIC_REPOS:
+                # Commit-pinned public raw reads avoid one REST API request per file.
+                raw = await get_bytes(
+                    client,
+                    f"https://raw.githubusercontent.com/{repo}/{snapshot.commit}/"
+                    + quote(path, safe="/"),
+                    limit=MAX_FILE,
+                )
+            else:
+                if blob.get("encoding") != "base64" or blob.get("sha") != sha:
+                    raise ValueError("Invalid Git blob")
+                raw = base64.b64decode(blob["content"])
             if (
                 len(raw) != size
                 or hashlib.sha1(b"blob " + str(len(raw)).encode() + b"\0" + raw).hexdigest() != sha
