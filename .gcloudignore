@@ -19,10 +19,13 @@
 !src/**
 !tools/
 !tools/**
+!skills/
+!skills/**
 !templates/
 !templates/**
 !deploy/
 !deploy/requirements-bot.txt
+!deploy/requirements-conversation.txt
 !deploy/requirements-email.txt
 !deploy/requirements-transfer.txt
 !deploy/cellpose-models.json
