@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     loading_emoji: str = ":hourglass_flowing_sand:"  # AGENT_LOADING_EMOJI; custom emoji supported.
     amendments: bool = False
     failure_channel: str = Field(default="", pattern=r"^(?:[CG][A-Z0-9]+)?$")
+    failure_operator_ids: str = ""  # Explicit team:user IDs allowed to resolve incident alerts.
     reference_github_org: Literal["azizilab"] = "azizilab"
     reference_github_app_id: str = Field(default="", pattern=r"^[0-9]*$")
     reference_github_installation_id: str = Field(default="", pattern=r"^[0-9]*$")

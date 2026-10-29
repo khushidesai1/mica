@@ -331,23 +331,52 @@ class FirestoreRepository:
                 if snapshot.exists:
                     old = Incident.model_validate(snapshot.to_dict())
             row = failures.observed(old, observation, now, episode)
-            transaction.set(collection.document(row.id), row.model_dump())
+            transaction.set(collection.document(row.id), failures.document(row))
             transaction.set(group, {"incident": row.id, "expires_at": row.expires_at})
             transaction.set(receipt, {"incident": row.id, "expires_at": now + failures.RETENTION})
             return row
 
         return cast(Incident, await record(self.client.transaction()))
 
+    async def get_failure(self, key: str) -> Incident | None:
+        snapshot = await self.client.collection("failures").document(key).get()
+        return Incident.model_validate(snapshot.to_dict()) if snapshot.exists else None
+
+    async def resolve_failure(
+        self, key: str, count: int, actor: str, channel: str, slack_ts: str, now: float
+    ) -> Incident | None:
+        from google.cloud import firestore
+
+        reference = self.client.collection("failures").document(key)
+
+        @firestore.async_transactional
+        async def resolve(transaction):  # type: ignore[no-untyped-def]
+            snapshot = await reference.get(transaction=transaction)
+            if not snapshot.exists:
+                return None
+            row = failures.resolved(
+                Incident.model_validate(snapshot.to_dict()), count, actor, channel, slack_ts, now
+            )
+            if row:
+                transaction.set(reference, failures.document(row))
+            return row
+
+        return cast(Incident | None, await resolve(self.client.transaction()))
+
     async def due_failures(self, now: float, limit: int = 20) -> list[Incident]:
         from google.cloud.firestore_v1.base_query import FieldFilter
 
-        query = (
-            self.client.collection("failures")
-            .where(filter=FieldFilter("next_attempt", "<=", now))  # type: ignore[no-untyped-call]
-            .order_by("next_attempt")
-            .limit(limit)
-        )
-        return [Incident.model_validate(doc.to_dict()) async for doc in query.stream()]
+        rows = []
+        # The third bounded query includes older documents without queue projections.
+        for field in ("request_due", "background_due", "next_attempt"):
+            query = (
+                self.client.collection("failures")
+                .where(filter=FieldFilter(field, "<=", now))  # type: ignore[no-untyped-call]
+                .order_by(field)
+                .limit(limit)
+            )
+            rows.extend([Incident.model_validate(doc.to_dict()) async for doc in query.stream()])
+        return failures.prioritized(rows, now, limit)
 
     async def claim_failure(self, key: str, channel: str, now: float) -> Incident | None:
         from google.cloud import firestore
@@ -362,7 +391,7 @@ class FirestoreRepository:
                 return None
             row = failures.claimed(Incident.model_validate(snapshot.to_dict()), channel, token, now)
             if row:
-                transaction.set(reference, row.model_dump())
+                transaction.set(reference, failures.document(row))
             return row
 
         return cast(Incident | None, await claim(self.client.transaction()))
@@ -378,6 +407,8 @@ class FirestoreRepository:
         retry_after: float = 0,
         uncertain: bool = False,
         request_status: str = "",
+        sent_resolved_count: int = 0,
+        card_version: int = 0,
     ) -> None:
         from google.cloud import firestore
 
@@ -397,9 +428,11 @@ class FirestoreRepository:
                 retry_after=retry_after,
                 uncertain=uncertain,
                 request_status=request_status,
+                sent_resolved_count=sent_resolved_count,
+                card_version=card_version,
             )
             if row:
-                transaction.set(reference, row.model_dump())
+                transaction.set(reference, failures.document(row))
 
         await finish(self.client.transaction())
 

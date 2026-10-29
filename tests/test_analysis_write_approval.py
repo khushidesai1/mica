@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from fastapi import BackgroundTasks
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_write_flow import allow, writable  # noqa: F401
 
@@ -248,11 +249,11 @@ async def test_signed_slack_action_routes_to_run_confirmation(replacing, monkeyp
         receive=receive,
     )
     if signed:
-        assert await slack.slack_actions(request) == {}
+        assert await slack.slack_actions(request, BackgroundTasks()) == {}
         assert write_approval.load(replacing.store, event_id)[0].status == "approved"
     else:
         with pytest.raises(HTTPException) as error:
-            await slack.slack_actions(request)
+            await slack.slack_actions(request, BackgroundTasks())
         assert error.value.status_code == 401
         assert write_approval.load(replacing.store, event_id)[0].status == "pending"
     replacing.test_client.create_job.assert_not_called()  # Only the scheduled poll may launch.
