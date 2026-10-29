@@ -764,6 +764,7 @@ class Transfers:
                 "project_id": p["project"],
                 "principal": p["requested_by"],
                 "surface": p.get("surface", ""),
+                "payload": {"event": {"channel": p.get("channel", ""), "ts": p.get("thread", "")}},
             },
             unit=unit or p.get("job_run", str(p.get("attempt", 0))),
         )

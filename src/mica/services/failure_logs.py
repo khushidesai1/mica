@@ -62,6 +62,7 @@ def parse(body: bytes, *, project: str, service: str) -> Observation | None:
         status = 0
         route = "platform"
         cause = "infra_platform_error"
+        event_id = ""
         if log_name == prefix + "requests":
             request = entry["httpRequest"]
             status = request["status"]
@@ -79,6 +80,13 @@ def parse(body: bytes, *, project: str, service: str) -> Observation | None:
                 if route == "/api/v1/internal/tools/catalog"
                 else "infra_http_error"
             )
+            # This opaque internal key is useful only after a repository lookup. Never
+            # preserve arbitrary path segments, URL queries, or external event IDs.
+            match = re.fullmatch(
+                r"/api/v1/internal/slack-analysis/process/([a-f0-9]{32})/[0-9]+", path
+            )
+            if match:
+                event_id = match[1]
         elif entry.get("severity") not in {"ERROR", "CRITICAL", "ALERT", "EMERGENCY"}:
             return None
         # Trusted platform metadata only, with bounds even for authenticated publisher mistakes.
@@ -95,7 +103,7 @@ def parse(body: bytes, *, project: str, service: str) -> Observation | None:
             route=route,
             http_status=status,
             revision=revision,
-            event_id=digest(log_name, identity_kind, identity)[:32],
+            event_id=event_id,
         )
     except (ValueError, TypeError, KeyError, AttributeError, binascii.Error):
         return None

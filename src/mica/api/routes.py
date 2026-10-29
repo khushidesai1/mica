@@ -415,6 +415,11 @@ async def ingest_failure_log(
         return {"status": "ignored"}
     try:
         async with asyncio.timeout(3):
+            from mica.agents.analysis.observability import correlate_platform
+
+            observation = await correlate_platform(
+                services.repository, services.settings, observation
+            )
             await services.repository.record_failure(observation, time.time())
     except Exception:
         # Pub/Sub must retry: unlike application best-effort reporting, this is the sole intake.

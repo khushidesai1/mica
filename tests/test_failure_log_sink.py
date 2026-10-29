@@ -229,3 +229,100 @@ def test_catalog_failure_names_the_background_job_without_raw_log_content():
     )
     assert "scheduled GitHub tool-catalog refresh" in summary
     assert "unmatched" not in summary and "secret" not in summary
+
+
+def request_envelope(event="a" * 32, **changes):
+    return envelope(
+        httpRequest={
+            "status": 500,
+            "requestUrl": f"https://mica.example/api/v1/internal/slack-analysis/process/{event}/3",
+        },
+        **changes,
+    )
+
+
+@pytest.mark.parametrize("platform_first", [True, False])
+async def test_request_platform_and_semantic_reports_share_one_incident(
+    repository, settings, platform_first
+):
+    event = "a" * 32
+    record = {
+        "principal": "alice@example.com",
+        "project_id": "p1",
+        "surface": "slack",
+        "payload": {"event": {"channel": "D123", "ts": "1234.56", "text": "private input"}},
+    }
+    await repository.set_connector_state(f"claude-event:{event}", record)
+    platform = await observability.correlate_platform(
+        repository, settings, parse(request_envelope())
+    )
+
+    async def semantic():
+        await observability.record_failure(
+            repository,
+            settings,
+            "compute_control_failed",
+            occurrence="control",
+            event_id=event,
+            record=record,
+        )
+
+    if platform_first:
+        await repository.record_failure(platform, 100)
+        await semantic()
+    else:
+        await semantic()
+        await repository.record_failure(platform, 100)
+    await repository.record_failure(platform, 101)  # Pub/Sub replay
+    assert len(repository.failures) == 1
+    row = next(iter(repository.failures.values()))
+    assert row.count == 2
+    assert row.observation.cause == "compute_control_failed"
+    assert set(row.causes) == {"compute_control_failed", "infra_http_error"}
+    assert row.observation.http_status == 500 and row.observation.actor == "alice@example.com"
+    assert row.observation.slack_channel == "D123"
+    summary = observability.summarize(row)
+    assert "Mica request issue" in summary and "private input" not in row.model_dump_json()
+
+
+@pytest.mark.parametrize("event", ["not-a-request", "A" * 32, "a" * 31, "a" * 33])
+def test_platform_only_preserves_valid_internal_request_keys(event):
+    assert parse(request_envelope(event)).event_id == ""
+
+
+async def test_unknown_receipt_remains_infrastructure_health(repository, settings):
+    parsed = parse(request_envelope())
+    assert parsed.event_id == "a" * 32
+    result = await observability.correlate_platform(repository, settings, parsed)
+    assert not result.request_scoped and not result.event_id
+    row = await repository.record_failure(result, 100)
+    summary = observability.summarize(row)
+    assert "infrastructure health alert" in summary and "No specific user request" in summary
+
+
+async def test_rollout_preserves_old_platform_receipts_without_reposting(repository, settings):
+    parsed = parse(request_envelope())
+    old = await repository.record_failure(parsed, 100)
+    await repository.set_connector_state(
+        f"claude-event:{parsed.event_id}", {"surface": "slack", "status": "complete"}
+    )
+    correlated = await observability.correlate_platform(repository, settings, parsed)
+    assert correlated.fingerprint != parsed.fingerprint
+    assert correlated.receipt == parsed.receipt
+    replay = await repository.record_failure(correlated, 101)
+    assert replay.id == old.id and replay.count == 1 and len(repository.failures) == 1
+
+
+async def test_receipt_lookup_outage_retries_intake_instead_of_losing_correlation(
+    repository, settings, monkeypatch
+):
+    settings.gcp_project = "test"
+    monkeypatch.setenv("K_SERVICE", "mica")
+    monkeypatch.setattr(repository, "get_connector_state", AsyncMock(side_effect=TimeoutError()))
+    with pytest.raises(HTTPException) as error:
+        await invoke(
+            json.dumps(request_envelope()).encode(),
+            SimpleNamespace(settings=settings, repository=repository),
+        )
+    assert error.value.status_code == 503
+    assert not repository.failures
