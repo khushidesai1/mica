@@ -102,8 +102,17 @@ def app_jwt(key: str, app_id: str) -> str:
     )
 
 
-async def fetch(settings: Settings, repo: str) -> RepoSnapshot:
-    repo = valid_repo(repo, settings.reference_github_org)
+async def installation_token(settings: Settings, *, repositories: list[str] | None) -> str:
+    """Mint read-only access within the operator-approved installation.
+
+    Reference snapshots must pass one repository. Only the scheduled catalog requests
+    the full installation selection with explicit None; project input cannot expand it.
+    """
+    if repositories is not None and (
+        not repositories
+        or any(not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", name) for name in repositories)
+    ):
+        raise ValueError("Invalid GitHub repository selection")
     if not (
         settings.reference_github_app_id
         and settings.reference_github_installation_id
@@ -128,15 +137,23 @@ async def fetch(settings: Settings, repo: str) -> RepoSnapshot:
             != settings.reference_github_org.lower()
         ):
             raise ValueError("GitHub installation does not match the configured organization")
+        body: dict[str, Any] = {"permissions": {"contents": "read"}}
+        if repositories is not None:
+            body["repositories"] = repositories
         response = await client.post(
             "https://api.github.com/app/installations/"
             + settings.reference_github_installation_id
             + "/access_tokens",
-            json={"repositories": [repo.split("/")[1]], "permissions": {"contents": "read"}},
+            json=body,
         )
         response.raise_for_status()
-        installation_token = response.json()["token"]
-    async with project_memory.client_for(installation_token) as client:
+        return str(response.json()["token"])
+
+
+async def fetch(settings: Settings, repo: str) -> RepoSnapshot:
+    repo = valid_repo(repo, settings.reference_github_org)
+    token = await installation_token(settings, repositories=[repo.split("/")[1]])
+    async with project_memory.client_for(token) as client:
         return await read_repo(client, repo)
 
 
