@@ -157,6 +157,8 @@ async def test_gpu_requires_requester_confirmation_and_duplicate_cannot_restart(
     gpu.test_client.create_job.assert_not_called()
     assert "slot" not in record
     assert "NVIDIA L4" in gpu.test_slack.chat_update.call_args.kwargs["text"]
+    buttons = gpu.test_slack.chat_update.call_args.kwargs["blocks"][-1]["elements"]
+    assert buttons[0]["style"] == "primary" and "style" not in buttons[1]
     await compute_approval.handle(gpu, gpu.store, click(event_id, record))
     assert await gpu.process(event_id, record["tick"]) == "running"
     await compute_approval.handle(gpu, gpu.store, click(event_id, record))

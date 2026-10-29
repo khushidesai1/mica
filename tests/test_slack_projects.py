@@ -665,6 +665,8 @@ def test_slack_compute_approval_button_confirms_and_enqueues(tmp_path, monkeypat
         updated = asyncio.run(repository.get_task(task.id))
 
     assert approve["text"]["text"] == "Approve resource usage"  # type: ignore[index]
+    assert approve["style"] == "primary"  # type: ignore[index]
+    assert approve["confirm"]["style"] == "primary"  # type: ignore[index]
     assert approve["confirm"]["confirm"]["text"] == "Approve"  # type: ignore[index]
     assert response.status_code == 200
     assert response.json() == {"ok": True}

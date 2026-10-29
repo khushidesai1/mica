@@ -236,6 +236,7 @@ async def ready(
                             "text": {"type": "plain_text", "text": label},
                             "action_id": PREFIX + action,
                             "value": event_id,
+                            **({"style": "primary"} if action == "approve" else {}),
                         }
                         for action, label in [("approve", "Approve GPU run"), ("cancel", "Cancel")]
                     ],

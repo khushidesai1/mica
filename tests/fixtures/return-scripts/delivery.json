@@ -5,24 +5,9 @@
         {
           "tasks": [
             {
-              "details": {
-                "elements": [
-                  {
-                    "elements": [
-                      {
-                        "text": "Preparing your request.",
-                        "type": "text"
-                      }
-                    ],
-                    "type": "rich_text_section"
-                  }
-                ],
-                "type": "rich_text"
-              },
-              "hide_title": true,
               "status": "in_progress",
               "task_id": "mica-activity",
-              "title": "Activity summary"
+              "title": "Preparing your request"
             }
           ],
           "title": "Mica is working",

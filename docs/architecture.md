@@ -149,6 +149,10 @@ Natural-language cancellation is checked before queueing only when work is alrea
 The old router remains available to other principals during rollout.
 Direct answers and worker answers use the same Markdown-to-Slack conversion, preserving code
 and formatting headings, bold text and links. Saved conversation text and email stay unchanged.
+Slack approvals use the green primary action style. Progress keeps one compact expandable
+working/thinking status with native task rows, public summaries and long-run check-ins. Completed
+tasks retain their completion state; interrupted tasks and terminal failures keep an error
+indicator. Service-side failed/cancelled messages and the compatibility fallback use a red flag.
 
 Agent rules live where they are used: code enforces access, sandbox and write constraints; tool
 descriptions explain delivery and operations; a `UserPromptSubmit` hook provides current memory,

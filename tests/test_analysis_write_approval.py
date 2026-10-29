@@ -55,6 +55,8 @@ async def test_exact_requester_approval_starts_once_and_pins_manifest(replacing)
     message = replacing.test_slack.chat_update.call_args.kwargs
     assert "nested/" in message["text"] and "folder already has files" in message["text"]
     assert len(message["blocks"][-1]["elements"]) == 2
+    buttons = message["blocks"][-1]["elements"]
+    assert buttons[0]["style"] == "primary" and "style" not in buttons[1]
     action = click(event_id, record)
     await write_approval.handle(replacing, replacing.store, action)
     assert await replacing.process(event_id, record["tick"]) == "running"

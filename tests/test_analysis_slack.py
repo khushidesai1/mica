@@ -18,6 +18,7 @@ from mica.agents.analysis.sessions import Sessions
 from mica.agents.analysis.slack_app import SlackAgent
 from mica.agents.analysis.slack_format import (
     activity_blocks,
+    activity_fallback,
     chunks,
     status_blocks,
     to_mrkdwn,
@@ -145,7 +146,7 @@ def test_status_uses_compact_native_disclosure_and_bounded_plain_text():
     assert block["type"] == "plan" and block["title"] == "Mica is working"
     assert "container" not in repr(block) and "rich_text_title" not in block
     task = block["tasks"][0]
-    assert task["hide_title"] and task["status"] == "in_progress"
+    assert task["status"] == "in_progress"
     text = task["details"]["elements"][0]["elements"][0]
     assert text["type"] == "text" and text["text"].startswith("Working: <!channel>")
     assert len(text["text"]) == len("Working: ") + 150
@@ -397,11 +398,24 @@ def test_activity_is_bounded_keeps_active_task_and_does_not_invent_success():
     assert "check 0" not in text and "check 2" not in text
     final = activity_blocks(tasks, finished=True, error="interrupted")[0]
     assert final["title"] == "Mica stopped"
-    assert len(final["tasks"]) == 1 and final["tasks"][0]["hide_title"]
-    assert "• Done: <!channel> check 3" in repr(final)
-    assert "• Stopped: <!channel> check 1" in repr(final)
+    assert [(task["title"], task["status"]) for task in final["tasks"]] == [
+        ("<!channel> check 3", "complete"), ("<!channel> check 1", "error")
+    ]
+    assert all("hide_title" not in task for task in final["tasks"])
+    assert "• Done:" not in repr(final) and "• Working:" not in repr(final)
     assert "✓" not in repr(final) and "container" not in repr(final)
     assert "not confirmed" in repr(final)
+    fallback = repr(activity_fallback([final]))
+    assert "🚩 Mica stopped" in fallback and "Stopped: <!channel> check 1" in fallback
+
+
+def test_terminal_failure_keeps_completed_task_and_explicit_error_row():
+    task = TaskProgress("one", "Check counts", "Checking data…", status="complete")
+    block = activity_blocks([task], finished=True, error="File delivery failed")[0]
+    assert [(row["title"], row["status"]) for row in block["tasks"]] == [
+        ("Check counts", "complete"), ("Stopped", "error")
+    ]
+    assert "File delivery failed" in repr(block)
 
 
 @pytest.mark.parametrize("unsupported", [set(), {"plan"}])
@@ -433,10 +447,14 @@ async def test_activity_compatibility_preserves_details_and_completion(
     await send(bot, event("check"))
     assert sum(bool(b) and b[0]["type"] == "plan" for b in seen) == (1 if unsupported else 4)
     final = seen[-2]  # Last activity update, before the final answer.
-    assert "Mica finished" in repr(final) and "• Done: Check counts" in repr(final)
+    assert "Mica finished" in repr(final) and "Check counts" in repr(final)
     assert "✓" not in repr(final)
     if unsupported:
         assert final[0]["type"] == "context"  # Muted fallback, never a bordered card.
+    else:
+        assert final[0]["tasks"] == [
+            {"task_id": "one", "title": "Check counts", "status": "complete"}
+        ]
     assert bot.client.chat_postMessage.call_args.kwargs["text"] == "Done."
 
 
@@ -493,6 +511,7 @@ async def test_unexpected_run_failure_stops_progress(bot):
         await send(bot, event("check", _notice_ts="9.0"))
     plan = bot.client.chat_update.call_args.kwargs["blocks"][0]
     assert plan["title"] == "Mica stopped"
+    assert plan["tasks"][0]["status"] == "error"
     assert "not confirmed" in repr(plan)
 
 

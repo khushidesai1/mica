@@ -58,6 +58,23 @@ async def test_partial_slack_reply_resumes_confirmed_parts_after_reload(bridge):
     assert bridge.test_slack.chat_postMessage.await_count == 3
 
 
+@pytest.mark.parametrize("phase", ["failed", "cancelled"])
+async def test_failed_or_stopped_reply_has_red_flag_without_changing_saved_text(bridge, phase):
+    text = "Stopped before finishing. " + "Saved progress. " * 260
+    record = {"payload": payload(), "notice_ts": "9.0", "status": "pending"}
+    await bridge.notify("stopped", record, phase, text)
+    delivered = [bridge.test_slack.chat_update.call_args.kwargs["text"]] + [
+        call.kwargs["text"] for call in bridge.test_slack.chat_postMessage.call_args_list
+    ]
+    assert delivered == list(chunks("🚩 " + text))
+    assert record["notice_text"] == record["terminal_reply"] == text
+    updates = bridge.test_slack.chat_update.await_count
+    posts = bridge.test_slack.chat_postMessage.await_count
+    await bridge.notify("stopped", record, phase, text)
+    assert bridge.test_slack.chat_update.await_count == updates
+    assert bridge.test_slack.chat_postMessage.await_count == posts
+
+
 async def test_long_direct_markdown_reply_is_converted_before_chunking(chat):
     text = "**QC workflow**\n" + "- Compare counts & genes across slides.\n" * 150
     chat.decision.return_value = direct.Decision(route="reply", reply=text)

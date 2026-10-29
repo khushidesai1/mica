@@ -189,6 +189,7 @@ async def propose(
                         "text": {"type": "plain_text", "text": label},
                         "action_id": PREFIX + action,
                         "value": event_id,
+                        **({"style": "primary"} if action == "confirm" else {}),
                     }
                     for action, label in [("confirm", "Confirm"), ("cancel", "Cancel")]
                 ],

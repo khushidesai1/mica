@@ -71,8 +71,8 @@ def check(source: Path, mode: str) -> None:
     activity = activity_blocks(
         [TaskProgress("job", "Analysis", "Running")], check_in="Run elapsed: 1d 3h 0m"
     )[0]
-    assert activity["type"] == "plan" and activity["tasks"][0]["hide_title"]
-    assert "• Working: Analysis" in str(activity["tasks"])
+    assert activity["type"] == "plan" and activity["tasks"][0]["title"] == "Analysis"
+    assert activity["tasks"][0]["status"] == "in_progress"
     assert "Run elapsed: 1d 3h 0m" in str(activity["tasks"])
     assert {ATOMX_TRANSFER_ID, SPATIAL_ANALYSIS_ID} <= {t.id for t in BOOTSTRAP_TOOLS}
     print("LONG_RUN_PROGRESS_AND_TOOL_CATALOG_VERIFIED")

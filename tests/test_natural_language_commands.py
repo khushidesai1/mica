@@ -159,6 +159,8 @@ async def proposal(chat, operation="rename", **fields):
 
 async def test_mutation_requires_confirmation_pins_target_and_replays_once(chat):
     eid = await proposal(chat, target="liver-renamed")
+    buttons = chat.test_slack.chat_update.call_args.kwargs["blocks"][-1]["elements"]
+    assert buttons[0]["style"] == "primary" and "style" not in buttons[1]
     assert Registry(chat.store).load().projects[chat.pid].name == "liver"
     await command_approval.handle(chat, chat.store, action(eid))
     doc = Registry(chat.store).load()

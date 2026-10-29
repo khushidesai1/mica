@@ -23,7 +23,7 @@ def activity_blocks(
     headline: str = "Mica is working",
     summary: str = "",
 ) -> list[dict[str, Any]]:
-    """One compact native disclosure; only public activity summaries go inside."""
+    """One compact disclosure with native task rows and public activity details."""
     active = next((task for task in reversed(tasks) if task.status == "in_progress"), None)
     thinking = headline in {"Thinking…", "Mica is thinking"}
     title = "Mica is thinking" if thinking else "Mica is working"
@@ -39,37 +39,39 @@ def activity_blocks(
         lines.append(
             "Thinking: " + ("Reviewing the latest results." if tasks else "Reviewing your request.")
         )
-    for task in visible:
-        label = " ".join(task.title.split())[:150] or "Working on the request"
-        if task.status == "complete":
-            lines.append(f"• Done: {label}")
-        elif task.status == "error" or finished:
-            lines.append(f"• Stopped: {label} — completion was not confirmed.")
-        else:
-            lines.append(f"• Working: {label}")
     if summary and not thinking and not active:
         lines.append(
             ("Last activity: " if finished else "Working: ") + " ".join(summary.split())[:150]
         )
-    if not lines:
-        lines.append("Finished." if finished else "Preparing your request.")
     if check_in and not finished:
         lines.append(check_in[:1500])
-    return [
-        {
-            "type": "plan",
-            "title": title,
-            "tasks": [
-                {
-                    "task_id": "mica-activity",
-                    "title": "Activity summary",
-                    "hide_title": True,
-                    "status": "error" if error else "complete" if finished else "in_progress",
-                    "details": _rich_text("\n".join(lines)),
-                }
-            ],
+    cards: list[dict[str, Any]] = []
+    for task in visible:
+        card: dict[str, Any] = {
+            "task_id": task.task_id,
+            "title": " ".join(task.title.split())[:150] or "Working on the request",
+            "status": "error" if finished and task.status == "in_progress" else task.status,
         }
-    ]
+        if card["status"] == "error":
+            card["details"] = _rich_text("Completion was not confirmed.")
+        cards.append(card)
+    if error and cards and not any(card["status"] == "error" for card in cards):
+        # A delivery/turn failure does not invalidate tasks already confirmed complete.
+        cards = cards[-1:] + [
+            {"task_id": "mica-terminal-error", "title": "Stopped", "status": "error"}
+        ]
+    if not cards:
+        cards.append({
+            "task_id": "mica-activity",
+            "title": "Stopped" if error else "Finished" if finished else "Preparing your request",
+            "status": "error" if error else "complete" if finished else "in_progress",
+        })
+    if lines:
+        details = cards[-1].get("details")
+        if details:
+            lines.insert(0, details["elements"][0]["elements"][0]["text"])
+        cards[-1]["details"] = _rich_text("\n".join(lines))
+    return [{"type": "plan", "title": title, "tasks": cards}]
 
 
 def activity_fallback(blocks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -79,14 +81,20 @@ def activity_fallback(blocks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
         if block.get("type") != "plan":
             result.append(block)
             continue
-        details = block["tasks"][0]["details"]["elements"][0]["elements"][0]["text"]
+        failed = any(task["status"] == "error" for task in block["tasks"])
+        lines = [("🚩 " if failed else "") + block["title"]]
+        for task in block["tasks"]:
+            label = {"complete": "Done", "error": "Stopped"}.get(task["status"], "Working")
+            lines.append(f"{label}: {task['title']}")
+            if details := task.get("details"):
+                lines.append(details["elements"][0]["elements"][0]["text"])
         result.append(
             {
                 "type": "context",
                 "elements": [
                     {
                         "type": "plain_text",
-                        "text": (block["title"] + "\n" + details)[:3000],
+                        "text": "\n".join(lines)[:3000],
                         "emoji": False,
                     }
                 ],
