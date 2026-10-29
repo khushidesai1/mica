@@ -1,6 +1,8 @@
 .env
 .env.*
 !.env.example
+# Local credentials and private keys.
+/keys/
 .venv/
 .venv-slack/
 .local-storage/

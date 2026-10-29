@@ -250,6 +250,19 @@ def build_options(
             capture.after(str(event.get("tool_use_id") or tool_id or ""), dict(event))
         return {}
 
+    async def amendment_feedback(
+        event: HookInput, _tool_id: str | None, _context: HookContext
+    ) -> HookJSONOutput:
+        if compute and compute.poll_addenda:
+            # Optional context failures leave the message queued as a normal follow-up.
+            with suppress(Exception):
+                text = await compute.poll_addenda()
+                if text:
+                    return cast(HookJSONOutput, {"hookSpecificOutput": {
+                        "hookEventName": event["hook_event_name"], "additionalContext": text,
+                    }})
+        return {}
+
     async def resource_feedback(
         event: HookInput,
         tool_id: str | None,
@@ -350,14 +363,18 @@ def build_options(
                             matcher="Bash",
                             hooks=([resource_feedback] if compute else [])
                             + ([captured_script] if capture else []),
-                        )
+                        ),
+                        *([HookMatcher(hooks=[amendment_feedback])]
+                          if compute and compute.poll_addenda else []),
                     ],
                     "PostToolUseFailure": [
                         HookMatcher(
                             matcher="Bash",
                             hooks=([resource_feedback] if compute else [])
                             + ([captured_script] if capture else []),
-                        )
+                        ),
+                        *([HookMatcher(hooks=[amendment_feedback])]
+                          if compute and compute.poll_addenda else []),
                     ],
                 }
                 if compute or capture

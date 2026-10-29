@@ -26,6 +26,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 from mica.compat import getenv
 
 from . import (
+    amendments,
     attachments,
     memory_workspace,
     project_memory,
@@ -320,6 +321,23 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             save_stage=save_stage,
             status=compute_status,
         )
+        if request.get("amendments_enabled") and not surface.is_email(request):
+            last_addenda_poll = 0.0
+
+            async def poll_addenda() -> str:
+                nonlocal last_addenda_poll
+                now = time.monotonic()
+                if now - last_addenda_poll < 5:
+                    return ""
+                last_addenda_poll = now
+                if not await asyncio.to_thread(monitor.check):
+                    return ""
+                return await asyncio.to_thread(
+                    amendments.consume, storage, event_id,
+                    request["principal"], request["access_signature"], attempt,
+                )
+
+            compute.poll_addenda = poll_addenda
         if resume:
             compute.manifest["pending_outputs"] = resume.get("pending_outputs", [])
         compute.manifest["sdk_cost_total"] = saved.get("sdk_cost_total")

@@ -460,15 +460,26 @@ async def slack_actions(request: Request) -> dict[str, object]:
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="invalid Slack payload") from exc
 
-    from mica.agents.analysis import command_approval, transfer_interactions, write_approval
+    from mica.agents.analysis import (
+        amendments,
+        command_approval,
+        transfer_interactions,
+        write_approval,
+    )
 
-    if write_approval.is_action(payload) or command_approval.is_action(payload):
+    if (write_approval.is_action(payload) or command_approval.is_action(payload)
+            or amendments.is_action(payload)):
         from slack_sdk.web.async_client import AsyncWebClient
 
         from mica.agents.analysis.batch import BatchBridge
         from mica.agents.analysis.storage import GCSStorage
 
         try:
+            if amendments.is_action(payload):
+                return await amendments.handle(
+                    BatchBridge(services.settings, services.repository),
+                    GCSStorage(services.settings.gcs_bucket), payload,
+                )
             if command_approval.is_action(payload):
                 return await command_approval.handle(
                     BatchBridge(services.settings, services.repository),

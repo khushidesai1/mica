@@ -24,6 +24,7 @@ from mica.storage.base import Repository
 
 from . import (
     access,
+    amendments,
     memory_tasks,
     observability,
     project_memory,
@@ -258,6 +259,10 @@ class BatchBridge:
             if phase in STATUS_PHASES
             else {}
         )
+        if phase == "waiting" and text == amendments.WAITING:
+            status = {"blocks": amendments.buttons(event_id)}
+        elif record.get("amendable") and not status:
+            status = {"blocks": []}  # Remove old buttons without bypassing text chunk limits.
         # Use the same bounded messages as guide display for every response, including
         # built-in commands. Save each confirmed part so a retry resumes the delivery.
         parts = list(chunks(text)) or [""]
@@ -401,6 +406,12 @@ class BatchBridge:
                     "write_control": surface_name == "slack"
                     and write_access.is_command(event.get("text", "")),
                 }
+                if self.settings.amendments and receipt.get("previous"):
+                    previous = await self.repository.get_connector_state(
+                        f"claude-event:{receipt['previous']}"
+                    )
+                    if previous and amendments.eligible(self, receipt, previous):
+                        receipt["amendable"] = receipt["previous"]
                 # Write controls bypass running work without replacing its queue tail.
                 # A subsequent analysis must still wait for that active computation.
                 if not receipt["write_control"]:
@@ -435,6 +446,14 @@ class BatchBridge:
                 await memory_tasks.enqueue(self, event_id, record)
 
                 return str(record["status"])
+            if record.get("amendable"):
+                amendment = await amendments.reconcile(self, event_id, record)
+                if amendment != "follow":
+                    if amendment == "wait":
+                        await self.schedule(event_id, tick + 1)
+                        record["tick"] = tick + 1
+                    await self.repository.set_connector_state(key, record)
+                    return str(record["status"])
             if not record.get("failure_project_id") and not record.get("project_id"):
                 grant = await asyncio.to_thread(
                     access.resolve, self.app, self.settings, self.storage, record
@@ -543,7 +562,12 @@ class BatchBridge:
                     event_id,
                     record,
                     "waiting",
-                    "Got it, I'll start once the earlier request here finishes…",
+                    amendments.WAITING
+                    if self.settings.amendments
+                    and record.get("amendable")
+                    and not record.get("amendment_choice")
+                    and record.get("command_intent", {}).get("route") == "continue"
+                    else "Got it, I'll start once the earlier request here finishes…",
                 )
             if record["status"] not in {"complete", "failed"}:
                 await self.schedule(event_id, tick + 1)
@@ -827,6 +851,8 @@ class BatchBridge:
                         max_run_seconds=seconds,
                     )
                     record.update(slot_pool=pool, submitted=time.time())
+                    record.setdefault("amendments_enabled", self.settings.amendments
+                                      and not surface.is_email(record))
                     # Persist before submission: an HTTP retry uses the same job and slot.
                     await self.repository.set_connector_state(f"claude-event:{event_id}", record)
                     break
@@ -944,6 +970,8 @@ class BatchBridge:
                 if record["private"]
                 else "",
             }
+            if record.get("amendments_enabled"):
+                manifest["amendments_enabled"] = True
             if references["snapshots"] or references["unavailable"]:
                 manifest["reference_repos"] = references["snapshots"]
                 manifest["reference_repos_unavailable"] = references["unavailable"]

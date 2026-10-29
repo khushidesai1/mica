@@ -78,6 +78,7 @@ class RecoveryManager:
         self.sdk_cost_total: float | None = None
         self.stop_reason = ""
         self.stop = asyncio.Event()
+        self.poll_addenda: Callable[[], Awaitable[str]] | None = None
         self.persist_resources: Callable[[], Awaitable[None]] | None = None
         self.stop_tools: Callable[[], Awaitable[None]] | None = None
         self.started = time.time()
