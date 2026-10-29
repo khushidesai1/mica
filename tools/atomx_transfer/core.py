@@ -15,6 +15,8 @@ from typing import Any, BinaryIO, Protocol
 
 import google_crc32c
 
+from .errors import TransferFailure, reason
+
 MARKER = "done.txt"
 SCOPES = ("raw", "additional_files")
 
@@ -193,6 +195,7 @@ def backfill(bucket: Bucket, request: dict[str, Any]) -> dict[str, Any]:
         stamp = now()
         lease = {
             "version": 1,
+            "destinations": request.get("destinations", {}),
             "sample": sample,
             "remote_sample": "unknown",
             "export_root": "unknown",
@@ -219,7 +222,11 @@ def backfill(bucket: Bucket, request: dict[str, Any]) -> dict[str, Any]:
                 summary["skipped"].append({"sample": sample, "reason": "unfinished_transfer"})
                 continue
             if done:
-                body = done[0]
+                # Older immutable records may predate resolved destinations. Only the repaired
+                # text uses this operator-supplied layout; the JSON record stays untouched.
+                body = dict(done[0])
+                if not body.get("destinations"):
+                    body["destinations"] = request.get("destinations", {})
                 counts = recorded_counts(body)
             else:
                 counts = scope_counts(destination_objects(bucket, sample), sample, scopes)
@@ -344,7 +351,7 @@ class Transfer:
         if self.bucket.read(self.prefix + ".done.json"):
             self.bucket.delete(self.prefix + ".in_progress.json", self.generation)
             raise Busy("Sample already has a done marker; verify it instead")
-        step = "plan"
+        step = "sftp_listing"
         try:
             run, files = plan(
                 self.remote,
@@ -361,9 +368,9 @@ class Transfer:
             self.beat(force=True)
             stage = getattr(self.remote, "stage", None)
             if stage is not None:
-                step = "download"
+                step = "staging"
                 stage(files, self.beat)
-            step = "copy"
+            step = "upload"
             manifest = []
             for file in files:
                 self.beat()
@@ -415,8 +422,8 @@ class Transfer:
                 "manifest": [asdict(f) for f in manifest],
                 "source": {"n_files": len(files), "total_bytes": sum(f.size for f in files)},
             }
-            self.bucket.write(self.prefix + ".done.json", done, None)
             step = "markers"
+            self.bucket.write(self.prefix + ".done.json", done, None)
             write_markers(self.bucket, done, recorded_counts(done))
             self.bucket.delete(self.prefix + ".in_progress.json", self.generation)
             failed = self.bucket.read(self.prefix + ".failed.json")
@@ -424,15 +431,24 @@ class Transfer:
                 self.bucket.delete(self.prefix + ".failed.json", failed[1])
             self.progress({"event": "done", **done})
             return done
-        except Exception:
+        except Exception as exc:
             # Never serialize a library exception: it may contain credentials or server text.
-            failed = self.bucket.read(self.prefix + ".failed.json")
-            body = {**self.marker, "finished": now(), "step": step, "error": "transfer_failed"}
-            # Confirm ownership before publishing failure or removing the lease.
-            self.beat(force=True)
-            self.bucket.write(self.prefix + ".failed.json", body, failed[1] if failed else None)
-            self.bucket.delete(self.prefix + ".in_progress.json", self.generation)
-            raise RuntimeError(f"Transfer failed during {step}") from None
+            body = {
+                **self.marker,
+                "finished": now(),
+                "error": "transfer_failed",
+                **reason(step, exc),
+            }
+            try:
+                failed = self.bucket.read(self.prefix + ".failed.json")
+                # Confirm ownership before publishing failure or removing the lease.
+                self.beat(force=True)
+                self.bucket.write(self.prefix + ".failed.json", body, failed[1] if failed else None)
+                self.bucket.delete(self.prefix + ".in_progress.json", self.generation)
+            except Exception:
+                # The job artifact/log still carries the original bounded reason if markers fail.
+                pass
+            raise TransferFailure(step, exc) from None
 
 
 def inventory(remote: Remote, bucket: Bucket, request: dict[str, Any]) -> dict[str, Any]:

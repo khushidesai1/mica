@@ -285,15 +285,32 @@ async def test_transfer_flow_keeps_login_out_of_artifacts_and_freezes_destinatio
     )
     assert "token_hash" not in request and "grant_token" not in request
     assert request["connection_revision"] == saved["revision"]
-    item = {
-        "sample": "sample",
-        "as_sample": "sample",
-        "export_root": "/Export",
-        "run_folder": "20260101_120000_S1",
-        "n_files": 4,
-        "total_bytes": 100,
-        "plan_fingerprint": "synthetic",
-    }
+    # The real controller artifact and API bootstrap must be accepted by the installed job
+    # entrypoint. A controller-only test previously missed the obsolete worker layout check.
+    from copy import deepcopy
+
+    from test_atomx_engine import MemoryBucket, MemoryRemote
+
+    from tools.atomx_transfer import cli, worker
+
+    monkeypatch.setattr(atomx, "worker", AsyncMock(return_value=(service, pending)))
+    bootstrap = json.loads((await atomx.bootstrap(None, pending["job_run"])).body)
+    artifact, data, remote = MemoryBucket(), MemoryBucket(), MemoryRemote()
+    remote.data = {key.replace("tma37", "sample"): value for key, value in remote.data.items()}
+    remote.close = lambda: None
+    prefix = f"tasks/transfers/{pending['job_run']}/inventory"
+    artifact.put(prefix + "-request.json", json.dumps(request).encode())
+    monkeypatch.setattr(cli, "GCS", lambda _: artifact)
+    monkeypatch.setattr(worker, "GCS", lambda *_: data)
+    monkeypatch.setattr(cli, "SFTP", lambda *_: remote)
+    monkeypatch.setattr(
+        worker, "Control", lambda _: SimpleNamespace(call=lambda _: deepcopy(bootstrap))
+    )
+    assert "layout" not in request
+    assert cli.run_job("gs://artifacts/" + prefix + "-request.json") == 0
+    result = artifact.read(prefix + "-result.json")[0]
+    item = result["inventory"]["samples"][0]
+    assert item["n_files"] == 4
     await service.preview(pending, {"samples": [item]})
     preview = await service.pending(eid)
     assert "gs://lab-data/import/raw/sample/" in preview["preview_text"]

@@ -6,9 +6,10 @@ import argparse
 import getpass
 import json
 import re
-import socket
 import signal
+import socket
 import sys
+from contextlib import suppress
 from pathlib import Path
 from uuid import uuid4
 
@@ -26,8 +27,8 @@ from .core import (
     plan,
     sample_name,
 )
+from .errors import reason
 
-CONFIG_ROOT = Path("/opt/atomx/config")
 REVISION = Path("/opt/atomx/REVISION")
 
 
@@ -47,25 +48,28 @@ def run_job(uri: str) -> int:
     )
     if not match:
         raise ValueError("Invalid job request URI")
-    artifact = GCS(match[1])
     prefix = f"tasks/transfers/{match[2]}/{match[3]}"
-    loaded = artifact.read(prefix + "-request.json")
-    if loaded is None:
-        raise ValueError("Request not found")
-    request = loaded[0]
+    artifact = None
     remote = None
+    step = "config"
     try:
-        if not re.fullmatch(r"[a-zA-Z0-9_-]+\.yaml", request["layout"]):
-            raise ValueError("Invalid layout")
-        config = yaml.safe_load((CONFIG_ROOT / request["layout"]).read_text())
-        if request["bucket"] != config["bucket"] or request["run_id"] != match[2]:
-            raise ValueError("Request does not match configuration")
+        artifact = GCS(match[1])
+        loaded = artifact.read(prefix + "-request.json")
+        if loaded is None:
+            raise ValueError("Request not found")
+        request = loaded[0]
+        if request["run_id"] != match[2]:
+            raise ValueError("Request does not match job")
         from .worker import Control, MappedGCS, ScriptSFTP
 
+        step = "bootstrap"
         control = Control(match[2])
         bootstrap = control.call("bootstrap")
         if bootstrap["run_id"] != match[2] or bootstrap["kind"] != match[3]:
             raise ValueError("Bootstrap does not match job")
+        step = "config"
+        if request["bucket"] != bootstrap["destinations"]["bucket"]:
+            raise ValueError("Request does not match authorized destination")
         # Use authoritative controller fields, never mutable artifact request scope.
         for field in (
             "sample",
@@ -79,30 +83,43 @@ def run_job(uri: str) -> int:
         request["requested_by"] = request["login_saved_by"] = bootstrap["requested_by"]
         request["run_id"] = match[2]
         request["tool_version"] = "mica-atomx-v2+5d864b6cd13f1873364aa70b9ac1939f4c656616"
+        bucket = MappedGCS(request["destinations"], control if match[3] == "pull" else None)
+        step = "sftp_auth"
         adapter = ScriptSFTP if match[3] == "pull" else SFTP
         remote = adapter(bootstrap["sftp"], bootstrap["login"])
         bootstrap.clear()
-        bucket = MappedGCS(request["destinations"], control if match[3] == "pull" else None)
         if match[3] == "inventory":
+            step = "sftp_listing"
             result = inventory(remote, bucket, request)
+            step = "markers"
             put(artifact, prefix + "-result.json", {"status": "done", "inventory": result})
         else:
+            step = "markers"
             result = Transfer(
                 remote, bucket, request, lambda p: put(artifact, prefix + "-progress.json", p)
             ).run()
             put(artifact, prefix + "-result.json", {"status": "done", "marker": result})
         return 0
     except Exception as exc:
-        from paramiko import AuthenticationException
-
-        status = "auth_failed" if isinstance(exc, AuthenticationException) else "failed"
-        result = {"status": status, "error": status, "finished": now(), "run_id": match[2]}
-        put(artifact, prefix + "-result.json", result)
-        print(json.dumps(result))
+        detail = reason(step, exc)
+        status = "auth_failed" if detail["error_class"] == "AuthenticationException" else "failed"
+        result = {
+            "status": status,
+            "error": status,
+            "finished": now(),
+            "run_id": match[2],
+            **detail,
+        }
+        print(json.dumps(result), flush=True)
+        if artifact is not None:
+            # An artifact outage must not expose the raw storage exception in a traceback.
+            with suppress(Exception):
+                put(artifact, prefix + "-result.json", result)
         return 1
     finally:
         if remote is not None:
-            remote.close()
+            with suppress(Exception):
+                remote.close()
 
 
 def main() -> int:
@@ -134,7 +151,19 @@ def main() -> int:
         if args.command == "job":
             return run_job(args.request)
         config = yaml.safe_load(Path(args.config).read_text())
-        bucket = GCS(config["bucket"])
+        if not isinstance(config, dict) or not isinstance(config.get("destinations"), dict):
+            print(
+                "Configuration requires a destinations block; see docs/atomx-transfers.md.",
+                file=sys.stderr,
+            )
+            return 1
+        from .worker import MappedGCS
+
+        destinations = config["destinations"]
+        bucket = MappedGCS.for_operator(
+            destinations,
+            writable=args.command == "pull" or (args.command == "backfill" and args.yes),
+        )
         if args.command == "backfill":
             result = backfill(
                 bucket,
@@ -144,6 +173,7 @@ def main() -> int:
                     "run_id": uuid4().hex,
                     "tool_version": REVISION.read_text().strip() if REVISION.exists() else "manual",
                     "requested_by": "manual:" + socket.gethostname(),
+                    "destinations": destinations,
                 },
             )
             print(json.dumps(result))
@@ -178,6 +208,7 @@ def main() -> int:
                 "tool_version": "manual",
                 "requested_by": "manual:" + socket.gethostname(),
                 "login_saved_by": login["username"],
+                "destinations": destinations,
             }
             if args.command == "inventory":
                 result = inventory(remote, bucket, request)

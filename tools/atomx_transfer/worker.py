@@ -63,6 +63,14 @@ class MappedGCS:
         self.reader = GCS(config["bucket"])
         self.writer = GCS(config["bucket"], Writer(control)) if control else None
 
+    @classmethod
+    def for_operator(cls, config, *, writable=False):
+        bucket = cls(config)
+        # Explicit operator commands use ADC; jobs never fall back from scoped credentials.
+        if writable:
+            bucket.writer = bucket.reader
+        return bucket
+
     def map(self, name):
         for old, new in self.mapping:
             if name.startswith(old):
@@ -81,6 +89,15 @@ class MappedGCS:
         return [
             Object(prefix + o.name[len(mapped) :], o.size, o.crc32c)
             for o in self.reader.list(mapped)
+        ]
+
+    def folders(self, prefix):
+        mapped = self.map(prefix)
+        return [
+            prefix + folder[len(mapped) :]
+            for folder in self.reader.folders(mapped)
+            # A raw root can contain the configured additional/status roots. They are not samples.
+            if not any(new != mapped and new.startswith(folder) for _, new in self.mapping)
         ]
 
     def write(self, name, body, generation):

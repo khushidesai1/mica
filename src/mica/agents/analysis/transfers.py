@@ -41,6 +41,41 @@ TERMINAL = {"done", "failed", "cancelled", "expired"}
 ACTIVE = {"inventory", "submitting", "running", "cancelling"}
 
 
+def failure_notice(result: dict[str, Any]) -> str:
+    # Artifacts are not trusted message text. Keep these vocabularies in sync with the
+    # standalone transfer tool; the API does not depend on its network adapters.
+    steps = {
+        "config",
+        "bootstrap",
+        "sftp_auth",
+        "sftp_listing",
+        "staging",
+        "upload",
+        "verify",
+        "markers",
+    }
+    classes = {
+        "AuthenticationException",
+        "SSHException",
+        "GoogleAPICallError",
+        "InterruptedError",
+        "TimeoutError",
+        "PermissionError",
+        "FileNotFoundError",
+        "OSError",
+        "KeyError",
+        "TypeError",
+        "ValueError",
+        "RuntimeError",
+        "UnknownError",
+    }
+    step, error = result.get("step"), result.get("error_class")
+    if isinstance(step, str) and step in steps:
+        detail = f" ({error})" if isinstance(error, str) and error in classes else ""
+        return f"AtoMx job failed during {step}{detail}. Request a new preview before retrying."
+    return "AtoMx job failed. Request a new preview before retrying."
+
+
 def stamp() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -714,7 +749,7 @@ class Transfers:
         else:
             await self.write_failure(p, "job_failed")
             await self.transition(p, "failed")
-            await self.notify(p, "AtoMx job failed. Check its status markers before retrying.")
+            await self.notify(p, failure_notice(result))
 
     async def report_failure(
         self, p: dict[str, Any], cause: observability.Cause, *, unit: str = ""
