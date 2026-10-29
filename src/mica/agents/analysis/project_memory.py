@@ -15,6 +15,7 @@ import re
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
@@ -49,15 +50,6 @@ HEADER = re.compile(
     r"\Atype: (fact|result|recipe|lesson|open|user)\nsource: [^\n]+\n"
     r"status: (current|superseded by [^\n]+)(?:\n|$)"
 )
-ENTRY_HEADER_RULES = """Every Markdown entry except PROJECT.md and INDEX.md MUST begin with
-these three literal lines, with no title, blank line, code fence or YAML delimiter before them:
-type: user
-source: <speaker or evidence, date>
-status: current
-Replace user with fact, result, recipe, lesson, or open when appropriate. Replace the source
-placeholder with the actual attribution. Put a blank line and any title/body AFTER these
-headers. Do not wrap the headers in --- delimiters.
-"""
 NO_GUIDE = "No guide yet."
 PRIVACY = (
     "Anything said about a project, in a DM or a channel, may be remembered for everyone "
@@ -159,6 +151,24 @@ def file_limit(path: str, settings: Settings) -> int:
     if Path(path).name == "PROJECT.md":
         return 100_000
     return 64 * 1024 if "recipes/" in path else settings.memory_file_kb * 1024
+
+
+def normalize(path: str, text: str, attribution: str) -> str:
+    """Supply mechanical metadata without changing an already valid entry."""
+    if (
+        not path.endswith(".md")
+        or Path(path).name in {"PROJECT.md", "INDEX.md"}
+        or path.startswith("archive/")
+        or HEADER.match(text)
+    ):
+        return text
+    kind = (
+        {"results": "result", "recipes": "recipe", "data": "fact"}.get(path.split("/")[0])
+        or {"lessons.md": "lesson", "open.md": "open", "conventions.md": "user"}.get(path)
+        or "fact"
+    )
+    source = " ".join(attribution.split())[:500] or "Mica application"
+    return f"type: {kind}\nsource: {source}\nstatus: current\n\n{text}"
 
 
 def validate(path: str, data: bytes, settings: Settings) -> str:
@@ -463,6 +473,11 @@ class GitHubMemory:
                     if path.startswith("archive/"):
                         raise ValueError("Archive entries are immutable; edit an active entry.")
                     if value is not None:
+                        value = normalize(
+                            path,
+                            value,
+                            f"{author_line}; {source} {event_id}; {datetime.now(UTC).date()}",
+                        )
                         validate(path, value.encode(), self.settings)
                     updates[path] = value
                 except (ValueError, UnicodeError) as exc:

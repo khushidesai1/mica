@@ -200,28 +200,74 @@ def cleanup_temporary(storage: Storage, event_id: str) -> int:
 
 
 class Stages:
-    def __init__(self, storage: Storage, work: Path, event_id: str, attempt: int) -> None:
+    def __init__(
+        self,
+        storage: Storage,
+        work: Path,
+        event_id: str,
+        attempt: int,
+        *,
+        thread_key: str = "",
+        project_id: str = "",
+    ) -> None:
+        from .thread_history import identifier
+
         self.storage, self.work = storage, work.resolve()
         self.prefix = event_prefix(event_id) + "/stages/"
+        self.durable_prefix = (
+            f"projects/_threads/{identifier(thread_key)}/stages/{identifier(project_id)}/"
+            if thread_key and project_id
+            else ""
+        )
         self.attempt = attempt
         self.uploaded_bytes = 0
         self.stages: list[dict[str, Any]] = []
 
     def manifest(self) -> dict[str, Any]:
-        return {"stages": self.stages, "uploaded_bytes": self.uploaded_bytes}
+        # Keep controller/Firestore handoffs bounded during multi-day tiled work. Every
+        # durable receipt remains discoverable; older results can be restored on demand.
+        stages = self.stages[-32:] if self.durable_prefix else self.stages
+        return {
+            "stages": stages,
+            "uploaded_bytes": self.uploaded_bytes,
+            "older_stages_available": len(stages) < len(self.stages),
+        }
 
     def capture(self, args: dict[str, Any]) -> dict[str, Any]:
         if set(args) != {"path", "fingerprint"}:
             raise ValueError("A checkpoint path and input/method fingerprint are required.")
         path, fingerprint = args["path"], args["fingerprint"]
-        if not isinstance(path, str) or not re.fullmatch(r"checkpoints/[a-zA-Z0-9_-]{1,80}", path):
-            raise ValueError("Use a completed stage directory directly under checkpoints/.")
+        if not isinstance(path, str) or not self.valid_path(
+            path, outputs=bool(self.durable_prefix)
+        ):
+            raise ValueError("Use a completed stage directory under checkpoints/ or outputs/.")
         if not isinstance(fingerprint, str) or not 1 <= len(fingerprint) <= 1000:
             raise ValueError(
                 "Record input versions, method, channels and parameters in the fingerprint."
             )
+        return self._capture(path, fingerprint)
+
+    def capture_result(self, path: str, fingerprint: str) -> dict[str, Any]:
+        """Save a completed tool result before acknowledging success to the model."""
+        if not self.durable_prefix or not self.valid_path(path, outputs=True):
+            raise ValueError("Durable result storage requires a project-bound output folder.")
+        return self._capture(path, fingerprint)
+
+    @staticmethod
+    def valid_path(path: str, *, outputs: bool = False) -> bool:
+        parts = Path(path).parts
+        return bool(
+            2 <= len(parts) <= 20
+            and parts[0] in ({"checkpoints", "outputs"} if outputs else {"checkpoints"})
+            and len(path) <= 1024
+            and all(
+                re.fullmatch(r"[a-zA-Z0-9_. -]{1,160}", p) and p not in {".", ".."} for p in parts
+            )
+        )
+
+    def _capture(self, path: str, fingerprint: str) -> dict[str, Any]:
         root = self.work / path
-        if root.is_symlink() or not root.resolve().is_relative_to(self.work / "checkpoints"):
+        if root.resolve() != root.absolute() or not root.resolve().is_relative_to(self.work):
             raise ValueError("Checkpoint must remain inside the workspace.")
         files = files_under(root)
         if not files:
@@ -235,7 +281,12 @@ class Stages:
                     tar.add(file, arcname=str(file.relative_to(self.work)), recursive=False)
             if any((p.stat().st_size, p.stat().st_mtime_ns) != stat for p, stat in sizes.items()):
                 raise ValueError("Stage is still changing. Close all writers before saving it.")
-            key = self.prefix + f"a{self.attempt}-{uuid4().hex}.tar.gz"
+            checkpoint_id = uuid4().hex
+            key = (
+                self.durable_prefix + checkpoint_id + ".tar.gz"
+                if self.durable_prefix
+                else self.prefix + f"a{self.attempt}-{checkpoint_id}.tar.gz"
+            )
             sha = digest(archive)
             self.storage.upload_new(key, archive)
         stage = {
@@ -244,10 +295,68 @@ class Stages:
             "bytes": total,
             "archive": key,
             "sha256": sha,
+            "checkpoint_id": checkpoint_id,
         }
+        if self.durable_prefix:
+            # Immutable receipt is written only after the complete archive upload succeeds.
+            self.storage.put_if(
+                self.durable_prefix + checkpoint_id + ".json", json.dumps(stage).encode(), None
+            )
         self.stages = [s for s in self.stages if s["path"] != path] + [stage]
         self.uploaded_bytes += total
-        return {"status": "saved", "path": path, "bytes": total, "fingerprint": fingerprint}
+        return {
+            "status": "saved",
+            "path": path,
+            "bytes": total,
+            "fingerprint": fingerprint,
+            "checkpoint_id": checkpoint_id,
+            "durable": bool(self.durable_prefix),
+        }
+
+    def available(self, offset: int = 0) -> dict[str, Any]:
+        """Bounded metadata discovery; no bulk download of scientific data."""
+        if not self.durable_prefix:
+            return {"checkpoints": [], "next_offset": None}
+        keys = sorted(k for k in self.storage.keys(self.durable_prefix) if k.endswith(".json"))
+        offset = max(0, offset)
+        rows = []
+        for key in keys[offset : offset + 50]:
+            raw = self.storage.read_prefix(key, 65537)
+            if len(raw) <= 65536:
+                stage = json.loads(raw)
+                rows.append(
+                    {k: stage[k] for k in ("checkpoint_id", "path", "bytes", "fingerprint")}
+                )
+        return {
+            "checkpoints": rows,
+            "next_offset": offset + 50 if len(keys) > offset + 50 else None,
+        }
+
+    def restore_saved(self, checkpoint_id: str) -> dict[str, Any]:
+        if not self.durable_prefix or not re.fullmatch(r"[a-f0-9]{32}", checkpoint_id):
+            raise ValueError("Choose a checkpoint from this project's thread.")
+        raw = self.storage.read_prefix(self.durable_prefix + checkpoint_id + ".json", 65537)
+        if len(raw) > 65536:
+            raise ValueError("Invalid checkpoint metadata.")
+        stage = json.loads(raw)
+        if stage.get("archive") != self.durable_prefix + checkpoint_id + ".tar.gz":
+            raise ValueError("Checkpoint does not match its scoped receipt.")
+        path = str(stage.get("path", ""))
+        if not self.valid_path(path, outputs=True):
+            raise ValueError("Invalid saved checkpoint path.")
+        target = self.work / path
+        if target.exists() or target.is_symlink():
+            raise ValueError(
+                "The checkpoint destination exists; preserve or remove it before restoring."
+            )
+        total = self._restore_stage(stage)
+        self.stages = [s for s in self.stages if s["path"] != path] + [stage]
+        return {
+            "status": "restored",
+            "path": path,
+            "bytes": total,
+            "fingerprint": stage["fingerprint"],
+        }
 
     def restore(self, manifest: dict[str, Any]) -> None:
         self._restore(manifest, skip_invalid=False)
@@ -286,11 +395,22 @@ class Stages:
     def _restore_stage(self, stage: dict[str, Any]) -> int:
         total = 0
         key = str(stage.get("archive", ""))
-        if not re.fullmatch(re.escape(self.prefix) + r"a\d+-[a-f0-9]{32}\.tar\.gz", key):
+        durable = bool(
+            self.durable_prefix
+            and re.fullmatch(re.escape(self.durable_prefix) + r"[a-f0-9]{32}\.tar\.gz", key)
+        )
+        if not durable and not re.fullmatch(
+            re.escape(self.prefix) + r"a\d+-[a-f0-9]{32}\.tar\.gz", key
+        ):
             raise ValueError("Stage belongs to a different request.")
         path = str(stage.get("path", ""))
-        if not re.fullmatch(r"checkpoints/[a-zA-Z0-9_-]{1,80}", path):
+        if not self.valid_path(path, outputs=durable):
             raise ValueError("Invalid stage restore path.")
+        if (self.work / path).resolve() != (self.work / path).absolute():
+            raise ValueError("Checkpoint destination traverses a symbolic link.")
+        self.work.mkdir(parents=True, exist_ok=True)
+        if int(stage.get("bytes", 0)) > shutil.disk_usage(self.work).free:
+            raise ValueError("Not enough disk space to restore this checkpoint.")
         with tempfile.TemporaryDirectory(prefix="mica-restore-") as temporary:
             archive = Path(temporary) / "stage.tar.gz"
             self.storage.download(key, archive)

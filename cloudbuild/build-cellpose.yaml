@@ -1,0 +1,51 @@
+# Runtime-only preparation; the coordinated source release and live GPU gate follow.
+steps:
+  - id: flatten-base
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    entrypoint: bash
+    env: [DOCKER_BUILDKIT=1]
+    args:
+      - -ceu
+      - |
+        docker pull '${_SLACK_BASE}'
+        docker inspect '${_SLACK_BASE}' > /workspace/cellpose-base-before.json
+        docker run --rm --network=none --user=0 -v /workspace:/workspace --entrypoint python '${_SLACK_BASE}' /workspace/tools/flatten_runtime.py /workspace/cellpose-base-before.json /workspace/cellpose-import.sh --import-archive /workspace/cellpose-rootfs.tar --import-tag mica-cellpose-flat-base
+        docker create --name cellpose-flatten-source '${_SLACK_BASE}'
+        docker export --output /workspace/cellpose-rootfs.tar cellpose-flatten-source
+        bash /workspace/cellpose-import.sh
+        docker rm cellpose-flatten-source
+        rm /workspace/cellpose-rootfs.tar
+        docker inspect mica-cellpose-flat-base > /workspace/cellpose-base-after.json
+        docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python mica-cellpose-flat-base /workspace/tools/flatten_runtime.py /workspace/cellpose-base-before.json /workspace/cellpose-base-after.json --verify
+  - id: fetch-models
+    name: python:3.12.12-slim
+    waitFor: ['-']
+    args: [python, tools/cellpose_build.py]
+  - id: cpu-runtime
+    name: gcr.io/cloud-builders/docker
+    waitFor: [flatten-base, fetch-models]
+    env: [DOCKER_BUILDKIT=1]
+    args: [build, --target, cpu, --build-arg, SLACK_AGENT_IMAGE=mica-cellpose-flat-base, -f, docker/Dockerfile.cellpose, -t, '${_CPU_IMAGE}', .]
+  - id: gpu-runtime
+    name: gcr.io/cloud-builders/docker
+    env: [DOCKER_BUILDKIT=1]
+    args: [build, --target, gpu, --build-arg, SLACK_AGENT_IMAGE=mica-cellpose-flat-base, -f, docker/Dockerfile.cellpose, -t, '${_GPU_IMAGE}', .]
+  - id: cpu-sam-offline
+    name: gcr.io/cloud-builders/docker
+    args: [run, --rm, --network=none, -v, '/workspace:/workspace:ro', --entrypoint, /opt/cellpose/4.2.1.1/bin/python, '${_CPU_IMAGE}', /workspace/scripts/check_cellpose_release.py]
+  - id: gpu-sam-offline
+    name: gcr.io/cloud-builders/docker
+    args: [run, --rm, --network=none, -v, '/workspace:/workspace:ro', --entrypoint, /opt/cellpose/4.2.1.1/bin/python, '${_GPU_IMAGE}', /workspace/scripts/check_cellpose_release.py]
+  - id: gpu-cellpose3-offline
+    name: gcr.io/cloud-builders/docker
+    args: [run, --rm, --network=none, -v, '/workspace:/workspace:ro', --entrypoint, /opt/cellpose/3.1.1.3/bin/python, '${_GPU_IMAGE}', /workspace/scripts/check_cellpose_release.py]
+  - id: original-spatial-regression
+    name: gcr.io/cloud-builders/docker
+    args: [run, --rm, --network=none, -v, '/workspace:/workspace:ro', --entrypoint, /opt/sap/bin/python, '${_CPU_IMAGE}', /workspace/scripts/check_spatial_release.py]
+images: ['${_CPU_IMAGE}', '${_GPU_IMAGE}']
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: 300
+timeout: 3600s

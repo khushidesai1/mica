@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import codecs
 import hashlib
 import logging
 import re
@@ -246,6 +247,55 @@ def router_heads(
             except FileNotFoundError:
                 log.info("Attachment is unavailable: %s", file.id)
     return heads
+
+
+def router_text(
+    storage: Storage, files: Iterable[ThreadFile], requested: list[str], budget: int = 256 * 1024
+) -> list[dict[str, Any]]:
+    """Read bounded UTF-8 text already registered in this thread; no decoders or paths."""
+    by_id = {file.id: file for file in files}
+    result = []
+    for identifier in dict.fromkeys(requested):
+        file = by_id.get(identifier)
+        if (
+            not file
+            or not file.key
+            or file.media_type
+            not in {
+                "text/plain",
+                "text/markdown",
+                "text/csv",
+                "text/tab-separated-values",
+                "application/json",
+            }
+        ):
+            result.append({"id": identifier, "unavailable": True})
+            continue
+        limit = min(64 * 1024, budget)
+        if limit <= 0:
+            result.append({"id": identifier, "context_limit": True})
+            continue
+        try:
+            raw = storage.read_prefix(file.key, limit + 1)
+            complete = len(raw) <= limit and len(raw) == file.size
+            if complete and hashlib.sha256(raw).hexdigest() != file.sha256:
+                raise ValueError("Attachment content changed")
+            text = codecs.getincrementaldecoder("utf-8")().decode(raw[:limit], final=complete)
+            budget -= len(text.encode())
+            if "\x00" in text:
+                raise ValueError("Binary attachment")
+            result.append(
+                {
+                    "id": file.id,
+                    "name": file.name,
+                    "text": text,
+                    "complete": complete,
+                    "total_bytes": file.size,
+                }
+            )
+        except (FileNotFoundError, ValueError):
+            result.append({"id": identifier, "unavailable": True})
+    return result
 
 
 def shown_ids(media: Sequence[dict[str, Any]]) -> set[str]:

@@ -256,7 +256,7 @@ async def test_hooks_and_prompt_are_opt_in_and_keep_failures_out(tmp_path):
     after = build_options(ctx, settings, return_scripts=True, capture=capture)
     assert before.sandbox == after.sandbox
     assert "PostToolUse" not in before.hooks
-    assert "attached automatically" in after.system_prompt["append"]
+    assert "receives the scripts you run" in after.system_prompt["append"]
     e = {
         "hook_event_name": "PreToolUse",
         "tool_name": "Bash",
@@ -473,7 +473,11 @@ def test_capture_merges_existing_compute_hooks(tmp_path):
     from types import SimpleNamespace
 
     compute = SimpleNamespace(
-        tools=lambda: [], prompt=lambda: "\nCompute policy", poll_addenda=None
+        tools=lambda: [],
+        prompt=lambda: "\nCompute policy",
+        poll_addenda=None,
+        save_result=None,
+        manifest={},
     )
     ctx = Context(tmp_path, tmp_path / "data")
     settings = Settings(_env_file=None)

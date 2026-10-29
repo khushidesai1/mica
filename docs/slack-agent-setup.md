@@ -13,24 +13,35 @@ token, always-on VM, or Modal account is required.
 
 `Slack DM → signed webhook → Cloud Tasks → Cloud Run conversation → Slack reply`
 
-Only requests that need file contents, code execution, or plots proceed to a sized Batch worker.
-Listing object names, folders, and sizes uses bounded metadata calls on Cloud Run, including
-in ordinary chat. Reading CSV headers or counting cells still requires the worker.
+Requests that need code execution, calculations, scientific data processing or plots proceed to
+a sized Batch worker. Information questions stay in the control service: listing names/folders/sizes,
+inspecting authorized repository source, reading registered text attachments, and recalling earlier
+thread records. CSV/TSV/JSON text can be inspected directly; computing new counts still needs a worker.
+Incomplete listings report their coverage or ask for a narrower folder instead of starting a worker.
 Conversation routing is always enabled. Ordinary questions, planning, brief edits,
 `help`, `brief`, `cancel`, and bounded initial setup run in the control service.
 The direct Claude call has no shell, filesystem, or network tools. It can answer, update the shared guide,
-request a project-scoped metadata listing, or request isolated computation. Invalid routing output
-gets one immediate correction attempt with field-level feedback. If that fails, or the model API
-times out, rate-limits, or returns a server error, the original request stays pending and retries
-through the existing queue no earlier than 30 and 60 seconds after each failure. There are at most
-three routing cycles; each decision gets one correction and at most one media fallback. The initial
-decision and any inventory/view follow-up share a 120-second routing deadline. Exhaustion reports
-an internal failure and preserves the conversation. Only schema
-field names and error types are logged, never invalid values. Each attempt rechecks access;
-failed routing never invents a computation or bypasses write approval. Display-only worker workload
-and reason labels are truncated to 200 characters; short reasons become "unspecified". Routes,
-resource choices, paths, and replies still require validation. Cancellation bypasses queued work
-and stops the active job without starting a new one.
+request a project-scoped metadata listing, request bounded information reads, or request isolated
+computation. Source inspection/README requests use the existing GitHub App to read commit-pinned
+source snapshots, with exact-path follow-ups for larger repositories. The reply cites source paths
+and the commit, distinguishes inspected code from executed/tested behavior, and reports missing
+coverage. Requested README text is delivered directly through the ordinary chunked reply path;
+Mica does not start a worker merely to compose documentation or claim an attachment was created.
+Set `AGENT_CONVERSATION_PRINCIPALS` to selected email addresses to enable the conversation tool
+loop. The default empty value preserves the previous router; `*` enables all authorized users.
+Start with the owner account. `AGENT_CONVERSATION_EFFORT` defaults to `medium` and
+`AGENT_CONVERSATION_MAX_CALLS` to 6, plus one final no-tool answer when the call/time reserve is
+reached. The total request budget is 120 seconds across retries. List, view and source-read tools
+can run in any order. Source/text/history content shares a 384 KiB request budget, and text
+attachments remain capped at 64 KiB each. Source inspection never executes code.
+All reads are restricted to authorized catalog/project repositories, registered attachments and
+this thread's history. Access is checked before each tool and again before delivery. Invalid tool
+input is returned to Claude for correction. Timeouts, refusals and truncated responses use the
+existing three-attempt queue recovery; failed routing never invents computation or bypasses
+approval. Terminal actions persist before dispatch and retry without another model call.
+Unselected principals retain the legacy fixed-stage router during this rollout. Cancellation
+bypasses queued work and stops the active job without starting another. Only active predecessors
+need a pre-queue natural-language control check.
 
 A verified user who lacks membership in a project published to the current channel gets a message
 naming its owner and the exact `share` command to run in the owner's DM with Mica. Unpublished
@@ -49,8 +60,16 @@ built-in Read/Write/Edit/Glob/Grep/Bash tools and the pinned science environment
 A control-service reply acknowledges each accepted input. Direct replies update it in place;
 computation requests update it before any Spot startup. That same
 Slack message reports queue waits, startup elapsed time, worker readiness, and completion/errors.
-During analysis it shows tool activity and a heartbeat every 30 seconds. Status failures do not
-prevent work, and repeated webhook/poll deliveries reuse the stored message timestamp.
+The status is one compact native activity disclosure titled “Mica is working” or “Mica is
+thinking”, using Slack's muted progress styling and native status indicator. Expand it to inspect
+concise public activity summaries, the latest tool descriptions and long-run check-ins. Cellpose
+entries name the crop being processed; completion is only shown after confirmation. The disclosure
+has no padded container, large heading, duplicate status line or separate “On it…” acknowledgment.
+Slack owns the disclosure animation and hover styling; no custom border, color or rounded wrapper
+is added. Phase changes come from SDK lifecycle events, never private reasoning text. Identical
+states are deduplicated and updates are throttled without posting extra messages. Unsupported
+surfaces fall back to small context text. Status failures do not prevent work, and webhook/poll
+deliveries reuse the stored message timestamp.
 
 Firestore receipts deduplicate Slack delivery, order accepted messages within a thread, and
 limit active Claude jobs to three. Named polling tasks use the existing queue without depending
@@ -247,12 +266,13 @@ For ordinary chat, the router resolves descriptive names from the project guide,
 memory, and conversation. It requests all relevant relative folders in one step (at most 50),
 listing the root only when context cannot resolve a needed folder. Every path is checked
 against project access, bucket admission, traversal, and array-store restrictions before listing.
-The reply names the folders used. Incomplete listings and requests for another listing route
-to a worker that can finish the work; missing entries in partial results never prove absence.
+The reply names the folders used. The conversation loop can request another bounded listing;
+incomplete metadata alone never starts a worker or proves that missing entries are absent.
 
 One `inventory event=<id> paths=<n> entries=<n> complete=<bool> ms=<n>` log records each step
-without names. Intermediate routing decisions are saved for failure diagnosis and marked pending
-until a final reply or compute decision is ready. Delivery retries reuse the final decision.
+without names. The conversation loop stores compact tool-step metadata, then a durable final
+reply or action decision. Delivery retries reuse that final decision. The legacy path retains
+pending intermediate routing records for unselected principals.
 The initial guide is generated without a worker even if the listing is unavailable.
 
 Retrying the same project/folder binding preserves its identity and saved brief. Init automatically

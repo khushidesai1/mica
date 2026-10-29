@@ -205,3 +205,88 @@ def folder_tool(
             return {"content": [{"type": "text", "text": message}], "isError": True}
 
     return prepare
+
+
+def select_files(
+    work: Path, paths: list[str], *, limit: int = MAX_ATTACHMENT_BYTES
+) -> dict[str, Any]:
+    """Validate explicit attachments with the same no-link policy as folder delivery."""
+    accepted: list[str] = []
+    errors: dict[str, str] = {}
+    for raw in dict.fromkeys(paths):
+        try:
+            relative = Path(raw)
+            if relative.is_absolute():
+                relative = relative.relative_to(work)
+            if relative.parts[:1] != ("outputs",) or ".." in relative.parts:
+                raise ValueError("Choose a file under outputs/.")
+            path = work / relative
+            issue = attachment_issue(path, work)
+            if issue:
+                raise ValueError(issue)
+            with open_regular(work, relative) as stream:
+                size = os.fstat(stream.fileno()).st_size
+            if not size:
+                raise ValueError("File is empty.")
+            if size > limit:
+                raise ValueError(f"Attachment exceeds {limit:,} bytes; split it or publish to GCS.")
+            accepted.append(relative.as_posix())
+        except (OSError, ValueError) as exc:
+            errors[raw] = (
+                str(exc) if isinstance(exc, ValueError) else "File could not be read safely."
+            )
+    return {"accepted": accepted, "errors": errors}
+
+
+def send_tool(
+    work: Path,
+    named: set[Path],
+    *,
+    manifest: dict[str, Any] | None = None,
+    limit: int = MAX_ATTACHMENT_BYTES,
+) -> SdkMcpTool[Any]:
+    from claude_agent_sdk import tool
+
+    @tool(
+        "send_files",
+        "Send completed files under outputs/ as attachments at turn end, including unchanged "
+        "files requested again. No touch or regeneration is needed. Nested files are supported. "
+        "Accepts figures, PDFs, tables, text/config, scripts and ZIPs; each must be an ordinary "
+        f"nonempty file under {limit:,} bytes. Returns accepted paths and per-file errors now; "
+        "the application confirms delivery later. Inspect figures before requesting delivery. "
+        "Local paths are not user-accessible. Use prepare_folder_attachment for complete script "
+        "folders; send ordinary figures/reports directly. outputs/gcs/ is bucket staging: use "
+        "publish_gcs for approved destinations and report only confirmed locations and counts.",
+        {
+            "type": "object",
+            "properties": {
+                "paths": {"type": "array", "items": {"type": "string"}, "maxItems": 100}
+            },
+            "required": ["paths"],
+            "additionalProperties": False,
+        },
+    )
+    async def send(args: dict[str, Any]) -> dict[str, Any]:
+        paths = args.get("paths")
+        if (
+            set(args) != {"paths"}
+            or not isinstance(paths, list)
+            or len(paths) > 100
+            or not all(isinstance(p, str) for p in paths)
+        ):
+            return {
+                "content": [{"type": "text", "text": "Provide up to 100 file paths."}],
+                "isError": True,
+            }
+        result = await asyncio.to_thread(select_files, work, paths, limit=limit)
+        named.update(work / path for path in result["accepted"])
+        if manifest is not None:
+            pending = set(manifest.get("pending_outputs", []))
+            pending.update(str(p.relative_to(work / "outputs")) for p in named)
+            manifest["pending_outputs"] = sorted(pending)
+        return {
+            "content": [{"type": "text", "text": json.dumps(result)}],
+            "isError": bool(result["errors"]),
+        }
+
+    return send

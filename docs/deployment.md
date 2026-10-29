@@ -1,5 +1,11 @@
 # Deployment
 
+For the staged move from the existing deployment to `mica-staging`, follow the
+[resource migration runbook](mica-resource-migration.md). Its separate Terraform root creates
+the replacement stack without renaming resources in the existing state. Foundation and preview
+do not switch Slack or Gmail traffic; admission, storage verification and the coordinated
+cutover must complete before old resources can be retired.
+
 ## Build immutable images
 
 Resolve the Python base image tag to a digest, pass it through `PYTHON_IMAGE`, and publish both
@@ -67,6 +73,20 @@ changed behavior. Prefer fakes for large file counts, large object sizes and fai
 Do not run lengthy model conversations or full-scale data transfers for routine releases;
 reserve those for explicit scale validation or a specific unresolved production issue.
 Keep build, authentication and worker compatibility gates, and clean up synthetic outputs.
+When a host or container runtime fails during startup, isolate that boundary with a small
+targeted probe before rebuilding the application images. Reuse an already verified immutable
+image when only an operator check changes; lint and validate that check against the actual
+production launch behavior. A verifier-only correction does not require another image build.
+A worker image rebuild for Slack presentation, read-only routing or request-authorization metadata
+alone does not require a live GPU job when the pinned GPU runtime, scientific dependencies,
+inference code, device setup and isolation are unchanged. Use focused behavior tests plus packaged
+source/compatibility gates and record the previous runtime validation being reused. Run actual CUDA
+and sandbox checks for changes to those GPU execution components or new hardware compatibility
+claims; do not launch a GPU simply because application source was repackaged.
+Controller-only placement or approval changes can reuse the exact verified worker images after
+contract checks and focused failure/race tests. A provider stockout should exercise compatible
+GPU fallback, rather than block that controller release. Record hardware not yet observed in
+live inference separately; do not claim that a fallback test verifies its scientific execution.
 Run live Slack smoke checks only in the owner's private DM, never in shared project channels.
 Simulate malformed model output, outages, and retry timing locally with fakes; do not inject
 failures into collaborators' conversations. Remove synthetic DM messages after verification.
@@ -264,8 +284,13 @@ say a package is prepared, not delivered; actual delivery is recorded after the 
 This behavior runs in the conversation worker, so an API-only rollout is insufficient. Use the
 coordinated Slack release pipeline and its complete-folder image gate, preserving existing jobs
 and immutable worker references during rollout.
+### Versioned Cellpose tools
 
-## Read-only project reference repositories
+See [Cellpose versions](cellpose.md) for isolated Cellpose 3 / Cellpose-SAM runtimes, coordinated
+CPU/GPU releases and the live GPU gate. Preserve the GPU image pin during API-only releases and
+update both workers together when worker source changes.
+
+### Read-only project reference repositories
 
 Set these nonsecret settings on the control-plane API only (never worker environment variables):
 
@@ -297,10 +322,43 @@ After a code release, run the existing `*-tool-catalog` Cloud Scheduler job once
 HTTP 200 and its catalog count. This exercises the actual API identity and configured GitHub App
 without changing credentials, IAM or the weekly schedule.
 
-Deploy the API and Slack worker together so the API's pinned snapshots can be materialized by the
-worker. Existing projects with no selected references remain unchanged. Verify offline fetch,
+The catalog also makes the approved AziziLab repositories discoverable across every project;
+per-project registration is optional. Requests select only the references they need. Read-only
+source/parameter/documentation questions use the direct Claude API path; execution requests pass
+snapshots to workers.
+The exact public-reference allowlist in `reference_repos.PUBLIC_REPOS` also makes
+`khushidesai1/nympheas-temp` available across projects. It uses anonymous GitHub reads, checks
+public visibility and repository identity on each fetch, and verifies commit-pinned raw files
+against Git blob hashes under the same snapshot limits. It receives no GitHub App or memory
+credential. Other personal repositories remain excluded; a private or moved repository fails
+closed. This provides source access, not automatic package installation or execution.
+Selection-only controller changes can retain verified worker image pins after compatibility
+checks. Repository-validation changes must reach both API and worker images so materialization
+recognizes the same approved references. Verify offline fetch,
 authorization, snapshot, read-only and failed-fetch tests before release. For the live owner check,
-add a permitted repository in your own private Slack conversation, confirm the selection, and ask
+ask about a catalog repository from a project with no default references, without registering it,
+or add a permitted default in your own private Slack conversation and confirm the selection. Ask
 about a known source parameter; the answer should cite `inputs/repos/<repo>/...` and its pinned
 commit. Remove the selection and confirm a subsequent compute request has no restored reference
 folder. Do not send synthetic messages to another user's conversation.
+
+The bounded information-read route is an API change and can retain verified worker images after
+contract checks. Validate direct repository/text/history replies, source byte/round limits, current
+access checks, catalog removal before delivery, and README replies longer than one Slack chunk.
+A partial listing or read failure must not automatically launch a worker. A live owner request to
+explain a catalog repository should produce source-grounded documentation without a new Batch job.
+No synthetic Slack/email message or repository write is required for release validation.
+
+### Flexible compute and durable stages
+
+Deploy the API and both Claude workers together for the new allowance controls, durable stage
+storage and Slack activity states. Preserve the existing science worker after its execution
+compatibility gate. Set `AGENT_GPU_MAX_SECONDS=604800` and
+`AGENT_GPU_DEFAULT_SECONDS=28800` on the controller; keep hardware/image authorization and
+model-budget settings intact. Approval durations are request-bound; old requests are not extended.
+No Terraform, IAM or secret changes are required. See [Cellpose](cellpose.md#long-runs-and-saved-progress).
+
+Required regression evidence includes requester-bound allowance selection, unchanged cumulative
+limits across continuation, and result restoration after terminal cleanup. Exercise those paths
+in the worker image with synthetic local storage. The final GPU smoke remains a small synthetic
+crop/isolation check; do not rerun a whole-slide workload for deployment.

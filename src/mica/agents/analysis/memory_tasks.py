@@ -21,8 +21,7 @@ if TYPE_CHECKING:
 
 EDITOR_RULES = """Maintain shared project memory after this conversation turn.
 Save only durable facts and current work. Attribute user statements to the supplied speaker
-and date. Keep required headers: type: fact|result|recipe|lesson|open|user, source: attribution
-and date, status: current or superseded by <entry>. PROJECT.md needs no metadata headers.
+and date. The application supplies entry metadata when absent.
 Use conventions.md for attributed preferences; open.md for active work, decisions, open
 questions and explicitly labeled hypotheses; lessons.md for reusable lessons; data/<topic>.md
 for verified dataset facts. Make corrections in existing entries instead of adding duplicates.
@@ -57,9 +56,7 @@ async def edit(key: str, model: str, context: dict[str, Any]) -> dict[str, str]:
             json={
                 "model": model,
                 "max_tokens": 8192,
-                "system": EDITOR_RULES
-                + project_memory.ENTRY_HEADER_RULES
-                + project_memory.GUIDE_POLICY,
+                "system": EDITOR_RULES + project_memory.GUIDE_POLICY,
                 "messages": [{"role": "user", "content": json.dumps(context)}],
                 "tools": [
                     {
@@ -87,7 +84,15 @@ async def edit(key: str, model: str, context: dict[str, Any]) -> dict[str, str]:
         changes = Edits.model_validate(calls[0]["input"]).changes
         if any(not EDIT_PATH.fullmatch(path) for path in changes):
             raise ValueError("Memory editor proposed an unsupported file")
-        return changes
+        return {
+            path: project_memory.normalize(
+                path,
+                text,
+                f"Speaker: {context.get('speaker', 'unknown')}; "
+                f"{context.get('date', '')}; post-turn editor",
+            )
+            for path, text in changes.items()
+        }
 
 
 def conversation_turn(record: dict[str, Any]) -> bool:

@@ -54,6 +54,17 @@ def projects_intent(monkeypatch):
     return classifier
 
 
+async def test_direct_markdown_reply_preserves_email_text(mail):
+    eid, record = await email_record(mail)
+    record["payload"]["event"]["text"] = "Explain the QC workflow"
+    text = "**Slide QC**\n- Compare counts & genes.\n[source](https://example.org/qc)"
+    direct.decide.return_value = direct.Decision(route="reply", reply=text)
+    assert await direct.handle(mail, eid, record, mail.store)
+    assert sent_messages(mail)[0].get_content().splitlines() == text.splitlines()
+    assert record["terminal_reply"] == text
+    mail.test_client.create_job.assert_not_called()
+
+
 @pytest.mark.parametrize("selection", ["none", "revoked", "conflicting_legacy"])
 async def test_natural_project_question_without_valid_selection_or_memory(
     mail, monkeypatch, selection

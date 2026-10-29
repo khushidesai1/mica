@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -11,8 +11,9 @@ if TYPE_CHECKING:
     from .config import Settings
     from .direct import WorkerChoice
 
-TierName = Literal["standard", "large", "xlarge"]
+TierName = Literal["standard", "large", "xlarge", "gpu"]
 Provisioning = Literal["SPOT", "STANDARD"]
+GPUType = Literal["t4", "l4"]
 
 
 class Record(BaseModel):
@@ -27,10 +28,15 @@ class Tier:
     disk_gb: int
     disk_type: str
     max_seconds: int
+    machine_type: str = ""
+    escalatable: bool = True
+    gpu_type: GPUType | None = None
+    gpu_memory_gib: int = 0
+    accelerator_type: str = ""
 
     @property
     def machine(self) -> str:
-        return f"n2-highmem-{self.vcpus}"
+        return self.machine_type or f"n2-highmem-{self.vcpus}"
 
     @property
     def workspace_gb(self) -> int:
@@ -42,11 +48,66 @@ TIERS: dict[str, Tier] = {
     "standard": Tier("standard", 8, 64, 500, "pd-balanced", 604800),
     "large": Tier("large", 32, 256, 1000, "pd-balanced", 604800),
     "xlarge": Tier("xlarge", 64, 512, 2000, "pd-ssd", 604800),
+    "gpu": Tier("gpu", 8, 32, 500, "pd-balanced", 7200, "g2-standard-8", False, "l4", 24),
 }
-ORDER = tuple(TIERS)
+GPU_TIERS = {
+    "l4": TIERS["gpu"],
+    "t4": replace(
+        TIERS["gpu"],
+        machine_type="n1-standard-8",
+        memory_gib=30,
+        gpu_type="t4",
+        gpu_memory_gib=16,
+        accelerator_type="nvidia-tesla-t4",
+    ),
+}
+ORDER = tuple(name for name, tier in TIERS.items() if tier.escalatable)
 
 
-def resolve(name: str, settings: Settings) -> Tier:
+def available_gpus(settings: Settings) -> list[str]:
+    return (
+        sorted(settings.csv("gpu_types"))
+        if settings.gpu_tier_enabled and settings.gpu_image
+        else []
+    )
+
+
+def gpu_estimate(settings: Settings, shape: Tier) -> float:
+    return (
+        settings.gpu_t4_hourly_estimate_usd
+        if shape.gpu_type == "t4"
+        else settings.gpu_hourly_estimate_usd
+    )
+
+
+def gpu_choices(record: dict[str, Any]) -> list[str]:
+    """Approved alternatives; old requests remain bound to their single GPU."""
+    launch = record["launch"]
+    return list(launch.get("gpu_candidates", [launch.get("gpu_type", "l4")]))
+
+
+def selected_gpu(record: dict[str, Any]) -> str:
+    return str(record.get("gpu_type", record.get("launch", {}).get("gpu_type", "l4")))
+
+
+def gpu_seconds(record: dict[str, Any], settings: Settings) -> int:
+    """A new request's selected envelope; legacy approvals keep their recorded duration."""
+    ceiling = min(settings.max_run_seconds, settings.gpu_max_seconds)
+    return min(int(record["launch"].get("max_seconds", 7200)), ceiling)
+
+
+def resolve(name: str, settings: Settings, gpu_type: str = "l4") -> Tier:
+    if name == "gpu":
+        if not settings.gpu_tier_enabled or not settings.gpu_image:
+            raise ValueError("GPU workers require an enabled tier and a verified GPU image.")
+        if gpu_type not in GPU_TIERS or gpu_type not in available_gpus(settings):
+            raise ValueError(
+                f"GPU {gpu_type} is unavailable; "
+                f"enabled choices: {', '.join(available_gpus(settings))}."
+            )
+        return replace(
+            GPU_TIERS[gpu_type], max_seconds=min(settings.max_run_seconds, settings.gpu_max_seconds)
+        )
     if name not in TIERS or ORDER.index(name) > ORDER.index(settings.max_tier):
         raise ValueError("This worker tier is unavailable.")
     tier = TIERS[name]
@@ -59,8 +120,57 @@ def launch_choice(worker: WorkerChoice | None, settings: Settings) -> dict[str, 
     tier = worker.tier
     if worker.category != "analysis" and tier == "standard" and not worker.tier_explicit:
         tier = settings.launch_heavy_tier
-    resolve(tier, settings)
+    gpu_type = worker.gpu_type or settings.gpu_default_type
+    if worker.gpu_type and tier != "gpu":
+        raise ValueError("A GPU model requires the GPU worker tier.")
     constraints: dict[str, object] = {}
+    if tier == "gpu":
+        if worker.max_tier:
+            raise ValueError("A GPU request cannot satisfy an explicit CPU-only tier ceiling.")
+        candidates = [gpu_type] + (
+            [name for name in available_gpus(settings) if name != gpu_type]
+            if worker.allow_gpu_fallback
+            else []
+        )
+        candidates = [
+            name
+            for name in candidates
+            if name in available_gpus(settings)
+            and GPU_TIERS[name].gpu_memory_gib >= worker.min_gpu_memory_gib
+        ]
+        if not candidates:
+            resolve(tier, settings, gpu_type)
+            raise ValueError("No enabled GPU satisfies this request's memory requirement.")
+        mode = "SPOT" if worker.on_demand is False else "STANDARD"
+        ceiling = min(settings.max_run_seconds, settings.gpu_max_seconds)
+        seconds = min(
+            ceiling,
+            int(worker.gpu_hours * 3600) if worker.gpu_hours else settings.gpu_default_seconds,
+        )
+        if worker.compute_budget_usd is not None:
+            rate = max(gpu_estimate(settings, GPU_TIERS[name]) for name in candidates)
+            seconds = min(
+                ceiling,
+                int(worker.compute_budget_usd / rate * 3600),
+                seconds if worker.gpu_hours else ceiling,
+            )
+        if seconds < 600:
+            raise ValueError("Choose at least ten minutes of GPU time, including startup.")
+        return {
+            "tier": "gpu",
+            "gpu_type": candidates[0],
+            "requested_gpu_type": gpu_type,
+            "gpu_candidates": candidates,
+            "max_seconds": seconds,
+            "flexible_compute": True,
+            "min_gpu_memory_gib": worker.min_gpu_memory_gib,
+            "provisioning": mode,
+            "category": worker.category,
+            "reason": worker.reason,
+            "constraints": {"provisioning": mode},
+            **({"workload": worker.workload} if worker.workload else {}),
+        }
+    resolve(tier, settings, gpu_type)
     if worker.max_tier:
         constraints["max_tier"] = worker.max_tier
         if ORDER.index(tier) > ORDER.index(worker.max_tier):

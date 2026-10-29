@@ -13,6 +13,7 @@ import threading
 import time
 from contextlib import suppress
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -50,6 +51,7 @@ from .sessions import Sessions
 from .slack_app import SlackAgent
 from .slack_format import status_blocks
 from .storage import GCSStorage
+from .transport import SlackTransport
 
 
 def arm_stop_deadline() -> None:
@@ -133,6 +135,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         raise ValueError("Slack credential has not been configured")
     check(settings)
     slack = AsyncWebClient(token=settings.slack_bot_token.get_secret_value())
+    progress_transport = SlackTransport(slack)
     monitor = AccessMonitor(
         lambda: worker_permitted(storage, request, saved, settings=settings),
         settings.access_unavailable_grace_seconds,
@@ -151,7 +154,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             ).encode(),
         )
         if request.get("notice_ts") and not surface.is_email(request):
-            await slack.chat_update(
+            await progress_transport.update(
                 channel=request["payload"]["event"]["channel"],
                 ts=request["notice_ts"],
                 text="Project access is unavailable.",
@@ -194,7 +197,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             )
     if request.get("notice_ts") and not surface.is_email(request):
         try:
-            await slack.chat_update(
+            await progress_transport.update(
                 channel=request["payload"]["event"]["channel"],
                 ts=request["notice_ts"],
                 text="Getting set up…",
@@ -260,6 +263,8 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             work,
             event_id,
             attempt,
+            thread_key=thread_key,
+            project_id=request["project_id"],
         )
         if resume:
             try:
@@ -303,10 +308,32 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             await save_partial()
             return value
 
+        async def save_result(result: dict[str, Any]) -> dict[str, Any]:
+            assert stages is not None
+            fingerprint = json.dumps(
+                {
+                    key: result.get(key)
+                    for key in (
+                        "input_sha256",
+                        "version",
+                        "model",
+                        "model_sha256",
+                        "model_precision",
+                        "parameters",
+                    )
+                },
+                sort_keys=True,
+            )
+            value = await asyncio.to_thread(
+                stages.capture_result, result["output_dir"], fingerprint
+            )
+            await save_partial()
+            return value
+
         async def compute_status(text: str) -> None:
             if surface.is_email(request):
                 return
-            await slack.chat_update(
+            await progress_transport.update(
                 channel=payload["event"]["channel"],
                 ts=request["notice_ts"],
                 text=text,
@@ -320,6 +347,8 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             operate,
             save_stage=save_stage,
             status=compute_status,
+            save_result=save_result,
+            stages=stages,
         )
         if request.get("amendments_enabled") and not surface.is_email(request):
             last_addenda_poll = 0.0
@@ -333,8 +362,12 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                 if not await asyncio.to_thread(monitor.check):
                     return ""
                 return await asyncio.to_thread(
-                    amendments.consume, storage, event_id,
-                    request["principal"], request["access_signature"], attempt,
+                    amendments.consume,
+                    storage,
+                    event_id,
+                    request["principal"],
+                    request["access_signature"],
+                    attempt,
                 )
 
             compute.poll_addenda = poll_addenda
@@ -535,7 +568,14 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             if not current_state:
                 return
             checkpoint_id = uuid4().hex
-            pending = await asyncio.to_thread(memory_workspace.pending, work, memory_base, settings)
+            pending = await asyncio.to_thread(
+                memory_workspace.pending,
+                work,
+                memory_base,
+                settings,
+                f"worker {event_id}; speaker {request['principal']}; "
+                f"thread {thread_key}; {datetime.now(UTC).date()}",
+            )
             pending_key = f"{prefix}/memory-a{attempt}-{checkpoint_id}.json"
             await asyncio.to_thread(storage.put_if, pending_key, pending, None)
             script_record = (
@@ -573,6 +613,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                 "model_cost": compute.model_cost,
                 "sdk_cost_total": compute.sdk_cost_total,
                 "stages": stages.manifest(),
+                "pending_outputs": compute.manifest.get("pending_outputs", []),
                 "state": {
                     "context": context,
                     "turn": int(request.get("turn_start", {}).get("turn", current_state[1])) + 1,
@@ -702,7 +743,12 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         and await asyncio.to_thread(worker_permitted, storage, request, saved, settings=settings)
     ):
         proposal = await asyncio.to_thread(
-            memory_workspace.pending, state[0].workdir, memory_base, settings
+            memory_workspace.pending,
+            state[0].workdir,
+            memory_base,
+            settings,
+            f"worker {event_id}; speaker {request['principal']}; "
+            f"thread {thread_key}; {datetime.now(UTC).date()}",
         )
         receipt = write_worker.Publication(
             destinations=publisher.summarize(set(publisher.uploaded))

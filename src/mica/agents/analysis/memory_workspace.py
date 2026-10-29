@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from . import memory_archive
 from .config import CHECKPOINT_PREFIX, Settings
-from .project_memory import Snapshot, file_limit, valid_path, validate
+from .project_memory import Snapshot, file_limit, normalize, valid_path, validate
 from .storage import Storage
 
 
@@ -36,7 +37,9 @@ def materialize(work: Path, base: Snapshot, settings: Settings) -> None:
         target.write_text(version.text)
 
 
-def scan(work: Path, settings: Settings) -> tuple[dict[str, bytes], dict[str, str]]:
+def scan(
+    work: Path, settings: Settings, attribution: str = ""
+) -> tuple[dict[str, bytes], dict[str, str]]:
     root = work / "knowledge"
     if root.is_symlink() or (root.exists() and not root.is_dir()):
         raise ValueError("Knowledge root must be an ordinary directory.")
@@ -67,6 +70,11 @@ def scan(work: Path, settings: Settings) -> tuple[dict[str, bytes], dict[str, st
                     after = os.fstat(stream.fileno())
                 if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
                     raise ValueError("File changed during save.")
+                data = normalize(
+                    path,
+                    data.decode("utf-8"),
+                    attribution or f"worker thread {work.name}; {datetime.now(UTC).date()}",
+                ).encode()
                 validate(path, data, settings)
                 found[path] = data
             except (ValueError, OSError) as exc:
@@ -88,8 +96,8 @@ def is_read(work: Path, tool: str, args: dict[str, Any]) -> bool:
     return path.resolve().is_relative_to((work / "knowledge").resolve())
 
 
-def proposal(work: Path, base: Snapshot, settings: Settings) -> Proposal:
-    files, rejected = scan(work, settings)
+def proposal(work: Path, base: Snapshot, settings: Settings, attribution: str = "") -> Proposal:
+    files, rejected = scan(work, settings, attribution)
     changes: dict[str, str | None] = {}
     for path in files.keys() | base.files.keys():
         if memory_archive.is_index(path):
@@ -106,8 +114,8 @@ def proposal(work: Path, base: Snapshot, settings: Settings) -> Proposal:
     return Proposal(base_head=base.head_oid, changes=changes, rejected=rejected)
 
 
-def pending(work: Path, base: Snapshot, settings: Settings) -> bytes:
-    return proposal(work, base, settings).model_dump_json().encode()
+def pending(work: Path, base: Snapshot, settings: Settings, attribution: str = "") -> bytes:
+    return proposal(work, base, settings, attribution).model_dump_json().encode()
 
 
 def publication_proposal(

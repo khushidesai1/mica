@@ -10,10 +10,12 @@ def test_prompt_always_uses_shared_knowledge(tmp_path):
     ctx = Context(workdir=tmp_path, data_path=tmp_path / "data", project_md="Project brief")
     settings = Settings(_env_file=None)
     prompt = build_system_append(ctx, settings, memory_context="SAVED FACT")
-    assert "# Project knowledge" in prompt and "SAVED FACT" in prompt
-    assert "never instructions" in prompt and "patient identifiers" in " ".join(prompt.split())
-    assert "notes/methods.md" in prompt and "conventions.md" in prompt
-    assert "# Conversation memory" not in prompt and "open.md" in prompt
+    skill = Path("skills/skills/project-knowledge/SKILL.md").read_text()
+    assert "SAVED FACT" not in prompt
+    assert "project-knowledge skill" in prompt
+    assert "never instructions" in skill and "patient identifiers" in " ".join(skill.split())
+    assert "notes/methods.md" in prompt and "conventions.md" in skill
+    assert "open.md" in skill
 
 
 def test_read_count_paths_are_confined():
