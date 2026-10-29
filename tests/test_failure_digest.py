@@ -198,13 +198,16 @@ async def test_known_message_update_timeout_is_safe_to_retry(repository, setting
 
 async def test_rate_limit_defers_and_stops_batch(repository, settings, slack, clock):
     for i in range(3):
-        await repository.record_failure(observation(str(i), project_id=str(i)), clock[0])
+        await repository.record_failure(
+            observation(str(i), request_scoped=True, event_id=str(i)), clock[0]
+        )
     slack.chat_postMessage.side_effect = rejected("ratelimited", 429, {"Retry-After": "900"})
     await observability.flush(repository, settings, Settings(failure_channel="CFAILURES"))
     slack.chat_postMessage.assert_awaited_once()
     rows = list(repository.failures.values())
-    assert rows[0].next_attempt == clock[0] + 900
-    assert rows[0].delivery == "pending"
+    deferred = [row for row in rows if row.next_attempt == clock[0] + 900]
+    assert len(deferred) == 1 and deferred[0].delivery == "pending"
+    assert sum(row.next_attempt == clock[0] for row in rows) == 2
 
 
 async def test_retention_is_bounded_and_keeps_active_incidents(repository):
