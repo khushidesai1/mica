@@ -15,10 +15,11 @@ from typing import Any
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, SdkMcpTool, tool
 from claude_agent_sdk.types import Message
 
+from .checkpoints import Stages
 from .config import Settings
 from .recovery import RecoverCall
 from .resources import Sampler
-from .tiers import TIERS
+from .tiers import GPU_TIERS, TIERS
 
 REQUEST_TOOL = "mcp__pistachio__recover_worker"
 STAGE_TOOL = "mcp__pistachio__checkpoint_stage"
@@ -66,9 +67,12 @@ class RecoveryManager:
         *,
         save_stage: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
         status: Callable[[str], Awaitable[None]] | None = None,
+        save_result: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]] | None = None,
+        stages: Stages | None = None,
     ) -> None:
         self.settings, self.manifest, self.sampler = settings, manifest, sampler
         self.operate, self.save_stage, self.status = operate, save_stage, status
+        self.save_result, self.stages = save_result, stages
         self.attempt = int(manifest["attempt"])
         self.tier = str(manifest["tier"])
         self.pending = False
@@ -93,19 +97,37 @@ class RecoveryManager:
             self.stop.set()
 
     def prompt(self) -> str:
-        shape = TIERS[self.tier]
+        shape = (
+            GPU_TIERS[self.manifest.get("gpu_type", "l4")]
+            if self.tier == "gpu"
+            else TIERS[self.tier]
+        )
         mode = "on-demand" if self.manifest["provisioning"] == "STANDARD" else "Spot"
         history = "\n".join(self.manifest.get("worker_history", []))
+        remaining = max(0, int(self.manifest.get("request_deadline", time.time()) - time.time()))
+        recovery_policy = (
+            "This GPU worker cannot resize or move to a CPU tier. Chunk work within the "
+            "confirmed resources; save progress and explain if the request cannot fit. "
+            "Verified Spot interruptions and checkpointed continuations keep the same GPU "
+            "tier, mode and total approved allowance. "
+            if self.tier == "gpu"
+            else (
+                "If measured input requirements or resource feedback show the next step cannot "
+                "fit, "
+                "call recover_worker with the evidence and remaining steps. The application can "
+                "automatically continue the same request on a suitable larger worker once. "
+            )
+        )
         return (
             "\n## Worker (trusted application policy)\n"
             f"Worker: {shape.name}, {shape.machine}, {shape.vcpus} CPUs, "
             f"{shape.memory_gib} GiB RAM, {mode}. "
             f"Launch reason: {self.manifest.get('launch_reason') or 'ordinary analysis'}.\n"
+            f"Approved time remaining at launch: {remaining} seconds. "
+            "Use compute_allowance for the current remaining time during long work. "
             "This worker was sized to finish the job. Run the requested work directly. "
             "Set explicit Bash timeouts within the remaining request deadline. "
-            "If measured input requirements or resource feedback show the next step cannot fit, "
-            "call recover_worker with the evidence and remaining steps. The application can "
-            "automatically continue the same request on a suitable larger worker once. "
+            f"{recovery_policy}"
             "Never deliberately start undersized, silently reduce scientific scope, or ask the "
             "user to resubmit for a larger worker. "
             "High RAM alone is not proof of insufficient capacity. "
@@ -115,6 +137,15 @@ class RecoveryManager:
             "Save completed expensive stages under checkpoints/ with checkpoint_stage after "
             "all writers close. Include input versions, method and parameters in fingerprints; "
             "validate them before reuse. Scratch and running processes do not survive a restart. "
+            "Durable saved stages survive a completed or stopped request in this project/thread. "
+            "Use saved_checkpoints to list or restore them before recomputing expensive work. "
+            "Only recent stages are restored automatically; restore older saved results on demand. "
+            "Cellpose results save automatically; general scripts must save completed stages. "
+            "Runtime estimates are advisory: long healthy processes may continue to the approved "
+            "deadline. If more time is needed, save progress and ask for an additional allowance; "
+            "Do not silently drop scope or repeat saved computation. "
+            "Use recover_worker cause=continue "
+            "only at a saved boundary when a fresh worker is needed within this same allowance. "
             "Keep commands foreground and preserve sandbox network and local-binding rules.\n"
             + history
         )
@@ -133,6 +164,63 @@ class RecoveryManager:
             return await self.call(args)
 
         result = [request]
+
+        @tool("compute_allowance", "Read the approved deadline and remaining compute time.", {})
+        async def allowance(_args: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": json.dumps(
+                            {
+                                "deadline_unix": self.deadline,
+                                "remaining_seconds": max(0, int(self.deadline - time.time())),
+                                "model_spent_this_worker_usd": self.model_cost,
+                                "policy": (
+                                    "Continue healthy work within this allowance. "
+                                    "Save completed stages and ask for a new allowance "
+                                    "before more work if the remaining time is insufficient."
+                                ),
+                            }
+                        ),
+                    }
+                ]
+            }
+
+        result.append(allowance)
+        if self.stages:
+
+            @tool(
+                "saved_checkpoints",
+                "List durable stages in this project/thread, or restore one by checkpoint_id. "
+                "Validate its input/method fingerprint before reuse. Page with offset; "
+                "existing files are preserved.",
+                {
+                    "type": "object",
+                    "properties": {
+                        "checkpoint_id": {"type": "string", "pattern": "^[a-f0-9]{32}$"},
+                        "offset": {"type": "integer", "minimum": 0},
+                    },
+                    "additionalProperties": False,
+                },
+            )
+            async def saved(args: dict[str, Any]) -> dict[str, Any]:
+                try:
+                    assert self.stages is not None
+                    value = (
+                        await asyncio.to_thread(
+                            self.stages.restore_saved, str(args["checkpoint_id"])
+                        )
+                        if args.get("checkpoint_id")
+                        else await asyncio.to_thread(
+                            self.stages.available, int(args.get("offset", 0))
+                        )
+                    )
+                    return {"content": [{"type": "text", "text": json.dumps(value)}]}
+                except (ValueError, OSError) as exc:
+                    return {"isError": True, "content": [{"type": "text", "text": str(exc)[:500]}]}
+
+            result.append(saved)
         if self.save_stage:
 
             @tool(

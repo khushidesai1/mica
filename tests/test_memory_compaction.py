@@ -59,7 +59,7 @@ async def test_coalesced_task_merges_one_set_and_preserves_originals(chat, monke
 @pytest.mark.parametrize(
     "invalid",
     [
-        {"data/fact.md": "missing headers"},
+        {"data/fact.md": "invalid\x00binary"},
         {"INDEX.md": "invented index"},
         {"PROJECT.md": "overwrite outside selected set"},
         {"recipes/unseen.py": "destroy"},

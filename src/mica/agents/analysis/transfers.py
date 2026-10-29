@@ -27,6 +27,7 @@ from . import (
     transfer_destinations,
 )
 from .access import Grant
+from .commands import spec
 from .progress import check_in_due, elapsed_label
 from .registry import Registry
 from .storage import GCSStorage, Storage
@@ -861,7 +862,7 @@ class Transfers:
         self, cmd: Command, grant: Grant, record: dict[str, Any], event_id: str
     ) -> str:
 
-        if cmd.name in {"connect atomx", "replace atomx login", "forget atomx login"}:
+        if spec(cmd.name).connection and cmd.name != "atomx login status":
             return await self.connection_link(grant.email, record, event_id)
         if cmd.name == "atomx login status":
             value = await self.connections.status(grant.email)

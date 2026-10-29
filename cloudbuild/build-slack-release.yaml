@@ -8,6 +8,18 @@ steps:
     name: gcr.io/cloud-builders/docker
     waitFor: ['-']
     args: [build, --build-arg, 'BASE_IMAGE=${_SLACK_BASE}', --build-arg, 'INSTALL_BOT_DEPENDENCIES=1', --build-arg, 'SOURCE_COMMIT=${_SOURCE_COMMIT}', -f, docker/Dockerfile.slack-release, -t, '${_SLACK_IMAGE}', .]
+  - id: build-gpu-worker
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        if [ -n '${_GPU_BASE}' ]; then
+          [[ '${_GPU_BASE}' =~ @sha256:[a-f0-9]{64}$ ]]
+          test -n '${_GPU_IMAGE}'
+          docker build --build-arg 'BASE_IMAGE=${_GPU_BASE}' --build-arg INSTALL_BOT_DEPENDENCIES=1 --build-arg 'SOURCE_COMMIT=${_SOURCE_COMMIT}' -f docker/Dockerfile.slack-release -t '${_GPU_IMAGE}' .
+        fi
   - id: verify-headless-api
     name: gcr.io/cloud-builders/docker
     waitFor: [build-api]
@@ -46,6 +58,29 @@ steps:
     args:
       - -ceu
       - if [ '${_VERIFY_SPATIAL}' = '1' ]; then docker run --rm --network=none -e OMP_NUM_THREADS=1 -v /workspace:/workspace:ro --entrypoint /opt/sap/bin/python '${_SLACK_IMAGE}' /workspace/scripts/check_spatial_release.py; fi
+  - id: verify-cellpose-cpu
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-slack-worker]
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        if [ '${_VERIFY_CELLPOSE}' = '1' ]; then
+          docker run --rm --network=none --privileged -v /workspace:/workspace:ro --entrypoint python '${_SLACK_IMAGE}' /workspace/scripts/check_cellpose_gpu.py
+        fi
+  - id: verify-gpu-worker
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-gpu-worker]
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        if [ -n '${_GPU_BASE}' ]; then
+          docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_slack_release.py worker
+          docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_atomx_release.py worker
+          docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_compute_release.py
+          docker run --rm --network=none --privileged -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_cellpose_gpu.py
+        fi
   - id: refresh-shared-worker
     name: gcr.io/cloud-builders/docker
     waitFor: [build-api]
@@ -54,10 +89,18 @@ steps:
     name: gcr.io/cloud-builders/docker
     waitFor: [export-api-contract, refresh-shared-worker]
     args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_SHARED_IMAGE}', /workspace/scripts/check_worker_compatibility.py, check, /workspace/api-execution-contract.json]
+  - id: push-gpu-worker
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args: [-ceu, "if [ -n '${_GPU_BASE}' ]; then docker push '${_GPU_IMAGE}'; fi"]
 images: ['${_API_IMAGE}', '${_SLACK_IMAGE}', '${_SHARED_IMAGE}']
 options:
   logging: CLOUD_LOGGING_ONLY
-  machineType: E2_HIGHCPU_8
+  machineType: E2_HIGHCPU_32
+  diskSizeGb: 300
 timeout: 1800s
 substitutions:
   _VERIFY_SPATIAL: '0'
+  _VERIFY_CELLPOSE: '0'
+  _GPU_BASE: ''
+  _GPU_IMAGE: ''

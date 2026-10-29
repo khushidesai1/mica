@@ -37,6 +37,16 @@ def serialized(job):
 
 
 @pytest.mark.parametrize("case", CASES)
+def test_cpu_boot_disk_omits_image_selector_on_the_wire(case):
+    app, settings, kwargs = job_inputs(case)
+    job = batch_v1.Job.deserialize(serialized(job_spec(app, settings, "a" * 32, **kwargs)))
+    disk = job.allocation_policy.instances[0].policy.boot_disk
+    # Empty string still selects this oneof; only omission lets Batch choose its host.
+    assert batch_v1.AllocationPolicy.Disk.pb(disk).WhichOneof("data_source") is None
+    assert disk.type_ == "pd-balanced" and disk.size_gb >= 500
+
+
+@pytest.mark.parametrize("case", CASES)
 def test_on_demand_changes_only_the_provisioning_model(case):
     app, settings, kwargs = job_inputs(case)
     job = job_spec(app, settings, "a" * 32, provisioning="STANDARD", **kwargs)

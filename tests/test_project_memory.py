@@ -44,7 +44,7 @@ async def test_round_trip_and_historical_snapshot(store, caplog):
     "path,text,reason",
     [
         ("../escape.md", FACT, "path"),
-        ("conventions.md", "No headers", "headers"),
+        ("conventions.md", "Invalid\x00binary", "binary"),
         ("data/token.md", FACT + "password=secret", "Secret"),
         ("PROJECT.md", "x" * 100_001, "size"),
         ("lessons.md", FACT + "x" * 16_384, "size"),

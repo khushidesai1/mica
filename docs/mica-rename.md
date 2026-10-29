@@ -29,6 +29,11 @@ SDK tool names, object metadata and idempotency fields retain their wire identif
 These compatibility names are intentional; changing them requires a separate migration.
 Historical source-hash manifests keep the original filenames they attest to.
 
+The [resource migration runbook](mica-resource-migration.md) describes the staged replacement
+of the cloud resource names. Its independent Terraform root keeps the existing deployment
+available while the Mica stack is prepared and verified. Container paths and wire identifiers
+remain compatible throughout that migration.
+
 ## Development and rollout
 
 ```bash

@@ -10,6 +10,7 @@ WORKDIR /opt/pistachio
 COPY pyproject.toml README.md ./
 COPY src ./src
 COPY tools ./tools
+COPY skills /opt/pistachio/plugin
 COPY templates ./templates
 RUN pip install --no-deps . && mkdir -p /srv/pistachio/work /opt/sci/bin && \
     ln -sf /usr/local/bin/python /opt/sci/bin/python && chown -R 65532:65532 /srv/pistachio

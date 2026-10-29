@@ -25,6 +25,24 @@ class ToolkitEntry:
 
 
 CATALOG = (
+    ToolkitEntry(
+        "Cellpose 3",
+        "cellpose==3.1.1.3",
+        ("cellpose",),
+        "BSD-3-Clause",
+        kind="image",
+        python="/opt/sap/bin/python",
+        notes="Versioned segmentation via cellpose_segment; existing SAP environment.",
+    ),
+    ToolkitEntry(
+        "Cellpose-SAM",
+        "cellpose==4.2.1.1",
+        ("cellpose",),
+        "BSD-3-Clause",
+        kind="image",
+        python="/opt/cellpose/4.2.1.1/bin/python",
+        notes="Separate versioned runtime and pinned cpsam/cpsam_v2 weights; use cellpose_segment.",
+    ),
     ToolkitEntry("Starfysh", "starfysh==1.2.0", ("starfysh",), "BSD-3-Clause"),
     ToolkitEntry("Echidna", "sc-echidna==1.0.3", ("echidna",), "MIT"),
     ToolkitEntry("Amici", "amici-st==0.1.0", ("amici",), "CC-BY-NC-ND-4.0", isolated=True),

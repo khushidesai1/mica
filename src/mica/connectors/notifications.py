@@ -200,6 +200,7 @@ class ChannelNotifier:
                             separators=(",", ":"),
                         ),
                         "confirm": {
+                            "style": "primary",
                             "title": {"type": "plain_text", "text": "Approve compute plan?"},
                             "text": {
                                 "type": "mrkdwn",

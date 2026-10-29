@@ -9,6 +9,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from .transfer_config import TransferProject
 
 CHECKPOINT_PREFIX = "tasks/slack-analysis"
+MAX_MEMORY_TOTAL_KB = 16384
 
 
 class Settings(BaseSettings):
@@ -24,6 +25,9 @@ class Settings(BaseSettings):
     )
     slack_app_token: SecretStr = Field(default=SecretStr(""), alias="SLACK_APP_TOKEN")
     model: str = "claude-opus-5-5"
+    conversation_principals: str = ""  # Empty retains the legacy route for staged rollout.
+    conversation_effort: Literal["low", "medium", "high"] = "medium"
+    conversation_max_calls: int = Field(default=6, ge=1, le=12)
     routing_repair_model: str = "claude-opus-5"  # Must support forced tool choice.
     loading_emoji: str = ":hourglass_flowing_sand:"  # AGENT_LOADING_EMOJI; custom emoji supported.
     amendments: bool = False
@@ -38,7 +42,7 @@ class Settings(BaseSettings):
     memory_index_chars: int = Field(default=4000, ge=1, le=16000)
     memory_file_kb: int = Field(default=16, ge=1, le=64)
     memory_max_files: int = Field(default=500, ge=1, le=1000)
-    memory_total_kb: int = Field(default=4096, ge=1, le=16384)
+    memory_total_kb: int = Field(default=4096, ge=1, le=MAX_MEMORY_TOTAL_KB)
     memory_router_chars: int = Field(default=12000, ge=1, le=64000)
     memory_auto_edit: bool = True
     memory_compaction_enabled: bool = True
@@ -61,6 +65,7 @@ class Settings(BaseSettings):
     state_db: Path = Path("/srv/pistachio/state.db")
     sci_python: Path = Path("/opt/sci/bin/python")
     tools_dir: Path = Path("/opt/pistachio/tools")
+    plugin_dir: Path = Path("/opt/pistachio/plugin")
     runtimes_enabled: bool = False
     runtime_root: Path = Path("/srv/pistachio/runtimes")
     runtime_min_age_days: int = Field(default=7, ge=0)
@@ -78,6 +83,16 @@ class Settings(BaseSettings):
     max_concurrent_runs: int = Field(default=3, ge=1)
     launch_heavy_tier: Literal["standard", "large", "xlarge"] = "large"
     max_tier: Literal["standard", "large", "xlarge"] = "xlarge"
+    gpu_tier_enabled: bool = False
+    gpu_types: str = Field(default="t4,l4", pattern=r"^(?:t4|l4)(?:,(?:t4|l4))*$")
+    gpu_default_type: Literal["t4", "l4"] = "t4"
+    gpu_queue_wait_seconds: int = Field(default=600, ge=60, le=3600)
+    gpu_image: str = Field(default="", pattern=r"^(?:[a-z0-9./_-]+@sha256:[0-9a-f]{64})?$")
+    gpu_max_seconds: int = Field(default=7 * 24 * 3600, ge=600, le=14 * 24 * 3600)
+    gpu_default_seconds: int = Field(default=8 * 3600, ge=600, le=14 * 24 * 3600)
+    gpu_hourly_estimate_usd: float = Field(default=2.0, gt=0, le=100)
+    gpu_t4_hourly_estimate_usd: float = Field(default=1.5, gt=0, le=100)
+    gpu_worker: bool = False  # Set only on the explicitly approved GPU worker.
     partial_checkpoint_seconds: int = Field(default=900, ge=60, le=3600)
     long_run_threshold_seconds: int = Field(default=600, ge=60)
     long_run_update_seconds: int = Field(default=7200, ge=60)

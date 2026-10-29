@@ -455,6 +455,9 @@ async def slack_actions(request: Request) -> dict[str, object]:
     ):
         raise HTTPException(status_code=401, detail="invalid Slack signature")
     encoded_payload = parse_qs(body.decode()).get("payload", [""])[0]
+    from mica.api.migration import admit
+
+    await admit(request)
     try:
         payload = json.loads(encoded_payload)
     except json.JSONDecodeError as exc:
@@ -463,18 +466,26 @@ async def slack_actions(request: Request) -> dict[str, object]:
     from mica.agents.analysis import (
         amendments,
         command_approval,
+        compute_approval,
         transfer_interactions,
         write_approval,
     )
 
-    if (write_approval.is_action(payload) or command_approval.is_action(payload)
-            or amendments.is_action(payload)):
+    if (
+        write_approval.is_action(payload) or command_approval.is_action(payload)
+        or compute_approval.is_action(payload) or amendments.is_action(payload)
+    ):
         from slack_sdk.web.async_client import AsyncWebClient
 
         from mica.agents.analysis.batch import BatchBridge
         from mica.agents.analysis.storage import GCSStorage
 
         try:
+            if compute_approval.is_action(payload):
+                return await compute_approval.handle(
+                    BatchBridge(services.settings, services.repository),
+                    GCSStorage(services.settings.gcs_bucket), payload,
+                )
             if amendments.is_action(payload):
                 return await amendments.handle(
                     BatchBridge(services.settings, services.repository),
@@ -797,6 +808,15 @@ async def slack_events(request: Request) -> dict[str, object]:
     payload = json.loads(body)
     if payload.get("type") == "url_verification":
         return {"challenge": payload.get("challenge", "")}
+    from mica.api.migration import buffer_slack
+
+    if await buffer_slack(request, payload):
+        return {"ok": True, "maintenance": True}
+    return await dispatch_slack_event(services, payload)
+
+
+async def dispatch_slack_event(services: Services, payload: dict[str, Any]) -> dict[str, object]:
+    """Dispatch a verified live event or an authenticated durable migration receipt."""
     if services.settings.slack_agent_backend == "claude_batch":
         from mica.api.slack_analysis import receive
 

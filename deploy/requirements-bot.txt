@@ -10,3 +10,5 @@ pyarrow==25.0.1
 pypdfium2==5.14.0
 uv==0.9.6
 packaging==26.3
+anthropic==2.3.0
+docstring-parser==0.18.0

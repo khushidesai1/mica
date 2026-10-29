@@ -207,25 +207,31 @@ class Connections:
             + self.mac("links", identifier)
         )
 
-    async def exchange(self, raw: str) -> str:
+    async def validate_link(self, raw: str) -> tuple[str, dict[str, Any]]:
+        """Authenticate a private link without consuming it or acquiring a write lease."""
         if len(raw) != 129 or raw[64] != ".":
             raise ValueError("Open a fresh private AtoMx link from Mica.")
         identifier, token = raw.split(".", 1)
         key = "atomx-link:" + identifier
+        link = await self.repo.get_connector_state(key)
+        if (
+            not link
+            or link.get("key_version") != self.key_version()
+            or link.get("used")
+            or time.time() >= link["expires"]
+            or not hmac.compare_digest(link["token_hash"], digest(token))
+        ):
+            raise ValueError(
+                "This private link expired or was already opened. Ask Mica for a new link."
+            )
+        if (await self.get(link["owner"])).get("revision", "") != link["revision"]:
+            raise ValueError("This connection changed. Ask Mica for a new link.")
+        return key, link
+
+    async def exchange(self, raw: str) -> str:
+        key, _ = await self.validate_link(raw)
         async with self.locked(key):
-            link = await self.repo.get_connector_state(key)
-            if (
-                not link
-                or link.get("key_version") != self.key_version()
-                or link.get("used")
-                or time.time() >= link["expires"]
-                or not hmac.compare_digest(link["token_hash"], digest(token))
-            ):
-                raise ValueError(
-                    "This private link expired or was already opened. Ask Mica for a new link."
-                )
-            if (await self.get(link["owner"])).get("revision", "") != link["revision"]:
-                raise ValueError("This connection changed. Ask Mica for a new link.")
+            _, link = await self.validate_link(raw)
             session = secrets.token_urlsafe(32)
             await self.repo.set_connector_state(
                 "atomx-session:" + digest(session),

@@ -25,6 +25,8 @@ from mica.storage.base import Repository
 from . import (
     access,
     amendments,
+    compute_approval,
+    gpu_capacity,
     memory_tasks,
     observability,
     project_memory,
@@ -41,10 +43,13 @@ from .data_links import init_args
 from .identity import IdentityUnavailable
 from .slack_format import chunks, status_blocks
 from .storage import GCSStorage, Storage
-from .tiers import Provisioning
+from .tiers import Provisioning, selected_gpu
 
 log = logging.getLogger(__name__)
 STATUS_PHASES = {"received", "waiting", "starting", "replying", "cancelling"}
+GPU_BOOT_IMAGE = (
+    "projects/batch-custom-image/global/images/batch-debian-12-official-20261016-00-p00"
+)
 
 
 def digest(value: str) -> str:
@@ -62,16 +67,19 @@ def job_spec(
     budget: float | None = None,
     duration: int | None = None,
     provisioning: Provisioning = "SPOT",
+    gpu_type: str = "l4",
 ) -> batch_v1.Job:
     import math
 
+    from . import gpu_runtime
     from .tiers import resolve
 
-    shape = resolve(tier, settings)
+    shape = resolve(tier, settings, gpu_type)
+    gpu = tier == "gpu"
     if provisioning not in {"SPOT", "STANDARD"}:
         raise ValueError("Invalid worker provisioning mode.")
     seconds = shape.max_seconds if duration is None else duration
-    if not 1 <= seconds <= shape.max_seconds or not 0 <= attempt <= 20:
+    if not 1 <= seconds <= shape.max_seconds or not 0 <= attempt <= 64:
         raise ValueError("Invalid worker duration or attempt.")
     if budget is not None and (not math.isfinite(budget) or not 0 < budget <= 10000):
         raise ValueError("Invalid reserved model budget.")
@@ -103,6 +111,8 @@ def job_spec(
                 "The proc-mount exception requires the existing staging sandbox opt-in"
             )
         options += " --security-opt systempaths=unconfined"
+    if gpu:
+        options += gpu_runtime.OPTIONS
     environment = {
         "HOME": "/srv/pistachio",
         "MICA_GCS_BUCKET": app.gcs_bucket,
@@ -121,6 +131,7 @@ def job_spec(
         "AGENT_LONG_RUN_THRESHOLD_SECONDS": str(settings.long_run_threshold_seconds),
         "AGENT_LONG_RUN_UPDATE_SECONDS": str(settings.long_run_update_seconds),
         "AGENT_MAX_RUN_SECONDS": str(seconds),
+        "AGENT_GPU_WORKER": "true" if gpu else "false",
     }
     environment.update(
         {
@@ -151,7 +162,7 @@ def job_spec(
         )
     runnable = batch_v1.Runnable(
         container=batch_v1.Runnable.Container(
-            image_uri=app.slack_agent_image,
+            image_uri=settings.gpu_image if gpu else app.slack_agent_image,
             commands=["python", "-m", "mica.agents.analysis.batch_worker", event_id],
             options=options,
             volumes=[f"/mnt/stateful_partition/gcs/{b}:/mnt/gcs/{b}:ro" for b in sorted(buckets)],
@@ -159,7 +170,16 @@ def job_spec(
         environment=batch_v1.Environment(variables=environment),
     )
     task = batch_v1.TaskSpec(
-        runnables=[runnable],
+        runnables=(
+            [
+                batch_v1.Runnable(
+                    script=batch_v1.Runnable.Script(text=gpu_runtime.SETUP), timeout="120s"
+                )
+            ]
+            if gpu
+            else []
+        )
+        + [runnable],
         max_retry_count=0,
         max_run_duration=f"{seconds}s",
         compute_resource=batch_v1.ComputeResource(
@@ -184,16 +204,31 @@ def job_spec(
     )
     policy = batch_v1.AllocationPolicy.InstancePolicy(
         machine_type=shape.machine,
+        accelerators=(
+            [batch_v1.AllocationPolicy.Accelerator(type_=shape.accelerator_type, count=1)]
+            if shape.accelerator_type
+            else []
+        ),
         # Proto-plus enums support name lookup; their stubs omit EnumMeta.__getitem__.
         provisioning_model=(
             batch_v1.AllocationPolicy.ProvisioningModel[provisioning]  # type: ignore[misc]
         ),
-        boot_disk=batch_v1.AllocationPolicy.Disk(type_=shape.disk_type, size_gb=shape.disk_gb),
+        boot_disk=batch_v1.AllocationPolicy.Disk(
+            type_=shape.disk_type,
+            size_gb=shape.disk_gb,
+            # Batch owns GPU/container integration. COS currently injects a privileged
+            # launch that conflicts with its CDI hook; use the supported Debian host.
+            **({"image": GPU_BOOT_IMAGE} if gpu else {}),
+        ),
     )
     return batch_v1.Job(
         task_groups=[batch_v1.TaskGroup(task_count=1, task_spec=task)],
         allocation_policy=batch_v1.AllocationPolicy(
-            instances=[batch_v1.AllocationPolicy.InstancePolicyOrTemplate(policy=policy)],
+            instances=[
+                batch_v1.AllocationPolicy.InstancePolicyOrTemplate(
+                    policy=policy, install_gpu_drivers=gpu
+                )
+            ],
             service_account=batch_v1.ServiceAccount(email=app.batch_service_account),
             network=batch_v1.AllocationPolicy.NetworkPolicy(
                 network_interfaces=[
@@ -265,8 +300,9 @@ class BatchBridge:
             status = {"blocks": []}  # Remove old buttons without bypassing text chunk limits.
         # Use the same bounded messages as guide display for every response, including
         # built-in commands. Save each confirmed part so a retry resumes the delivery.
-        parts = list(chunks(text)) or [""]
-        delivery_id = digest(f"{phase}:{text}")
+        displayed = f"🚩 {text}" if phase in {"failed", "cancelled"} else text
+        parts = list(chunks(displayed)) or [""]
+        delivery_id = digest(f"{phase}:{displayed}")
         progress = record.get("notice_chunks", {})
         sent = int(progress.get("sent", 0)) if progress.get("id") == delivery_id else 0
         try:
@@ -461,19 +497,47 @@ class BatchBridge:
                 if observability.capture_project(record, grant):
                     await self.repository.set_connector_state(key, record)
             if not record.get("notice_ts"):
-                await self.notify(event_id, record, "received", "On it…")
+                await self.notify(event_id, record, "received", "Mica is working")
             from . import command_intent, commands
             from .direct import RoutingUnavailable, finish
 
+            previous = (
+                await self.repository.get_connector_state(f"claude-event:{record['previous']}")
+                if record.get("previous")
+                else None
+            )
+            for _ in range(100):
+                if not previous or not previous.get("control_bypass"):
+                    break
+                previous = (
+                    await self.repository.get_connector_state(
+                        f"claude-event:{previous['previous']}"
+                    )
+                    if previous.get("previous")
+                    else None
+                )
+            else:
+                raise RuntimeError("Control predecessor chain exceeds the safe limit")
             cmd = commands.Command("cancel") if record.get("cancel_control") else None
             if record["status"] == "pending" and record.get("route") != "compute":
                 try:
                     cmd = commands.parse(record["payload"]["event"].get("text", ""))
-                    intent = (
-                        None
-                        if cmd
-                        else await command_intent.prepare(self, event_id, record, self.storage)
+                    from . import conversation
+
+                    grant = await asyncio.to_thread(
+                        access.resolve, self.app, self.settings, self.storage, record
                     )
+                    intent = None
+                    if not cmd and conversation.enabled(self.settings, grant.email):
+                        if previous and previous["status"] not in {"complete", "failed"}:
+                            operation = await conversation.control(self, event_id, record, grant)
+                            if operation == "cancel":
+                                cmd = commands.Command("cancel")
+                            elif operation == "write revoke" and not surface.is_email(record):
+                                record["control_bypass"] = True
+                                await self.repository.set_connector_state(key, record)
+                    elif not cmd:
+                        intent = await command_intent.prepare(self, event_id, record, self.storage)
                     if intent and intent.route == "command" and intent.proposal:
                         if intent.proposal.operation == "cancel":
                             cmd = commands.Command("cancel")
@@ -513,23 +577,6 @@ class BatchBridge:
                     await self.notify(event_id, record, "failed", str(exc).splitlines()[0][:250])
                     await self.repository.set_connector_state(key, record)
                     return "failed"
-            previous = (
-                await self.repository.get_connector_state(f"claude-event:{record['previous']}")
-                if record.get("previous")
-                else None
-            )
-            for _ in range(100):
-                if not previous or not previous.get("control_bypass"):
-                    break
-                previous = (
-                    await self.repository.get_connector_state(
-                        f"claude-event:{previous['previous']}"
-                    )
-                    if previous.get("previous")
-                    else None
-                )
-            else:
-                raise RuntimeError("Control predecessor chain exceeds the safe limit")
             from .data_links import message_text
 
             if cmd and cmd.name == "cancel":
@@ -615,6 +662,7 @@ class BatchBridge:
 
     async def record_terminal(self, event_id: str, record: dict[str, Any]) -> None:
         """Fill missing history before a terminal event releases the next turn."""
+        from . import recovery
         from .direct import record_exchange
 
         if record["status"] not in {"complete", "failed"} or record.get("terminal_recorded"):
@@ -631,6 +679,16 @@ class BatchBridge:
                 and record.get("principal", grant.email) == grant.email
             ):
                 state = grant.state
+                if record["status"] == "failed" and record.get("recovery_version"):
+                    partial = await asyncio.to_thread(
+                        recovery.verified_resume, storage, event_id, record["attempt"]
+                    )
+                    if partial:
+                        # Preserve the code/notes handoff too. Large results live in separately
+                        # scoped durable stages, never in the ordinary workspace archive.
+                        state.update(archive=partial["archive"], retention_version=1)
+                        if "script_manifest" in partial:
+                            state["script_manifest"] = partial["script_manifest"]
                 exchange = next(
                     (m for m in state.get("messages", []) if m.get("id") == event_id), None
                 )
@@ -728,7 +786,15 @@ class BatchBridge:
         name = f"{parent}/jobs/claude-{event_id}"
         name = record.get("job", name)
         if record["status"] == "awaiting_approval":
-            if record.get("overwrite_approval"):
+            if record.get("gpu_approval"):
+                try:
+                    if not await compute_approval.ready(self, event_id, record, self.storage):
+                        return
+                except (ValueError, PermissionError) as exc:
+                    record["status"] = "failed"
+                    await self.notify(event_id, record, "failed", str(exc))
+                    return
+            elif record.get("overwrite_approval"):
                 try:
                     if not await write_approval.ready(self, event_id, record, self.storage):
                         return
@@ -794,6 +860,13 @@ class BatchBridge:
             # without creating late work after cancellation or the original deadline.
             record.update(status="running", started=record.get("started", time.time()))
         if record["status"] == "pending":
+            try:
+                if not await compute_approval.ready(self, event_id, record, self.storage):
+                    return
+            except (ValueError, PermissionError) as exc:
+                record["status"] = "failed"
+                await self.notify(event_id, record, "failed", str(exc))
+                return
             if "write_grant" not in record:
                 writable = await asyncio.to_thread(
                     write_access.active, self.storage, record["project_id"], self.settings
@@ -851,8 +924,10 @@ class BatchBridge:
                         max_run_seconds=seconds,
                     )
                     record.update(slot_pool=pool, submitted=time.time())
-                    record.setdefault("amendments_enabled", self.settings.amendments
-                                      and not surface.is_email(record))
+                    record.setdefault(
+                        "amendments_enabled",
+                        self.settings.amendments and not surface.is_email(record),
+                    )
                     # Persist before submission: an HTTP retry uses the same job and slot.
                     await self.repository.set_connector_state(f"claude-event:{event_id}", record)
                     break
@@ -869,15 +944,21 @@ class BatchBridge:
         if record["status"] == "submitting":
             starting = "Spinning up a compute worker (usually a few minutes)…"
             if record.get("provisioning") == "STANDARD":
-                from .tiers import TIERS
+                from .tiers import GPU_TIERS, TIERS
 
-                shape = TIERS[record["tier"]]
+                shape = (
+                    GPU_TIERS[selected_gpu(record)]
+                    if record["tier"] == "gpu"
+                    else TIERS[record["tier"]]
+                )
                 reason = (
                     record.get("launch_reason") or "on-demand selected for this request"
                 ).rstrip(".")
                 starting = (
                     f"Starting an on-demand worker ({shape.name}: {shape.vcpus} CPUs, "
-                    f"{shape.memory_gib} GiB): {reason}."
+                    f"{shape.memory_gib} GiB"
+                    + (f", NVIDIA {str(shape.gpu_type).upper()}" if shape.gpu_type else "")
+                    + f"): {reason}."
                 )
             await self.notify(
                 event_id,
@@ -921,8 +1002,14 @@ class BatchBridge:
             except FileNotFoundError:
                 references = {"snapshots": [], "unavailable": []}
                 references_started = time.monotonic()
-                for repo in sorted(grant.project.reference_repos):
+                available = grant.project.reference_repos | await reference_repos.shared_repos(
+                    self.repository, self.settings
+                )
+                selected = record.get("reference_repos", sorted(grant.project.reference_repos))
+                for repo in selected:
                     try:
+                        if repo not in available:
+                            raise ValueError("Reference repository is no longer available")
                         async with asyncio.timeout(
                             max(0.01, 60 - (time.monotonic() - references_started))
                         ):
@@ -991,8 +1078,28 @@ class BatchBridge:
             record["cooperative_stop"] = True
             record["retention_version"] = 1
             record.pop("worker_stopped", None)
+            # Revalidate after snapshot preparation, immediately before creating a GPU job.
+            try:
+                if not await compute_approval.ready(self, event_id, record, self.storage):
+                    return
+            except (ValueError, PermissionError) as exc:
+                # A prior submission may have reached Batch before its response was lost.
+                # Reconcile/delete it and retain the slot until deletion is observed.
+                try:
+                    await asyncio.to_thread(client.delete_job, name=name)
+                except NotFound:
+                    await self.repository.release_event(
+                        f"{record.get('slot_pool', 'claude-slot')}:{record['slot']}",
+                        record["slot_token"],
+                    )
+                    record.update(status="failed", worker_stopped=True)
+                else:
+                    record.update(status="running", started=record.get("started", time.time()))
+                record["cancel_requested"] = True
+                await self.notify(event_id, record, "failed", str(exc))
+                return
             await self.repository.set_connector_state(f"claude-event:{event_id}", record)
-            with suppress(AlreadyExists):
+            try:
                 await asyncio.to_thread(
                     client.create_job,
                     parent=parent,
@@ -1009,6 +1116,7 @@ class BatchBridge:
                         ),
                         event_id,
                         set(record["mount_buckets"]) if "mount_buckets" in record else None,
+                        gpu_type=selected_gpu(record),
                         **(
                             {
                                 "tier": record["tier"],
@@ -1022,13 +1130,38 @@ class BatchBridge:
                         ),
                     ),
                 )
+            except AlreadyExists:
+                pass
+            except GoogleAPICallError as exc:
+                if not gpu_capacity.capacity_error(str(exc)):
+                    raise
+                try:
+                    existing = await asyncio.to_thread(client.get_job, name=name)
+                except NotFound:
+                    existing = None
+                if await gpu_capacity.fallback(
+                    self,
+                    event_id,
+                    record,
+                    client,
+                    existing,
+                    existing.status.state.name if existing else "MISSING",
+                    submission_error=str(exc),
+                ):
+                    return
+                raise
             record.update(status="running", started=record.get("submitted", time.time()))
             await self.repository.set_connector_state(f"claude-event:{event_id}", record)
         try:
             job = await asyncio.to_thread(client.get_job, name=name)
             state = job.status.state.name
         except NotFound:
+            job = None
             state = "FAILED"
+        if await gpu_capacity.fallback(
+            self, event_id, record, client, job, state if job else "MISSING"
+        ):
+            return
         if (
             record.get("cancel_requested")
             and record.get("cooperative_stop")
@@ -1130,7 +1263,11 @@ class BatchBridge:
                 "Stopped: couldn't confirm your project access with Slack for "
                 f"{self.settings.access_unavailable_grace_seconds / 60:g} min."
             ),
-            "compute_time_allowance": "Stopped: this request reached its time allowance.",
+            "compute_time_allowance": (
+                "This request reached its approved time allowance. Saved stages remain available. "
+                "Reply to continue with an additional allowance; "
+                "completed saved work can be reused."
+            ),
         }.get(reason, "Stopped before finishing.")
         # A generic stop notice is safe; project paths require a verified current grant.
         try:

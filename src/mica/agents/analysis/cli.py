@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from .config import Settings
-from .progress import ProgressUpdate, TaskProgress
+from .progress import ActivityState, ProgressUpdate, TaskProgress
 from .runner import Context, Runner
 
 
@@ -23,7 +23,13 @@ async def main(args: argparse.Namespace) -> None:
         ctx.session_id, ctx.project_md = saved["session_id"], saved["brief"]
 
     async def status(update: ProgressUpdate) -> None:
-        text = f"{update.title} ({update.status})" if isinstance(update, TaskProgress) else update
+        text = (
+            f"{update.title} ({update.status})"
+            if isinstance(update, TaskProgress)
+            else update.label
+            if isinstance(update, ActivityState)
+            else update
+        )
         print(text, flush=True)
 
     result = await Runner(settings, sandbox=not args.no_sandbox).run_turn(ctx, args.prompt, status)
