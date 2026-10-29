@@ -92,5 +92,6 @@ class Repository(Protocol):
         sent_count: int = 0,
         retry_after: float = 0,
         uncertain: bool = False,
+        request_status: str = "",
     ) -> None: ...
     async def purge_failures(self, now: float, limit: int = 200) -> int: ...

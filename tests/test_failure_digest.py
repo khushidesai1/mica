@@ -260,7 +260,8 @@ async def test_terminal_compute_failure_precedes_failed_notification(bridge):
     }
     bridge.test_slack.chat_postMessage.side_effect = TimeoutError()
     await bridge.notify("event", record, "failed", "failed worker")
-    assert {r.observation.cause for r in bridge.repository.failures.values()} == {
+    assert len(bridge.repository.failures) == 1
+    assert set(next(iter(bridge.repository.failures.values())).causes) == {
         "compute_failed",
         "slack_delivery_failed",
     }
@@ -376,3 +377,108 @@ async def test_large_loop_produces_one_message_with_latest_count(
     slack.chat_postMessage.assert_awaited_once()
     assert "Occurrences: 57" in slack.chat_postMessage.call_args.kwargs["text"]
     assert slack.chat_postMessage.call_args.kwargs["mrkdwn"] is False
+
+
+async def test_distinct_requests_do_not_collapse_and_long_request_keeps_one_incident(repository):
+    first = observation(event_id="event-1", request_scoped=True, project_id="p1")
+    row = await repository.record_failure(first, 1000)
+    await repository.record_failure(
+        first.model_copy(update={"event_id": "event-2", "occurrence": "other"}), 1001
+    )
+    later = await repository.record_failure(
+        first.model_copy(
+            update={"project_id": "p2", "cause": "compute_deadline", "occurrence": "late"}
+        ),
+        1000 + QUIET + 1,
+    )
+    assert len(repository.failures) == 2
+    assert later.id == row.id and set(later.causes) == {"compute_failed", "compute_deadline"}
+
+
+async def test_active_request_updates_same_message_after_recovery_without_reposting(
+    repository, settings, slack, clock
+):
+    event = "a" * 32
+    record = {
+        "status": "running",
+        "surface": "slack",
+        "payload": {
+            "event": {
+                "channel": "D123",
+                "ts": "1000.1",
+                "thread_ts": "999.2",
+                "text": "private request",
+            }
+        },
+    }
+    await repository.set_connector_state(f"claude-event:{event}", record)
+    await observability.record_failure(
+        repository,
+        settings,
+        "compute_control_failed",
+        occurrence="control",
+        event_id=event,
+        record=record,
+    )
+    config = Settings(failure_channel="CFAILURES")
+    slack.chat_getPermalink.return_value = {
+        "permalink": "https://example.slack.com/archives/D123/p9992"
+    }
+    await observability.flush(repository, settings, config)
+    posted = slack.chat_postMessage.call_args.kwargs
+    assert "still active or retrying" in posted["text"]
+    assert "Open request thread" in str(posted["blocks"])
+    assert "private request" not in str(posted)
+    slack.chat_getPermalink.assert_awaited_once_with(channel="D123", message_ts="999.2")
+    clock[0] += 301
+    await observability.flush(repository, settings, config)
+    slack.chat_update.assert_not_awaited()  # unchanged state needs no Slack edit
+    record["status"] = "complete"
+    await repository.set_connector_state(f"claude-event:{event}", record)
+    clock[0] += 301
+    await observability.flush(repository, settings, config)
+    slack.chat_postMessage.assert_awaited_once()
+    slack.chat_update.assert_awaited_once()
+    assert slack.chat_update.call_args.kwargs["ts"] == "123.1"
+    assert (
+        "completed after the earlier processing errors"
+        in slack.chat_update.call_args.kwargs["text"]
+    )
+    row = next(iter(repository.failures.values()))
+    assert row.count == 1 and row.request_status == "recovered"
+    assert not await repository.due_failures(clock[0] + 301)
+
+
+async def test_completion_does_not_claim_memory_or_delivery_recovery(
+    repository, settings, slack, clock
+):
+    record = {"status": "complete", "surface": "slack"}
+    await repository.set_connector_state("claude-event:event", record)
+    for cause in ("memory_editor_failed", "slack_delivery_failed"):
+        await observability.record_failure(
+            repository, settings, cause, occurrence=cause, event_id="event", record=record
+        )
+    await observability.flush(repository, settings, Settings(failure_channel="CFAILURES"))
+    text = slack.chat_postMessage.call_args.kwargs["text"]
+    assert "recovery of the reported operations is not confirmed" in text
+    assert (
+        "Project memory editing failed" in text and "Slack response could not be delivered" in text
+    )
+    assert len(repository.failures) == 1
+
+
+async def test_untrusted_thread_coordinates_never_become_links(repository, settings, slack, clock):
+    await observability.record_failure(
+        repository,
+        settings,
+        "compute_failed",
+        occurrence="one",
+        event_id="event",
+        record={
+            "surface": "slack",
+            "payload": {"event": {"channel": "https://secret", "ts": "private"}},
+        },
+    )
+    await observability.flush(repository, settings, Settings(failure_channel="CFAILURES"))
+    slack.chat_getPermalink.assert_not_awaited()
+    assert "secret" not in str(slack.chat_postMessage.call_args.kwargs)

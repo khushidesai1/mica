@@ -377,6 +377,7 @@ class FirestoreRepository:
         sent_count: int = 0,
         retry_after: float = 0,
         uncertain: bool = False,
+        request_status: str = "",
     ) -> None:
         from google.cloud import firestore
 
@@ -395,6 +396,7 @@ class FirestoreRepository:
                 sent_count=sent_count,
                 retry_after=retry_after,
                 uncertain=uncertain,
+                request_status=request_status,
             )
             if row:
                 transaction.set(reference, row.model_dump())

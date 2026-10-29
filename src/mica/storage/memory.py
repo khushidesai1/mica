@@ -264,6 +264,7 @@ class InMemoryRepository:
         sent_count: int = 0,
         retry_after: float = 0,
         uncertain: bool = False,
+        request_status: str = "",
     ) -> None:
         async with self._lock:
             row = self.failures.get(key)
@@ -276,6 +277,7 @@ class InMemoryRepository:
                     sent_count=sent_count,
                     retry_after=retry_after,
                     uncertain=uncertain,
+                    request_status=request_status,
                 )
                 if row
                 else None

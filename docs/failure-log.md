@@ -11,10 +11,18 @@ ID (`C…` or `G…`). Mica needs its existing `chat:write` permission. An empty
 not failure recording. No new credentials, scheduler, queue, IAM grant or Terraform apply is needed.
 The channel must be limited to operators allowed to see project identities across the workspace.
 
-Summaries include a fixed explanation, project, latest verified requester, interface, count,
-first/last occurrence, and event/incident IDs. They exclude request/response content, exception text,
-filenames, credentials and private action links. Background work does not invent an originating user.
-A summary with several occurrences shows the latest requester, not everyone affected.
+Request summaries include fixed explanations, project, verified requester, interface, report count,
+first/last occurrence, and request/incident IDs. When Slack can supply a permalink, an “Open request
+thread” link points to the original thread; opening it still requires the viewer's existing Slack
+access. They exclude request/response content, exception text, filenames, credentials and private
+approval/action links. Background work does not invent an originating user.
+
+Each request has one incident across failure phases, routing context changes, and long-running work.
+Distinct requests do not collapse into a single project-level failure. The incident retains every
+fixed failure cause; a platform report cannot overwrite the more specific application diagnosis.
+The report count counts distinct observations (including both application and platform evidence),
+not distinct failed requests. Background and uncorrelated infrastructure incidents still aggregate
+by cause and scope.
 
 Request processing saves the authorized working project before its first acknowledgement or command
 reply. Existing thread context takes precedence over a user's default for new threads. An authorized
@@ -31,8 +39,13 @@ to receive its single final response.
 The existing five-minute `reconcile-batch` schedule delivers at most five due incident messages per
 invocation, independently of the shared task reconciler. Expect up to five minutes of latency in normal
 operation; backlog, rate limiting or outages can add delay. Repeated occurrences update the same
-message. After 24 hours without a new occurrence, the next failure starts a new episode/message.
-Silence and retention never mark an incident resolved. Operators can discuss a failure in its thread;
+message. For background/infrastructure incidents, 24 hours without a new occurrence starts a new
+episode/message. A request keeps its incident even across longer pauses. Active request incidents
+are rechecked on later maintenance runs; unchanged status produces no Slack edit. Completion or
+failure updates the same alert. A successful request can confirm recovery of earlier processing
+errors, but does not establish that memory editing, delivery, reference loading, or a handed-off
+transfer recovered; those remain explicitly unconfirmed. Silence and retention never mark an
+incident resolved. Operators can discuss a failure in its thread;
 replies and reactions do not change application state.
 
 ## Coverage
@@ -83,11 +96,20 @@ use ordinary single-field indexes; no custom Firestore index or TTL policy is re
 The authenticated `/api/v1/internal/maintenance/log-failure` Pub/Sub receiver accepts Cloud Run
 request-log HTTP 5xx (including 503) and platform `varlog/system` ERROR or higher entries. It checks
 the Cloud project and the receiver's own `K_SERVICE`; other services and log streams are ignored.
-Request status alone never proves that application code did or did not record an error.
-Infrastructure observations are labeled separately rather than pretending to correlate them with
-application incidents. Platform logs do not reliably identify an authorized project or requester;
-the summary says that context is unavailable. Raw URLs, queries, exception text and payloads never
-enter Firestore or Slack. Only fixed route templates, HTTP status, service/revision and counts do.
+Request status alone never proves that application code did or did not record an error. For the
+internal Slack/email request-processing route only, the receiver validates the opaque 32-character
+request key and looks up its saved receipt. Authorized project/requester metadata comes from that
+receipt, never from a log payload or arbitrary path segment. Correlated observations use the same
+request incident as application reporting, in either arrival order. A receipt lookup outage retries
+Pub/Sub intake; a missing receipt remains an uncorrelated service health alert. Other endpoints and
+platform errors remain “Mica infrastructure health alert”, explicitly stating that no specific user
+request has been linked. A startup-candidate platform error is therefore not described as a failed
+user request. Raw URLs, queries, exception text and payloads never enter Firestore or Slack.
+
+Existing sent incidents are retained as history; deployment does not repost or rewrite historical
+alerts. Existing occurrence receipts still deduplicate replays. New correlated reports stop feeding
+the old service-wide aggregate; genuinely uncorrelated health issues retain its ordinary delivery
+identity and coverage. No incident migration, new index or infrastructure change is required.
 
 The sink and receiver both exclude incident intake and the two maintenance delivery routes. All
 container stdout/stderr is excluded, so inline reporter warnings cannot feed back into the log sink.

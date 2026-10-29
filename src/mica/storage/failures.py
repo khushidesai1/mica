@@ -28,14 +28,22 @@ class Observation(BaseModel):
     route: str = ""
     http_status: int = 0
     revision: str = ""
+    request_scoped: bool = False
+    slack_channel: str = ""
+    slack_thread_ts: str = ""
+    receipt_scope: str = ""
 
     @property
     def fingerprint(self) -> str:
+        if self.request_scoped and self.event_id:
+            # A request may fail before project routing and across several phases.
+            # Platform and semantic reports must select the same incident in either order.
+            return digest(self.scope, "request", self.event_id)
         return digest(self.scope, self.kind, self.cause, self.project_id)
 
     @property
     def receipt(self) -> str:
-        return digest(self.scope, self.kind, self.cause, self.occurrence)
+        return digest(self.receipt_scope or self.scope, self.kind, self.cause, self.occurrence)
 
 
 def digest(*parts: str) -> str:
@@ -58,10 +66,12 @@ class Incident(BaseModel):
     lease_until: float = 0
     send_started: float = 0
     delivery_attempts: int = 0
+    causes: list[str] = []
+    request_status: str = ""
 
 
 def observed(old: Incident | None, observation: Observation, now: float, episode: str) -> Incident:
-    if old is None or now - old.last_seen >= QUIET:
+    if old is None or (not observation.request_scoped and now - old.last_seen >= QUIET):
         return Incident(
             id=episode,
             observation=observation,
@@ -69,8 +79,32 @@ def observed(old: Incident | None, observation: Observation, now: float, episode
             last_seen=now,
             expires_at=now + RETENTION,
             next_attempt=now,
+            causes=[observation.cause],
         )
     row = old.model_copy(deep=True)
+    row.causes = list(dict.fromkeys([*(row.causes or [row.observation.cause]), observation.cause]))
+    if observation.request_scoped:
+        previous = row.observation
+        context = {
+            field: getattr(observation, field) or getattr(previous, field)
+            for field in (
+                "project_id",
+                "project_name",
+                "actor",
+                "slack_channel",
+                "slack_thread_ts",
+                "service",
+                "route",
+                "http_status",
+                "revision",
+            )
+        }
+        if observation.project_id and observation.project_id != previous.project_id:
+            context["project_name"] = observation.project_name
+        # Late platform delivery adds evidence without replacing a more useful diagnosis.
+        if observation.source == "cloud_run" and previous.source == "application":
+            observation = previous
+        observation = observation.model_copy(update=context)
     row.observation = observation
     row.count += 1
     row.last_seen = max(row.last_seen, now)
@@ -108,6 +142,7 @@ def finished(
     sent_count: int = 0,
     retry_after: float = 0,
     uncertain: bool = False,
+    request_status: str = "",
 ) -> Incident | None:
     if row.lease_token != token or row.lease_until < now:
         return None
@@ -117,9 +152,12 @@ def finished(
         row.delivery, row.next_attempt = "unconfirmed", now + 3600
     elif slack_ts:
         row.slack_ts, row.sent_count = slack_ts, sent_count
+        row.request_status = request_status
         row.delivery_attempts = 0
         row.delivery = "sent" if sent_count == row.count else "pending"
-        row.next_attempt = NEVER if row.delivery == "sent" else now
+        row.next_attempt = (
+            (now + retry_after if retry_after else NEVER) if row.delivery == "sent" else now
+        )
     else:
         row.delivery = "pending"
         row.next_attempt = now + max(60, retry_after)
