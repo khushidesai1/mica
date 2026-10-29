@@ -46,6 +46,8 @@ Cause = Literal[
     "smoke_test",
 ]
 CATALOG: dict[str, tuple[str, str]] = {
+    "infra_http_error": ("infrastructure", "Cloud Run recorded a failed HTTP request."),
+    "infra_platform_error": ("infrastructure", "Cloud Run reported a platform error."),
     "routing_exhausted": ("routing", "Request routing exhausted its automatic retries."),
     "conversation_failed": ("turn", "The conversation could not complete an internal operation."),
     "access_unverifiable": (
@@ -197,12 +199,21 @@ async def report(
 def summarize(row: Incident) -> str:
     o = row.observation
     summary = CATALOG.get(o.cause, ("unknown", "An operational failure was recorded."))[1]
+    first = datetime.fromtimestamp(row.first_seen, UTC).strftime("%Y-%m-%d %H:%M UTC")
+    last = datetime.fromtimestamp(row.last_seen, UTC).strftime("%Y-%m-%d %H:%M UTC")
+    if o.source == "cloud_run":
+        return (
+            f"Mica infrastructure failure · {escape(o.service)}\n{summary}\n"
+            f"Source: Cloud Run · route: {escape(o.route)} · HTTP: {o.http_status or 'n/a'}\n"
+            f"Revision: {escape(o.revision or 'unknown')}\n"
+            f"Occurrences: {row.count} · first {first} · latest {last}\n"
+            "Project/requester: unavailable in platform logs\n"
+            f"Incident: {row.id} · {o.cause} · recovery not confirmed"
+        )
     project = o.project_name or o.project_id or "No project assigned"
     who = o.actor or (
         "Background maintenance" if o.surface == "background" else "Requester unknown"
     )
-    first = datetime.fromtimestamp(row.first_seen, UTC).strftime("%Y-%m-%d %H:%M UTC")
-    last = datetime.fromtimestamp(row.last_seen, UTC).strftime("%Y-%m-%d %H:%M UTC")
     return (
         f"Mica failure · {escape(project)}\n{summary}\n"
         f"Latest requester: {escape(who)} · {o.surface}\n"
