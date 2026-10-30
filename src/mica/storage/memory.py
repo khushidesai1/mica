@@ -238,13 +238,26 @@ class InMemoryRepository:
             self.failure_receipts[observation.receipt] = (row.id, now + failures.RETENTION)
             return row.model_copy(deep=True)
 
+    async def get_failure(self, key: str) -> Incident | None:
+        async with self._lock:
+            row = self.failures.get(key)
+            return row.model_copy(deep=True) if row else None
+
+    async def resolve_failure(
+        self, key: str, count: int, actor: str, channel: str, slack_ts: str, now: float
+    ) -> Incident | None:
+        async with self._lock:
+            row = self.failures.get(key)
+            update = failures.resolved(row, count, actor, channel, slack_ts, now) if row else None
+            if update:
+                self.failures[key] = update
+            return update.model_copy(deep=True) if update else None
+
     async def due_failures(self, now: float, limit: int = 20) -> list[Incident]:
         async with self._lock:
-            return [
-                r.model_copy(deep=True)
-                for r in sorted(self.failures.values(), key=lambda r: r.next_attempt)
-                if r.next_attempt <= now
-            ][:limit]
+            return [r.model_copy(deep=True) for r in failures.prioritized(
+                list(self.failures.values()), now, limit
+            )]
 
     async def claim_failure(self, key: str, channel: str, now: float) -> Incident | None:
         async with self._lock:
@@ -265,6 +278,8 @@ class InMemoryRepository:
         retry_after: float = 0,
         uncertain: bool = False,
         request_status: str = "",
+        sent_resolved_count: int = 0,
+        card_version: int = 0,
     ) -> None:
         async with self._lock:
             row = self.failures.get(key)
@@ -278,6 +293,8 @@ class InMemoryRepository:
                     retry_after=retry_after,
                     uncertain=uncertain,
                     request_status=request_status,
+                    sent_resolved_count=sent_resolved_count,
+                    card_version=card_version,
                 )
                 if row
                 else None

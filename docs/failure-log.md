@@ -11,6 +11,22 @@ ID (`C…` or `G…`). Mica needs its existing `chat:write` permission. An empty
 not failure recording. No new credentials, scheduler, queue, IAM grant or Terraform apply is needed.
 The channel must be limited to operators allowed to see project identities across the workspace.
 
+Alerts use compact Slack cards with priority/category tags, the requester and project, a short
+explanation, and the current status. User-related issues have red high-priority tags; uncorrelated
+service-health alerts use gray low-priority tags. **Details** opens the full diagnostic record,
+keeping timestamps, routes, revisions and incident IDs out of the main card. Slack clients that
+reject the newer card/tag blocks receive standard Block Kit sections with the same actions.
+
+Set `AGENT_FAILURE_OPERATOR_IDS` to explicit comma-separated `team:user` IDs for the people who
+may inspect Details and **Mark resolved**. It defaults to no operators; project membership,
+onboarding-admin or output-write authority does not implicitly grant this role. Actions require
+a signed Slack request, the configured failure channel, the stored message timestamp, and the
+exact incident. A green Mark resolved button records the operator, timestamp and reviewed report
+count, then refreshes that same card. It records an investigation decision, not job recovery or
+permission to retry a task. A new distinct report reopens the incident; a replay does not.
+A stale button cannot resolve reports that arrived since the card was displayed. Card refreshes
+are durable and retried by maintenance if Slack is unavailable or a delivery is already in flight.
+
 Request summaries include fixed explanations, project, verified requester, interface, report count,
 first/last occurrence, and request/incident IDs. When Slack can supply a permalink, an “Open request
 thread” link points to the original thread; opening it still requires the viewer's existing Slack
@@ -37,7 +53,11 @@ confirmed parts. The full response is only marked delivered after every part suc
 to receive its single final response.
 
 The existing five-minute `reconcile-batch` schedule delivers at most five due incident messages per
-invocation, independently of the shared task reconciler. Expect up to five minutes of latency in normal
+invocation, independently of the shared task reconciler. User-request incidents are selected first,
+with at most one background/service-health incident per cycle. When both have backlog, four slots
+go to requests and one to service health; infrastructure noise cannot consume the request slots.
+Single-field request/background due-time projections avoid a composite index; a bounded legacy
+query includes preexisting records, which gain projections on their next write. Expect up to five minutes of latency in normal
 operation; backlog, rate limiting or outages can add delay. Repeated occurrences update the same
 message. For background/infrastructure incidents, 24 hours without a new occurrence starts a new
 episode/message. A request keeps its incident even across longer pauses. Active request incidents
@@ -46,7 +66,8 @@ failure updates the same alert. A successful request can confirm recovery of ear
 errors, but does not establish that memory editing, delivery, reference loading, or a handed-off
 transfer recovered; those remain explicitly unconfirmed. Silence and retention never mark an
 incident resolved. Operators can discuss a failure in its thread;
-replies and reactions do not change application state.
+replies and reactions do not change application state. Only the guarded Mark resolved action
+records manual resolution.
 
 ## Coverage
 

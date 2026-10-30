@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -68,6 +68,60 @@ class Incident(BaseModel):
     delivery_attempts: int = 0
     causes: list[str] = []
     request_status: str = ""
+    resolved_at: float = 0
+    resolved_by: str = ""
+    resolved_count: int = 0
+    sent_resolved_count: int = 0
+    card_version: int = 0
+
+    @property
+    def resolved(self) -> bool:
+        return self.resolved_at > 0 and self.resolved_count == self.count
+
+    @property
+    def user_related(self) -> bool:
+        o = self.observation
+        return o.request_scoped or bool(o.event_id and o.surface in {"slack", "email"})
+
+
+def document(row: Incident) -> dict[str, Any]:
+    """Single-field queue projections; no composite index or infrastructure change."""
+    return {
+        **row.model_dump(),
+        "request_due": row.next_attempt if row.user_related else NEVER,
+        "background_due": NEVER if row.user_related else row.next_attempt,
+    }
+
+
+def prioritized(rows: list[Incident], now: float, limit: int) -> list[Incident]:
+    due = sorted(
+        {r.id: r for r in rows if r.next_attempt <= now and r.lease_until <= now}.values(),
+        key=lambda r: (r.next_attempt, r.id),
+    )
+    requests = [r for r in due if r.user_related]
+    background = [r for r in due if not r.user_related]
+    # Reserve room for one service-health issue, without letting a noisy backlog
+    # displace user failures. With no request failures, send at most one per cycle.
+    slots = max(0, limit - int(bool(background) and limit > 1))
+    selected = requests[:slots]
+    return (selected + background[:1])[:limit]
+
+
+def resolved(
+    row: Incident, count: int, actor: str, channel: str, slack_ts: str, now: float
+) -> Incident | None:
+    """Compare-and-set the exact occurrence count the operator actually reviewed."""
+    if not slack_ts or row.channel != channel or row.slack_ts != slack_ts or row.count != count:
+        return None
+    if row.resolved:
+        return row
+    row = row.model_copy(deep=True)
+    row.resolved_at, row.resolved_by, row.resolved_count = now, actor, count
+    row.next_attempt = max(now, row.lease_until)
+    # Preserve an active delivery lease; its stale rendering must finish as pending.
+    if not row.lease_token:
+        row.delivery = "pending"
+    return row
 
 
 def observed(old: Incident | None, observation: Observation, now: float, episode: str) -> Incident:
@@ -143,6 +197,8 @@ def finished(
     retry_after: float = 0,
     uncertain: bool = False,
     request_status: str = "",
+    sent_resolved_count: int = 0,
+    card_version: int = 0,
 ) -> Incident | None:
     if row.lease_token != token or row.lease_until < now:
         return None
@@ -153,8 +209,14 @@ def finished(
     elif slack_ts:
         row.slack_ts, row.sent_count = slack_ts, sent_count
         row.request_status = request_status
+        row.sent_resolved_count = sent_resolved_count
+        row.card_version = card_version
         row.delivery_attempts = 0
-        row.delivery = "sent" if sent_count == row.count else "pending"
+        row.delivery = (
+            "sent"
+            if sent_count == row.count and sent_resolved_count == row.resolved_count
+            else "pending"
+        )
         row.next_attempt = (
             (now + retry_after if retry_after else NEVER) if row.delivery == "sent" else now
         )

@@ -15,7 +15,7 @@ from typing import Any
 from urllib.parse import parse_qs
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Request, UploadFile
 from slack_sdk import WebClient
 from starlette.datastructures import Headers
 
@@ -444,7 +444,7 @@ def _submitted_approval_values(
 
 
 @router.post("/actions")
-async def slack_actions(request: Request) -> dict[str, object]:
+async def slack_actions(request: Request, background_tasks: BackgroundTasks) -> dict[str, object]:
     services: Services = request.app.state.services
     body = await request.body()
     if not verify_slack_request(
@@ -467,9 +467,22 @@ async def slack_actions(request: Request) -> dict[str, object]:
         amendments,
         command_approval,
         compute_approval,
+        failure_actions,
         transfer_interactions,
         write_approval,
     )
+
+    if failure_actions.is_action(payload):
+        from mica.agents.analysis.config import Settings
+
+        try:
+            return await failure_actions.handle(
+                services.repository, services.settings, Settings(), payload, background_tasks
+            )
+        except PermissionError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if (
         write_approval.is_action(payload) or command_approval.is_action(payload)

@@ -15,6 +15,7 @@ from mica.config import Settings as AppSettings
 from mica.storage.base import Repository
 from mica.storage.failures import Incident, Observation, digest
 
+from . import failure_cards
 from .config import Settings
 from .project_memory import SECRET
 
@@ -234,6 +235,16 @@ async def report(
 
 
 def summarize(row: Incident, *, request_status: str = "unknown") -> str:
+    text = _summary(row, request_status=request_status)
+    if row.resolved:
+        return (
+            f"Resolved by operator {row.resolved_by}. "
+            f"This records investigation, not job recovery.\n{text}"
+        )
+    return text
+
+
+def _summary(row: Incident, *, request_status: str = "unknown") -> str:
     o = row.observation
     summary = CATALOG.get(o.cause, ("unknown", "An operational failure was recorded."))[1]
     first = datetime.fromtimestamp(row.first_seen, UTC).strftime("%Y-%m-%d %H:%M UTC")
@@ -291,7 +302,9 @@ def summarize(row: Incident, *, request_status: str = "unknown") -> str:
     )
 
 
-async def flush(repository: Repository, app: AppSettings, settings: Settings) -> dict[str, int]:
+async def flush(
+    repository: Repository, app: AppSettings, settings: Settings, *, incident_id: str = ""
+) -> dict[str, int]:
     from slack_sdk.errors import SlackApiError
     from slack_sdk.web.async_client import AsyncWebClient
 
@@ -306,7 +319,12 @@ async def flush(repository: Repository, app: AppSettings, settings: Settings) ->
     # No SDK-level retries of a potentially accepted first post.
     client = AsyncWebClient(token=app.slack_bot_token, timeout=5, retry_handlers=[])
     async with asyncio.timeout(45):
-        for item in await repository.due_failures(time.time(), limit=5):
+        if incident_id:
+            item = await repository.get_failure(incident_id)
+            items = [item] if item else []
+        else:
+            items = await repository.due_failures(time.time(), limit=5)
+        for item in items:
             row = await repository.claim_failure(item.id, settings.failure_channel, time.time())
             if not row:
                 continue
@@ -349,8 +367,8 @@ async def flush(repository: Repository, app: AppSettings, settings: Settings) ->
                     log.warning("failure_reporter delivery_unconfirmed incident=%s", row.id)
                 continue
             token = row.lease_token
-            request_status = "unknown"
-            if row.observation.request_scoped:
+            request_status = (row.request_status or "unknown") if row.resolved else "unknown"
+            if row.observation.request_scoped and not row.resolved:
                 try:
                     record = await repository.get_connector_state(
                         f"claude-event:{row.observation.event_id}"
@@ -375,13 +393,17 @@ async def flush(repository: Repository, app: AppSettings, settings: Settings) ->
                     pass  # Status lookup must not hide an existing incident.
             review_after = (
                 300
-                if row.observation.request_scoped and request_status in {"active", "unknown"}
+                if row.observation.request_scoped
+                and not row.resolved
+                and request_status in {"active", "unknown"}
                 else 0
             )
             if (
                 row.slack_ts
                 and row.sent_count == row.count
                 and row.request_status == request_status
+                and row.sent_resolved_count == row.resolved_count
+                and row.card_version == failure_cards.VERSION
             ):
                 await repository.finish_failure(
                     row.id,
@@ -391,6 +413,8 @@ async def flush(repository: Repository, app: AppSettings, settings: Settings) ->
                     sent_count=row.count,
                     retry_after=review_after,
                     request_status=request_status,
+                    sent_resolved_count=row.resolved_count,
+                    card_version=failure_cards.VERSION,
                 )
                 continue
             try:
@@ -401,41 +425,43 @@ async def flush(repository: Repository, app: AppSettings, settings: Settings) ->
                     mrkdwn=False,
                 )
                 o = row.observation
+                link = ""
                 if o.slack_channel and o.slack_thread_ts:
                     try:
                         result = await client.chat_getPermalink(
                             channel=o.slack_channel, message_ts=o.slack_thread_ts
                         )
-                        link = result.get("permalink", "")
-                        if isinstance(link, str) and re.fullmatch(
-                            r"https://[a-z0-9-]+\.slack\.com/archives/[CDG][A-Z0-9]+/p[0-9]+", link
+                        candidate = result.get("permalink", "")
+                        if isinstance(candidate, str) and re.fullmatch(
+                            r"https://[a-z0-9-]+\.slack\.com/archives/[CDG][A-Z0-9]+/p[0-9]+",
+                            candidate,
                         ):
-                            block_text = params["text"]
-                            if len(block_text) > 3000:
-                                block_text = block_text[:2999] + "…"
-                            params["blocks"] = [
-                                {
-                                    "type": "section",
-                                    "text": {"type": "plain_text", "text": block_text},
-                                },
-                                {
-                                    "type": "context",
-                                    "elements": [
-                                        {"type": "mrkdwn", "text": f"<{link}|Open request thread>"}
-                                    ],
-                                },
-                            ]
+                            link = candidate
                     except Exception:
-                        pass  # Thread links are optional, and grant no new Slack access.
-                if row.slack_ts:
-                    response = await client.chat_update(ts=row.slack_ts, **params)
-                else:
-                    response = await client.chat_postMessage(
-                        **params,
-                        unfurl_links=False,
-                        unfurl_media=False,
-                        client_msg_id=str(uuid5(NAMESPACE_URL, "mica-failure:" + row.id)),
+                        pass  # Links are optional and grant no new Slack access.
+                causes = row.causes or [o.cause]
+                semantic = [c for c in causes if c in CATALOG and c != "infra_http_error"]
+                explanations = [CATALOG[c][1] for c in semantic or causes if c in CATALOG]
+                # Retry only an explicit rejection of the new presentation, never an
+                # ambiguous first post. Both renderings retain resolution and details.
+                for native in (True, False):
+                    params["blocks"] = failure_cards.blocks(
+                        row, explanations, request_status, link=link, native=native
                     )
+                    try:
+                        if row.slack_ts:
+                            response = await client.chat_update(ts=row.slack_ts, **params)
+                        else:
+                            response = await client.chat_postMessage(
+                                **params,
+                                unfurl_links=False,
+                                unfurl_media=False,
+                                client_msg_id=str(uuid5(NAMESPACE_URL, "mica-failure:" + row.id)),
+                            )
+                        break
+                    except SlackApiError as exc:
+                        if not native or exc.response.get("error") != "invalid_blocks":
+                            raise
                 ts = str(response["ts"])
                 if not re.fullmatch(r"\d+\.\d+", ts):
                     raise ValueError("Missing delivery receipt")
@@ -458,6 +484,7 @@ async def flush(repository: Repository, app: AppSettings, settings: Settings) ->
                         "restricted_action",
                         "msg_too_long",
                         "invalid_arguments",
+                        "invalid_blocks",
                     }
                     if exc.response.status_code == 429:
                         rejected = True
@@ -489,6 +516,8 @@ async def flush(repository: Repository, app: AppSettings, settings: Settings) ->
                     # failure label after the request completes. Never count this as an error.
                     retry_after=review_after,
                     request_status=request_status,
+                    sent_resolved_count=row.resolved_count,
+                    card_version=failure_cards.VERSION,
                 )
                 counts["failure_sent"] += 1
     return counts
