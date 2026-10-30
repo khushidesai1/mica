@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Any, Literal, Protocol
 
 from mica.models import MemoryItem, Project, ProjectSummary, TaskRecord, ToolRecord
-from mica.storage.failures import Incident, Observation
+from mica.storage.failures import FailureInvestigation, Incident, Observation
 
 
 def preserve_conversation(current: TaskRecord, incoming: TaskRecord) -> None:
@@ -99,5 +99,7 @@ class Repository(Protocol):
         request_status: str = "",
         sent_resolved_count: int = 0,
         card_version: int = 0,
+        investigation: FailureInvestigation | None = None,
+        sent_investigation: str = "",
     ) -> None: ...
     async def purge_failures(self, now: float, limit: int = 200) -> int: ...

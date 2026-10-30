@@ -638,9 +638,10 @@ class BatchBridge:
                     await self.notify_stop(event_id, record)
                 await self.repository.set_connector_state(key, record)
             raise
-        except GoogleAPICallError:
+        except GoogleAPICallError as exc:
             await observability.report(
-                self, "compute_control_failed", event_id, record or {}, unit=claim.token
+                self, "compute_control_failed", event_id, record or {}, unit=claim.token,
+                api_status=int(exc.code) if exc.code is not None else 0,
             )
             raise
         finally:

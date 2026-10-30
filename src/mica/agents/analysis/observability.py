@@ -15,7 +15,7 @@ from mica.config import Settings as AppSettings
 from mica.storage.base import Repository
 from mica.storage.failures import Incident, Observation, digest
 
-from . import failure_cards
+from . import failure_cards, failure_investigation
 from .config import Settings
 from .project_memory import SECRET
 
@@ -193,6 +193,7 @@ async def record_failure(
     occurrence: str,
     event_id: str = "",
     record: dict[str, Any] | None = None,
+    api_status: int = 0,
 ) -> None:
     """No external identity lookup, arbitrary error text, or exception propagation."""
     try:
@@ -204,6 +205,7 @@ async def record_failure(
             cause=cause,
             occurrence=digest(occurrence),
             event_id=reference(event_id) if event_id else "",
+            api_status=api_status if type(api_status) is int and 400 <= api_status < 600 else 0,
             **request_context(record),
         )
         async with asyncio.timeout(3):
@@ -223,6 +225,7 @@ async def report(
     record: dict[str, Any],
     *,
     unit: str = "",
+    api_status: int = 0,
 ) -> None:
     await record_failure(
         bridge.repository,
@@ -231,11 +234,17 @@ async def report(
         event_id=event_id,
         record=record,
         occurrence=f"{event_id}:{unit or 'terminal'}",
+        api_status=api_status,
     )
 
 
 def summarize(row: Incident, *, request_status: str = "unknown") -> str:
     text = _summary(row, request_status=request_status)
+    if row.observation.api_status:
+        text += f"\nCloud API status: {row.observation.api_status}"
+    assessment = failure_investigation.details(row)
+    if assessment:
+        text += "\n\n" + assessment
     if row.resolved:
         return (
             f"Resolved by operator {row.resolved_by}. "
@@ -305,6 +314,31 @@ def _summary(row: Incident, *, request_status: str = "unknown") -> str:
 async def flush(
     repository: Repository, app: AppSettings, settings: Settings, *, incident_id: str = ""
 ) -> dict[str, int]:
+    # First deliver every selected alert. Only confirmed posts enter the bounded AI pass.
+    items: list[Incident] = []
+    if settings.failure_channel:
+        async with asyncio.timeout(5):
+            if incident_id:
+                item = await repository.get_failure(incident_id)
+                items = [item] if item else []
+            else:
+                items = await repository.due_failures(time.time(), limit=5)
+    counts = await _flush(repository, app, settings, items)
+    if settings.failure_investigation_enabled and app.anthropic_api_key.get_secret_value():
+        try:
+            async with asyncio.timeout(25):
+                assessed = await _flush(repository, app, settings, items, investigating=True)
+                counts = {key: value + assessed[key] for key, value in counts.items()}
+        except Exception:
+            # Alerts have already been sent. Leases and pending assessments survive interruption.
+            log.warning("failure_reporter assessment_pending")
+    return counts
+
+
+async def _flush(
+    repository: Repository, app: AppSettings, settings: Settings, items: list[Incident],
+    *, investigating: bool = False,
+) -> dict[str, int]:
     from slack_sdk.errors import SlackApiError
     from slack_sdk.web.async_client import AsyncWebClient
 
@@ -319,12 +353,14 @@ async def flush(
     # No SDK-level retries of a potentially accepted first post.
     client = AsyncWebClient(token=app.slack_bot_token, timeout=5, retry_handlers=[])
     async with asyncio.timeout(45):
-        if incident_id:
-            item = await repository.get_failure(incident_id)
-            items = [item] if item else []
-        else:
-            items = await repository.due_failures(time.time(), limit=5)
         for item in items:
+            if investigating:
+                current = await repository.get_failure(item.id)
+                if (
+                    not current or not current.slack_ts or current.resolved
+                    or not current.investigation or current.investigation.status != "pending"
+                ):
+                    continue
             row = await repository.claim_failure(item.id, settings.failure_channel, time.time())
             if not row:
                 continue
@@ -367,6 +403,10 @@ async def flush(
                     log.warning("failure_reporter delivery_unconfirmed incident=%s", row.id)
                 continue
             token = row.lease_token
+            previous_investigation = (
+                row.investigation.model_copy(deep=True) if row.investigation else None
+            )
+            record = None
             request_status = (row.request_status or "unknown") if row.resolved else "unknown"
             if row.observation.request_scoped and not row.resolved:
                 try:
@@ -391,6 +431,23 @@ async def flush(
                             request_status = "recovered"
                 except Exception:
                     pass  # Status lookup must not hide an existing incident.
+            enabled = (
+                settings.failure_investigation_enabled
+                and bool(app.anthropic_api_key.get_secret_value())
+            )
+            if (enabled or row.investigation) and not row.resolved:
+                packet = failure_investigation.evidence(row, request_status, record, CATALOG)
+                row.investigation = failure_investigation.queue(row.investigation, packet)
+                if row.investigation.status == "pending":
+                    if not enabled:
+                        row.investigation.status = "unavailable"
+                    elif investigating:
+                        row.investigation = await failure_investigation.assess(
+                            app.anthropic_api_key.get_secret_value(),
+                            settings.routing_repair_model,
+                            row.investigation,
+                        )
+            investigation_changed = previous_investigation != row.investigation
             review_after = (
                 300
                 if row.observation.request_scoped
@@ -404,6 +461,8 @@ async def flush(
                 and row.request_status == request_status
                 and row.sent_resolved_count == row.resolved_count
                 and row.card_version == failure_cards.VERSION
+                and not investigation_changed
+                and row.sent_investigation == failure_investigation.delivery_key(row)
             ):
                 await repository.finish_failure(
                     row.id,
@@ -415,6 +474,8 @@ async def flush(
                     request_status=request_status,
                     sent_resolved_count=row.resolved_count,
                     card_version=failure_cards.VERSION,
+                    investigation=row.investigation,
+                    sent_investigation=failure_investigation.delivery_key(row),
                 )
                 continue
             try:
@@ -496,6 +557,7 @@ async def flush(
                     time.time(),
                     retry_after=delay,
                     uncertain=uncertain,
+                    investigation=row.investigation,
                 )
                 counts["failure_unconfirmed" if uncertain else "failure_pending"] += 1
                 log.warning(
@@ -518,6 +580,8 @@ async def flush(
                     request_status=request_status,
                     sent_resolved_count=row.resolved_count,
                     card_version=failure_cards.VERSION,
+                    investigation=row.investigation,
+                    sent_investigation=failure_investigation.delivery_key(row),
                 )
                 counts["failure_sent"] += 1
     return counts

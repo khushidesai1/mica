@@ -8,7 +8,9 @@ from typing import Any
 
 from mica.storage.failures import Incident
 
-VERSION = 1
+from . import failure_investigation
+
+VERSION = 2
 PREFIX = "mica_failure_"
 
 
@@ -58,6 +60,15 @@ def blocks(
         explanation = (
             clipped(explanation, 160) + f" (+{len(explanations) - 1} related issues; see Details)"
         )
+    assessment_blocks: list[dict[str, Any]] = []
+    if row.investigation and row.investigation.assessment:
+        explanation = row.investigation.assessment.summary
+        assessment_blocks = [
+            {
+                "type": "section",
+                "text": {"type": "plain_text", "text": failure_investigation.details(row)},
+            }
+        ]
     latest = datetime.fromtimestamp(row.last_seen, UTC).strftime("%b %d, %H:%M UTC")
     subtext = clipped(f"{state}\n{row.count} reports · Latest {latest}", 200)
     value = json.dumps({"id": row.id, "count": row.count}, separators=(",", ":"))
@@ -110,6 +121,7 @@ def blocks(
                 "subtext": {"type": "plain_text", "text": subtext},
                 "actions": actions,
             },
+            *assessment_blocks,
         ]
     return [
         {
@@ -127,4 +139,5 @@ def blocks(
         {"type": "section", "text": {"type": "plain_text", "text": clipped(explanation, 3000)}},
         {"type": "context", "elements": [{"type": "plain_text", "text": subtext.split("\n")[-1]}]},
         {"type": "actions", "elements": actions},
+        *assessment_blocks,
     ]

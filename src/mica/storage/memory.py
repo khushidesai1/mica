@@ -11,7 +11,7 @@ from typing import Any
 from mica.models import MemoryItem, Project, ProjectSummary, TaskRecord, ToolRecord
 from mica.storage import failures
 from mica.storage.base import EventClaim, preserve_conversation
-from mica.storage.failures import Incident, Observation
+from mica.storage.failures import FailureInvestigation, Incident, Observation
 
 
 class InMemoryRepository:
@@ -280,6 +280,8 @@ class InMemoryRepository:
         request_status: str = "",
         sent_resolved_count: int = 0,
         card_version: int = 0,
+        investigation: FailureInvestigation | None = None,
+        sent_investigation: str = "",
     ) -> None:
         async with self._lock:
             row = self.failures.get(key)
@@ -295,6 +297,8 @@ class InMemoryRepository:
                     request_status=request_status,
                     sent_resolved_count=sent_resolved_count,
                     card_version=card_version,
+                    investigation=investigation,
+                    sent_investigation=sent_investigation,
                 )
                 if row
                 else None

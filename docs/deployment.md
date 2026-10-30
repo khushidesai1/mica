@@ -257,6 +257,11 @@ change using `cloudbuild/build-slack-api.yaml`; preserve both worker image pins.
 reconciliation endpoint delivers summaries; the daily maintenance endpoint expires old incident state.
 Verify those schedules remain enabled. See [failure-log.md](failure-log.md) for coverage, delivery
 recovery and retention. Empty channel configuration still records incidents in Firestore.
+Claude failure assessments default on when the existing Anthropic credential is available;
+`AGENT_FAILURE_INVESTIGATION_ENABLED=false` disables further assessment calls. This API-only
+addition reuses the configured structured-response model, starts no compute jobs and requires no
+new secrets, IAM or infrastructure. Alerts post before assessment and retain their original evidence
+if Claude is unavailable. See the failure log for the bounded inputs, caching and call limits.
 
 ## Folder and script delivery
 
