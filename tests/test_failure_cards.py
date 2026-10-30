@@ -13,7 +13,7 @@ from test_failure_digest import clock, observation, rejected, slack  # noqa: F40
 from mica.agents.analysis import failure_actions, failure_cards, observability
 from mica.agents.analysis.config import Settings
 from mica.storage import failures
-from mica.storage.failures import NEVER
+from mica.storage.failures import NEVER, FailureAssessment, FailureInvestigation
 
 
 @pytest.fixture
@@ -183,6 +183,60 @@ async def test_details_uses_stored_incident_not_payload_content(
     view = slack.views_open.call_args.kwargs["view"]
     assert row.id in str(view) and "private input" not in str(view) and "evil" not in str(view)
     assert not (await repository.get_failure(row.id)).resolved
+
+
+async def test_details_formats_complete_assessment_and_keeps_dynamic_values_literal(repository):
+    row = await repository.record_failure(
+        observation(
+            request_scoped=True,
+            event_id="a" * 32,
+            actor="operator@example.org",
+            project_name="*Literal project* <@U1>",
+            service="mica",
+            route="/worker/{id}",
+            revision="release-1",
+            http_status=500,
+            api_status=403,
+        ),
+        1000,
+    )
+    row.investigation = FailureInvestigation(
+        key="evidence",
+        evidence={},
+        status="complete",
+        assessment=FailureAssessment(
+            summary="A complete explanation " * 20,
+            likely_cause="A suspected cause with *literal asterisks* <@U1>.",
+            next_check="Inspect the recorded worker control response.",
+        ),
+    )
+    view = failure_cards.details_view(row, ["The worker control operation failed."])
+    headings = [b["text"]["text"] for b in view["blocks"] if b["type"] == "header"]
+    assert headings == [
+        row.observation.project_name,
+        "Assessment",
+        "Recorded evidence",
+        "Technical references",
+    ]
+    text = json.dumps(view)
+    assert row.investigation.assessment.summary in text  # Full text, unlike the card preview.
+    assert row.id in text and "release-1" in text and "403" in text
+    assert '"bold": true' in text and '"type": "mrkdwn"' not in text
+    assert '"type": "user"' not in text and '"type": "link"' not in text
+    for native in (True, False):
+        blocks = failure_cards.blocks(row, [], "failed", native=native)
+        assert blocks[-1]["type"] == ("card" if native else "actions")
+        assert row.investigation.assessment.next_check not in json.dumps(blocks)
+    assert len(view["blocks"]) < 100
+
+
+async def test_details_preserves_reopened_review_and_missing_assessment(repository):
+    row = await repository.record_failure(observation(request_scoped=True), 1000)
+    row.resolved_at, row.resolved_by, row.resolved_count, row.count = 1001, "T1:U1", 1, 2
+    view = failure_cards.details_view(row, ["Worker stopped."])
+    text = json.dumps(view)
+    assert "Reopened" in text and "open again" in text and "T1:U1" in text
+    assert "Assessment unavailable" in text and "Worker stopped." in text
 
 
 async def test_card_limits_and_tags(repository):

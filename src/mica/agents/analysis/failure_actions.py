@@ -83,20 +83,14 @@ async def handle(
         trigger = str(payload.get("trigger_id", ""))
         if not trigger:
             raise ValueError("Missing Slack interaction context.")
-        text = observability.summarize(row, request_status=row.request_status or "unknown")
-        if row.resolved_at:
-            text += f"\nLast operator review: {row.resolved_by} · report {row.resolved_count}"
+        explanations = [
+            observability.CATALOG[cause][1]
+            for cause in row.causes or [row.observation.cause]
+            if cause in observability.CATALOG
+        ]
         await client.views_open(
             trigger_id=trigger,
-            view={
-                "type": "modal",
-                "title": {"type": "plain_text", "text": "Failure details"},
-                "close": {"type": "plain_text", "text": "Close"},
-                "blocks": [
-                    {"type": "section", "text": {"type": "plain_text", "text": text[i : i + 3000]}}
-                    for i in range(0, min(len(text), 12000), 3000)
-                ],
-            },
+            view=failure_cards.details_view(row, explanations),
         )
         return {}
     result = await repository.resolve_failure(key, count, actor, channel, ts, time.time())

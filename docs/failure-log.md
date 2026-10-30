@@ -73,7 +73,12 @@ records manual resolution.
 
 After confirming delivery of the selected alerts, maintenance asks Claude for a short assessment
 and updates the same cards: **what happened**, **likely cause (unconfirmed)**, and **next check**.
-The overview is included in the message text and Details so it can be forwarded to a developer.
+The channel shows a compact summary inside the card, with the full assessment behind **Details**;
+there is no separate assessment text below the card. Details opens a structured incident brief
+with bold labels, headings and dividers for the assessment, recorded evidence, technical references
+and any operator review. Requester, status and project context appear first. Model and diagnostic
+values remain literal rich text, so they cannot introduce Slack mentions or formatting. The
+message's accessibility text also retains the full overview for forwarding to a developer.
 Priority tags, request links and Mark resolved continue to work; an assessment never resolves,
 retries or changes the underlying request.
 
