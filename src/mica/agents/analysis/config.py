@@ -102,6 +102,7 @@ class Settings(BaseSettings):
     # Channel mode denies admission until a designated admin enables a channel.
     access_mode: Literal["channel", "mapped", "workspace"] = "channel"
     access_admin_ids: str = ""  # Explicit team:user IDs; onboarding authority only.
+    access_request_owner_id: str = Field(default="", pattern=r"^(?:T[A-Z0-9]+:[UW][A-Z0-9]+)?$")
     write_admin_ids: str = ""  # Separate team:user IDs authorized to manage output grants.
     write_allowed_prefixes: str = ""  # Comma-separated gs://bucket/folder/ ceilings.
     write_service_account: str = ""  # Dedicated output writer identity; control plane only.

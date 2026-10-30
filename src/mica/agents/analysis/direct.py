@@ -785,6 +785,13 @@ async def handle(
     if not grant.email:
         return await finish(bridge, event_id, record, access.deny_text(grant))
     cmd = commands.parse(event.get("text", ""))
+    if (not grant.allowed and cmd is None and not grant.private
+            and not surface.is_email(record) and bridge.settings.access_request_owner_id):
+        from . import access_requests
+
+        return await finish(
+            bridge, event_id, record, await access_requests.propose(bridge, record, grant)
+        )
     files = event.get("files") or []
     if files and cmd and cmd.name == "init":
         raise ValueError("Send files in their own message, not with init.")
@@ -806,6 +813,12 @@ async def handle(
                 bridge, event_id, record, storage, grant, {"request": text}, []
             )
             saved = opening.model_dump()
+        if saved.get("route") == "access":
+            from . import access_requests
+
+            return await finish(
+                bridge, event_id, record, await access_requests.propose(bridge, record, grant)
+            )
         if saved.get("route") == "command":
             record["command_intent"] = {"route": "command", "proposal": saved["command_proposal"]}
             record["intent_actor"] = grant.email

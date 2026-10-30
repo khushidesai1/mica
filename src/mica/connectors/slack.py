@@ -464,6 +464,7 @@ async def slack_actions(request: Request, background_tasks: BackgroundTasks) -> 
         raise HTTPException(status_code=400, detail="invalid Slack payload") from exc
 
     from mica.agents.analysis import (
+        access_requests,
         amendments,
         command_approval,
         compute_approval,
@@ -471,6 +472,28 @@ async def slack_actions(request: Request, background_tasks: BackgroundTasks) -> 
         transfer_interactions,
         write_approval,
     )
+
+    if access_requests.is_action(payload):
+        from mica.agents.analysis.batch import BatchBridge
+        from mica.agents.analysis.storage import GCSStorage
+
+        try:
+            return await access_requests.handle(
+                BatchBridge(services.settings, services.repository),
+                GCSStorage(services.settings.gcs_bucket), payload, background_tasks,
+            )
+        except (ValueError, PermissionError) as exc:
+            if payload.get("type") == "view_submission":
+                return {"response_action": "errors", "errors": {"project": str(exc)}}
+            from slack_sdk.web.async_client import AsyncWebClient
+
+            await AsyncWebClient(
+                token=services.settings.slack_bot_token, timeout=5
+            ).chat_postEphemeral(
+                channel=payload.get("channel", {}).get("id", ""),
+                user=payload.get("user", {}).get("id", ""), text=str(exc),
+            )
+            return {}
 
     if failure_actions.is_action(payload):
         from mica.agents.analysis.config import Settings
