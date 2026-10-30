@@ -9,8 +9,8 @@ import pytest
 from pydantic import SecretStr
 from test_failure_digest import clock, observation, rejected, slack  # noqa: F401
 
+from mica.agents.analysis import failure_cards, observability
 from mica.agents.analysis import failure_investigation as investigation
-from mica.agents.analysis import observability
 from mica.agents.analysis.config import Settings
 from mica.storage.failures import FailureAssessment
 
@@ -128,11 +128,14 @@ async def test_baseline_post_precedes_claude_and_same_card_gets_forwardable_summ
     slack.chat_update.assert_awaited_once()
     message = slack.chat_update.call_args.kwargs
     assert message["ts"] == "123.1" and "Likely cause (unconfirmed)" in message["text"]
-    assert ASSESSMENT["next_check"] in str(message["blocks"])
+    assert [b["type"] for b in message["blocks"]] == ["rich_text", "card"]
+    assert ASSESSMENT["summary"] in str(message["blocks"])
+    assert ASSESSMENT["next_check"] not in str(message["blocks"])
     assert "Mark resolved" in str(message["blocks"])
     saved = await repository.get_failure(row.id)
     assert saved.investigation.assessment.summary == ASSESSMENT["summary"]
     assert saved.delivery == "sent" and saved.investigation.attempts == 1
+    assert ASSESSMENT["next_check"] in str(failure_cards.details_view(saved, []))
 
 
 async def test_repeated_reports_reuse_assessment_but_new_evidence_refreshes(
