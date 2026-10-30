@@ -340,7 +340,8 @@ they do not establish scientific correctness. SVG and HEIC require a PNG alterna
 Set `AGENT_ACCESS_REQUEST_OWNER_ID` to the single designated owner's `workspace:member`
 Slack identity to enable owner approval cards in that person's DM. This is separate from
 channel-onboarding admins, failure operators and write administrators; it grants none of
-those roles. An empty setting disables this workflow.
+those roles. An empty setting disables this workflow. Owner delivery uses the existing
+`chat:write` scope and records Slack's returned DM ID; no `im:write` scope is needed.
 
 When a verified Slack member asks for project work from an unauthorized channel, Mica
 requests owner review before invoking the model or starting a worker. A member may already

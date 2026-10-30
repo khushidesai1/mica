@@ -189,14 +189,14 @@ async def propose(bridge: BatchBridge, record: dict[str, Any], grant: access.Gra
             raise ValueError("Access request identity changed.")
         if not row.message_ts and row.delivery == "pending":
             client = client_for(bridge)
-            opened = await client.conversations_open(users=owner.split(":", 1)[1])
-            row.owner_channel = opened["channel"]["id"]
             # An ambiguous send stays held, never blindly posts another approval.
             row.delivery = "sending"
             await save(bridge, row)
             try:
                 sent = await client.chat_postMessage(
-                    channel=row.owner_channel,
+                    # chat:write supports an owner user ID and returns the DM ID;
+                    # conversations.open would require an unnecessary im:write scope.
+                    channel=owner.split(":", 1)[1],
                     text="Mica access approval needed",
                     blocks=blocks(row),
                     unfurl_links=False,
@@ -207,6 +207,9 @@ async def propose(bridge: BatchBridge, record: dict[str, Any], grant: access.Gra
                 row.delivery = "pending" if exc.response.get("error") else "unknown"
                 await save(bridge, row)
                 raise
+            row.owner_channel = str(sent["channel"])
+            if not re.fullmatch(r"D[A-Z0-9]+", row.owner_channel):
+                raise ValueError("The owner approval requires a private conversation.")
             row.message_ts, row.delivery = sent["ts"], "sent"
             await save(bridge, row)
         record["access_request_id"] = row.id

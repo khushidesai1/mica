@@ -22,8 +22,8 @@ def approvals(bridge, monkeypatch):
     bridge.settings.access_request_owner_id = "T1:U1"
     bridge.settings.conversation_principals = "*"
     client = AsyncMock()
-    client.conversations_open.return_value = {"channel": {"id": "DOWNER"}}
-    client.chat_postMessage.return_value = {"ts": "90.1"}
+    client.conversations_open.side_effect = AssertionError("im:write is not installed")
+    client.chat_postMessage.return_value = {"ts": "90.1", "channel": "DOWNER"}
     client.views_open.return_value = {"view": {"id": "V1"}}
     monkeypatch.setattr(requests, "client_for", lambda _: client)
     bridge.approval_client = client
@@ -105,6 +105,7 @@ async def test_member_unpublished_channel_goes_to_owner_before_model_or_worker(
     router.assert_not_called()
     bridge.test_client.create_job.assert_not_called()
     assert bridge.approval_client.chat_postMessage.await_count == 1
+    assert bridge.approval_client.chat_postMessage.call_args.kwargs["channel"] == "U1"
     assert not Registry(bridge.store).load().bound("T1", "C1")
     action = requests.blocks(row)[-1]["elements"][0]
     assert action["style"] == "primary"
