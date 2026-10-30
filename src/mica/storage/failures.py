@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, Field
 
 DAY = 86400
 RETENTION = 30 * DAY
@@ -32,6 +32,7 @@ class Observation(BaseModel):
     slack_channel: str = ""
     slack_thread_ts: str = ""
     receipt_scope: str = ""
+    api_status: int = 0
 
     @property
     def fingerprint(self) -> str:
@@ -48,6 +49,24 @@ class Observation(BaseModel):
 
 def digest(*parts: str) -> str:
     return hashlib.sha256("\0".join(parts).encode()).hexdigest()
+
+
+class FailureAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    # Slack clips the card preview separately. Preserve modestly longer sentences in
+    # Details instead of rejecting an otherwise useful provider response.
+    summary: str = Field(min_length=1, max_length=500)
+    likely_cause: str = Field(min_length=1, max_length=500)
+    next_check: str = Field(min_length=1, max_length=500)
+
+
+class FailureInvestigation(BaseModel):
+    key: str
+    evidence: dict[str, Any]
+    status: Literal["pending", "complete", "unavailable"] = "pending"
+    attempts: int = 0
+    assessment: FailureAssessment | None = None
 
 
 class Incident(BaseModel):
@@ -73,6 +92,8 @@ class Incident(BaseModel):
     resolved_count: int = 0
     sent_resolved_count: int = 0
     card_version: int = 0
+    investigation: FailureInvestigation | None = None
+    sent_investigation: str = ""
 
     @property
     def resolved(self) -> bool:
@@ -151,6 +172,7 @@ def observed(old: Incident | None, observation: Observation, now: float, episode
                 "route",
                 "http_status",
                 "revision",
+                "api_status",
             )
         }
         if observation.project_id and observation.project_id != previous.project_id:
@@ -199,11 +221,15 @@ def finished(
     request_status: str = "",
     sent_resolved_count: int = 0,
     card_version: int = 0,
+    investigation: FailureInvestigation | None = None,
+    sent_investigation: str = "",
 ) -> Incident | None:
     if row.lease_token != token or row.lease_until < now:
         return None
     row = row.model_copy(deep=True)
     row.lease_token, row.lease_until = "", 0
+    if investigation is not None:
+        row.investigation = investigation
     if uncertain and not row.slack_ts:
         row.delivery, row.next_attempt = "unconfirmed", now + 3600
     elif slack_ts:
@@ -211,6 +237,7 @@ def finished(
         row.request_status = request_status
         row.sent_resolved_count = sent_resolved_count
         row.card_version = card_version
+        row.sent_investigation = sent_investigation
         row.delivery_attempts = 0
         row.delivery = (
             "sent"
@@ -220,6 +247,8 @@ def finished(
         row.next_attempt = (
             (now + retry_after if retry_after else NEVER) if row.delivery == "sent" else now
         )
+        if row.investigation and row.investigation.status == "pending" and not row.resolved:
+            row.next_attempt = now
     else:
         row.delivery = "pending"
         row.next_attempt = now + max(60, retry_after)

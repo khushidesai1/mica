@@ -69,6 +69,37 @@ incident resolved. Operators can discuss a failure in its thread;
 replies and reactions do not change application state. Only the guarded Mark resolved action
 records manual resolution.
 
+## Claude assessments
+
+After confirming delivery of the selected alerts, maintenance asks Claude for a short assessment
+and updates the same cards: **what happened**, **likely cause (unconfirmed)**, and **next check**.
+The overview is included in the message text and Details so it can be forwarded to a developer.
+Priority tags, request links and Mark resolved continue to work; an assessment never resolves,
+retries or changes the underlying request.
+
+This is a bounded review of saved diagnostics, not an autonomous log/code investigation. Claude
+receives the fixed failure explanations, request outcome, cloud API status when captured, and
+allowlisted worker state: attempt, outcome, stop reason, tier/GPU, provisioning, retry counters
+and time allowance. It does not receive prompts, replies, exception text, arbitrary receipt fields,
+project/user identity, credentials or private files. Missing evidence must remain unknown. It has
+no execution tools or access to Cloud Logging; its next check identifies what a developer should
+inspect. Existing compute-control handling now records the numeric cloud API status without the
+exception message, distinguishing permission, capacity and service errors when that evidence exists.
+
+`AGENT_FAILURE_INVESTIGATION_ENABLED` defaults to true and uses the existing Anthropic credential
+and `AGENT_ROUTING_REPAIR_MODEL` (the configured model supporting forced structured responses).
+Each call has an eight-second limit and 650 output tokens, with no provider retry. Baseline alerts
+are delivered before any call; provider timeouts, invalid output and unavailable credentials cannot
+hide them. The AI pass has a separate 25-second budget and shares the existing incident leases.
+Pending work survives interruption and is picked up by maintenance. No worker or GPU is started.
+
+Assessments, including unavailable results, are cached per diagnostic state. Duplicate reports and
+Slack delivery retries reuse the cached result; new causes or changed request state can request a
+new assessment, up to three completed attempts per incident. Beyond that cap, changed evidence
+discards the stale assessment and retains the original diagnostics. Resolved incidents are not
+investigated. Turning the setting off stops further model calls. Existing historical cards are
+enriched only when they next become due; deployment does not repost old incidents.
+
 ## Coverage
 
 The control plane reports exhausted routing, failed computation, worker control API failures,
