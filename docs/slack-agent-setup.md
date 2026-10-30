@@ -335,6 +335,42 @@ they do not establish scientific correctness. SVG and HEIC require a PNG alterna
 
 ## Identity, projects, and private memory
 
+### Owner access requests
+
+Set `AGENT_ACCESS_REQUEST_OWNER_ID` to the single designated owner's `workspace:member`
+Slack identity to enable owner approval cards in that person's DM. This is separate from
+channel-onboarding admins, failure operators and write administrators; it grants none of
+those roles. An empty setting disables this workflow. Owner delivery uses the existing
+`chat:write` scope and records Slack's returned DM ID; no `im:write` scope is needed.
+
+When a verified Slack member asks for project work from an unauthorized channel, Mica
+requests owner review before invoking the model or starting a worker. A member may already
+have project access in DMs while their channel still needs publication and binding.
+In a private conversation without project access, Claude has a `request_access` proposal
+tool and explicit access context. Existing members with no selected project are asked to
+choose a project. Account/help/setup commands remain available. Identity lookup outages
+and invalid/non-workspace identities are not treated as requests that can bypass admission.
+
+The owner receives the requester, verified email, origin and a bounded excerpt of the
+request, with a green **Approve access…** button and **Deny**. Approve opens a project
+selector listing only projects the reviewer owns. The confirmation explicitly grants that
+person membership; for a channel request it also publishes and binds that project to the
+channel, warning that all channel viewers (including future members) can read replies.
+It cannot replace another channel binding or grant another owner's project. It does not
+grant write permissions, cloud IAM, co-ownership, or compute approval.
+
+Approvals recheck both Slack identities, current ownership, project access revision and
+channel binding. Decisions are bound to the original DM/card and modal. They expire after
+24 hours; repeated requests from the same person and scope on a UTC day share one card.
+Declined requests stay declined for that day. Durable registry receipts prevent old clicks
+or retries after a crash from restoring subsequently revoked access. The requester receives
+the decision and must send a fresh task; no old analysis is automatically restarted.
+
+Delivery uses durable intent records under `access-request:` connector state. An ambiguous
+post is held rather than blindly duplicated. The requester is not told an owner was notified
+unless Slack returned the message timestamp. Failed card edits can be retried by revisiting
+the card; ambiguous decision notifications require operator inspection before resending.
+
 The live bot uses `AGENT_ACCESS_MODE=workspace`: active human members of its Slack workspace
 can use their own private agent DM without joining an access channel. Slack must expose a valid
 email for the member. Projects and personal memory stay private; adding Mica to a channel

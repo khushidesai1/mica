@@ -38,7 +38,7 @@ def enabled(settings: Settings, principal: str) -> bool:
 
 
 class Decision(DecisionFields):
-    route: Literal["reply", "compute", "transfer", "command"]
+    route: Literal["reply", "compute", "transfer", "command", "access"]
     command_proposal: dict[str, Any] | None = None
 
 
@@ -104,8 +104,19 @@ class Control(Input):
     operation: Literal["cancel", "write revoke", "none"]
 
 
+class RequestAccess(Input):
+    """No model-supplied identities, projects or permissions are trusted."""
+
+
 # These descriptions are the tool-specific policy, shared by every loop iteration.
 DESCRIPTIONS = {
+    "request_access": (
+        "Request an owner approval card when project work is requested but "
+        "project_access.allowed is false. No permissions or work are started. "
+        "For accessible but unselected projects, ask which to use instead. "
+        "Account/help/setup uses propose_command. Missing authorization does "
+        "not mean workers are unavailable."
+    ),
     ("list_folders"): (
         "List metadata under this project's read-only data root. Paths are "
         "relative to data_uri (empty means root) or within it. Batch relevant "
@@ -176,6 +187,7 @@ DESCRIPTIONS = {
     ),
 }
 MODELS: dict[str, type[BaseModel]] = {
+    "request_access": RequestAccess,
     "list_folders": Folders,
     "view_files": Views,
     "read_sources": Sources,
@@ -233,7 +245,9 @@ def tools_for(allowed: bool) -> list[dict[str, Any]]:
             "strict": True,
         }
         for name, model in MODELS.items()
-        if allowed or name == "propose_command"
+        if (allowed and name != "request_access") or (
+            not allowed and name in {"propose_command", "request_access"}
+        )
     ]
 
 
@@ -349,6 +363,11 @@ async def run(
     remaining = min(float(record.get("routing_budget", ROUTING_SECONDS)), ROUTING_SECONDS)
     deadline = started + remaining
     data = {**context, **await pending_context(bridge, record, grant)}
+    data["project_access"] = {
+        "allowed": grant.allowed,
+        "has_accessible_projects": bool(grant.doc.visible(grant.email)),
+        "channel_authorization_required": not grant.private and not grant.allowed,
+    }
     data.pop("brief", None)
     messages: list[dict[str, Any]] = [
         {
@@ -357,6 +376,8 @@ async def run(
         }
     ]
     tool_specs = tools_for(grant.allowed)
+    if surface.is_email(record) or not bridge.settings.access_request_owner_id:
+        tool_specs = [tool for tool in tool_specs if tool["name"] != "request_access"]
     snapshots: dict[str, reference_repos.RepoSnapshot] = {}
     read_remaining = 384 * 1024
     record["conversation_steps"] = []
@@ -472,6 +493,7 @@ async def run(
                     record,
                     "replying",
                     {
+                        "request_access": "Requesting owner approval…",
                         "list_folders": "Checking the requested folders…",
                         "view_files": "Looking at the attached files…",
                         "read_sources": "Reading the requested sources…",
@@ -483,7 +505,9 @@ async def run(
                 result: Any = None
                 terminal: Decision | None = None
                 async with asyncio.timeout_at(deadline):
-                    if isinstance(value, Folders):
+                    if isinstance(value, RequestAccess):
+                        terminal = Decision(route="access", reply="Owner review requested")
+                    elif isinstance(value, Folders):
                         from .survey import inventory_uri
 
                         uris = list(
