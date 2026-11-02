@@ -97,8 +97,11 @@ class RecoveryManager:
             self.stop.set()
 
     def prompt(self) -> str:
+        from .gpu_profiles import profile
+
         shape = (
-            GPU_TIERS[self.manifest.get("gpu_type", "l4")]
+            (profile(self.manifest["gpu_profile"]) if self.manifest.get("gpu_profile")
+             else GPU_TIERS[self.manifest.get("gpu_type", "l4")])
             if self.tier == "gpu"
             else TIERS[self.tier]
         )
@@ -106,6 +109,8 @@ class RecoveryManager:
         history = "\n".join(self.manifest.get("worker_history", []))
         remaining = max(0, int(self.manifest.get("request_deadline", time.time()) - time.time()))
         recovery_policy = (
+            f"Allocated GPUs: {shape.gpu_count} NVIDIA {str(shape.gpu_type).upper()}, "
+            f"{shape.gpu_memory_gib} GiB VRAM per device (not automatically pooled). "
             "This GPU worker cannot resize or move to a CPU tier. Chunk work within the "
             "confirmed resources; save progress and explain if the request cannot fit. "
             "Verified Spot interruptions and checkpointed continuations keep the same GPU "

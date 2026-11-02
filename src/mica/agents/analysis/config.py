@@ -86,7 +86,11 @@ class Settings(BaseSettings):
     launch_heavy_tier: Literal["standard", "large", "xlarge"] = "large"
     max_tier: Literal["standard", "large", "xlarge"] = "xlarge"
     gpu_tier_enabled: bool = False
-    gpu_types: str = Field(default="t4,l4", pattern=r"^(?:t4|l4)(?:,(?:t4|l4))*$")
+    gpu_flexible_sizing: bool = False
+    gpu_types: str = Field(
+        default="t4,l4",
+        pattern=r"^(?:t4|l4|a100|a100-80gb|h100)(?:,(?:t4|l4|a100|a100-80gb|h100))*$",
+    )
     gpu_default_type: Literal["t4", "l4"] = "t4"
     gpu_queue_wait_seconds: int = Field(default=600, ge=60, le=3600)
     gpu_image: str = Field(default="", pattern=r"^(?:[a-z0-9./_-]+@sha256:[0-9a-f]{64})?$")

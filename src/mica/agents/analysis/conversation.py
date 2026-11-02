@@ -30,6 +30,7 @@ from .direct import (
     read_information,
 )
 from .direct import Decision as ReadDecision
+from .gpu_profiles import Sizing
 from .storage import Storage
 from .survey import inventory
 from .transfer_config import TransferRequest
@@ -87,6 +88,7 @@ class Constraints(Input):
     allow_gpu_fallback: bool = True
     min_memory_gib: int = Field(default=0, ge=0, le=1_048_576)
     min_gpu_memory_gib: int = Field(default=0, ge=0, le=1_048_576)
+    gpu_sizing: Sizing | None = None
     gpu_hours: float | None = Field(default=None, gt=0, le=336, allow_inf_nan=False)
     compute_budget_usd: float | None = Field(default=None, gt=0, le=33600, allow_inf_nan=False)
 
@@ -95,7 +97,7 @@ class Worker(Input):
     task: str = Field(min_length=5, max_length=16000)
     category: Literal["training", "full_segmentation", "full_ingest", "analysis"]
     tier: Literal["standard", "large", "xlarge", "gpu"] = "standard"
-    gpu_type: Literal["t4", "l4"] | None = None
+    gpu_type: tiers.GPUType | None = None
     constraints: Constraints | None = None
     reference_repos: list[Annotated[str, Field(max_length=150)]] = Field(
         default_factory=list, max_length=5
@@ -158,16 +160,16 @@ DESCRIPTIONS = {
         " package. task describes the authorized work, not a success claim. Use"
         " analysis/standard for ordinary tasks; training, full_segmentation and"
         " full_ingest identify heavier work. CPU tiers are standard, large, "
-        "xlarge; gpu supports T4 or L4 subject to availability and approval. "
+        "xlarge; GPU choices come from compute_capabilities and require approval. "
         "Prefer GPU for substantial Cellpose-SAM segmentation; bounded crops "
         "can use CPU. Repository reading alone needs read_sources. "
         "reference_repos selects available source snapshots. write_paths names "
         "explicit requested GCS destinations; output grants and overwrite "
-        "approval are enforced separately. constraints records only explicit "
-        "user limits/preferences: tier_explicit, max_tier, allow_resize, "
+        "approval are enforced separately. constraints records assessed GPU sizing and "
+        "user limits: tier_explicit, max_tier, allow_resize, "
         "on_demand, allow_gpu_fallback, min_memory_gib (host RAM), "
-        "min_gpu_memory_gib (GPU VRAM), gpu_hours, "
-        "compute_budget_usd. Leave constraints null normally. Runtime estimates"
+        "min_gpu_memory_gib (VRAM/device), gpu_sizing, gpu_hours, "
+        "compute_budget_usd. CPU constraints can be null. Runtime estimates"
         " are advisory; long tasks may checkpoint and continue. Never shrink "
         "scientific scope merely because it is long. Never invent consent, "
         "budgets, write access or required hardware; GPU requests still require"

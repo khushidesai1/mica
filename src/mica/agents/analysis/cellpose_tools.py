@@ -55,7 +55,12 @@ def gpu_devices() -> tuple[Path, ...]:
     for path in required:
         if not path.exists() or not stat.S_ISCHR(path.lstat().st_mode):
             raise ValueError("The approved GPU worker has no usable NVIDIA device.")
-    return required + (
+    # Bind only actual NVIDIA character devices, never a symlink or the whole /dev.
+    additional = tuple(
+        path for index in range(1, 16) if (path := Path(f"/dev/nvidia{index}")).exists()
+        and stat.S_ISCHR(path.lstat().st_mode)
+    )
+    return required + additional + (
         (optional,) if optional.exists() and stat.S_ISCHR(optional.lstat().st_mode) else ()
     )
 

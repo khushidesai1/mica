@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import html
 import json
 import re
 import time
@@ -14,7 +15,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from . import access, surface
 from .storage import Conflict, Storage
-from .tiers import gpu_choices, gpu_estimate, gpu_seconds, resolve, selected_gpu
+from .tiers import gpu_choices, gpu_estimate, gpu_mode, gpu_seconds, resolve, selected_gpu_choice
 
 if TYPE_CHECKING:
     from .batch import BatchBridge
@@ -75,13 +76,13 @@ def validate(
         or bridge.settings.gpu_image != approval.image
         or gpu_seconds(record, bridge.settings) != approval.seconds
         or max(gpu_estimate(bridge.settings, item) for item in shapes) != approval.hourly_estimate
-        or selected_gpu(record) not in gpu_choices(record)
+        or selected_gpu_choice(record) not in gpu_choices(record)
         or bridge.settings.max_budget_usd_per_turn != approval.model_allowance
     ):
         raise ValueError("GPU execution choices changed. Request fresh confirmation.")
     if record.get("recovery_version") and (
         record["tier"] != "gpu"
-        or record["provisioning"] != record["launch"]["provisioning"]
+        or record["provisioning"] != gpu_mode(record)
         or record.get("gpu_fallback_count", 0) > len(shapes) - 1
         or record["attempt"]
         > (
@@ -100,7 +101,7 @@ async def ready(
 ) -> bool:
     if record.get("launch", {}).get("tier") != "gpu":
         return True
-    shape = resolve("gpu", bridge.settings, record["launch"].get("gpu_type", "l4"))
+    shape = resolve("gpu", bridge.settings, selected_gpu_choice(record))
     if surface.is_email(record):
         raise ValueError(
             "GPU execution needs confirmation in your private Slack conversation with Mica. "
@@ -152,23 +153,30 @@ async def ready(
     compute = approval.hourly_estimate * approval.seconds / 3600
     hourly = approval.hourly_estimate
     alternatives = gpu_choices(record)[1:]
+    def describe(name: str) -> str:
+        candidate = resolve("gpu", bridge.settings, name)
+        mode_label = "Spot" if gpu_mode(record, name) == "SPOT" else "on-demand"
+        return (
+            f"{candidate.gpu_count} NVIDIA {str(candidate.gpu_type).upper()} "
+            f"({candidate.gpu_memory_gib} GiB VRAM each, {candidate.memory_gib} GiB host RAM, "
+            f"{candidate.vcpus} CPUs; {mode_label})"
+        )
+
     fallback = (
         "If unavailable, automatically try "
-        + ", ".join("NVIDIA " + name.upper() for name in alternatives)
+        + ", ".join(describe(name) for name in alternatives)
         + " within this same time and cost estimate. "
         if alternatives
         else ""
     )
     requested = record["launch"].get("requested_gpu_type", shape.gpu_type)
-    if requested != shape.gpu_type:
+    if requested and requested != shape.gpu_type:
         fallback = (
-            f"{str(requested).upper()} is unavailable; using {str(shape.gpu_type).upper()}. "
+            f"Selected {str(shape.gpu_type).upper()} to meet the assessed needs and cost. "
             + fallback
         )
     text = (
-        f"Approve this GPU run on 1 NVIDIA {str(shape.gpu_type).upper()} "
-        f"({shape.gpu_memory_gib} GiB GPU memory, {shape.vcpus} CPUs, "
-        f"{shape.memory_gib} GiB RAM)? "
+        f"Approve this GPU run on {describe(selected_gpu_choice(record))}? "
         + fallback
         + f"Time allowance: {approval.seconds / 3600:g} hours including startup/retries. "
         f"Estimated compute and disk: ${compute:.2f}; "
@@ -180,6 +188,14 @@ async def ready(
             else "On-demand; completed stages can continue within this same allowance. No resize."
         )
     )
+    assessment = record["launch"].get("gpu_sizing")
+    if assessment:
+        text += (
+            "\n\n*Sizing assessment* · " + str(assessment["basis"]).replace("_", " ")
+            + "\n" + html.escape(str(assessment["evidence"]), quote=False)
+            + ("\n*Parallelism:* " + html.escape(str(assessment["multi_gpu_reason"]), quote=False)
+               if assessment.get("multi_gpu_reason") else "")
+        )
     record.update(status="awaiting_approval", gpu_approval=True)
     await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
     if record.get("notice_text") != text:

@@ -16,7 +16,7 @@ from pydantic import Field
 from .config import CHECKPOINT_PREFIX, MAX_MEMORY_TOTAL_KB, Settings
 from .reference_repos import MAX_BYTES as REFERENCE_MAX_BYTES
 from .storage import Storage
-from .tiers import ORDER, TIERS, Record, gpu_seconds, resolve, selected_gpu
+from .tiers import ORDER, TIERS, Record, gpu_seconds, resolve, selected_gpu, selected_gpu_choice
 
 if TYPE_CHECKING:
     from .batch import BatchBridge
@@ -262,6 +262,8 @@ def worker_manifest(record: dict[str, Any], settings: Settings) -> dict[str, Any
     return {
         "recovery": {
             **({"gpu_type": selected_gpu(record)} if record["tier"] == "gpu" else {}),
+            **({"gpu_profile": selected_gpu_choice(record)}
+               if record["tier"] == "gpu" and record["launch"].get("gpu_profile") else {}),
             **{
                 key: record[key]
                 for key in (

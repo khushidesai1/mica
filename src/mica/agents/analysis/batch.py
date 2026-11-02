@@ -43,7 +43,7 @@ from .data_links import init_args
 from .identity import IdentityUnavailable
 from .slack_format import chunks, status_blocks
 from .storage import GCSStorage, Storage
-from .tiers import Provisioning, selected_gpu
+from .tiers import Provisioning, selected_gpu_choice
 
 log = logging.getLogger(__name__)
 STATUS_PHASES = {"received", "waiting", "starting", "replying", "cancelling"}
@@ -78,6 +78,8 @@ def job_spec(
     gpu = tier == "gpu"
     if provisioning not in {"SPOT", "STANDARD"}:
         raise ValueError("Invalid worker provisioning mode.")
+    if shape.spot_only and provisioning != "SPOT":
+        raise ValueError("This GPU configuration requires Spot provisioning.")
     seconds = shape.max_seconds if duration is None else duration
     if not 1 <= seconds <= shape.max_seconds or not 0 <= attempt <= 64:
         raise ValueError("Invalid worker duration or attempt.")
@@ -205,7 +207,9 @@ def job_spec(
     policy = batch_v1.AllocationPolicy.InstancePolicy(
         machine_type=shape.machine,
         accelerators=(
-            [batch_v1.AllocationPolicy.Accelerator(type_=shape.accelerator_type, count=1)]
+            [batch_v1.AllocationPolicy.Accelerator(
+                type_=shape.accelerator_type, count=shape.gpu_count
+            )]
             if shape.accelerator_type
             else []
         ),
@@ -945,12 +949,10 @@ class BatchBridge:
         if record["status"] == "submitting":
             starting = "Spinning up a compute worker (usually a few minutes)…"
             if record.get("provisioning") == "STANDARD":
-                from .tiers import GPU_TIERS, TIERS
+                from .tiers import resolve
 
                 shape = (
-                    GPU_TIERS[selected_gpu(record)]
-                    if record["tier"] == "gpu"
-                    else TIERS[record["tier"]]
+                    resolve(record["tier"], self.settings, selected_gpu_choice(record))
                 )
                 reason = (
                     record.get("launch_reason") or "on-demand selected for this request"
@@ -1117,7 +1119,7 @@ class BatchBridge:
                         ),
                         event_id,
                         set(record["mount_buckets"]) if "mount_buckets" in record else None,
-                        gpu_type=selected_gpu(record),
+                        gpu_type=selected_gpu_choice(record),
                         **(
                             {
                                 "tier": record["tier"],

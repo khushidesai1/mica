@@ -12,7 +12,7 @@ from google.cloud import batch_v1
 
 from . import compute_approval, recovery
 from .storage import Conflict, Storage
-from .tiers import gpu_choices, selected_gpu
+from .tiers import gpu_choices, gpu_mode, resolve, selected_gpu, selected_gpu_choice
 
 if TYPE_CHECKING:
     from .batch import BatchBridge
@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 def claim_start(storage: Storage, event_id: str, attempt: int, decision: str) -> bool:
     """First writer wins: either issue credentials or retire this unstarted attempt."""
-    if decision not in {"start", "fallback"} or not 0 <= attempt <= 2:
+    if decision not in {"start", "fallback"} or not 0 <= attempt <= 64:
         raise ValueError("Invalid GPU startup decision")
     key = compute_approval.key(event_id).removesuffix(".json") + f"/start-a{attempt}"
     value = decision.encode()
@@ -39,6 +39,8 @@ def capacity_error(message: str) -> bool:
             "ZONE_RESOURCE_POOL_EXHAUSTED",
             "POOL_CAPACITY_INSUFFICIENT",
             "STOCKOUT",
+            "QUOTA_EXCEEDED",
+            "QUOTA_EXHAUSTED",
         )
     )
 
@@ -84,10 +86,12 @@ async def fallback(
             claim_start, bridge.storage, event_id, record["attempt"], "fallback"
         ):
             return False
-        pending = next(name for name in choices if name != selected_gpu(record))
+        pending = next(name for name in choices if name != selected_gpu_choice(record))
         record["gpu_switch_pending"] = pending
         record["gpu_fallback_reason"] = "provider_capacity" if resource_error else "queue_timeout"
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+    shape = resolve("gpu", bridge.settings, pending)
+    alternative = f"NVIDIA {str(shape.gpu_type).upper()} ({shape.memory_gib} GiB host RAM)"
     if state != "MISSING":
         # Wait for deletion to be observed before publishing a successor's manifest.
         if state != "DELETION_IN_PROGRESS":
@@ -98,13 +102,14 @@ async def fallback(
             record,
             "starting",
             f"{selected_gpu(record).upper()} hasn't become available. "
-            f"Releasing that reservation before trying {pending.upper()} automatically.",
+            f"Releasing that reservation before trying {alternative} automatically.",
         )
         return True
     previous = selected_gpu(record)
     recovery.settle(record, 0.0)  # The credential fence proves computation never started.
     record.update(
-        gpu_type=pending,
+        gpu_type=shape.gpu_type,
+        provisioning=gpu_mode(record, pending),
         gpu_fallback_count=1,
         attempt=record["attempt"] + 1,
         status="pending",
@@ -118,6 +123,9 @@ async def fallback(
             }
         ],
     )
+    if record["launch"].get("gpu_profile"):
+        record["gpu_profile"] = pending
+        record["constraints"] = {**record["constraints"], "provisioning": record["provisioning"]}
     record.pop("gpu_switch_pending", None)
     await recovery.release(bridge, record)
     await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
@@ -125,7 +133,7 @@ async def fallback(
         event_id,
         record,
         "starting",
-        f"Continuing on NVIDIA {pending.upper()} because {previous.upper()} was unavailable. "
+        f"Continuing on {alternative} because {previous.upper()} was unavailable. "
         "The original time and cost allowance still applies.",
     )
     return True

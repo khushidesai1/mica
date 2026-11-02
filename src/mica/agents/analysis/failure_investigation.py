@@ -54,7 +54,7 @@ ENUMS = {
         "stopped",
     },
     "tier": {"standard", "large", "xlarge", "gpu"},
-    "gpu_type": {"t4", "l4"},
+    "gpu_type": {"t4", "l4", "a100", "a100-80gb", "h100"},
     "provisioning": {"SPOT", "STANDARD"},
     "reply_handoff": {"atomx"},
 }
