@@ -20,6 +20,10 @@ class Record(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, frozen=True)
 
 
+class WorkerUnavailable(ValueError):
+    """A requirement cannot be honored; explain it instead of lowering that requirement."""
+
+
 @dataclass(frozen=True)
 class Tier:
     name: TierName
@@ -62,6 +66,21 @@ GPU_TIERS = {
     ),
 }
 ORDER = tuple(name for name, tier in TIERS.items() if tier.escalatable)
+
+CAPABILITY_POLICY = """
+compute_capabilities is the current deployment's authoritative resource catalog, refreshed for
+this turn. It describes enabled choices, not guaranteed cloud capacity. Do not substitute old
+thread/project memory or general cloud knowledge for these limits. Host RAM and GPU VRAM are
+different requirements. Carry requested/established minimum host RAM in min_memory_gib and
+minimum GPU VRAM in min_gpu_memory_gib, even when the task text already mentions them.
+Before start_worker/compute, check that a listed worker satisfies all requirements together.
+If none does, clearly say what Mica cannot currently provide, state the actual limiting capacity,
+and explain that enabling a larger worker requires an owner configuration change. Offer supported
+alternatives, but do not silently allocate less RAM, drop the GPU or reduce the scientific task.
+A worker cannot change its allocated machine by following a prose instruction. You may select
+enabled resources and request an allowance within the configured ceilings and approval rules;
+you cannot change those ceilings, enable machines or grant yourself additional permissions.
+"""
 
 
 def available_gpus(settings: Settings) -> list[str]:
@@ -114,6 +133,36 @@ def resolve(name: str, settings: Settings, gpu_type: str = "l4") -> Tier:
     return replace(tier, max_seconds=settings.max_run_seconds)
 
 
+def capabilities(settings: Settings) -> dict[str, Any]:
+    """Describe exactly the enabled launch catalog without probing or allocating resources."""
+    shapes = [
+        resolve(name, settings)
+        for name in ORDER[: ORDER.index(settings.max_tier) + 1]
+    ] + [resolve("gpu", settings, gpu) for gpu in available_gpus(settings)]
+    return {
+        "workers": [
+            {
+                "tier": shape.name,
+                "machine_type": shape.machine,
+                "vcpus": shape.vcpus,
+                "host_memory_gib": shape.memory_gib,
+                "gpu_type": shape.gpu_type,
+                "gpu_memory_gib": shape.gpu_memory_gib,
+                "workspace_gb": shape.workspace_gb,
+                "max_seconds": shape.max_seconds,
+                "can_resize": shape.escalatable and shape.name != settings.max_tier,
+            }
+            for shape in shapes
+        ],
+        "gpu_approval_required": True,
+        "gpu_default_seconds": min(
+            settings.gpu_default_seconds, settings.gpu_max_seconds, settings.max_run_seconds
+        ),
+        "provider_capacity_confirmed": False,
+        "can_change_limits": False,
+    }
+
+
 def launch_choice(worker: WorkerChoice | None, settings: Settings) -> dict[str, object]:
     if worker is None:
         return {"tier": "standard", "provisioning": "SPOT", "category": "analysis", "reason": ""}
@@ -124,6 +173,8 @@ def launch_choice(worker: WorkerChoice | None, settings: Settings) -> dict[str, 
     if worker.gpu_type and tier != "gpu":
         raise ValueError("A GPU model requires the GPU worker tier.")
     constraints: dict[str, object] = {}
+    if worker.min_memory_gib:
+        constraints["min_memory_gib"] = worker.min_memory_gib
     if tier == "gpu":
         if worker.max_tier:
             raise ValueError("A GPU request cannot satisfy an explicit CPU-only tier ceiling.")
@@ -137,10 +188,30 @@ def launch_choice(worker: WorkerChoice | None, settings: Settings) -> dict[str, 
             for name in candidates
             if name in available_gpus(settings)
             and GPU_TIERS[name].gpu_memory_gib >= worker.min_gpu_memory_gib
+            and GPU_TIERS[name].memory_gib >= worker.min_memory_gib
         ]
         if not candidates:
-            resolve(tier, settings, gpu_type)
-            raise ValueError("No enabled GPU satisfies this request's memory requirement.")
+            enabled = available_gpus(settings)
+            if not enabled or (not worker.allow_gpu_fallback and gpu_type not in enabled):
+                resolve(tier, settings, gpu_type)
+            choices = "; ".join(
+                f"{name.upper()}: {GPU_TIERS[name].memory_gib} GiB host RAM, "
+                f"{GPU_TIERS[name].gpu_memory_gib} GiB GPU VRAM"
+                for name in enabled
+            )
+            requirements = " and ".join(
+                f"at least {amount} GiB {kind}"
+                for amount, kind in (
+                    (worker.min_memory_gib, "host RAM"),
+                    (worker.min_gpu_memory_gib, "GPU VRAM"),
+                )
+                if amount
+            )
+            raise WorkerUnavailable(
+                f"I can't launch a GPU worker with {requirements} under Mica's current limits. "
+                f"Enabled GPU workers: {choices}. No worker was started. "
+                "The owner needs to enable a suitable machine before I can run this request."
+            )
         mode = "SPOT" if worker.on_demand is False else "STANDARD"
         ceiling = min(settings.max_run_seconds, settings.gpu_max_seconds)
         seconds = min(
@@ -167,10 +238,24 @@ def launch_choice(worker: WorkerChoice | None, settings: Settings) -> dict[str, 
             "provisioning": mode,
             "category": worker.category,
             "reason": worker.reason,
-            "constraints": {"provisioning": mode},
+            "constraints": {**constraints, "provisioning": mode},
             **({"workload": worker.workload} if worker.workload else {}),
         }
-    resolve(tier, settings, gpu_type)
+    shape = resolve(tier, settings, gpu_type)
+    if worker.min_gpu_memory_gib:
+        raise WorkerUnavailable(
+            "A CPU worker cannot satisfy a GPU VRAM requirement. Nothing started."
+        )
+    if shape.memory_gib < worker.min_memory_gib:
+        choices = ", ".join(
+            f"{name}: {TIERS[name].memory_gib} GiB"
+            for name in ORDER[: ORDER.index(settings.max_tier) + 1]
+        )
+        raise WorkerUnavailable(
+            f"The selected {tier} CPU worker has {shape.memory_gib} GiB host RAM, below "
+            f"the requested {worker.min_memory_gib} GiB. No worker was started. "
+            f"Enabled CPU workers: {choices}. A suitable enabled worker is required."
+        )
     if worker.max_tier:
         constraints["max_tier"] = worker.max_tier
         if ORDER.index(tier) > ORDER.index(worker.max_tier):

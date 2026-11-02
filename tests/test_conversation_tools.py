@@ -252,6 +252,37 @@ async def test_terminal_worker_is_saved_and_replayed_without_model(turn, monkeyp
     bridge.test_client.create_job.assert_not_called()
 
 
+async def test_128_gib_gpu_request_explains_limit_without_downgrade_or_allocation(
+    turn, monkeypatch
+):
+    bridge, event_id, _, _ = turn
+    bridge.settings.gpu_tier_enabled = True
+    bridge.settings.gpu_image = "us-docker.pkg.dev/project/images/gpu@sha256:" + "b" * 64
+    sdk = Client(
+        tool(
+            "start_worker", task="Train with GPU and 128 GiB host RAM",
+            category="training", tier="gpu", gpu_type="l4",
+            constraints={"min_memory_gib": 128},
+        ),
+        # A repair turn must not discard the explicit minimum and launch the smaller VM.
+        tool("start_worker", task="Try with less RAM", category="training", tier="gpu"),
+    )
+    monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: sdk)
+    assert await bridge.process(event_id, 0) == "complete"
+    assert len(sdk.calls) == 1
+    bridge.test_client.create_job.assert_not_called()
+    saved = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
+    assert "launch" not in saved and "gpu_approval" not in saved and "slot" not in saved
+    assert "128 GiB" in saved["direct_decision"]["reply"]
+    assert "32 GiB host RAM" in saved["direct_decision"]["reply"]
+    assert "owner needs to enable" in saved["direct_decision"]["reply"]
+    context = json.loads(sdk.calls[0]["messages"][0]["content"][0]["text"])
+    assert [w["host_memory_gib"] for w in context["compute_capabilities"]["workers"]
+            if w["tier"] == "gpu"] == [32, 30]
+    assert await bridge.process(event_id, 0) == "complete"
+    bridge.test_client.create_job.assert_not_called()
+
+
 async def test_transfer_is_terminal_and_durable(turn):
     client = Client(tool("propose_transfer", sample="sample-7"))
     result = await run(turn, client)

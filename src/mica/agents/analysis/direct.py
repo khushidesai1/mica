@@ -226,7 +226,8 @@ class WorkerChoice(BaseModel):
     tier: Literal["standard", "large", "xlarge", "gpu"] = "standard"
     gpu_type: Literal["t4", "l4"] | None = None
     allow_gpu_fallback: bool = True
-    min_gpu_memory_gib: int = Field(default=0, ge=0, le=24)
+    min_memory_gib: int = Field(default=0, ge=0, le=1_048_576)
+    min_gpu_memory_gib: int = Field(default=0, ge=0, le=1_048_576)
     gpu_hours: float | None = Field(default=None, gt=0, le=336, allow_inf_nan=False)
     compute_budget_usd: float | None = Field(default=None, gt=0, le=33600, allow_inf_nan=False)
     on_demand: bool | None = None
@@ -327,7 +328,9 @@ async def decide(
         deadline=deadline,
         repair_model=repair_model,
         result_type=Decision,
-        system=SYSTEM + WORKER_POLICY + "\n" + project_memory.ROUTER_RULES,
+        system=(
+            SYSTEM + WORKER_POLICY + tiers.CAPABILITY_POLICY + "\n" + project_memory.ROUTER_RULES
+        ),
     )
 
 
@@ -1082,6 +1085,7 @@ async def handle(
             },
             "gpu_available": bool(tiers.available_gpus(bridge.settings)),
             "gpu_types": tiers.available_gpus(bridge.settings),
+            "compute_capabilities": tiers.capabilities(bridge.settings),
             "write_access": (
                 surface.EMAIL_READ_ONLY
                 if surface.is_email(record)
@@ -1386,7 +1390,10 @@ async def handle(
                 "The requested repository is not in Mica's available reference catalog."
             )
         record["reference_repos"] = sorted(selected)
-        record["launch"] = launch_choice(decision.worker, bridge.settings)
+        try:
+            record["launch"] = launch_choice(decision.worker, bridge.settings)
+        except tiers.WorkerUnavailable as exc:
+            return await finish(bridge, event_id, record, str(exc))
         record["route"] = "compute"
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
         return False

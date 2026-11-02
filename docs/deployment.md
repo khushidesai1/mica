@@ -87,6 +87,17 @@ Controller-only placement or approval changes can reuse the exact verified worke
 contract checks and focused failure/race tests. A provider stockout should exercise compatible
 GPU fallback, rather than block that controller release. Record hardware not yet observed in
 live inference separately; do not claim that a fallback test verifies its scientific execution.
+
+Conversation routing receives a fresh compute catalog derived from the deployed tier settings
+on every turn. It lists host RAM separately from GPU VRAM, CPU count, usable workspace, runtime
+ceilings and resize support. This describes enabled configurations, not a live capacity guarantee.
+Explicit memory requirements are checked before worker approval or allocation, and every GPU
+fallback must meet both host-RAM and VRAM requirements. An unsupported memory request receives a
+direct explanation; the conversation cannot retry it with a lower requirement in the same turn.
+For example, the current 30/32 GiB GPU machines cannot satisfy a 128 GiB host-RAM request, even
+though larger CPU-only tiers exist. Changing the machine catalog or deployment ceilings requires
+an owner configuration/release change; conversational memory cannot increase those allowances.
+
 Run live Slack smoke checks only in the owner's private DM, never in shared project channels.
 Simulate malformed model output, outages, and retry timing locally with fakes; do not inject
 failures into collaborators' conversations. Remove synthetic DM messages after verification.

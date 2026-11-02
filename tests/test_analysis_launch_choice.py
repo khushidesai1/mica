@@ -13,7 +13,7 @@ from mica.agents.analysis import direct, recovery
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.recovery_tools import RecoveryManager
 from mica.agents.analysis.resources import Sampler
-from mica.agents.analysis.tiers import launch_choice
+from mica.agents.analysis.tiers import WorkerUnavailable, capabilities, launch_choice
 
 
 @pytest.mark.parametrize(
@@ -43,6 +43,40 @@ def test_cannot_silently_clamp_and_explicit_small_initial_tier():
         launch_choice(worker, Settings(_env_file=None, max_tier="large"))
     worker = worker.model_copy(update={"tier": "standard", "tier_explicit": True})
     assert launch_choice(worker, Settings(_env_file=None))["tier"] == "standard"
+
+
+def test_cpu_memory_requirement_is_preserved_and_never_silently_undersized():
+    settings = Settings(_env_file=None)
+    worker = direct.WorkerChoice(
+        category="analysis", tier="large", min_memory_gib=128,
+        reason="Explicit 128 GiB host requirement",
+    )
+    choice = launch_choice(worker, settings)
+    assert choice["tier"] == "large" and choice["constraints"]["min_memory_gib"] == 128
+    with pytest.raises(WorkerUnavailable, match="64 GiB host RAM"):
+        launch_choice(worker.model_copy(update={"tier": "standard"}), settings)
+    with pytest.raises(WorkerUnavailable, match="GPU VRAM"):
+        launch_choice(worker.model_copy(update={"min_gpu_memory_gib": 16}), settings)
+
+
+def test_compute_catalog_reflects_enabled_resources_and_effective_time_limits():
+    settings = Settings(
+        _env_file=None, max_tier="large", max_run_seconds=3600,
+        gpu_tier_enabled=True, gpu_types="t4", gpu_max_seconds=7200,
+        gpu_image="us-docker.pkg.dev/project/images/gpu@sha256:" + "b" * 64,
+    )
+    catalog = capabilities(settings)
+    assert [(w["tier"], w["host_memory_gib"], w["gpu_memory_gib"])
+            for w in catalog["workers"]] == [
+        ("standard", 64, 0), ("large", 256, 0), ("gpu", 30, 16),
+    ]
+    assert all(w["max_seconds"] == 3600 for w in catalog["workers"])
+    assert catalog["gpu_default_seconds"] == 3600
+    assert not catalog["workers"][-1]["can_resize"]
+    assert not catalog["provider_capacity_confirmed"] and not catalog["can_change_limits"]
+    settings.gpu_tier_enabled = False
+    settings.max_tier = "standard"
+    assert [w["tier"] for w in capabilities(settings)["workers"]] == ["standard"]
 
 
 @pytest.mark.parametrize("tier", ["standard", "large", "xlarge"])

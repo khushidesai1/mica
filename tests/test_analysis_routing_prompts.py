@@ -2,7 +2,7 @@
 import json
 from pathlib import Path
 
-from mica.agents.analysis import command_intent, direct, project_memory
+from mica.agents.analysis import command_intent, direct, project_memory, tiers
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.prompts import build_system_append
 from mica.agents.analysis.runner import Context
@@ -14,7 +14,10 @@ def prompt_snapshot():
     return {
         "command_intent": command_intent.SYSTEM,
         "command_schema": command_intent.Intent.model_json_schema(),
-        "router": direct.SYSTEM + direct.WORKER_POLICY + "\n" + project_memory.ROUTER_RULES,
+        "router": (
+            direct.SYSTEM + direct.WORKER_POLICY + tiers.CAPABILITY_POLICY
+            + "\n" + project_memory.ROUTER_RULES
+        ),
         "route_schema": direct.Decision.model_json_schema(),
         "worker": build_system_append(ctx, settings),
     }
