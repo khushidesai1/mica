@@ -11,7 +11,16 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal
 from anthropic import APIError, AsyncAnthropic
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import access, attachments, command_intent, commands, prompts, reference_repos, surface
+from . import (
+    access,
+    attachments,
+    command_intent,
+    commands,
+    prompts,
+    reference_repos,
+    surface,
+    tiers,
+)
 from .config import Settings
 from .direct import (
     ROUTING_SECONDS,
@@ -76,7 +85,8 @@ class Constraints(Input):
     allow_resize: bool = True
     on_demand: bool | None = None
     allow_gpu_fallback: bool = True
-    min_gpu_memory_gib: int = Field(default=0, ge=0, le=24)
+    min_memory_gib: int = Field(default=0, ge=0, le=1_048_576)
+    min_gpu_memory_gib: int = Field(default=0, ge=0, le=1_048_576)
     gpu_hours: float | None = Field(default=None, gt=0, le=336, allow_inf_nan=False)
     compute_budget_usd: float | None = Field(default=None, gt=0, le=33600, allow_inf_nan=False)
 
@@ -155,7 +165,8 @@ DESCRIPTIONS = {
         "explicit requested GCS destinations; output grants and overwrite "
         "approval are enforced separately. constraints records only explicit "
         "user limits/preferences: tier_explicit, max_tier, allow_resize, "
-        "on_demand, allow_gpu_fallback, min_gpu_memory_gib, gpu_hours, "
+        "on_demand, allow_gpu_fallback, min_memory_gib (host RAM), "
+        "min_gpu_memory_gib (GPU VRAM), gpu_hours, "
         "compute_budget_usd. Leave constraints null normally. Runtime estimates"
         " are advisory; long tasks may checkpoint and continue. Never shrink "
         "scientific scope merely because it is long. Never invent consent, "
@@ -363,6 +374,7 @@ async def run(
     remaining = min(float(record.get("routing_budget", ROUTING_SECONDS)), ROUTING_SECONDS)
     deadline = started + remaining
     data = {**context, **await pending_context(bridge, record, grant)}
+    data["compute_capabilities"] = tiers.capabilities(bridge.settings)
     data["project_access"] = {
         "allowed": grant.allowed,
         "has_accessible_projects": bool(grant.doc.visible(grant.email)),
@@ -407,7 +419,7 @@ async def run(
                 system=[
                     {
                         "type": "text",
-                        "text": prompts.CONVERSATION
+                        "text": prompts.CONVERSATION + tiers.CAPABILITY_POLICY
                         + (
                             (
                                 "\nDraft the initial project guide from init_inventory. "
@@ -624,6 +636,11 @@ async def run(
                     "tool_use_id": block["id"],
                     "content": content,
                 }
+            except tiers.WorkerUnavailable as exc:
+                # A repair call must not discard the requirement and start a smaller worker.
+                return await persist(
+                    bridge, event_id, record, grant, Decision(route="reply", reply=str(exc))
+                )
             except ValueError as exc:
                 # Input failures are repairable. Never persist source, model text or arguments.
                 tool_result = {

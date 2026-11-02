@@ -298,6 +298,36 @@ def test_gpu_memory_requirement_excludes_smaller_fallback():
     assert choice["gpu_candidates"] == ["l4"]
 
 
+@pytest.mark.parametrize("host,vram", [(128, 0), (0, 48), (128, 48)])
+def test_gpu_rejects_unsupported_host_or_device_memory(host, vram):
+    settings = Settings(_env_file=None, gpu_tier_enabled=True, gpu_image=GPU_IMAGE)
+    with pytest.raises(tiers.WorkerUnavailable) as error:
+        tiers.launch_choice(
+            direct.WorkerChoice(
+                category="training", tier="gpu", gpu_type="l4",
+                min_memory_gib=host, min_gpu_memory_gib=vram,
+                reason="Explicit requested memory",
+            ),
+            settings,
+        )
+    assert "L4: 32 GiB host RAM, 24 GiB GPU VRAM" in str(error.value)
+    assert "T4: 30 GiB host RAM, 16 GiB GPU VRAM" in str(error.value)
+    assert "No worker was started" in str(error.value)
+
+
+def test_host_memory_requirement_also_excludes_smaller_gpu_fallback():
+    settings = Settings(_env_file=None, gpu_tier_enabled=True, gpu_image=GPU_IMAGE)
+    choice = tiers.launch_choice(
+        direct.WorkerChoice(
+            category="training", tier="gpu", gpu_type="t4", min_memory_gib=32,
+            reason="At least 32 GiB host RAM required",
+        ),
+        settings,
+    )
+    assert choice["gpu_type"] == "l4" and choice["gpu_candidates"] == ["l4"]
+    assert choice["constraints"]["min_memory_gib"] == 32
+
+
 def test_approval_and_start_receipts_use_existing_control_only_prefix():
     assert compute_approval.key("a" * 32) == "write-access/compute-approvals/" + "a" * 32 + ".json"
 
