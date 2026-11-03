@@ -61,6 +61,72 @@ def test_copy_maps_new_generations_without_changing_content_identity(tmp_path):
     assert output.stat().st_mode & 0o777 == 0o600
 
 
+def retained_verification(tmp_path, *, destination=None, source=None, historical=None,
+                          manifest_rows=None, manifest_header=None):
+    copied = record(generation="20")
+    retained = tmp_path / "retained.jsonl"
+    migration.write_evidence(retained, {
+        "type": "retained-copies", "project": migration.PROJECT, "project_number": "123",
+        "source": SOURCE, "destination": DEST, **(manifest_header or {}),
+    }, manifest_rows if manifest_rows is not None else [{
+        "kind": "retained", "name": SNAPSHOT, "source_generation": "10",
+        "destination_record": copied,
+    }])
+    output = tmp_path / "mapping.jsonl"
+    result = migration.verify(
+        SOURCE, DEST,
+        save_inventory(tmp_path / "before.jsonl", SOURCE, source or []),
+        save_inventory(tmp_path / "after.jsonl", SOURCE, source or []),
+        save_inventory(tmp_path / "destination.jsonl", DEST,
+                       [copied] if destination is None else destination),
+        output, retained_path=retained,
+        historical_paths=[save_inventory(tmp_path / "historical.jsonl", SOURCE,
+                                         [record()] if historical is None else historical)],
+    )
+    return result, output
+
+
+def test_retention_preserves_expired_snapshot_with_exact_generation_mapping(tmp_path):
+    result, mapping = retained_verification(tmp_path)
+    assert result["verified"] and result["retained_objects"] == 1
+    _, rows = migration.read_evidence(mapping)
+    assert rows[0]["retained"] and rows[0]["source_generation"] == "10"
+    assert rows[0]["destination_generation"] == "20"
+    assert migration.snapshot_proposals(
+        mapping, snapshot_export(tmp_path / "snapshots.json"), tmp_path / "proposals.jsonl"
+    )["proposals"] == 1
+
+
+@pytest.mark.parametrize("kwargs,issue", [
+    ({"destination": []}, "retained_copy_changed_or_missing"),
+    ({"destination": [record(generation="21")]}, "retained_copy_changed_or_missing"),
+    ({"destination": [record(generation="20", metageneration="2")]},
+     "retained_copy_changed_or_missing"),
+    ({"source": [record()]}, "retained_source_present"),
+    ({"destination": [record(generation="20"), record(name="tasks/unreviewed/file")]},
+     "destination_extra"),
+])
+def test_retention_never_accepts_missing_changed_or_unreviewed_objects(tmp_path, kwargs, issue):
+    result, _ = retained_verification(tmp_path, **kwargs)
+    assert not result["verified"] and result["issues"][issue] == 1
+
+
+@pytest.mark.parametrize("kwargs", [
+    {"historical": []},
+    {"historical": [record(generation="11")]},
+    {"historical": [record(crc32c="wrong")]},
+    {"historical": [record(metadata={"sha256": "wrong"})]},
+    {"manifest_header": {"project_number": "999"}},
+    {"manifest_header": {"source": "scientific-data"}},
+    {"manifest_rows": []},
+    {"manifest_rows": [{"kind": "retained", "name": "projects/live/cursor.json",
+                        "source_generation": "10", "destination_record": record()}]},
+])
+def test_retention_requires_matching_historical_evidence_and_task_scope(tmp_path, kwargs):
+    with pytest.raises(ValueError):
+        retained_verification(tmp_path, **kwargs)
+
+
 @pytest.mark.parametrize("changes", [
     {"generation": "11"}, {"metageneration": "2"},
     {"metadata": {"sha256": "changed"}}, {"size": "14"},

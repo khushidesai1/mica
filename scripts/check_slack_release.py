@@ -58,7 +58,10 @@ def check(source: Path, mode: str) -> None:
     assert Path(legacy.__file__).read_bytes() == (source / "src/pistachio/__init__.py").read_bytes()
     settings = Settings(_env_file=None)
     assert importlib.metadata.version("anthropic") == "2.3.0"
-    assert all(tool["strict"] for tool in conversation.tools_for(True))
+    assert all(
+        tool["strict"] is (tool["name"] != "start_worker")
+        for tool in conversation.tools_for(True)
+    )
     assert settings.long_run_threshold_seconds == 600
     assert settings.long_run_update_seconds == 7200
     assert settings.max_run_seconds == 604800
