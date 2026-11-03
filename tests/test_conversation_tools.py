@@ -8,7 +8,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-from test_analysis_batch import bridge, payload  # noqa: F401
+from test_analysis_batch import (  # noqa: F401
+    CONVERSATION_CONTROL,
+    CONVERSATION_RUN,
+    bridge,
+    payload,
+)
 
 from mica.agents.analysis import (
     access,
@@ -18,7 +23,6 @@ from mica.agents.analysis import (
     prompts,
     reference_repos,
 )
-from mica.agents.analysis.config import Settings
 
 
 class Block:
@@ -59,8 +63,9 @@ def tool(name, **args):
 
 
 @pytest.fixture
-async def turn(bridge):  # noqa: F811
-    bridge.settings.conversation_principals = "alice@example.com"
+async def turn(bridge, monkeypatch):  # noqa: F811
+    monkeypatch.setattr(conversation, "run", CONVERSATION_RUN)
+    monkeypatch.setattr(conversation, "control", CONVERSATION_CONTROL)
     event_id = await bridge.accept(payload(text="Please inspect the source"))
     record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
     grant = access.resolve(bridge.app, bridge.settings, bridge.store, record)
@@ -114,9 +119,11 @@ async def test_approved_public_reference_is_read_directly_without_project_regist
     bridge, event_id, record, grant = turn
     repo = "khushidesai1/nympheas-temp"
     assert not grant.project.reference_repos
-    fetch = AsyncMock(return_value=reference_repos.RepoSnapshot(
-        repo=repo, commit="a" * 40, files={"src/qc.py": "def qc(min_counts=20): pass"}
-    ))
+    fetch = AsyncMock(
+        return_value=reference_repos.RepoSnapshot(
+            repo=repo, commit="a" * 40, files={"src/qc.py": "def qc(min_counts=20): pass"}
+        )
+    )
     monkeypatch.setattr(reference_repos, "fetch", fetch)
     sdk = Client(tool("read_sources", repos=[repo], file_ids=[]), reply("The default is 20."))
     monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: sdk)
@@ -260,8 +267,11 @@ async def test_128_gib_gpu_request_explains_limit_without_downgrade_or_allocatio
     bridge.settings.gpu_image = "us-docker.pkg.dev/project/images/gpu@sha256:" + "b" * 64
     sdk = Client(
         tool(
-            "start_worker", task="Train with GPU and 128 GiB host RAM",
-            category="training", tier="gpu", gpu_type="l4",
+            "start_worker",
+            task="Train with GPU and 128 GiB host RAM",
+            category="training",
+            tier="gpu",
+            gpu_type="l4",
             constraints={"min_memory_gib": 128},
         ),
         # A repair turn must not discard the explicit minimum and launch the smaller VM.
@@ -277,8 +287,11 @@ async def test_128_gib_gpu_request_explains_limit_without_downgrade_or_allocatio
     assert "32 GiB host RAM" in saved["direct_decision"]["reply"]
     assert "owner needs to enable" in saved["direct_decision"]["reply"]
     context = json.loads(sdk.calls[0]["messages"][0]["content"][0]["text"])
-    assert [w["host_memory_gib"] for w in context["compute_capabilities"]["workers"]
-            if w["tier"] == "gpu"] == [32, 30]
+    assert [
+        w["host_memory_gib"]
+        for w in context["compute_capabilities"]["workers"]
+        if w["tier"] == "gpu"
+    ] == [32, 30]
     assert await bridge.process(event_id, 0) == "complete"
     bridge.test_client.create_job.assert_not_called()
 
@@ -310,7 +323,7 @@ async def test_command_policies_and_stale_choices(turn):
         conversation.validate_command(proposal, grant, record)
 
 
-async def test_enabled_request_skips_prequeue_classifier_without_predecessor(turn, monkeypatch):
+async def test_request_skips_control_check_without_active_predecessor(turn, monkeypatch):
     bridge, event_id, _, _ = turn
     sdk = Client(reply())
     monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: sdk)
@@ -318,7 +331,6 @@ async def test_enabled_request_skips_prequeue_classifier_without_predecessor(tur
     monkeypatch.setattr(conversation, "control", control)
     assert await bridge.process(event_id, 0) == "complete"
     control.assert_not_awaited()
-    command_intent.classify.assert_not_awaited()
     assert len(sdk.calls) == 1
 
 
@@ -335,11 +347,7 @@ async def test_active_predecessor_cancel_bypasses_queue(turn, monkeypatch):
     assert stored["cancel_control"] is True
 
 
-def test_principal_rollout_and_strict_schema_budget():
-    settings = Settings(_env_file=None, conversation_principals="alice@example.com")
-    assert conversation.enabled(settings, "alice@example.com")
-    assert not conversation.enabled(settings, "bob@example.com")
-    assert not conversation.enabled(Settings(_env_file=None), "alice@example.com")
+def test_strict_schema_budget():
     allowed = {
         "type",
         "properties",
@@ -440,3 +448,92 @@ async def test_email_write_paths_are_repairable_read_only_error(turn, monkeypatc
     result = await run(turn, sdk)
     assert result.reply == EMAIL_READ_ONLY and result.route == "reply"
     assert sdk.calls[1]["messages"][-1]["content"][0]["is_error"] is True
+
+
+@pytest.mark.parametrize(
+    "principal,user,channel",
+    [
+        ("alice@example.com", "U1", "D1"),
+        ("bob@example.com", "U2", "D2"),
+    ],
+)
+async def test_every_authorized_principal_uses_conversation(
+    turn, monkeypatch, principal, user, channel
+):
+    from mica.agents.analysis.registry import Registry
+
+    bridge = turn[0]
+
+    def authorize(doc):
+        doc.share(bridge.pid, "alice@example.com", principal)
+        doc.bind("T1", channel, principal, bridge.pid, private=True)
+        return bridge.pid
+
+    if user == "U2":
+        Registry(bridge.store).update("share", "alice@example.com", "fixture", authorize)
+    client = Client(reply("A direct answer."))
+    monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: client)
+    event_id = await bridge.accept(payload("9.0", text="Explain QC", user=user, channel=channel))
+    assert await bridge.process(event_id, 0) == "complete"
+    saved = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
+    assert (
+        saved["conversation_steps"] == []
+        and saved["direct_decision"]["reply"] == "A direct answer."
+    )
+    assert len(client.calls) == 1
+    bridge.test_client.create_job.assert_not_called()
+
+
+async def test_pending_legacy_decisions_restart_through_conversation(turn, monkeypatch):
+    bridge, event_id, record, _ = turn
+    record.update(
+        command_intent={"route": "command", "proposal": {"operation": "cancel"}},
+        intent_actor="alice@example.com",
+        direct_decision={"route": "compute", "reply": "Old"},
+        direct_decision_pending=False,
+        decision_access="old",
+        route="compute",
+        launch={"tier": "xlarge"},
+        routing_retry_at=10**12,
+        routing_failures=2,
+        routing_budget=0,
+    )
+    await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+    client = Client(reply("Current conversation answer."))
+    monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: client)
+    assert await bridge.process(event_id, 0) == "complete"
+    saved = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
+    assert saved["direct_decision"]["reply"] == "Current conversation answer."
+    assert "command_intent" not in saved and "intent_actor" not in saved and "launch" not in saved
+    assert len(client.calls) == 1
+    bridge.test_client.create_job.assert_not_called()
+    bridge.test_client.delete_job.assert_not_called()
+
+
+@pytest.mark.parametrize("job", [{"job": "active"}, {"recovery_version": 1}])
+def test_legacy_running_worker_keeps_its_approved_launch(job):
+    record = {**job, "route": "compute", "launch": {"tier": "gpu"}, "direct_decision": {}}
+    before = copy.deepcopy(record)
+    conversation.start(record)
+    assert record == before
+
+
+@pytest.mark.parametrize(
+    "operation,amendable",
+    [
+        ("cancel", False),
+        ("write revoke", False),
+        ("none", False),
+        ("none", True),
+    ],
+)
+async def test_control_result_keeps_commands_out_of_amendments(
+    turn, monkeypatch, operation, amendable
+):
+    bridge, event_id, record, grant = turn
+    client = Client(reply(json.dumps({"operation": operation, "amendable": amendable})))
+    monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: client)
+    assert await conversation.control(bridge, event_id, record, grant) == operation
+    assert record["conversation_amendable"] is (operation == "none" and amendable)
+    assert await conversation.control(bridge, event_id, record, grant) == operation
+    assert len(client.calls) == 1

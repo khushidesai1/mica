@@ -9,7 +9,7 @@ import pytest
 from test_analysis_batch import bridge  # noqa: F401
 from test_analysis_direct import chat, payload  # noqa: F401
 
-from mica.agents.analysis import direct, recovery
+from mica.agents.analysis import conversation, recovery, tiers
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.recovery_tools import RecoveryManager
 from mica.agents.analysis.resources import Sampler
@@ -29,7 +29,7 @@ from mica.agents.analysis.tiers import WorkerUnavailable, capabilities, launch_c
 )
 def test_launch_table(category, tier, instruction, wanted, mode):
     choice = launch_choice(
-        direct.WorkerChoice(
+        tiers.WorkerChoice(
             category=category, tier=tier, on_demand=instruction, reason="Measured input requirement"
         ),
         Settings(_env_file=None),
@@ -38,7 +38,7 @@ def test_launch_table(category, tier, instruction, wanted, mode):
 
 
 def test_cannot_silently_clamp_and_explicit_small_initial_tier():
-    worker = direct.WorkerChoice(category="training", tier="xlarge", reason="Measured requirement")
+    worker = tiers.WorkerChoice(category="training", tier="xlarge", reason="Measured requirement")
     with pytest.raises(ValueError):
         launch_choice(worker, Settings(_env_file=None, max_tier="large"))
     worker = worker.model_copy(update={"tier": "standard", "tier_explicit": True})
@@ -47,7 +47,7 @@ def test_cannot_silently_clamp_and_explicit_small_initial_tier():
 
 def test_cpu_memory_requirement_is_preserved_and_never_silently_undersized():
     settings = Settings(_env_file=None)
-    worker = direct.WorkerChoice(
+    worker = tiers.WorkerChoice(
         category="analysis", tier="large", min_memory_gib=128,
         reason="Explicit 128 GiB host requirement",
     )
@@ -105,10 +105,10 @@ def test_worker_has_long_commands_and_no_quote_gate(tmp_path, tier):
 
 @pytest.fixture
 async def running_heavy(chat):
-    chat.decision.return_value = direct.Decision(
+    chat.decision.return_value = conversation.Decision(
         route="compute",
         reply="Training.",
-        worker=direct.WorkerChoice(category="training", reason="Train Amici on a full sample."),
+        worker=tiers.WorkerChoice(category="training", reason="Train Amici on a full sample."),
     )
     event = await chat.accept(payload(text="Train Amici"))
     assert await chat.process(event, 0) == "running"
@@ -180,10 +180,10 @@ async def test_heavy_runs_launch_without_shared_cap(chat, monkeypatch, tier):
     monkeypatch.setenv("AGENT_MAX_CONCURRENT_LARGE_RUNS", "1")
     assert "max_concurrent_large_runs" not in Settings(_env_file=None).model_dump()
     await chat.repository.begin_event("claude-large-slot:0", lease_seconds=7200)
-    chat.decision.return_value = direct.Decision(
+    chat.decision.return_value = conversation.Decision(
         route="compute",
         reply="Training.",
-        worker=direct.WorkerChoice(category="training", tier=tier, reason="Full sample training"),
+        worker=tiers.WorkerChoice(category="training", tier=tier, reason="Full sample training"),
     )
     events = []
     for i in range(24):
@@ -219,7 +219,7 @@ async def test_existing_shared_heavy_lease_is_released_on_completion(chat, runni
 
 async def test_standard_pool_retains_its_configured_limit(chat):
     chat.settings.max_concurrent_runs = 1
-    chat.decision.return_value = direct.Decision(route="compute", reply="Plotting.")
+    chat.decision.return_value = conversation.Decision(route="compute", reply="Plotting.")
     first = await chat.accept(payload(text="Plot sample one"))
     second = await chat.accept(payload("2.0", text="Plot sample two"))
     assert await chat.process(first, 0) == "running"

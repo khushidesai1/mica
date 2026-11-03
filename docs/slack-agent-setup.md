@@ -27,9 +27,8 @@ source snapshots, with exact-path follow-ups for larger repositories. The reply 
 and the commit, distinguishes inspected code from executed/tested behavior, and reports missing
 coverage. Requested README text is delivered directly through the ordinary chunked reply path;
 Mica does not start a worker merely to compose documentation or claim an attachment was created.
-Set `AGENT_CONVERSATION_PRINCIPALS` to selected email addresses to enable the conversation tool
-loop. The default empty value preserves the previous router; `*` enables all authorized users.
-Start with the owner account. `AGENT_CONVERSATION_EFFORT` defaults to `medium` and
+All users use the conversation tool loop with the same access checks.
+`AGENT_CONVERSATION_EFFORT` defaults to `medium` and
 `AGENT_CONVERSATION_MAX_CALLS` to 6, plus one final no-tool answer when the call/time reserve is
 reached. The total request budget is 120 seconds across retries. List, view and source-read tools
 can run in any order. Source/text/history content shares a 384 KiB request budget, and text

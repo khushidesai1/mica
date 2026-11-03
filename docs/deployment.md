@@ -129,10 +129,12 @@ Run live Slack smoke checks only in the owner's private DM, never in shared proj
 Simulate malformed model output, outages, and retry timing locally with fakes; do not inject
 failures into collaborators' conversations. Remove synthetic DM messages after verification.
 
-Routing uses the primary `AGENT_MODEL` first. Its one bounded correction attempt uses
-`AGENT_ROUTING_REPAIR_MODEL` (default `claude-opus-5`) with forced `route_request` selection;
-choose a repair model that supports forced tool choice. The correction retains the same context,
-schema, authorization checks and shared routing deadline. Invalid prose never starts a worker.
+All requests use the conversation loop with `AGENT_MODEL` and the shared 120-second routing
+budget. Invalid tool input returns to the model for correction; unfinished responses retain the
+existing bounded retry behavior. Starting a worker requires a validated terminal tool call.
+Remove the retired `AGENT_CONVERSATION_PRINCIPALS` environment variable during an API release;
+there is no per-user routing flag. `AGENT_ROUTING_REPAIR_MODEL` remains the model setting for
+failure-card assessments, with its existing `claude-opus-5` default.
 
 ## Provision
 

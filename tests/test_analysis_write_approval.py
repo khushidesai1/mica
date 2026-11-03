@@ -6,7 +6,7 @@ from fastapi import BackgroundTasks
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_write_flow import allow, writable  # noqa: F401
 
-from mica.agents.analysis import direct, write_access, write_approval
+from mica.agents.analysis import conversation, write_access, write_approval
 
 
 @pytest.fixture
@@ -15,10 +15,10 @@ def replacing(writable, monkeypatch):  # noqa: F811
     monkeypatch.setattr(write_approval, "inspect", writable.inspect)
     monkeypatch.setattr(write_approval, "AsyncWebClient", lambda **kw: writable.test_slack)
     monkeypatch.setattr(
-        direct,
-        "decide",
+        conversation,
+        "run",
         AsyncMock(
-            return_value=direct.Decision(
+            return_value=conversation.Decision(
                 route="compute",
                 reply="Prepare the revised results.",
                 write_paths=["gs://lab-data/liver/output/nested/"],
@@ -126,10 +126,10 @@ async def test_no_existing_outputs_starts_without_confirmation(replacing):
 async def test_invalid_targets_rejected_before_listing(replacing, monkeypatch, path):
     await allow(replacing)
     monkeypatch.setattr(
-        direct,
-        "decide",
+        conversation,
+        "run",
         AsyncMock(
-            return_value=direct.Decision(
+            return_value=conversation.Decision(
                 route="compute",
                 reply="Compute the revision.",
                 write_paths=[path],
@@ -165,10 +165,10 @@ async def test_only_nonempty_requested_folders_are_in_constant_size_approval(
     await allow(replacing)
     paths = [f"gs://lab-data/liver/output/tma{n}/" for n in [17, 18, 19]]
     monkeypatch.setattr(
-        direct,
-        "decide",
+        conversation,
+        "run",
         AsyncMock(
-            return_value=direct.Decision(
+            return_value=conversation.Decision(
                 route="compute",
                 reply="Regenerating.",
                 write_paths=paths,

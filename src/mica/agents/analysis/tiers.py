@@ -5,11 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 if TYPE_CHECKING:
     from .config import Settings
-    from .direct import WorkerChoice
 
 TierName = Literal["standard", "large", "xlarge", "gpu"]
 Provisioning = Literal["SPOT", "STANDARD"]
@@ -18,6 +17,52 @@ GPUType = Literal["t4", "l4", "a100", "a100-80gb", "h100"]
 
 class Record(BaseModel):
     model_config = ConfigDict(extra="forbid", allow_inf_nan=False, frozen=True)
+
+
+class Sizing(Record):
+    host_memory_gib: int = Field(ge=1, le=1_048_576)
+    gpu_memory_gib: int = Field(ge=1, le=1_048_576)
+    vcpus: int = Field(ge=1, le=1024)
+    gpu_count: int = Field(default=1, ge=1, le=16)
+    basis: Literal["user_requirement", "measured", "estimated"]
+    evidence: str = Field(min_length=20, max_length=700)
+    multi_gpu_reason: str = Field(default="", max_length=400)
+
+    @model_validator(mode="after")
+    def parallelism(self) -> Sizing:
+        if self.gpu_count > 1 and len(self.multi_gpu_reason.strip()) < 20:
+            raise ValueError("Multiple GPUs require a multi_gpu_reason describing parallelism.")
+        return self
+
+
+class WorkerChoice(BaseModel):
+    category: Literal["training", "full_segmentation", "full_ingest", "analysis"]
+    tier: Literal["standard", "large", "xlarge", "gpu"] = "standard"
+    gpu_type: GPUType | None = None
+    gpu_sizing: Sizing | None = None
+    allow_gpu_fallback: bool = True
+    min_memory_gib: int = Field(default=0, ge=0, le=1_048_576)
+    min_gpu_memory_gib: int = Field(default=0, ge=0, le=1_048_576)
+    gpu_hours: float | None = Field(default=None, gt=0, le=336, allow_inf_nan=False)
+    compute_budget_usd: float | None = Field(default=None, gt=0, le=33600, allow_inf_nan=False)
+    on_demand: bool | None = None
+    workload: str = Field(default="", max_length=200)
+    tier_explicit: bool = False
+    max_tier: Literal["standard", "large", "xlarge"] | None = None
+    allow_resize: bool = True
+    reason: str = Field(min_length=5, max_length=200)
+
+    @field_validator("workload", "reason", mode="before")
+    @classmethod
+    def bounded_label(cls, value: Any) -> Any:
+        return value[:200] if isinstance(value, str) else value
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def meaningful_reason(cls, value: Any) -> Any:
+        if isinstance(value, str) and len(value.strip()) < 5:
+            return "unspecified"
+        return value
 
 
 class WorkerUnavailable(ValueError):

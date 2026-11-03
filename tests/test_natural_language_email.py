@@ -1,6 +1,6 @@
-# ruff: noqa: F811
 """Account discovery and audience boundaries through the actual email delivery path."""
 
+# ruff: noqa: F811
 import json
 from copy import deepcopy
 from unittest.mock import AsyncMock
@@ -10,7 +10,7 @@ from test_analysis_batch import bridge  # noqa: F401
 from test_email_transport import sent_messages
 from test_gmail_intake import SENDER, email_record, mail, signing  # noqa: F401
 
-from mica.agents.analysis import access, command_intent, direct
+from mica.agents.analysis import access, command_intent, conversation, direct
 from mica.agents.analysis.email_delivery import deliver
 from mica.agents.analysis.registry import Binding, Registry
 from mica.agents.analysis.surface import EMAIL_STATE_PREFIX
@@ -46,11 +46,13 @@ def bind_conversation(mail, record, pid):
 
 def projects_intent(monkeypatch):
     classifier = AsyncMock(
-        return_value=command_intent.Intent(
-            route="command", proposal=command_intent.Proposal(operation="projects")
+        return_value=conversation.Decision(
+            reply="Request received.",
+            route="command",
+            command_proposal=command_intent.Proposal(operation="projects").model_dump(),
         )
     )
-    monkeypatch.setattr(command_intent, "classify", classifier)
+    monkeypatch.setattr(conversation, "run", classifier)
     return classifier
 
 
@@ -58,7 +60,7 @@ async def test_direct_markdown_reply_preserves_email_text(mail):
     eid, record = await email_record(mail)
     record["payload"]["event"]["text"] = "Explain the QC workflow"
     text = "**Slide QC**\n- Compare counts & genes.\n[source](https://example.org/qc)"
-    direct.decide.return_value = direct.Decision(route="reply", reply=text)
+    conversation.run.return_value = conversation.Decision(route="reply", reply=text)
     assert await direct.handle(mail, eid, record, mail.store)
     assert sent_messages(mail)[0].get_content().splitlines() == text.splitlines()
     assert record["terminal_reply"] == text
@@ -94,7 +96,7 @@ async def test_natural_project_question_without_valid_selection_or_memory(
     assert await direct.handle(mail, eid, record, mail.store)
     classifier.assert_awaited_once()
     memory_read.assert_not_awaited()
-    direct.decide.assert_not_awaited()
+    conversation.run.assert_awaited_once()
     mail.test_client.create_job.assert_not_called()
     messages = sent_messages(mail)
     assert len(messages) == 1
@@ -151,9 +153,9 @@ async def test_pending_account_list_regenerates_after_access_revocation(mail):
     eid, record = await email_record(mail)
     project(mail, "still-visible")
     record["payload"]["event"]["text"] = QUESTION
-    record["command_intent"] = {
+    record["direct_decision"] = {
         "route": "command",
-        "proposal": {"operation": "projects"},
+        "command_proposal": {"operation": "projects"},
     }
     grant = access.resolve(mail.app, mail.settings, mail.store, record)
     command_intent.private_reply(record, grant)
@@ -214,11 +216,13 @@ async def test_natural_memory_reply_retains_project_scope(mail, monkeypatch):
     eid, record = await email_record(mail)
     record["payload"]["event"]["text"] = "Please show the current project brief."
     monkeypatch.setattr(
-        command_intent,
-        "classify",
+        conversation,
+        "run",
         AsyncMock(
-            return_value=command_intent.Intent(
-                route="command", proposal=command_intent.Proposal(operation="brief")
+            return_value=conversation.Decision(
+                reply="Request received.",
+                route="command",
+                command_proposal=command_intent.Proposal(operation="brief").model_dump(),
             )
         ),
     )
@@ -244,9 +248,11 @@ async def test_email_compute_followup_uses_original_context_session_key(mail, mo
     eid, first = await email_record(mail)
     first["payload"]["event"]["text"] = "What can we analyze?"
     monkeypatch.setattr(
-        direct,
-        "decide",
-        AsyncMock(return_value=direct.Decision(route="reply", reply="Let's review the data.")),
+        conversation,
+        "run",
+        AsyncMock(
+            return_value=conversation.Decision(route="reply", reply="Let's review the data.")
+        ),
     )
     assert await direct.handle(mail, eid, first, mail.store)
     original_thread = first["payload"]["event"]["ts"]
@@ -262,9 +268,11 @@ async def test_email_compute_followup_uses_original_context_session_key(mail, mo
     event.pop("thread_ts", None)
     second_id, followup["thread_key"] = surface.email_keys(followup["payload"], SENDER)
     monkeypatch.setattr(
-        direct,
-        "decide",
-        AsyncMock(return_value=direct.Decision(route="compute", reply="I'll make that plot.")),
+        conversation,
+        "run",
+        AsyncMock(
+            return_value=conversation.Decision(route="compute", reply="I'll make that plot.")
+        ),
     )
     assert not await direct.handle(mail, second_id, followup, mail.store)
     assert event["thread_ts"] == original_thread
@@ -287,14 +295,15 @@ async def test_email_admin_handoff_precedes_private_selector_resolution(
     )
     private_pid = project(mail, "private-account-project")
     monkeypatch.setattr(
-        command_intent,
-        "classify",
+        conversation,
+        "run",
         AsyncMock(
-            return_value=command_intent.Intent(
+            return_value=conversation.Decision(
+                reply="Request received.",
                 route="command",
-                proposal=command_intent.Proposal(
+                command_proposal=command_intent.Proposal(
                     operation=operation, selector="private-account-project"
-                ),
+                ).model_dump(),
             )
         ),
     )

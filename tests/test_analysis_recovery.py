@@ -8,7 +8,7 @@ from analysis_helpers import memory_message as message
 from test_analysis_batch import bridge  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from mica.agents.analysis import direct, recovery
+from mica.agents.analysis import conversation, recovery, tiers
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.storage import LocalStorage
 from mica.agents.analysis.tiers import launch_choice
@@ -20,7 +20,7 @@ EVENT = "a" * 32
 async def test_terminal_stop_is_not_a_success_or_resource_failure(chat, cancelled):
     from mica.agents.analysis.calibration import recent
 
-    chat.decision.return_value = direct.Decision(route="compute", reply="Working")
+    chat.decision.return_value = conversation.Decision(route="compute", reply="Working")
     initial = await message(chat, "Plot data", "1.0")
     event = initial["job"].rsplit("claude-", 1)[-1]
     prefix = recovery.event_prefix(event)
@@ -77,7 +77,7 @@ def capacity(**kwargs):
 def test_launch_respects_analysis_size_and_uniform_deadline(tier):
     settings = Settings(_env_file=None)
     choice = launch_choice(
-        direct.WorkerChoice(category="analysis", tier=tier, reason="Measured input requirement"),
+        tiers.WorkerChoice(category="analysis", tier=tier, reason="Measured input requirement"),
         settings,
     )
     assert choice["tier"] == tier and choice["provisioning"] == "SPOT"
@@ -148,28 +148,28 @@ def test_constraints_and_one_resize_are_enforced(tmp_path):
 
 
 async def test_inventory_then_compute_in_one_request(chat, monkeypatch):
+    from test_analysis_batch import CONVERSATION_RUN
+    from test_conversation_tools import Client, tool
+    from test_direct_information import result
+
     monkeypatch.setattr(
-        direct, "inventory", lambda *args, **kwargs: {"entries": [{"size_bytes": 123}]}
+        conversation, "inventory", lambda *args, **kwargs: {"entries": [{"size_bytes": 123}]}
     )
-    chat.decision.side_effect = [
-        direct.Decision(route="inventory", reply="Checking input size"),
-        direct.Decision(
-            route="compute",
-            reply="Working",
-            worker=direct.WorkerChoice(
-                category="full_ingest", tier="large", reason="Full sample ingest"
-            ),
-        ),
-    ]
+    client = Client(
+        tool("list_folders", paths=[]),
+        tool("start_worker", category="full_ingest", tier="large", task="Full sample ingest"),
+    )
+    monkeypatch.setattr(conversation, "run", CONVERSATION_RUN)
+    monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: client)
     state = await message(chat, "Ingest the whole sample", "1.0")
     assert state["status"] == "running" and state["tier"] == "large"
-    assert chat.decision.call_args.args[2]["data_inventory"]["entries"][0]["size_bytes"] == 123
+    assert result(client)["entries"][0]["size_bytes"] == 123
     assert chat.test_client.create_job.call_count == 1
 
 
 async def test_preemption_restarts_once_and_cancellation_targets_successor(chat, monkeypatch):
     monkeypatch.setattr(recovery, "exit_code", lambda *args: 50001)
-    chat.decision.return_value = direct.Decision(route="compute", reply="Working")
+    chat.decision.return_value = conversation.Decision(route="compute", reply="Working")
     initial = await message(chat, "Plot data", "1.0")
     event = initial["job"].rsplit("claude-", 1)[-1]
     chat.test_states[initial["job"]] = "FAILED"
@@ -189,7 +189,7 @@ async def test_preemption_restarts_once_and_cancellation_targets_successor(chat,
 
 async def test_oom_without_final_report_recovers_but_publication_is_not_replayed(chat, monkeypatch):
     monkeypatch.setattr(recovery, "exit_code", lambda *args: 137)
-    chat.decision.return_value = direct.Decision(route="compute", reply="Working")
+    chat.decision.return_value = conversation.Decision(route="compute", reply="Working")
     initial = await message(chat, "Plot data", "1.0")
     event = initial["job"].rsplit("claude-", 1)[-1]
     prefix = recovery.event_prefix(event)
@@ -224,7 +224,7 @@ async def test_oom_without_final_report_recovers_but_publication_is_not_replayed
 async def test_preemption_then_oom_uses_three_attempts_without_resetting_guards(chat, monkeypatch):
     code = [50001]
     monkeypatch.setattr(recovery, "exit_code", lambda *args: code[0])
-    chat.decision.return_value = direct.Decision(route="compute", reply="Working")
+    chat.decision.return_value = conversation.Decision(route="compute", reply="Working")
     first = await message(chat, "Analyze the sample", "1.0")
     event = first["job"].rsplit("claude-", 1)[-1]
     chat.test_states[first["job"]] = "FAILED"
@@ -268,7 +268,7 @@ async def test_preemption_then_oom_uses_three_attempts_without_resetting_guards(
 
 
 async def test_capacity_request_waits_for_terminal_and_duplicate_create_reconciles(chat):
-    chat.decision.return_value = direct.Decision(route="compute", reply="Working")
+    chat.decision.return_value = conversation.Decision(route="compute", reply="Working")
     initial = await message(chat, "Analyze data", "1.0")
     event = initial["job"].rsplit("claude-", 1)[-1]
     state = await chat.repository.get_connector_state("claude-event:" + event)

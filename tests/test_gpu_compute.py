@@ -9,7 +9,7 @@ from test_analysis_batch import bridge, payload  # noqa: F401
 
 from mica.agents.analysis import (
     compute_approval,
-    direct,
+    conversation,
     gpu_capacity,
     gpu_runtime,
     recovery,
@@ -40,13 +40,13 @@ def gpu(bridge, monkeypatch):  # noqa: F811
     bridge.settings.gpu_max_seconds = 7200
     monkeypatch.setattr(compute_approval, "AsyncWebClient", lambda **kw: bridge.test_slack)
     monkeypatch.setattr(
-        direct,
-        "decide",
+        conversation,
+        "run",
         AsyncMock(
-            return_value=direct.Decision(
+            return_value=conversation.Decision(
                 route="compute",
                 reply="Segment this crop with Cellpose-SAM.",
-                worker=direct.WorkerChoice(
+                worker=tiers.WorkerChoice(
                     category="analysis",
                     tier="gpu",
                     gpu_type="l4",
@@ -67,7 +67,7 @@ def test_gpu_is_outside_cpu_resize_ladder_and_requires_compatible_image():
     assert tiers.resolve("gpu", settings).machine == "g2-standard-8"
     with pytest.raises(ValueError, match="CPU-only"):
         tiers.launch_choice(
-            direct.WorkerChoice(
+            tiers.WorkerChoice(
                 category="analysis", tier="gpu", max_tier="large", reason="Explicit GPU request"
             ),
             settings,
@@ -107,7 +107,7 @@ def test_gpu_job_uses_gpu_image_drivers_and_bounded_duration(gpu):
 def test_gpu_recovery_never_resizes_or_extends_original_deadline():
     settings = Settings(_env_file=None, gpu_tier_enabled=True, gpu_image=GPU_IMAGE)
     choice = tiers.launch_choice(
-        direct.WorkerChoice(
+        tiers.WorkerChoice(
             category="analysis", tier="gpu", on_demand=False, reason="Explicit Spot GPU"
         ),
         settings,
@@ -213,13 +213,13 @@ async def test_gpu_hardware_choice_reaches_approval_and_submission(
     gpu, monkeypatch, gpu_type, machine, memory, accelerator
 ):
     monkeypatch.setattr(
-        direct,
-        "decide",
+        conversation,
+        "run",
         AsyncMock(
-            return_value=direct.Decision(
+            return_value=conversation.Decision(
                 route="compute",
                 reply="Segment this crop.",
-                worker=direct.WorkerChoice(
+                worker=tiers.WorkerChoice(
                     category="analysis",
                     tier="gpu",
                     gpu_type=gpu_type,
@@ -255,7 +255,7 @@ def test_gpu_preference_can_use_available_model_but_strict_choice_is_preserved()
     assert tiers.available_gpus(settings) == ["t4"]
     with pytest.raises(ValueError, match="l4 is unavailable"):
         tiers.launch_choice(
-            direct.WorkerChoice(
+            tiers.WorkerChoice(
                 category="analysis",
                 tier="gpu",
                 gpu_type="l4",
@@ -266,18 +266,18 @@ def test_gpu_preference_can_use_available_model_but_strict_choice_is_preserved()
         )
     with pytest.raises(ValueError, match="requires the GPU"):
         tiers.launch_choice(
-            direct.WorkerChoice(
+            tiers.WorkerChoice(
                 category="analysis", tier="standard", gpu_type="t4", reason="Invalid CPU request"
             ),
             settings,
         )
     choice = tiers.launch_choice(
-        direct.WorkerChoice(category="analysis", tier="gpu", reason="Unspecified GPU model"),
+        tiers.WorkerChoice(category="analysis", tier="gpu", reason="Unspecified GPU model"),
         settings,
     )
     assert choice["gpu_type"] == "t4"
     choice = tiers.launch_choice(
-        direct.WorkerChoice(category="analysis", tier="gpu", gpu_type="l4", reason="Prefer L4"),
+        tiers.WorkerChoice(category="analysis", tier="gpu", gpu_type="l4", reason="Prefer L4"),
         settings,
     )
     assert choice["gpu_type"] == "t4" and choice["requested_gpu_type"] == "l4"
@@ -286,7 +286,7 @@ def test_gpu_preference_can_use_available_model_but_strict_choice_is_preserved()
 def test_gpu_memory_requirement_excludes_smaller_fallback():
     settings = Settings(_env_file=None, gpu_tier_enabled=True, gpu_image=GPU_IMAGE)
     choice = tiers.launch_choice(
-        direct.WorkerChoice(
+        tiers.WorkerChoice(
             category="analysis",
             tier="gpu",
             gpu_type="l4",
@@ -303,7 +303,7 @@ def test_gpu_rejects_unsupported_host_or_device_memory(host, vram):
     settings = Settings(_env_file=None, gpu_tier_enabled=True, gpu_image=GPU_IMAGE)
     with pytest.raises(tiers.WorkerUnavailable) as error:
         tiers.launch_choice(
-            direct.WorkerChoice(
+            tiers.WorkerChoice(
                 category="training", tier="gpu", gpu_type="l4",
                 min_memory_gib=host, min_gpu_memory_gib=vram,
                 reason="Explicit requested memory",
@@ -318,7 +318,7 @@ def test_gpu_rejects_unsupported_host_or_device_memory(host, vram):
 def test_host_memory_requirement_also_excludes_smaller_gpu_fallback():
     settings = Settings(_env_file=None, gpu_tier_enabled=True, gpu_image=GPU_IMAGE)
     choice = tiers.launch_choice(
-        direct.WorkerChoice(
+        tiers.WorkerChoice(
             category="training", tier="gpu", gpu_type="t4", min_memory_gib=32,
             reason="At least 32 GiB host RAM required",
         ),

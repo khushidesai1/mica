@@ -7,7 +7,7 @@ from test_email_project_access import intake
 from test_gmail_intake import SENDER, mail, signing  # noqa: F401
 from test_natural_language_commands import action, chat  # noqa: F401
 
-from mica.agents.analysis import access, command_approval, command_intent, direct
+from mica.agents.analysis import access, command_approval, command_intent, conversation, direct
 from mica.agents.analysis.registry import Registry, RegistryDoc
 
 A, B, C = "alice@example.com", "bob@example.com", "carol@example.com"
@@ -75,11 +75,11 @@ async def test_owner_change_requires_confirmation_and_replay_cannot_repromote(ch
     text = "add-owner liver <@U2>"
     if natural:
         text = "Make <@U2> an owner of this project"
-        chat.intent.return_value = command_intent.Intent(
+        chat.intent.return_value = conversation.Decision(reply="Request received.",
             route="command",
-            proposal=command_intent.Proposal(
+            command_proposal=command_intent.Proposal(
                 operation="add-owner", selector="this project", target="<@U2>"
-            ),
+            ).model_dump(),
         )
     eid = await chat.accept(payload(text=text))
     assert await chat.process(eid, 0) == "complete"
@@ -97,11 +97,11 @@ async def test_owner_change_requires_confirmation_and_replay_cannot_repromote(ch
 
 @pytest.mark.parametrize("scope", ["", "owner"])
 async def test_ownership_misclassified_as_share_never_silently_shares(chat, scope):
-    chat.intent.return_value = command_intent.Intent(
+    chat.intent.return_value = conversation.Decision(reply="Request received.",
         route="command",
-        proposal=command_intent.Proposal(
+        command_proposal=command_intent.Proposal(
             operation="share", selector="this project", target="<@U2>", scope=scope
-        ),
+        ).model_dump(),
     )
     eid = await chat.accept(payload(text="Can you make <@U2> an owner of the project?"))
     assert await chat.process(eid, 0) == "complete"

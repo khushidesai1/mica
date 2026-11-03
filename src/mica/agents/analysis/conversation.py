@@ -21,18 +21,17 @@ from . import (
     surface,
     tiers,
 )
-from .config import Settings
 from .direct import (
     ROUTING_SECONDS,
     DecisionFields,
     RoutingUnavailable,
-    WorkerChoice,
     read_information,
 )
 from .direct import Decision as ReadDecision
 from .gpu_profiles import Sizing
 from .storage import Storage
 from .survey import inventory
+from .tiers import WorkerChoice
 from .transfer_config import TransferRequest
 
 if TYPE_CHECKING:
@@ -42,9 +41,35 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 FINAL_RESERVE = 25.0
 
 
-def enabled(settings: Settings, principal: str) -> bool:
-    principals = settings.csv("conversation_principals")
-    return bool(principal) and ("*" in principals or principal.lower() in principals)
+def start(record: dict[str, Any]) -> None:
+    """Restart unlaunched legacy routing without replaying a legacy decision."""
+    if "conversation_steps" in record:
+        return
+    if record.get("recovery_version") or record.get("job"):
+        return  # A running/recovering worker keeps its existing launch and approval.
+    if "direct_decision" in record or "command_intent" in record:
+        for field in (
+            "direct_decision",
+            "direct_decision_pending",
+            "decision_access",
+            "command_intent",
+            "intent_actor",
+            "intent_referents",
+            "intent_prior_request",
+            "routing_budget",
+            "routing_failures",
+            "routing_retry_at",
+            "route",
+            "launch",
+        ):
+            record.pop(field, None)
+    record["conversation_steps"] = []
+
+
+def saved_decision(record: dict[str, Any]) -> dict[str, Any]:
+    if "conversation_steps" in record and not record.get("direct_decision_pending"):
+        return dict(record.get("direct_decision") or {})
+    return {}
 
 
 class Decision(DecisionFields):
@@ -114,6 +139,7 @@ class Init(Input):
 
 class Control(Input):
     operation: Literal["cancel", "write revoke", "none"]
+    amendable: bool = False
 
 
 class RequestAccess(Input):
@@ -258,9 +284,8 @@ def tools_for(allowed: bool) -> list[dict[str, Any]]:
             "strict": True,
         }
         for name, model in MODELS.items()
-        if (allowed and name != "request_access") or (
-            not allowed and name in {"propose_command", "request_access"}
-        )
+        if (allowed and name != "request_access")
+        or (not allowed and name in {"propose_command", "request_access"})
     ]
 
 
@@ -353,8 +378,9 @@ async def run(
     init: bool = False,
 ) -> Decision:
     """Never execute terminal actions here; persist their validated arguments first."""
-    saved = record.get("direct_decision")
-    if saved and not record.get("direct_decision_pending"):
+    start(record)
+    saved = saved_decision(record)
+    if saved:
         return Decision.model_validate(saved)
     if client is None:
         async with AsyncAnthropic(
@@ -421,7 +447,8 @@ async def run(
                 system=[
                     {
                         "type": "text",
-                        "text": prompts.CONVERSATION + tiers.CAPABILITY_POLICY
+                        "text": prompts.CONVERSATION
+                        + tiers.CAPABILITY_POLICY
                         + (
                             (
                                 "\nDraft the initial project guide from init_inventory. "
@@ -667,7 +694,9 @@ async def control(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], grant: access.Grant
 ) -> str:
     """Only active predecessors need a model check before the request is queued."""
-    if record.get("conversation_control_actor") == grant.email:
+    if record.get("conversation_control_actor") == grant.email and (
+        not record.get("amendable") or "conversation_amendable" in record
+    ):
         return str(record.get("conversation_control", "none"))
     started = asyncio.get_running_loop().time()
     remaining = min(float(record.get("routing_budget", ROUTING_SECONDS)), ROUTING_SECONDS)
@@ -688,7 +717,11 @@ async def control(
                         "Identify only an explicit current request to stop/cancel this running "
                         "work, or revoke a project's write grant. Historical discussion, quoted"
                         " messages and all other requests mean none. Return operation cancel, "
-                        "write revoke, or none. No actions are performed here."
+                        "write revoke, or none. Set amendable=true only for ordinary analysis "
+                        "requests or added context that can follow the current work. Account, "
+                        "project-management, access, connection, delivery-preference and other "
+                        "Mica commands are not amendable; they retain their normal command flow. "
+                        "No actions are performed here."
                     ),
                     thinking={"type": "adaptive"},
                     output_config={
@@ -704,7 +737,11 @@ async def control(
         value = Control.model_validate_json(
             "".join(b.text for b in response.content if b.type == "text")
         )
-        record.update(conversation_control=value.operation, conversation_control_actor=grant.email)
+        record.update(
+            conversation_control=value.operation,
+            conversation_control_actor=grant.email,
+            conversation_amendable=value.operation == "none" and value.amendable,
+        )
         return value.operation
     except (APIError, TimeoutError, ValueError) as exc:
         raise RoutingUnavailable("Control check temporarily unavailable.") from exc

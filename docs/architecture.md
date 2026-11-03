@@ -137,16 +137,18 @@ between its durable handoff record and SDK receipt remains an acknowledgment amb
 
 ### Conversation tools and worker guidance
 
-The conversation API uses the official Anthropic SDK for principals selected by
-`AGENT_CONVERSATION_PRINCIPALS` (comma-separated email addresses, `*` for everyone, empty for the
-legacy path). Adaptive thinking uses `AGENT_CONVERSATION_EFFORT=medium`. A bounded loop can call
+Every Slack and email request uses the same conversation API and official Anthropic SDK.
+Adaptive thinking uses `AGENT_CONVERSATION_EFFORT=medium`. A bounded loop can call
 `list_folders`, `view_files` and `read_sources` in any order, or propose a command, transfer or
 compute worker. Each tool rechecks access; terminal decisions are persisted before existing
 idempotent handlers and approval controls run. Signed thinking stays in the private provider
 transcript. Stored step logs contain tool names, argument sizes and status, never source text.
 Exact command grammar and handlers share the policy table in `agents/analysis/commands.py`.
 Natural-language cancellation is checked before queueing only when work is already active.
-The old router remains available to other principals during rollout.
+Pending requests from the retired router restart in the conversation loop without reusing
+legacy decisions. Already running workers retain their saved launch and recovery state.
+An active predecessor triggers one control check for cancellation, write revocation and
+amendment eligibility; queued commands retain their normal authorization and approval flow.
 Direct answers and worker answers use the same Markdown-to-Slack conversion, preserving code
 and formatting headings, bold text and links. Saved conversation text and email stay unchanged.
 Slack approvals use the green primary action style. Progress keeps one compact expandable

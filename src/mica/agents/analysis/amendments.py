@@ -175,7 +175,15 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
             record["amendment_choice"] = "add"
             await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
             return {}  # First accepted choice wins, including a crash before receipt save.
-        if record.get("command_intent", {}).get("route") != "continue":
+        if (
+            "conversation_amendable" not in record
+            and record.get("notice_phase") == "waiting"
+            and record.get("notice_text") == WAITING
+        ):
+            # The previously delivered choice is the migration witness; do not reuse
+            # a retired classifier result or permit newly forged command actions.
+            record["conversation_amendable"] = True
+        if record.get("conversation_amendable") is not True:
             raise ValueError("Commands keep their normal follow-up flow.")
         # Serialize click eligibility with completion/recovery of the running request.
         parent_mutex = f"claude-poll:{target}"

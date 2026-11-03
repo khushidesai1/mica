@@ -9,7 +9,7 @@ from urllib.parse import urlencode
 
 import pytest
 from fastapi import BackgroundTasks, HTTPException
-from test_analysis_batch import bridge, payload  # noqa: F401
+from test_analysis_batch import CONVERSATION_RUN, bridge, payload  # noqa: F401
 from test_conversation_tools import Client, tool
 
 from mica.agents.analysis import access, conversation, direct
@@ -20,7 +20,7 @@ from mica.agents.analysis.registry import Registry
 @pytest.fixture
 def approvals(bridge, monkeypatch):
     bridge.settings.access_request_owner_id = "T1:U1"
-    bridge.settings.conversation_principals = "*"
+    monkeypatch.setattr(conversation, "run", CONVERSATION_RUN)
     client = AsyncMock()
     client.conversations_open.side_effect = AssertionError("im:write is not installed")
     client.chat_postMessage.return_value = {"ts": "90.1", "channel": "DOWNER"}

@@ -1,18 +1,20 @@
 """Shared guide initialization and recovery of unsaved worker corrections."""
-# ruff: noqa: F811
 
+# ruff: noqa: F811
 import pytest
 from analysis_helpers import memory_message as message
 from test_analysis_batch import bridge  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from mica.agents.analysis import direct, memory_workspace, project_memory
+from mica.agents.analysis import conversation, direct, memory_workspace, project_memory
 from mica.agents.analysis.config import Settings
 
 
 async def test_init_saves_guide_and_legacy_commands_explain_autosave(chat, monkeypatch):
     monkeypatch.setattr(direct, "inventory", lambda *args, **kwargs: {"entries": []})
-    chat.decision.return_value = direct.Decision(route="reply", reply="Ready.", guide="# New guide")
+    chat.decision.return_value = conversation.Decision(
+        route="reply", reply="Ready.", guide="# New guide"
+    )
     await message(chat, "init new gs://lab-data/new/ --force", "1.0")
     from mica.agents.analysis.registry import Registry
 

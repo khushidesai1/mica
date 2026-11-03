@@ -1,6 +1,6 @@
-# ruff: noqa: F811
 """Offline onboarding and admission tests through the signed-webhook receiver boundary."""
 
+# ruff: noqa: F811
 import json
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -10,7 +10,7 @@ from pydantic import SecretStr
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from mica.agents.analysis import access, direct, identity
+from mica.agents.analysis import access, conversation, identity
 from mica.agents.analysis import channel_access as ca
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.registry import Registry
@@ -208,7 +208,7 @@ async def test_old_enable_replay_cannot_undo_disable_and_replies_are_deduplicate
 
 async def test_queued_jobs_and_workers_recheck_channel_membership(channels):
     await onboard(channels)
-    channels.decision.return_value = direct.Decision(route="compute", reply="Computing")
+    channels.decision.return_value = conversation.Decision(route="compute", reply="Computing")
     intake = await receive(channels, payload("2.0"))
     event_id = intake["event_id"]
     assert await channels.process(event_id, 0) == "running"
@@ -370,7 +370,7 @@ async def test_workspace_mode_rechecks_identity_and_requires_channel_publication
         channels.app, channels.settings, channels.store, {"payload": body, "thread_key": "empty"}
     )
     assert grant.email == "alice@example.com" and not grant.allowed
-    channels.decision.return_value = direct.Decision(route="compute", reply="Computing")
+    channels.decision.return_value = conversation.Decision(route="compute", reply="Computing")
     event = await receive(channels, payload())
     assert await channels.process(event["event_id"], 0) == "running"
     record = await channels.repository.get_connector_state("claude-event:" + event["event_id"])
@@ -402,7 +402,7 @@ async def test_admission_outage_retries_without_denial_or_losing_queued_request(
         await receive(channels, payload("2.0"))
     assert error.value.status_code == 503
     channels.member_api.users_info.side_effect = profiles
-    channels.decision.return_value = direct.Decision(route="compute", reply="Computing")
+    channels.decision.return_value = conversation.Decision(route="compute", reply="Computing")
     event = await receive(channels, payload("2.0"))
     channels.member_api.users_info.side_effect = TimeoutError("Slack unavailable")
     with pytest.raises(identity.IdentityUnavailable):

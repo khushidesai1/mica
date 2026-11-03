@@ -6,31 +6,14 @@ import math
 import re
 from contextlib import suppress
 from dataclasses import replace
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
-from pydantic import Field, model_validator
-
-from .tiers import GPU_TIERS, GPUType, Record, Tier, WorkerUnavailable, available_gpus, gpu_estimate
+from .tiers import GPU_TIERS, GPUType, Tier, WorkerUnavailable, available_gpus, gpu_estimate
+from .tiers import Sizing as Sizing
 
 if TYPE_CHECKING:
     from .config import Settings
-    from .direct import WorkerChoice
-
-
-class Sizing(Record):
-    host_memory_gib: int = Field(ge=1, le=1_048_576)
-    gpu_memory_gib: int = Field(ge=1, le=1_048_576)
-    vcpus: int = Field(ge=1, le=1024)
-    gpu_count: int = Field(default=1, ge=1, le=16)
-    basis: Literal["user_requirement", "measured", "estimated"]
-    evidence: str = Field(min_length=20, max_length=700)
-    multi_gpu_reason: str = Field(default="", max_length=400)
-
-    @model_validator(mode="after")
-    def parallelism(self) -> Sizing:
-        if self.gpu_count > 1 and len(self.multi_gpu_reason.strip()) < 20:
-            raise ValueError("Multiple GPUs require a multi_gpu_reason describing parallelism.")
-        return self
+    from .tiers import WorkerChoice
 
 
 def _shape(family: GPUType, machine: str, cpus: int, ram: int, count: int, vram: int) -> Tier:

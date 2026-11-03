@@ -502,7 +502,10 @@ class BatchBridge:
                     await self.repository.set_connector_state(key, record)
             if not record.get("notice_ts"):
                 await self.notify(event_id, record, "received", "Mica is working")
-            from . import command_intent, commands
+            from . import commands, conversation
+
+            if record["status"] == "pending":
+                conversation.start(record)
             from .direct import RoutingUnavailable, finish
 
             previous = (
@@ -526,31 +529,14 @@ class BatchBridge:
             if record["status"] == "pending" and record.get("route") != "compute":
                 try:
                     cmd = commands.parse(record["payload"]["event"].get("text", ""))
-                    from . import conversation
-
                     grant = await asyncio.to_thread(
                         access.resolve, self.app, self.settings, self.storage, record
                     )
-                    intent = None
-                    if not cmd and conversation.enabled(self.settings, grant.email):
-                        if previous and previous["status"] not in {"complete", "failed"}:
-                            operation = await conversation.control(self, event_id, record, grant)
-                            if operation == "cancel":
-                                cmd = commands.Command("cancel")
-                            elif operation == "write revoke" and not surface.is_email(record):
-                                record["control_bypass"] = True
-                                await self.repository.set_connector_state(key, record)
-                    elif not cmd:
-                        intent = await command_intent.prepare(self, event_id, record, self.storage)
-                    if intent and intent.route == "command" and intent.proposal:
-                        if intent.proposal.operation == "cancel":
+                    if not cmd and previous and previous["status"] not in {"complete", "failed"}:
+                        operation = await conversation.control(self, event_id, record, grant)
+                        if operation == "cancel":
                             cmd = commands.Command("cancel")
-                        if intent.proposal.operation == "write revoke" and not surface.is_email(
-                            record
-                        ):
-                            # This control may present an approval while compute is running.
-                            # Later turns must follow its predecessor, never treat the preview
-                            # as completion of that active computation.
+                        elif operation == "write revoke" and not surface.is_email(record):
                             record["control_bypass"] = True
                             await self.repository.set_connector_state(key, record)
                 except RoutingUnavailable:
@@ -617,7 +603,7 @@ class BatchBridge:
                     if self.settings.amendments
                     and record.get("amendable")
                     and not record.get("amendment_choice")
-                    and record.get("command_intent", {}).get("route") == "continue"
+                    and record.get("conversation_amendable") is True
                     else "Got it, I'll start once the earlier request here finishes…",
                 )
             if record["status"] not in {"complete", "failed"}:

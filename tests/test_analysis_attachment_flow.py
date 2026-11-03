@@ -1,6 +1,6 @@
 """Exercise upload → direct reply → worker → direct follow-up, entirely offline."""
-# ruff: noqa: F811
 
+# ruff: noqa: F811
 import shutil
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,7 +18,7 @@ from test_analysis_direct import (  # noqa: F401
     upload_http,
 )
 
-from mica.agents.analysis import batch_worker, direct
+from mica.agents.analysis import batch_worker, conversation
 from mica.agents.analysis.runner import TurnResult
 
 
@@ -41,7 +41,7 @@ async def test_direct_compute_direct_files_survive(
     assert await chat.process(first, 0) == "complete"
     first_record, state = await thread_state(chat, first)
     original = state["thread_files"][0]
-    chat.decision.return_value = direct.Decision(route="compute", reply="Making the plot")
+    chat.decision.return_value = conversation.Decision(route="compute", reply="Making the plot")
     compute = await chat.accept(payload("2.0", "1.0", "plot B against A"))
     assert await chat.process(compute, 0) == "running"
     _, before = await thread_state(chat, compute)
@@ -112,9 +112,11 @@ async def test_direct_compute_direct_files_survive(
     for key in chat.test_states:
         chat.test_states[key] = "SUCCEEDED"
     assert await chat.process(compute, 1) == "complete"
-    chat.decision.return_value = direct.Decision(route="reply", reply="That plot is available.")
+    chat.decision.return_value = conversation.Decision(
+        route="reply", reply="That plot is available."
+    )
     followup = await chat.accept(payload("3.0", "1.0", "Which files are in this thread?"))
     assert await chat.process(followup, 0) == "complete"
-    listing = chat.decision.call_args.args[2]["attachments"]
+    listing = chat.decision.call_args.args[5]["attachments"]
     assert [f["id"] for f in listing] == [original["id"], output["id"]]
     assert all(not f["shown"] and not f["current"] for f in listing)
