@@ -5,6 +5,7 @@ import json
 import shutil
 import sqlite3
 import tarfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -677,3 +678,55 @@ def test_checkpoint_excludes_previews_and_expiring_inputs(tmp_path):
         "work/thread/code/p.py",
         "work/thread/logs/checkpoint-excluded.json",
     }
+
+
+@pytest.mark.parametrize("tier", ["standard", "gpu"])
+def test_package_runtime_policy_is_carried_to_cpu_and_gpu_workers(bridge, tier):
+    bridge.settings.runtimes_enabled = True
+    bridge.settings.runtime_denylist = "boto3,google-cloud-storage"
+    bridge.settings.runtime_max_source_builds = 3
+    bridge.settings.runtime_failure_ttl_hours = 12
+    bridge.settings.gpu_tier_enabled = True
+    bridge.settings.gpu_image = "us-docker.pkg.dev/project/images/gpu@sha256:" + "b" * 64
+    bridge.settings.batch_proc_mount_opt_in = True
+    bridge.app.batch_nested_sandbox_opt_in = True
+    job = job_spec(bridge.app, bridge.settings, "a" * 32, tier=tier, gpu_type="t4")
+    task = job.task_groups[0].task_spec
+    worker = next(run for run in task.runnables if run.container.image_uri)
+    env = worker.environment.variables
+    assert env["AGENT_RUNTIMES_ENABLED"] == "true"
+    assert env["AGENT_RUNTIME_DENYLIST"] == "boto3,google-cloud-storage"
+    assert env["AGENT_RUNTIME_MAX_SOURCE_BUILDS"] == "3"
+    assert float(env["AGENT_RUNTIME_FAILURE_TTL_HOURS"]) == 12
+    bridge.settings.runtimes_enabled = False
+    job = job_spec(bridge.app, bridge.settings, "a" * 32, tier=tier, gpu_type="t4")
+    worker = next(run for run in job.task_groups[0].task_spec.runnables if run.container.image_uri)
+    assert "AGENT_RUNTIMES_ENABLED" not in worker.environment.variables
+
+
+async def test_package_install_receipt_is_reported_with_request_identity_without_stopping(bridge):
+    from mica.agents.analysis import observability
+    from mica.agents.analysis.runtime_install import RuntimeFailure
+    from mica.agents.analysis.runtime_tools import RuntimeManager, ensure_tool
+
+    event_id = await bridge.accept(payload(text="Analyze the cells"))
+    assert await bridge.process(event_id, 0) == "running"
+    key = f"claude-event:{event_id}"
+    request = await bridge.repository.get_connector_state(key)
+    manager = RuntimeManager(
+        bridge.settings, storage=bridge.store, event_id=event_id, attempt=request["attempt"],
+    )
+    manager.ensure = Mock(side_effect=RuntimeFailure("Package build failed"))
+    result = await ensure_tool(manager).handler({"packages": ["example"], "reason": "Analysis"})
+    assert result["isError"]
+    await observability.report_runtime_failure(bridge, event_id, request)
+    # A handoff can advance the current attempt before the next controller poll.
+    request["attempt"] += 1
+    await observability.report_runtime_failure(bridge, event_id, request)
+    incidents = await bridge.repository.due_failures(time.time() + 60, limit=10)
+    assert len(incidents) == 1 and incidents[0].count == 1
+    assert incidents[0].observation.cause == "runtime_install_failed"
+    assert incidents[0].observation.event_id == event_id
+    assert incidents[0].observation.actor == "alice@example.com"
+    assert incidents[0].observation.project_id == bridge.pid
+    assert (await bridge.repository.get_connector_state(key))["status"] == "running"

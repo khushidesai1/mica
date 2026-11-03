@@ -11,6 +11,7 @@ import tarfile
 import tempfile
 import time
 from dataclasses import asdict, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -138,7 +139,10 @@ class RuntimeStore:
     ) -> RuntimeRecord | None:
         candidates = []
         for id in self.index():
-            record = self.load(id)
+            try:
+                record = self.load(id)
+            except RuntimeFailure:
+                continue  # Older policy records cannot block a fresh, validated setup.
             if self.matches(record, request, base, isolated=isolated):
                 candidates.append(record)
         catalog = ", ".join(e.name for e in request.entries)
@@ -290,6 +294,8 @@ class RuntimeStore:
         )
         policy = json.dumps(
             [
+                POLICY_VERSION,
+                self.settings.runtime_max_source_builds,
                 self.settings.runtime_min_age_days,
                 sorted(self.settings.csv("runtime_denylist")),
                 self.settings.runtime_max_gb,
@@ -300,11 +306,25 @@ class RuntimeStore:
 
     def failure(self, key: str) -> str | None:
         try:
-            return str(json.loads(self.storage.get(f"{PREFIX}/failures/{key}.json")[0])["error"])
-        except FileNotFoundError:
+            entry = json.loads(self.storage.get(f"{PREFIX}/failures/{key}.json")[0])
+            created = datetime.fromisoformat(entry["created_at"])
+            age = (datetime.now(UTC) - created).total_seconds()
+            if entry["policy_version"] != POLICY_VERSION or not (
+                0 <= age < self.settings.runtime_failure_ttl_hours * 3600
+            ):
+                return None
+            return str(entry["error"])
+        except (FileNotFoundError, KeyError, TypeError, ValueError):
             return None
 
     def save_failure(self, key: str, message: str) -> None:
         self.storage.put(
-            f"{PREFIX}/failures/{key}.json", json.dumps({"error": message[-3000:]}).encode()
+            f"{PREFIX}/failures/{key}.json",
+            json.dumps(
+                {
+                    "error": message[-3000:],
+                    "created_at": datetime.now(UTC).isoformat(),
+                    "policy_version": POLICY_VERSION,
+                }
+            ).encode(),
         )

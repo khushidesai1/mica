@@ -12,21 +12,40 @@ import json
 import re
 import shutil
 import threading
-from contextlib import AbstractContextManager, nullcontext
+from contextlib import AbstractContextManager, nullcontext, suppress
+from datetime import UTC, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import TracebackType
+from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
-from packaging.utils import canonicalize_name
+from packaging.requirements import Requirement
+from packaging.specifiers import SpecifierSet
+from packaging.tags import sys_tags
+from packaging.utils import canonicalize_name, parse_sdist_filename, parse_wheel_filename
+from packaging.version import Version
 
+from .runtime_policy import RuntimePolicyError
+from .runtime_sdist import SourceDistribution
 from .runtime_wheels import check_metadata, check_wheel
 
 
 class WheelMirror(AbstractContextManager["WheelMirror"]):
-    def __init__(self, root: Path, denied: set[str], max_bytes: int) -> None:
+    def __init__(
+        self,
+        root: Path,
+        denied: set[str],
+        max_bytes: int,
+        *,
+        min_age_days: int = 7,
+    ) -> None:
         self.root, self.denied, self.max_bytes = root, denied, max_bytes
+        self.denied = {canonicalize_name(name) for name in denied}
+        self.cutoff = datetime.now(UTC) - timedelta(days=min_age_days)
+        self.indexes: dict[str, list[dict[str, Any]]] = {}
+        self.policy_errors: list[str] = []
         self.urls: dict[str, str] = {}
         self.local_wheels: dict[str, Path] = {}
         self.lock = threading.Lock()
@@ -57,6 +76,9 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
                                 shutil.copyfileobj(stream, self.wfile, 1024 * 1024)
                         else:
                             self.wfile.write(content)
+                except RuntimePolicyError as exc:
+                    mirror.policy_errors.append(str(exc))
+                    self.send_error(403, "Package source refused by runtime policy")
                 except (ValueError, httpx.HTTPError, OSError):
                     self.send_error(403, "Package source refused by runtime policy")
 
@@ -120,6 +142,120 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
         name, _ = check_wheel(path, self.denied, self.max_bytes)
         self.local_wheels[name] = path
 
+    def eligible(self, item: dict[str, Any], python_version: str) -> bool:
+        if item.get("yanked"):
+            return False
+        try:
+            uploaded = datetime.fromisoformat(item["upload-time"].replace("Z", "+00:00"))
+            return uploaded <= self.cutoff and SpecifierSet(
+                item.get("requires-python") or ""
+            ).contains(python_version, prereleases=True)
+        except (KeyError, TypeError, ValueError):
+            return False  # Missing age or Python evidence never authorizes a source build.
+
+    def source_candidates(
+        self,
+        error: str,
+        specs: list[str],
+        python_version: str,
+    ) -> list[SourceDistribution]:
+        """Only packages implicated by a failed wheel-only solve can run a build script.
+
+        The final resolver still enforces all transitive constraints; selecting a source
+        candidate does not authorize an incompatible install.
+        """
+        if "No solution found" not in error:
+            return []
+        candidates = []
+        tags = set(sys_tags())
+        requested = [Requirement(spec) for spec in specs]
+        for name, files in self.indexes.items():
+            pattern = re.escape(name).replace(r"\-", "[-_.]")
+            if not re.search(r"(?<![\w.-])" + pattern + r"(?![\w.-])", error, re.I):
+                continue
+            constraints = [r.specifier for r in requested if canonicalize_name(r.name) == name]
+            # Read positive requirements, not uv's descriptions of the unavailable versions.
+            for match in re.finditer(
+                r"(?:depends on|requires?|requiring)\s+"
+                + pattern
+                + r"((?:[<>=!~]{1,2}[A-Za-z0-9.*+!_-]+)(?:,[<>=!~]{1,2}[A-Za-z0-9.*+!_-]+)*)",
+                error,
+                re.I,
+            ):
+                constraints.append(SpecifierSet(match[1]))
+            wheel_versions = set()
+            matching_ages = []
+            for item in files:
+                if item["filename"].endswith(".whl"):
+                    _, version, _, wheel_tags = parse_wheel_filename(item["filename"])
+                    if all(c.contains(version) for c in constraints):
+                        with suppress(KeyError, TypeError, ValueError):
+                            matching_ages.append(
+                                datetime.fromisoformat(item["upload-time"].replace("Z", "+00:00"))
+                                > self.cutoff
+                            )
+                    if tags & wheel_tags and self.eligible(item, python_version):
+                        wheel_versions.add(version)
+            sources = []
+            recent = matching_ages
+            for item in files:
+                if not item["filename"].endswith((".tar.gz", ".zip")):
+                    continue
+                source_name, version = parse_sdist_filename(item["filename"])
+                if source_name == name and all(c.contains(version) for c in constraints):
+                    with suppress(KeyError, TypeError, ValueError):
+                        recent.append(
+                            datetime.fromisoformat(item["upload-time"].replace("Z", "+00:00"))
+                            > self.cutoff
+                        )
+                if (
+                    source_name != name
+                    or version in wheel_versions
+                    or not all(c.contains(version) for c in constraints)
+                    or not self.eligible(item, python_version)
+                ):
+                    continue
+                url = str(item["url"])
+                parsed = urlsplit(url)
+                digest = item.get("hashes", {}).get("sha256", "")
+                if (
+                    parsed.scheme != "https"
+                    or parsed.hostname != "files.pythonhosted.org"
+                    or parsed.username
+                    or parsed.password
+                    or parsed.port not in (None, 443)
+                    or parsed.fragment
+                    or not re.fullmatch(r"[0-9a-f]{64}", digest)
+                    or Path(item["filename"]).name != item["filename"]
+                ):
+                    raise RuntimePolicyError("Untrusted or unpinned source archive")
+                sources.append(
+                    SourceDistribution(name, str(version), item["filename"], url, digest)
+                )
+            if sources:
+                candidates.append(max(sources, key=lambda source: Version(source.version)))
+            elif recent and all(recent) and not wheel_versions:
+                raise RuntimePolicyError(f"Package {name} is newer than the minimum runtime age.")
+        return sorted(candidates, key=lambda source: source.name)
+
+    def fetch_source(self, source: SourceDistribution, destination: Path) -> None:
+        # This path is available only to the trusted installer, never the uv HTTP proxy.
+        if source.name in self.denied:
+            raise RuntimePolicyError("Source package denied by runtime policy")
+        if not any(
+            item.get("url") == source.url
+            and item.get("hashes", {}).get("sha256") == source.sha256
+            and item.get("filename") == source.filename
+            for item in self.indexes.get(source.name, [])
+        ):
+            raise RuntimePolicyError("Source archive is not pinned by the observed PyPI index")
+        if urlsplit(source.url).hostname != "files.pythonhosted.org":
+            raise RuntimePolicyError("Untrusted source artifact host")
+        self.fetch(source.url, destination=destination)
+        with destination.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != source.sha256:
+                raise RuntimePolicyError("Source archive SHA256 does not match the PyPI index")
+
     def get(self, raw: str) -> tuple[bytes | Path, str]:
         parsed = urlsplit(raw)
         if parsed.netloc and f"{parsed.scheme}://{parsed.netloc}" != self.url:
@@ -131,7 +267,7 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
         if match:
             name = canonicalize_name(match[1])
             if name in self.denied:
-                raise ValueError("Package denied")
+                raise RuntimePolicyError("Package denied by runtime policy")
             if name in self.local_wheels:
                 wheel = self.local_wheels[name]
                 digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
@@ -149,8 +285,10 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
                 }
                 return json.dumps(doc).encode(), "application/vnd.pypi.simple.v1+json"
             doc = json.loads(self.fetch(f"https://pypi.org/simple/{name}/", metadata=True))
+            self.indexes[name] = doc["files"]
             wheels = []
-            for item in doc["files"]:
+            for original in doc["files"]:
+                item = dict(original)
                 if not item["filename"].endswith(".whl"):
                     continue
                 url = item["url"]
