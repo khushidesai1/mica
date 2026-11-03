@@ -324,7 +324,7 @@
         ],
         "type": "object"
       },
-      "strict": true
+      "strict": false
     },
     {
       "name": "propose_transfer",

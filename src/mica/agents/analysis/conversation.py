@@ -47,22 +47,21 @@ def start(record: dict[str, Any]) -> None:
         return
     if record.get("recovery_version") or record.get("job"):
         return  # A running/recovering worker keeps its existing launch and approval.
-    if "direct_decision" in record or "command_intent" in record:
-        for field in (
-            "direct_decision",
-            "direct_decision_pending",
-            "decision_access",
-            "command_intent",
-            "intent_actor",
-            "intent_referents",
-            "intent_prior_request",
-            "routing_budget",
-            "routing_failures",
-            "routing_retry_at",
-            "route",
-            "launch",
-        ):
-            record.pop(field, None)
+    for field in (
+        "direct_decision",
+        "direct_decision_pending",
+        "decision_access",
+        "command_intent",
+        "intent_actor",
+        "intent_referents",
+        "intent_prior_request",
+        "routing_budget",
+        "routing_failures",
+        "routing_retry_at",
+        "route",
+        "launch",
+    ):
+        record.pop(field, None)
     record["conversation_steps"] = []
 
 

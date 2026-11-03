@@ -199,6 +199,7 @@ async def test_unordered_reads_and_append_only_thinking(turn, monkeypatch):
 async def test_cap_and_deadline_reserve_final_no_tools(turn, monkeypatch, deadline):
     turn[0].settings.conversation_max_calls = 1
     if deadline:
+        conversation.start(turn[2])
         turn[2]["routing_budget"] = 10
         client = Client(reply("Partial evidence and exact gap."))
     else:
@@ -499,7 +500,10 @@ async def test_every_authorized_principal_uses_conversation(
     bridge.test_client.create_job.assert_not_called()
 
 
-async def test_pending_legacy_decisions_restart_through_conversation(turn, monkeypatch):
+@pytest.mark.parametrize("decision_saved", [True, False])
+async def test_pending_legacy_decisions_restart_through_conversation(
+    turn, monkeypatch, decision_saved
+):
     bridge, event_id, record, _ = turn
     record.update(
         command_intent={"route": "command", "proposal": {"operation": "cancel"}},
@@ -513,6 +517,10 @@ async def test_pending_legacy_decisions_restart_through_conversation(turn, monke
         routing_failures=2,
         routing_budget=0,
     )
+    if not decision_saved:
+        # A failed legacy classifier may have exhausted its budget before saving a decision.
+        for field in ("command_intent", "direct_decision"):
+            record.pop(field)
     await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
     client = Client(reply("Current conversation answer."))
     monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: client)
