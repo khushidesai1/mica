@@ -281,7 +281,10 @@ def tools_for(allowed: bool) -> list[dict[str, Any]]:
             "name": name,
             "description": DESCRIPTIONS[name],
             "input_schema": strict_schema(model),
-            "strict": True,
+            # The compute schema exceeds the provider's compiled-grammar budget.
+            # Keep its schema; MODELS validation and allocation approvals still
+            # run locally before any worker request can be persisted or executed.
+            "strict": name != "start_worker",
         }
         for name, model in MODELS.items()
         if (allowed and name != "request_access")

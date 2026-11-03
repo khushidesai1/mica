@@ -259,6 +259,21 @@ async def test_terminal_worker_is_saved_and_replayed_without_model(turn, monkeyp
     bridge.test_client.create_job.assert_not_called()
 
 
+async def test_worker_arguments_are_validated_without_provider_grammar(turn):
+    bridge, _, record, _ = turn
+    client = Client(
+        tool("start_worker", task="Run the request", category="analysis", tier="invented"),
+        reply("I cannot allocate that unsupported worker."),
+    )
+    decision = await run(turn, client)
+    specs = {spec["name"]: spec for spec in client.calls[0]["tools"]}
+    assert specs["start_worker"]["strict"] is False
+    assert client.calls[1]["messages"][-1]["content"][0]["is_error"] is True
+    assert decision.route == "reply"
+    assert "launch" not in record and "gpu_approval" not in record and "slot" not in record
+    bridge.test_client.create_job.assert_not_called()
+
+
 async def test_128_gib_gpu_request_explains_limit_without_downgrade_or_allocation(
     turn, monkeypatch
 ):
@@ -379,7 +394,7 @@ def test_strict_schema_budget():
                     check(value)
 
     for spec in conversation.tools_for(True):
-        assert spec["strict"] is True
+        assert spec["strict"] is (spec["name"] != "start_worker")
         check(spec["input_schema"])
     assert len(prompts.CONVERSATION) <= 1502
     assert sum(map(len, conversation.DESCRIPTIONS.values())) <= 3910

@@ -1,10 +1,13 @@
 # Deployment
 
-For the staged move from the existing deployment to `mica-staging`, follow the
-[resource migration runbook](mica-resource-migration.md). Its separate Terraform root creates
-the replacement stack without renaming resources in the existing state. Foundation and preview
-do not switch Slack or Gmail traffic; admission, storage verification and the coordinated
-cutover must complete before old resources can be retired.
+The active service is `mica-staging` in `azizilab-aml/us-central1`, with mailbox
+`mica@azizilab.com` and artifacts bucket `mica-staging-artifacts-azizilab-aml`.
+Deploy subsequent releases to this service and preserve its current configuration and worker
+image pins. The former `pistachio-staging` service is frozen for rollback; its queue, schedulers,
+and push consumers must remain paused. Existing buckets and historical images remain available.
+The [resource migration runbook](mica-resource-migration.md) describes the separate state owners
+and the reverse reconciliation required before rollback after new writes. Source merging or
+a healthy new release does not authorize deleting legacy resources.
 
 ## Build immutable images
 
@@ -135,6 +138,13 @@ existing bounded retry behavior. Starting a worker requires a validated terminal
 Remove the retired `AGENT_CONVERSATION_PRINCIPALS` environment variable during an API release;
 there is no per-user routing flag. `AGENT_ROUTING_REPAIR_MODEL` remains the model setting for
 failure-card assessments, with its existing `claude-opus-5` default.
+
+The conversation API includes available tool schemas before Claude chooses a tool. The larger
+`start_worker` schema uses ordinary tool calling because compiling it as a strict provider
+grammar can reject even a simple chat request. Its input schema, local typed validation,
+resource constraints, and allocation approvals remain enforced. Other conversation tools keep
+provider strict mode. A small provider request can verify schema compatibility without starting
+workers or running a scientific workload.
 
 ## Provision
 
