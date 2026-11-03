@@ -146,13 +146,6 @@ resource constraints, and allocation approvals remain enforced. Other conversati
 provider strict mode. A small provider request can verify schema compatibility without starting
 workers or running a scientific workload.
 
-The conversation API includes available tool schemas before Claude chooses a tool. The larger
-`start_worker` schema uses ordinary tool calling because compiling it as a strict provider
-grammar can reject even a simple chat request. Its input schema, local typed validation,
-resource constraints, and allocation approvals remain enforced. Other conversation tools keep
-provider strict mode. A small provider request can verify schema compatibility without starting
-workers or running a scientific workload.
-
 ## Provision
 
 ```bash
