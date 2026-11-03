@@ -28,6 +28,7 @@ from . import (
     write_access,
 )
 from .data_links import message_text
+from .gpu_profiles import Sizing
 from .help_text import PROJECT_HELP
 from .identity import post
 from .registry import Registry
@@ -206,7 +207,10 @@ Cellpose-SAM is a separate versioned segmentation tool. For new Cellpose-SAM seg
 select gpu when gpu_available is true, unless the user explicitly requests CPU. The application
 will obtain run-specific confirmation before allocating a GPU. Existing-result questions or
 plots do not need a GPU. Cellpose 3 remains available and is never silently replaced by SAM.
-Set gpu_type to the preferred t4 or l4: T4 has 16 GiB GPU memory and L4 has 24 GiB.
+Set gpu_type only for a hardware preference; use the current compute_capabilities catalog.
+When flexible sizing is enabled, supply gpu_sizing with an evidence-based assessment of host
+RAM, per-device VRAM, CPU count and GPU count. Do not choose a larger family just because it is
+enabled. The application chooses a fitting configuration. Preserve all explicit user minima.
 Prefer T4 for bounded crops that fit. GPU preferences allow an available alternative by default;
 the confirmation covers the alternatives and Mica reports the actual GPU used. Set
 allow_gpu_fallback=false only for an explicit strict hardware requirement. Set
@@ -224,7 +228,8 @@ stages can be saved durably and continued in later workers within the approved a
 class WorkerChoice(BaseModel):
     category: Literal["training", "full_segmentation", "full_ingest", "analysis"]
     tier: Literal["standard", "large", "xlarge", "gpu"] = "standard"
-    gpu_type: Literal["t4", "l4"] | None = None
+    gpu_type: tiers.GPUType | None = None
+    gpu_sizing: Sizing | None = None
     allow_gpu_fallback: bool = True
     min_memory_gib: int = Field(default=0, ge=0, le=1_048_576)
     min_gpu_memory_gib: int = Field(default=0, ge=0, le=1_048_576)

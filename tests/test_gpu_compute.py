@@ -233,7 +233,7 @@ async def test_gpu_hardware_choice_reaches_approval_and_submission(
     assert record["launch"]["gpu_type"] == gpu_type
     text = gpu.test_slack.chat_update.call_args.kwargs["text"]
     assert "NVIDIA " + gpu_type.upper() in text
-    assert f"{memory} GiB RAM" in text
+    assert f"{memory} GiB host RAM" in text
     assert ("$3.00" if gpu_type == "t4" else "$4.00") in text
     await compute_approval.handle(gpu, gpu.store, click(event_id, record))
     # Changing the default after approval must not change the selected hardware.
@@ -334,7 +334,7 @@ def test_approval_and_start_receipts_use_existing_control_only_prefix():
 
 async def approved(gpu):
     event_id, record = await start(gpu)
-    assert "automatically try NVIDIA T4" in gpu.test_slack.chat_update.call_args.kwargs["text"]
+    assert "automatically try 1 NVIDIA T4" in gpu.test_slack.chat_update.call_args.kwargs["text"]
     await compute_approval.handle(gpu, gpu.store, click(event_id, record))
     await gpu.process(event_id, record["tick"])
     return event_id, await gpu.repository.get_connector_state("claude-event:" + event_id)

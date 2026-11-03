@@ -94,9 +94,36 @@ ceilings and resize support. This describes enabled configurations, not a live c
 Explicit memory requirements are checked before worker approval or allocation, and every GPU
 fallback must meet both host-RAM and VRAM requirements. An unsupported memory request receives a
 direct explanation; the conversation cannot retry it with a lower requirement in the same turn.
-For example, the current 30/32 GiB GPU machines cannot satisfy a 128 GiB host-RAM request, even
-though larger CPU-only tiers exist. Changing the machine catalog or deployment ceilings requires
-an owner configuration/release change; conversational memory cannot increase those allowances.
+With `AGENT_GPU_FLEXIBLE_SIZING=true`, GPU requests require a structured sizing assessment before
+approval: host RAM, per-device VRAM, CPUs, exact GPU count, evidence and parallelism justification
+for multiple GPUs. The controller selects a fitting configuration by estimated cost; an explicit
+GPU preference is honored when it fits. A 128 GiB host-RAM request can use a custom N1/T4 or
+`g2-standard-32` L4 worker. Every fallback preserves the same resource minima and GPU count.
+
+The trusted catalog supports T4 (16 GiB per GPU), L4 (24 GiB), A100 (40 GiB), A100 80 GB and
+H100 (80 GiB). Enable families through `AGENT_GPU_TYPES=t4,l4,a100,a100-80gb,h100` only with a
+compatible pinned GPU worker; leave `AGENT_GPU_DEFAULT_TYPE=t4`. The default is one GPU and
+larger families require an assessed need. Multiple-device VRAM is not automatically pooled.
+See Google's [GPU configurations](https://docs.cloud.google.com/compute/docs/gpus) and
+[accelerator machine types](https://docs.cloud.google.com/compute/docs/accelerator-optimized-machines).
+H100 configurations with 1–4 GPUs use Spot; an explicit on-demand request cannot silently become
+Spot or increase its GPU count. The approval card binds the sizing evidence, exact primary and
+alternative machines, each provisioning mode, image, time allowance and worst estimated cost.
+Placement can try one approved alternative before credentials are issued and only after the first
+reservation is gone. It never changes hardware under a running computation.
+
+Family enablement is not a quota or stock guarantee. Enable only families with usable regional
+quota; for example an A100 80 GB quota of zero need not block H100 Spot. Provider capacity/explicit
+quota errors can trigger a fitting approved alternative; permissions and transport errors cannot.
+Planning estimates include conservative compute/disk allowances and are not billing caps.
+The model cannot edit this catalog, cloud permissions, quotas or deployment ceilings.
+Existing requests without flexible profiles keep their original machine definitions and estimates;
+image/configuration changes still require fresh confirmation under the existing approval rules.
+
+For a new GPU architecture, use `scripts/check_gpu_hardware.py` for bounded CUDA arithmetic in
+the actual fixed-tool sandbox, including device and credential isolation. It performs no model
+inference or scientific workflow and uses no project mounts. Reuse prior T4/L4 inference evidence
+when scientific dependencies are unchanged, and record unobserved hardware separately.
 
 Run live Slack smoke checks only in the owner's private DM, never in shared project channels.
 Simulate malformed model output, outages, and retry timing locally with fakes; do not inject
