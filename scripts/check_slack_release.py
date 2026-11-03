@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -24,6 +25,7 @@ from mica.agents.analysis import (
     memory_archive,
     memory_workspace,
     project_memory,
+    prompts,
     reference_repos,
     write_access,
 )
@@ -58,7 +60,10 @@ def check(source: Path, mode: str) -> None:
     assert Path(legacy.__file__).read_bytes() == (source / "src/pistachio/__init__.py").read_bytes()
     settings = Settings(_env_file=None)
     assert importlib.metadata.version("anthropic") == "2.3.0"
-    assert all(tool["strict"] for tool in conversation.tools_for(True))
+    assert all(
+        tool["strict"] is (tool["name"] != "start_worker")
+        for tool in conversation.tools_for(True)
+    )
     assert settings.long_run_threshold_seconds == 600
     assert settings.long_run_update_seconds == 7200
     assert settings.max_run_seconds == 604800
@@ -177,7 +182,9 @@ def check(source: Path, mode: str) -> None:
         memory_workspace.materialize(work / "memory-work", snapshot, settings)
         assert memory_workspace.proposal(work / "memory-work", snapshot, settings).changes == {}
         assert "viridis" in project_memory.context(snapshot, "heatmaps", settings)
-        assert project_memory.GUIDE_POLICY in direct.SYSTEM
+        assert project_memory.GUIDE_POLICY in prompts.build_system_append(
+            SimpleNamespace(survey_only=True), settings
+        )
         for removed in (
             "user_memory",
             "conversation_memory",

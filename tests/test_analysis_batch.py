@@ -17,12 +17,15 @@ from google.cloud import batch_v1
 from slack_sdk.errors import SlackApiError
 from starlette.requests import Request
 
-from mica.agents.analysis import batch
+from mica.agents.analysis import batch, conversation
 from mica.agents.analysis.batch import BatchBridge, job_spec
 from mica.agents.analysis.batch_worker import restore, snapshot
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.storage import LocalStorage
 from mica.api import slack_analysis
+
+CONVERSATION_RUN = conversation.run
+CONVERSATION_CONTROL = conversation.control
 
 
 def payload(
@@ -90,24 +93,25 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     slack = AsyncMock()
     slack.chat_postMessage.return_value = {"ts": "9.0"}
     monkeypatch.setattr("slack_sdk.web.async_client.AsyncWebClient", lambda **kw: slack)
-    from analysis_helpers import seed_project
-
-    from mica.agents.analysis import command_intent, direct
-
-    monkeypatch.setattr(
-        command_intent, "classify", AsyncMock(return_value=command_intent.Intent(route="continue"))
-    )
+    from analysis_helpers import conversation_mock, seed_project
 
     pid = seed_project(storage)
-    monkeypatch.setattr(
-        direct,
-        "decide",
-        AsyncMock(return_value=direct.Decision(route="compute", reply="Computation needed.")),
+    decision = conversation_mock(
+        conversation.Decision(route="compute", reply="Computation needed.")
     )
+    monkeypatch.setattr(conversation, "run", decision)
+
+    async def ordinary_request(_bridge, _event_id, record, _grant):
+        record["conversation_amendable"] = True
+        return "none"
+
+    control = AsyncMock(side_effect=ordinary_request)
+    monkeypatch.setattr(conversation, "control", control)
     slack.conversations_replies.return_value = {"messages": []}
     result = BatchBridge(settings, repository)
     result.test_client, result.test_states, result.test_slack = client, states, slack
     result.store, result.pid = storage, pid
+    result.decision, result.control = decision, control
     result.memory_backend, result.github = memory, github
     return result
 
@@ -607,11 +611,12 @@ async def test_dynamic_project_buckets_and_outside_project_rejection(bridge, mon
             )
         )
     )
-    from mica.agents.analysis import direct
 
-    direct.decide.return_value = direct.Decision(route="reply", reply="Draft.", guide="New brief")
+    conversation.run.return_value = conversation.Decision(
+        route="reply", reply="Draft.", guide="New brief"
+    )
     assert await bridge.process(first, 0) == "complete"
-    direct.decide.return_value = direct.Decision(route="compute", reply="Plotting.")
+    conversation.run.return_value = conversation.Decision(route="compute", reply="Plotting.")
     compute = await bridge.accept(payload("1.1", "1.0", "plot"))
     assert await bridge.process(compute, 0) == "running"
     catalog.assert_called_with(project="existing-project")

@@ -7,19 +7,27 @@ from unittest.mock import AsyncMock
 import pytest
 from test_analysis_batch import bridge, payload  # noqa: F401
 
-from mica.agents.analysis import access, command_approval, command_intent, commands, direct
-from mica.agents.analysis.command_intent import Intent, Proposal
+from mica.agents.analysis import command_approval, commands, conversation
+from mica.agents.analysis.command_intent import Proposal
 from mica.agents.analysis.registry import Registry
-
-REAL_CLASSIFY = command_intent.classify
 
 
 @pytest.fixture
 def chat(bridge, monkeypatch):  # noqa: F811
-    decision = AsyncMock(return_value=Intent(route="continue"))
-    monkeypatch.setattr(command_intent, "classify", decision)
+    decision = AsyncMock(
+        return_value=conversation.Decision(reply="Request received.", route="compute")
+    )
+    monkeypatch.setattr(conversation, "run", decision)
     monkeypatch.setattr(command_approval, "AsyncWebClient", lambda **kw: bridge.test_slack)
     bridge.intent = decision
+
+    async def control(_bridge, _event_id, record, _grant):
+        proposal = decision.return_value.command_proposal or {}
+        operation = proposal.get("operation", "")
+        record["conversation_amendable"] = not operation
+        return operation if operation in {"cancel", "write revoke"} else "none"
+
+    bridge.control.side_effect = control
     return bridge
 
 
@@ -63,7 +71,11 @@ async def test_projects_before_project_admission_and_memory_and_replay(chat):
     Registry(chat.store).update(
         "unbound", "alice@example.com", "clear", lambda d: d.bindings.clear() or "cleared"
     )
-    chat.intent.return_value = Intent(route="command", proposal=Proposal(operation="projects"))
+    chat.intent.return_value = conversation.Decision(
+        reply="Request received.",
+        route="command",
+        command_proposal=Proposal(operation="projects").model_dump(),
+    )
     original = "Can you list the projects that I am collaborating on?\n\nSent with Spark"
     eid = await chat.accept(payload(text=original))
     assert await chat.process(eid, 0) == "complete"
@@ -77,7 +89,11 @@ async def test_projects_before_project_admission_and_memory_and_replay(chat):
 
 
 async def test_shared_request_hands_off_without_project_list(chat):
-    chat.intent.return_value = Intent(route="command", proposal=Proposal(operation="projects"))
+    chat.intent.return_value = conversation.Decision(
+        reply="Request received.",
+        route="command",
+        command_proposal=Proposal(operation="projects").model_dump(),
+    )
     eid = await chat.accept(
         payload(text="What projects can I access?", channel="C1", channel_type="channel")
     )
@@ -98,7 +114,9 @@ async def test_shared_request_hands_off_without_project_list(chat):
     ],
 )
 async def test_shared_dispatch_executes_and_never_launches_worker(chat, proposal, expected):
-    chat.intent.return_value = Intent(route="command", proposal=proposal)
+    chat.intent.return_value = conversation.Decision(
+        reply="Request received.", route="command", command_proposal=proposal.model_dump()
+    )
     eid = await chat.accept(payload(text="Natural request"))
     assert await chat.process(eid, 0) == "complete"
     record = await chat.repository.get_connector_state("claude-event:" + eid)
@@ -111,7 +129,11 @@ async def test_shared_dispatch_executes_and_never_launches_worker(chat, proposal
 async def test_cancel_bypasses_running_predecessor_and_is_cached(chat):
     active = await chat.accept(payload(text="Plot the data"))
     assert await chat.process(active, 0) == "running"
-    chat.intent.return_value = Intent(route="command", proposal=Proposal(operation="cancel"))
+    chat.intent.return_value = conversation.Decision(
+        reply="Request received.",
+        route="command",
+        command_proposal=Proposal(operation="cancel").model_dump(),
+    )
     eid = await chat.accept(payload("2.0", "1.0", "Please stop this analysis"))
     await chat.process(eid, 0)
     saved = await chat.repository.get_connector_state("claude-event:" + active)
@@ -126,8 +148,10 @@ async def test_cancel_bypasses_running_predecessor_and_is_cached(chat):
 async def test_switch_obeys_active_predecessor(chat):
     active = await chat.accept(payload(text="Plot the data"))
     assert await chat.process(active, 0) == "running"
-    chat.intent.return_value = Intent(
-        route="command", proposal=Proposal(operation="use", selector="liver")
+    chat.intent.return_value = conversation.Decision(
+        reply="Request received.",
+        route="command",
+        command_proposal=Proposal(operation="use", selector="liver").model_dump(),
     )
     eid = await chat.accept(payload("2.0", "1.0", "Use liver"))
     assert await chat.process(eid, 0) == "pending"
@@ -148,9 +172,10 @@ def action(eid, verb="confirm", *, user="U1", channel="D1"):
 
 
 async def proposal(chat, operation="rename", **fields):
-    chat.intent.return_value = Intent(
+    chat.intent.return_value = conversation.Decision(
+        reply="Request received.",
         route="command",
-        proposal=Proposal(operation=operation, selector="liver", **fields),
+        command_proposal=Proposal(operation=operation, selector="liver", **fields).model_dump(),
     )
     eid = await chat.accept(payload(text="Natural administrative request"))
     assert await chat.process(eid, 0) == "complete"
@@ -206,22 +231,6 @@ async def test_target_change_invalidates_preview_even_when_active_project_unchan
         await command_approval.handle(chat, chat.store, action(eid))
 
 
-async def test_classifier_receives_no_roster_in_public_and_has_bounded_budget(chat, monkeypatch):
-    # Exercise the real classification context builder, replacing only HTTP routing.
-    eid = await chat.accept(payload(text="What projects?", channel="C1", channel_type="channel"))
-    record = await chat.repository.get_connector_state("claude-event:" + eid)
-    grant = access.resolve(chat.app, chat.settings, chat.store, record)
-    route = AsyncMock(return_value=Intent(route="continue"))
-    monkeypatch.setattr(direct, "route_model", route)
-    result = await REAL_CLASSIFY(chat, eid, record, grant)
-    assert result.route == "continue"
-    context = route.call_args.args[2]
-    assert "liver" not in json.dumps(context)
-    assert "projects" not in context
-    assert record["routing_budget"] <= direct.ROUTING_SECONDS
-    assert route.call_args.kwargs["result_type"] is Intent
-
-
 async def test_project_list_records_numbered_choices_for_followups(chat):
     eid = await chat.accept(payload(text="projects"))
     await chat.process(eid, 0)
@@ -242,8 +251,12 @@ async def test_confirmation_button_failure_retries_presentation_before_completio
         return {"ok": True}
 
     chat.test_slack.chat_update.side_effect = update
-    chat.intent.return_value = Intent(
-        route="command", proposal=Proposal(operation="rename", selector="liver", target="new-name")
+    chat.intent.return_value = conversation.Decision(
+        reply="Request received.",
+        route="command",
+        command_proposal=Proposal(
+            operation="rename", selector="liver", target="new-name"
+        ).model_dump(),
     )
     eid = await chat.accept(payload(text="Rename my project"))
     with pytest.raises(TimeoutError):
@@ -314,18 +327,24 @@ async def test_write_revoke_preview_bypasses_compute_without_releasing_its_queue
     chat.settings.write_admin_ids = "T1:U1"
     active = await chat.accept(payload(text="Plot the data"))
     assert await chat.process(active, 0) == "running"
-    chat.intent.return_value = Intent(
-        route="command", proposal=Proposal(operation="write revoke", selector="liver")
+    chat.intent.return_value = conversation.Decision(
+        reply="Request received.",
+        route="command",
+        command_proposal=Proposal(operation="write revoke", selector="liver").model_dump(),
     )
     revoke = await chat.accept(payload("2.0", "1.0", "Please revoke write access to liver"))
     assert await chat.process(revoke, 0) == "complete"
     saved = await chat.repository.get_connector_state("claude-event:" + revoke)
     assert saved["control_bypass"]
-    chat.intent.return_value = Intent(route="continue")
+    chat.intent.return_value = conversation.Decision(reply="Request received.", route="compute")
     followup = await chat.accept(payload("3.0", "1.0", "Make another plot"))
     assert await chat.process(followup, 0) == "pending"
     assert chat.test_client.create_job.call_count == 1
-    chat.intent.return_value = Intent(route="command", proposal=Proposal(operation="cancel"))
+    chat.intent.return_value = conversation.Decision(
+        reply="Request received.",
+        route="command",
+        command_proposal=Proposal(operation="cancel").model_dump(),
+    )
     cancel = await chat.accept(payload("4.0", "1.0", "Please stop the analysis"))
     await chat.process(cancel, 0)
     active_record = await chat.repository.get_connector_state("claude-event:" + active)
@@ -334,8 +353,10 @@ async def test_write_revoke_preview_bypasses_compute_without_releasing_its_queue
 
 @pytest.mark.parametrize("operation", ["publish", "unpublish", "write grant", "write revoke"])
 async def test_shared_admin_selector_never_resolves_private_project_names(chat, operation):
-    chat.intent.return_value = Intent(
-        route="command", proposal=Proposal(operation=operation, selector="liver")
+    chat.intent.return_value = conversation.Decision(
+        reply="Request received.",
+        route="command",
+        command_proposal=Proposal(operation=operation, selector="liver").model_dump(),
     )
     eid = await chat.accept(
         payload(text="Administrative request", channel="C1", channel_type="channel")

@@ -15,7 +15,7 @@ from mica.agents.analysis import (
     command_approval,
     command_intent,
     commands,
-    direct,
+    conversation,
     memory_workspace,
     observability,
     project_memory,
@@ -49,13 +49,13 @@ async def test_shared_catalog_repo_reaches_worker_without_project_registration(b
     before = Registry(bridge.store).load().projects[bridge.pid]
     assert not before.reference_repos
     decide = AsyncMock(
-        return_value=direct.Decision(
+        return_value=conversation.Decision(
             route="compute",
             reply="Inspect the source and write the README.",
             reference_repos=["azizilab/nympheas"],
         )
     )
-    monkeypatch.setattr(direct, "decide", decide)
+    monkeypatch.setattr(conversation, "run", decide)
     fetch = AsyncMock(
         return_value=refs.RepoSnapshot(
             repo="azizilab/nympheas",
@@ -66,7 +66,7 @@ async def test_shared_catalog_repo_reaches_worker_without_project_registration(b
     monkeypatch.setattr(refs, "fetch", fetch)
     eid = await bridge.accept(payload(text="Read nympheas and document basic preprocessing"))
     assert await bridge.process(eid, 0) == "running"
-    assert decide.call_args.args[2]["reference_repos"] == [
+    assert decide.call_args.args[5]["reference_repos"] == [
         "azizilab/decipher",
         "azizilab/nympheas",
         "khushidesai1/nympheas-temp",
@@ -80,10 +80,10 @@ async def test_shared_catalog_repo_reaches_worker_without_project_registration(b
 async def test_router_cannot_select_a_repo_outside_available_catalog(bridge, monkeypatch):  # noqa: F811
     await catalog_repo(bridge)
     monkeypatch.setattr(
-        direct,
-        "decide",
+        conversation,
+        "run",
         AsyncMock(
-            return_value=direct.Decision(
+            return_value=conversation.Decision(
                 route="compute",
                 reply="Read a repo.",
                 reference_repos=["azizilab/not-approved"],

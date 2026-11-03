@@ -25,10 +25,9 @@ class Settings(BaseSettings):
     )
     slack_app_token: SecretStr = Field(default=SecretStr(""), alias="SLACK_APP_TOKEN")
     model: str = "claude-opus-5-5"
-    conversation_principals: str = ""  # Empty retains the legacy route for staged rollout.
     conversation_effort: Literal["low", "medium", "high"] = "medium"
     conversation_max_calls: int = Field(default=6, ge=1, le=12)
-    routing_repair_model: str = "claude-opus-5"  # Must support forced tool choice.
+    routing_repair_model: str = "claude-opus-5"  # Failure investigation assessments.
     loading_emoji: str = ":hourglass_flowing_sand:"  # AGENT_LOADING_EMOJI; custom emoji supported.
     amendments: bool = False
     failure_channel: str = Field(default="", pattern=r"^(?:[CG][A-Z0-9]+)?$")

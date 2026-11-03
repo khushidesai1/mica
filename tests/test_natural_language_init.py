@@ -1,6 +1,6 @@
-# ruff: noqa: F811
 """Natural project creation reuses setup admission and conversation safeguards."""
 
+# ruff: noqa: F811
 import json
 from unittest.mock import AsyncMock
 
@@ -9,33 +9,28 @@ from test_analysis_batch import bridge, payload  # noqa: F401
 from test_email_transport import sent_messages
 from test_gmail_intake import SENDER, email_record, mail, signing  # noqa: F401
 
-from mica.agents.analysis import access, command_intent, direct
+from mica.agents.analysis import access, command_intent, conversation, direct
 from mica.agents.analysis.registry import Registry
 
 
 def classify_creation(monkeypatch, *, name="brain", uri="gs://lab-data/brain/"):
     monkeypatch.setattr(
-        command_intent,
-        "classify",
-        AsyncMock(
-            return_value=command_intent.Intent(
-                route="command",
-                proposal=command_intent.Proposal(operation="init", selector=name, scope=uri),
-            )
-        ),
-    )
-    monkeypatch.setattr(
         direct, "inventory", lambda *args, **kwargs: {"entries": [], "content_inspected": False}
     )
-    monkeypatch.setattr(
-        direct,
-        "decide",
-        AsyncMock(
-            return_value=direct.Decision(
+    async def respond(*args, **kwargs):
+        if kwargs.get("init"):
+            return conversation.Decision(
                 route="reply", reply="Project ready.", guide="# Brain\nUser-provided project."
             )
-        ),
-    )
+        return conversation.Decision(
+            route="command", reply="Creating the project.",
+            command_proposal=command_intent.Proposal(
+                operation="init", selector=name, scope=uri
+            ).model_dump(),
+        )
+
+    monkeypatch.setattr(conversation, "run", AsyncMock(side_effect=respond))
+
 
 
 async def request(mail, text, surface="slack", *, shared=False):
@@ -69,7 +64,7 @@ async def test_natural_creation_uses_supplied_bucket_and_preserves_request(
     state = json.loads(mail.store.get(access.checkpoint_key(record["thread_key"]))[0])
     assert state["context"]["project_slug"] == pid
     assert record["payload"]["event"]["text"] == text
-    assert "init_inventory" in direct.decide.call_args.args[2]
+    assert "init_inventory" in conversation.run.call_args.args[5]
     mail.test_client.create_job.assert_not_called()
     # Replaying the completed setup must not create another project or change its identity.
     assert await direct.handle(mail, eid, record, mail.store)
@@ -98,7 +93,7 @@ async def test_missing_or_invented_creation_details_clarify_without_mutation(
     assert await direct.handle(mail, eid, record, mail.store)
     assert Registry(mail.store).load() == before
     assert record["notice_text"] and record["status"] == "complete"
-    direct.decide.assert_not_awaited()
+    conversation.run.assert_awaited_once()
     mail.test_client.create_job.assert_not_called()
 
 
@@ -111,7 +106,7 @@ async def test_natural_creation_rejects_unadmitted_bucket_before_registry_write(
     with pytest.raises(ValueError, match="not available"):
         await direct.handle(mail, eid, record, mail.store)
     assert Registry(mail.store).load() == before
-    direct.decide.assert_not_awaited()
+    conversation.run.assert_awaited_once()
     mail.test_client.create_job.assert_not_called()
 
 
@@ -125,7 +120,15 @@ async def test_natural_creation_in_bound_conversation_requires_new_conversation(
     mail.store.put(
         access.checkpoint_key(record["thread_key"]),
         json.dumps(
-            {"private_owner": SENDER, "context": {"project_slug": mail.pid}}
+            {
+                "private_owner": SENDER,
+                "context": {
+                    "project_slug": mail.pid,
+                    "data_path": str(mail.settings.data_mount_root / "lab-data/liver"),
+                    "project_md": "# Existing project",
+                    "thread_ts": record["payload"]["event"]["ts"],
+                },
+            }
         ).encode(),
     )
     before = Registry(mail.store).load()
@@ -133,7 +136,7 @@ async def test_natural_creation_in_bound_conversation_requires_new_conversation(
     with pytest.raises(ValueError, match="[Nn]ew (thread|conversation)"):
         await direct.handle(mail, eid, record, mail.store)
     assert Registry(mail.store).load() == before
-    direct.decide.assert_not_awaited()
+    conversation.run.assert_awaited_once()
     mail.test_client.create_job.assert_not_called()
 
 
@@ -144,10 +147,11 @@ async def test_natural_creation_with_attached_files_keeps_existing_setup_guard(m
     record["payload"]["event"]["files"] = [{"id": "F1", "name": "counts.csv"}]
     before = Registry(mail.store).load()
     classify_creation(monkeypatch)
+    monkeypatch.setattr(direct.attachments, "ingest", lambda *args, **kwargs: [])
     with pytest.raises(ValueError, match="[Ss]end files"):
         await direct.handle(mail, eid, record, mail.store)
     assert Registry(mail.store).load() == before
-    direct.decide.assert_not_awaited()
+    conversation.run.assert_awaited_once()
     mail.test_client.create_job.assert_not_called()
 
 
@@ -160,7 +164,7 @@ async def test_shared_channel_cannot_create_private_project_from_model_proposal(
     assert await direct.handle(mail, eid, record, mail.store)
     assert Registry(mail.store).load() == before
     assert "private" in record["notice_text"].lower()
-    direct.decide.assert_not_awaited()
+    conversation.run.assert_awaited_once()
     mail.test_client.create_job.assert_not_called()
 
 

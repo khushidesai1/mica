@@ -8,8 +8,8 @@ from test_gpu_compute import approved, click, gpu, start  # noqa: F401
 from mica.agents.analysis import cellpose_tools, compute_approval, recovery, tiers
 from mica.agents.analysis.checkpoints import Stages, cleanup_temporary
 from mica.agents.analysis.config import Settings
-from mica.agents.analysis.direct import WorkerChoice
 from mica.agents.analysis.storage import LocalStorage
+from mica.agents.analysis.tiers import WorkerChoice
 
 
 def test_long_gpu_allowance_and_cost_ceiling_use_worst_approved_hardware():

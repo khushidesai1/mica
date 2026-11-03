@@ -1,6 +1,6 @@
-# ruff: noqa: F811
 """Email outbox, semantic worker result, authorization and MIME delivery tests."""
 
+# ruff: noqa: F811
 import base64
 import hashlib
 import json
@@ -16,7 +16,7 @@ from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_slack import bot, event, send  # noqa: F401
 from test_gmail_intake import SENDER, email_record, mail, signing  # noqa: F401
 
-from mica.agents.analysis import access, direct, email_delivery, surface
+from mica.agents.analysis import access, conversation, direct, email_delivery, surface
 from mica.agents.analysis.email_delivery import Artifact, TerminalResult, artifact_prefix, deliver
 from mica.agents.analysis.registry import Registry
 from mica.agents.analysis.transport import EmailWorkerTransport
@@ -112,18 +112,13 @@ async def test_slack_keeps_acknowledgement_and_progress(bridge):
 async def test_clarification_is_a_substantive_email_response(mail, monkeypatch):
     eid, _ = await email_record(mail)
     # Natural-language routing can finish this turn with a question the user must answer.
-    from mica.agents.analysis import command_intent
 
     record = await mail.repository.get_connector_state(f"claude-event:{eid}")
     record["payload"]["event"]["text"] = "Analyze my samples"
     await mail.repository.set_connector_state(f"claude-event:{eid}", record)
     monkeypatch.setattr(
-        command_intent, "classify",
-        AsyncMock(return_value=command_intent.Intent(route="continue")),
-    )
-    monkeypatch.setattr(
-        direct, "decide",
-        AsyncMock(return_value=direct.Decision(route="reply", reply="Which samples?")),
+        conversation, "run",
+        AsyncMock(return_value=conversation.Decision(route="reply", reply="Which samples?")),
     )
     assert await mail.process(eid, 0) == "complete"
     assert len(sent_messages(mail)) == 1

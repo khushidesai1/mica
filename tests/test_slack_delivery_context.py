@@ -9,7 +9,7 @@ from analysis_helpers import seed_project
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from mica.agents.analysis import access, command_intent, direct, observability
+from mica.agents.analysis import access, conversation, direct, observability
 from mica.agents.analysis.help_text import COMMAND_HELP
 from mica.agents.analysis.registry import Registry
 from mica.agents.analysis.slack_format import chunks, to_mrkdwn
@@ -77,7 +77,7 @@ async def test_failed_or_stopped_reply_has_red_flag_without_changing_saved_text(
 
 async def test_long_direct_markdown_reply_is_converted_before_chunking(chat):
     text = "**QC workflow**\n" + "- Compare counts & genes across slides.\n" * 150
-    chat.decision.return_value = direct.Decision(route="reply", reply=text)
+    chat.decision.return_value = conversation.Decision(route="reply", reply=text)
     event_id = await chat.accept(payload(text="Explain the QC workflow"))
     record = await chat.repository.get_connector_state("claude-event:" + event_id)
     record["notice_ts"] = "9.0"
@@ -125,14 +125,14 @@ async def test_failure_context_prefers_thread_project_over_new_default(chat):
     assert record["failure_project_id"] == chat.pid
 
 
-async def test_natural_language_failure_records_context_before_classifier(chat, monkeypatch):
+async def test_natural_language_failure_records_context_before_conversation(chat, monkeypatch):
     event_id = await chat.accept(payload(text="Please show my project choices"))
     record = await chat.repository.get_connector_state("claude-event:" + event_id)
     monkeypatch.setattr(
-        command_intent, "classify", AsyncMock(side_effect=direct.RoutingUnavailable())
+        conversation, "run", AsyncMock(side_effect=direct.RoutingUnavailable())
     )
     with pytest.raises(direct.RoutingUnavailable):
-        await command_intent.prepare(chat, event_id, record, chat.store)
+        await direct.handle(chat, event_id, record, chat.store)
     saved = await chat.repository.get_connector_state("claude-event:" + event_id)
     assert saved["failure_project_id"] == chat.pid
 

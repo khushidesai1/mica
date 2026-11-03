@@ -1,6 +1,6 @@
-# ruff: noqa: F811
 """Prompt -> editor -> GitHub -> new router/worker context, without network."""
 
+# ruff: noqa: F811
 import json
 from unittest.mock import AsyncMock
 
@@ -8,7 +8,7 @@ import pytest
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from mica.agents.analysis import direct, job_lifecycle, memory_tasks, project_memory
+from mica.agents.analysis import conversation, direct, job_lifecycle, memory_tasks, project_memory
 
 CONVENTION = (
     "type: user\nsource: alice@example.com, 2026-10-10\nstatus: current\n\n"
@@ -21,7 +21,7 @@ def memory_chat(chat, monkeypatch):  # noqa: F811
     github, backend = chat.github, chat.memory_backend
     chat.settings.memory_auto_edit = True
     monkeypatch.setattr(job_lifecycle, "enqueue", AsyncMock())
-    chat.decision.return_value = direct.Decision(route="reply", reply="I'll use viridis.")
+    chat.decision.return_value = conversation.Decision(route="reply", reply="I'll use viridis.")
     chat.github, chat.memory_backend = github, backend
     return chat
 
@@ -40,8 +40,8 @@ async def test_prompt_persists_and_new_thread_and_worker_receive_it(memory_chat,
     assert "alice@example.com" in editor.call_args.args[2]["speaker"]
     second = await chat.accept(payload("2.0", text="What colormap do we use for heatmaps?"))
     assert await chat.process(second, 0) == "complete"
-    assert "viridis" in chat.decision.call_args.args[2]["project_memory"]
-    chat.decision.return_value = direct.Decision(route="compute", reply="Plotting.")
+    assert "viridis" in chat.decision.call_args.args[5]["project_memory"]
+    chat.decision.return_value = conversation.Decision(route="compute", reply="Plotting.")
     third = await chat.accept(payload("3.0", text="Plot a small heatmap"))
     assert await chat.process(third, 0) == "running"
     manifest = json.loads(chat.store.get(f"tasks/slack-analysis/events/{third}/request.json")[0])
@@ -53,7 +53,7 @@ async def test_prompt_persists_and_new_thread_and_worker_receive_it(memory_chat,
 
 async def test_worker_proposal_is_the_only_writer(memory_chat, monkeypatch):
     chat = memory_chat
-    chat.decision.return_value = direct.Decision(route="compute", reply="Plotting.")
+    chat.decision.return_value = conversation.Decision(route="compute", reply="Plotting.")
     event_id = await chat.accept(payload(text="Plot a small heatmap"))
     await chat.process(event_id, 0)
     key = f"tasks/slack-analysis/events/{event_id}/"
@@ -120,12 +120,12 @@ async def test_dm_fact_is_shared_with_channel_but_not_another_project(memory_cha
     await message(chat, "publish liver <#C1>", "2.0")
     await message(chat, "use liver", "3.0", channel="C1")
     await message(chat, "What colormap?", "4.0", channel="C1")
-    assert "viridis" in chat.decision.call_args.args[2]["project_memory"]
+    assert "viridis" in chat.decision.call_args.args[5]["project_memory"]
     from analysis_helpers import seed_project
 
     seed_project(chat.store, name="other", channel="D2")
     await message(chat, "What colormap?", "5.0", channel="D2")
-    assert "viridis" not in chat.decision.call_args.args[2]["project_memory"]
+    assert "viridis" not in chat.decision.call_args.args[5]["project_memory"]
 
 
 async def test_edits_other_init_and_share_keep_older_thread_state(memory_chat, monkeypatch):
@@ -148,12 +148,12 @@ async def test_edits_other_init_and_share_keep_older_thread_state(memory_chat, m
     state["context"]["workdir"] += "/legacy-hash"
     chat.store.put(key, json.dumps(state).encode())
     await memory_tasks.process(chat, first, chat.store)
-    chat.decision.return_value = direct.Decision(
+    chat.decision.return_value = conversation.Decision(
         route="reply", reply="Ready.", guide="# Other guide"
     )
     await message(chat, "init other gs://lab-data/other/ --force", "2.0")
     await message(chat, "share other <@U2>", "3.0")
-    chat.decision.return_value = direct.Decision(route="reply", reply="We use viridis.")
+    chat.decision.return_value = conversation.Decision(route="reply", reply="We use viridis.")
     await message(chat, "Which colormap?", "4.0", thread="1.0")
     after = json.loads(chat.store.get(key)[0])
     assert after["context"]["workdir"] == state["context"]["workdir"]

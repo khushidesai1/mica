@@ -47,3 +47,21 @@ async def memory_message(chat, *args, **kwargs):
             await memory_tasks.process(chat, event_id, chat.store)
             record = await chat.repository.get_connector_state("claude-event:" + event_id)
     return record
+
+
+def conversation_mock(value):
+    """Fake the terminal model response while preserving the no-project reply boundary."""
+    from unittest.mock import AsyncMock
+
+    from mica.agents.analysis import access, conversation
+
+    decision = AsyncMock(return_value=value)
+
+    async def respond(*args, **kwargs):
+        grant = args[4]
+        if not grant.allowed and decision.return_value.route not in {"command", "access"}:
+            return conversation.Decision(route="reply", reply=access.deny_text(grant))
+        return decision.return_value
+
+    decision.side_effect = respond
+    return decision

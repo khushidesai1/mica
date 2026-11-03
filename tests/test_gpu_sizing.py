@@ -14,7 +14,7 @@ from test_gpu_compute import GPU_IMAGE, click, gpu, start  # noqa: F401
 from mica.agents.analysis import (
     cellpose_tools,
     compute_approval,
-    direct,
+    conversation,
     gpu_capacity,
     recovery,
     tiers,
@@ -36,7 +36,7 @@ def settings():
 
 
 def request(ram=24, vram=12, cpus=4, count=1, **changes):
-    return direct.WorkerChoice(
+    return tiers.WorkerChoice(
         category="training",
         tier="gpu",
         reason="Assessed model and host memory",
@@ -60,7 +60,7 @@ def shapes(choice, config=None):
 def test_assessment_is_mandatory_and_multiple_gpus_need_parallelism():
     with pytest.raises(ValueError, match="Assess GPU resources"):
         tiers.launch_choice(
-            direct.WorkerChoice(category="analysis", tier="gpu", reason="Run a GPU task"),
+            tiers.WorkerChoice(category="analysis", tier="gpu", reason="Run a GPU task"),
             settings(),
         )
     with pytest.raises(ValueError, match="parallelism"):
@@ -171,10 +171,10 @@ async def test_approved_80_gib_fallback_preserves_resources_and_binds_spot_mode(
     gpu.settings.gpu_flexible_sizing = True
     gpu.settings.gpu_types = settings().gpu_types
     monkeypatch.setattr(
-        direct,
-        "decide",
+        conversation,
+        "run",
         AsyncMock(
-            return_value=direct.Decision(
+            return_value=conversation.Decision(
                 route="compute",
                 reply="Run the model with assessed GPU memory.",
                 worker=request(vram=80),
