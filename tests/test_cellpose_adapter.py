@@ -12,6 +12,22 @@ from skills.skills.cellpose.scripts.segment import load_image, validate_shape
 
 
 @pytest.mark.parametrize(
+    "changes",
+    [
+        {"version": "latest"}, {"model": "cyto3"}, {"device": []},
+        {"model_dir": "/tmp/unreviewed"}, {"batch_size": 10000},
+        {"flow_threshold": float("nan")}, {"channels": [0, 0]},
+    ],
+)
+def test_skill_adapter_retains_version_model_and_parameter_validation(changes):
+    with pytest.raises(ValueError):
+        cellpose_segment.normalize({
+            "input_path": "crop.tif", "output_dir": "outputs/crop",
+            "version": "4.2.1.1", "model": "cpsam", **changes,
+        })
+
+
+@pytest.mark.parametrize(
     "shape,kind", [((100000, 100000), "f"), ((3,), "u"), ((0, 3), "u"), ((2, 2), "O")]
 )
 def test_unbounded_or_non_numeric_image_header_is_rejected(shape, kind):
