@@ -452,3 +452,12 @@ def test_resolution_refreshes_newly_built_wheel_metadata(settings, mirror, tmp_p
     command = commands[0]
     assert command[command.index("--refresh-package") + 1] == "docrep"
     assert "--only-binary" in command and "--exclude-newer" in command
+
+
+def test_source_retry_does_not_misread_old_wheel_availability_as_a_requirement(mirror):
+    mirror.indexes["docrep"] = [index_file(version="0.3.1", wheel=True), index_file()]
+    error = (
+        "No solution found: only docrep<=0.3.1 is available and scvi-tools depends on\n"
+        "docrep>=0.3.2, so requirements are unsatisfiable."
+    )
+    assert mirror.source_candidates(error, ["scvi-tools"], "3.12.12")[0].version == "0.3.2"

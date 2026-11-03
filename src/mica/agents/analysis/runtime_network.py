@@ -174,9 +174,10 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
             if not re.search(r"(?<![\w.-])" + pattern + r"(?![\w.-])", error, re.I):
                 continue
             constraints = [r.specifier for r in requested if canonicalize_name(r.name) == name]
-            # uv's diagnostic includes the dependency constraints that made the solve fail.
+            # Read positive requirements, not uv's descriptions of the unavailable versions.
             for match in re.finditer(
-                pattern
+                r"(?:depends on|requires?|requiring)\s+"
+                + pattern
                 + r"((?:[<>=!~]{1,2}[A-Za-z0-9.*+!_-]+)(?:,[<>=!~]{1,2}[A-Za-z0-9.*+!_-]+)*)",
                 error,
                 re.I,
