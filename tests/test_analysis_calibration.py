@@ -31,6 +31,12 @@ def test_history_is_idempotent_scoped_and_accepts_missing_final_metrics(tmp_path
     rows = calibration.recent(store, "project")
     assert len(rows) == 2
     original = next(r for r in rows if r["attempt"] == 0)
+    assert "category" not in original
+    saved = store.get(f"{calibration.PREFIX}project/{event}-a0.json")[0]
+    assert "category" not in json.loads(saved)
+    legacy = calibration.Row.model_validate({**original, "category": "full_ingest"})
+    assert legacy.category == "full_ingest"
+    assert calibration.Row.model_validate(original).category == "analysis"
     assert original["peak_gib"] == 63 and original["outcome"] == "oom"
     assert not original["telemetry_complete"]
     assert next(r for r in rows if r["attempt"] == 1)["peak_gib"] is None

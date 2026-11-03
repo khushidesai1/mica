@@ -32,7 +32,7 @@ images: ['${_IMAGE_URI}']
 substitutions:
   _SOURCE_COMMIT: 5d864b6cd13f1873364aa70b9ac1939f4c656616
   _IMPLEMENTATION_SHA: e86e2f2434bfa8393fc5af5f44dfb6ddb54a2abed4fe324f92f8fc81fb0708a2
-  _IMAGE_URI: us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/atomx-transfer:reviewed
+  _IMAGE_URI: us-central1-docker.pkg.dev/azizilab-aml/mica-staging/atomx-transfer:reviewed
 options:
   logging: CLOUD_LOGGING_ONLY
 timeout: 1800s

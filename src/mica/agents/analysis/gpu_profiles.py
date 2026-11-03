@@ -169,7 +169,6 @@ def launch(worker: WorkerChoice, settings: Settings) -> dict[str, object]:
         "flexible_compute": True,
         "min_gpu_memory_gib": vram,
         "provisioning": modes[primary.profile_id],
-        "category": worker.category,
         "reason": worker.reason,
         "constraints": {"min_memory_gib": ram, "provisioning": modes[primary.profile_id]},
         **({"workload": worker.workload} if worker.workload else {}),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -9,6 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 if TYPE_CHECKING:
     from .config import Settings
+    from .runtime_install import RuntimeRecord
+    from .toolkit_catalog import Environment
 
 TierName = Literal["standard", "large", "xlarge", "gpu"]
 Provisioning = Literal["SPOT", "STANDARD"]
@@ -36,7 +39,7 @@ class Sizing(Record):
 
 
 class WorkerChoice(BaseModel):
-    category: Literal["training", "full_segmentation", "full_ingest", "analysis"]
+    expected_hours: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     tier: Literal["standard", "large", "xlarge", "gpu"] = "standard"
     gpu_type: GPUType | None = None
     gpu_sizing: Sizing | None = None
@@ -230,19 +233,26 @@ def resolve(name: str, settings: Settings, gpu_type: str = "l4") -> Tier:
     return replace(tier, max_seconds=settings.max_run_seconds)
 
 
-def capabilities(settings: Settings) -> dict[str, Any]:
+def capabilities(
+    settings: Settings, runtime_records: Iterable[RuntimeRecord | Environment] = ()
+) -> dict[str, Any]:
     """Describe exactly the enabled launch catalog without probing or allocating resources."""
     from .gpu_profiles import catalog
+    from .toolkit_catalog import environment_view
+
+    runtime_records = tuple(runtime_records)
 
     gpu_shapes = (
-        [resolve("gpu", settings, s.profile_id)
-         for s in catalog() if s.gpu_type in available_gpus(settings)]
+        [
+            resolve("gpu", settings, s.profile_id)
+            for s in catalog()
+            if s.gpu_type in available_gpus(settings)
+        ]
         if settings.gpu_flexible_sizing
         else [resolve("gpu", settings, gpu) for gpu in available_gpus(settings)]
     )
     shapes = [
-        resolve(name, settings)
-        for name in ORDER[: ORDER.index(settings.max_tier) + 1]
+        resolve(name, settings) for name in ORDER[: ORDER.index(settings.max_tier) + 1]
     ] + gpu_shapes
     return {
         "workers": [
@@ -261,17 +271,35 @@ def capabilities(settings: Settings) -> dict[str, Any]:
             }
             for shape in shapes
         ],
+        "environments": {
+            "cpu": environment_view(
+                settings.model_copy(update={"gpu_worker": False}), runtime_records
+            ),
+            "gpu": environment_view(
+                settings.model_copy(update={"gpu_worker": True}), runtime_records
+            )
+            if available_gpus(settings)
+            else [],
+        },
+        "saved_environment_use": (
+            "Saved environment discovery is bounded. Restore runtime ids with ensure_packages "
+            "before run_gpu; it validates the full manifest and compatibility."
+        ),
         "gpu_approval_required": True,
         "gpu_sizing_required": settings.gpu_flexible_sizing,
         "gpu_selection": "Least estimated cost meeting assessed needs; exact GPU count",
         "t4_custom_host_limits": (
-            {"1_or_2_gpus": {"vcpus": 48, "memory_gib": 312},
-             "4_gpus": {"vcpus": 96, "memory_gib": 624}}
-            if settings.gpu_flexible_sizing and "t4" in available_gpus(settings) else None
+            {
+                "1_or_2_gpus": {"vcpus": 48, "memory_gib": 312},
+                "4_gpus": {"vcpus": 96, "memory_gib": 624},
+            }
+            if settings.gpu_flexible_sizing and "t4" in available_gpus(settings)
+            else None
         ),
         "gpu_default_seconds": min(
             settings.gpu_default_seconds, settings.gpu_max_seconds, settings.max_run_seconds
         ),
+        "on_demand_after_hours": settings.on_demand_after_hours,
         "provider_capacity_confirmed": False,
         "can_change_limits": False,
     }
@@ -279,10 +307,8 @@ def capabilities(settings: Settings) -> dict[str, Any]:
 
 def launch_choice(worker: WorkerChoice | None, settings: Settings) -> dict[str, object]:
     if worker is None:
-        return {"tier": "standard", "provisioning": "SPOT", "category": "analysis", "reason": ""}
+        return {"tier": "standard", "provisioning": "SPOT", "reason": ""}
     tier = worker.tier
-    if worker.category != "analysis" and tier == "standard" and not worker.tier_explicit:
-        tier = settings.launch_heavy_tier
     gpu_type = worker.gpu_type or settings.gpu_default_type
     if worker.gpu_type and tier != "gpu":
         raise ValueError("A GPU model requires the GPU worker tier.")
@@ -356,7 +382,6 @@ def launch_choice(worker: WorkerChoice | None, settings: Settings) -> dict[str, 
             "flexible_compute": True,
             "min_gpu_memory_gib": worker.min_gpu_memory_gib,
             "provisioning": mode,
-            "category": worker.category,
             "reason": worker.reason,
             "constraints": {**constraints, "provisioning": mode},
             **({"workload": worker.workload} if worker.workload else {}),
@@ -384,11 +409,14 @@ def launch_choice(worker: WorkerChoice | None, settings: Settings) -> dict[str, 
         constraints["max_tier"] = tier
     if worker.on_demand is not None:
         constraints["provisioning"] = "STANDARD" if worker.on_demand else "SPOT"
-    on_demand = worker.on_demand if worker.on_demand is not None else worker.category != "analysis"
+    on_demand = (
+        worker.on_demand
+        if worker.on_demand is not None
+        else (worker.expected_hours or 0) >= settings.on_demand_after_hours
+    )
     return {
         "tier": tier,
         "provisioning": "STANDARD" if on_demand else "SPOT",
-        "category": worker.category,
         "reason": worker.reason,
         **({"constraints": constraints} if constraints else {}),
         **({"workload": worker.workload} if worker.workload else {}),

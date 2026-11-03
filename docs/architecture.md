@@ -149,6 +149,19 @@ Pending requests from the retired router restart in the conversation loop withou
 legacy decisions. Already running workers retain their saved launch and recovery state.
 An active predecessor triggers one control check for cancellation, write revocation and
 amendment eligibility; queued commands retain their normal authorization and approval flow.
+
+Worker sizing uses assessed resource needs and expected duration. CPU jobs estimated at two
+hours or more use on-demand capacity unless the requester chose Spot; the operator can change
+that threshold. Old workload categories remain readable but no longer select resources.
+GPU shapes, approval, placement and hardware guarantees retain the same catalog and checks.
+On an approved GPU worker, `run_gpu` executes a workspace Python script using a named environment
+from the shared toolkit registry. The sandbox exposes allocated GPU devices, clears credentials,
+blocks networking and keeps project data and `inputs/` read-only. Successful output folders save
+as durable checkpoints. Device observations are reported explicitly; method provenance must still
+confirm actual GPU use. The conversation catalog and worker guidance share the same environment
+list, including validated saved runtimes. Cellpose is a bundled skill and versioned environment;
+its CPU path uses Bash and its GPU path uses the general tool.
+
 Direct answers and worker answers use the same Markdown-to-Slack conversion, preserving code
 and formatting headings, bold text and links. Saved conversation text and email stay unchanged.
 Slack approvals use the green primary action style. Progress keeps one compact expandable

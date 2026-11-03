@@ -16,6 +16,7 @@ RUN if [ "$INSTALL_BOT_DEPENDENCIES" = "1" ]; then \
 RUN if [ "$INSTALL_BOT_DEPENDENCIES" = "1" ]; then \
       pip install --no-cache-dir --no-deps -r /tmp/mica-requirements-bot.txt; \
     fi && \
+    rm -f /opt/pistachio/tools/cellpose_segment.py && \
     rm -rf /usr/local/lib/python3.12/site-packages/mica /app/src/mica /opt/pistachio/src/mica \
            /usr/local/lib/python3.12/site-packages/pistachio /app/src/pistachio /opt/pistachio/src/pistachio
 COPY src/mica /usr/local/lib/python3.12/site-packages/mica

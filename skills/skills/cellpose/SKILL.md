@@ -3,27 +3,46 @@ name: cellpose
 description: Use Cellpose or Cellpose-SAM segmentation, version/model selection, tiling, checkpoints and GPU provenance.
 ---
 
+Use the named environments in the toolkit: `cellpose-3.1.1.3` for `cyto3`, or
+`cellpose-4.2.1.1` for `cpsam` and `cpsam_v2`. Honor an explicit version/model; default to
+`cpsam` for an unspecified Cellpose-SAM model. These are isolated environments, so selecting
+one does not upgrade or downgrade SAP. Do not install, replace or download Cellpose or weights.
 
+The bundled `scripts/segment.py` accepts `--request '<JSON>'` and writes `masks.tif` plus
+`provenance.json`. Copy it to `code/segment.py` before execution. Required request keys are
+`input_path`, `output_dir`, `version` and `model`. Set `device` explicitly to `cpu` or `gpu`.
+For multichannel data, specify `channel_axis` and zero-based `channels` (cytoplasm then nucleus
+for version 3). Other keys include `diameter`, `batch_size`, `flow_threshold`,
+`cellprob_threshold` and `min_size`; record the exact parameters in the delivered methods.
 
-Cellpose tools:
-- Call cellpose_versions to inspect installed versions. Use cellpose_segment with an explicit
-  version and model: 3.1.1.3/cyto3, or 4.2.1.1/cpsam or cpsam_v2. Honor a requested version/model;
-  never substitute another. Use cpsam for an unspecified Cellpose-SAM model. The versions are
-  isolated; selecting one does not upgrade/downgrade the existing SAP environment.
-- The tool segments one 2D TIFF or NumPy crop and returns masks.tif and provenance.json in a new
-  outputs/ folder. Select channel_axis and zero-based channels explicitly for multichannel data.
-  Prepare/crop/tile larger images with ordinary analysis tools. Preserve coordinates when
-  combining masks. Record the version, model and parameters in the methods and delivered result.
-- On a compute worker each completed Cellpose result is saved durably before the tool returns.
-  Keep a tile manifest with coordinates and parameters in code/ or notes/. Use saved_checkpoints
-  to discover and restore completed tiles in this project/thread before recomputing. Compare
-  the saved input hash, version/model and parameters to the current request. A save error means
-  inference already finished: retry checkpoint_stage on that output folder, not segmentation.
-- Estimates are guidance. Long and uncertain processes are supported within the approved total
-  allowance; inspect compute_allowance during long work. Save completed stages for other tools
-  with checkpoint_stage. If the allowance is insufficient, preserve progress and ask for an
-  additional allowance. Never lower resolution, omit tiles or change models just to fit a timer.
-- GPU access is supplied only to this segmentation tool on an approved GPU worker. General Bash
-  runs remain CPU sandboxed. Never report GPU use unless the tool provenance says gpu. CPU SAM
-  is slower; use bounded crops. Do not install, replace or download Cellpose or model weights.
+Use one 2D TIFF or NumPy crop per call, at most 512 MiB and 64 million values. Prepare and tile
+larger images with ordinary analysis scripts, preserve coordinates, and keep a tile manifest in
+`code/` or `notes/`. Always choose a new `outputs/` folder so prior results remain available.
 
+For bounded CPU crops, run the copied script in Bash with the interpreter listed for the
+selected environment. For example, the SAM interpreter is `/opt/cellpose/4.2.1.1/bin/python`:
+
+```bash
+/opt/cellpose/4.2.1.1/bin/python code/segment.py --request '{"input_path":"crop.tif","output_dir":"outputs/crop-cpu","version":"4.2.1.1","model":"cpsam","device":"cpu"}'
+```
+
+For substantial CUDA segmentation, request a suitably assessed GPU worker. Bash remains
+CPU-only even on that worker. Call `run_gpu` with the selected environment id, `script` set to
+`code/segment.py`, and `arguments` containing `--request` plus the JSON string. Set both the
+request's `output_dir` and the tool's `output_dir` to the same new folder, and set the request's
+`device` to `gpu`. Include input versions, tiling coordinates and parameters in the tool's
+`input_fingerprint`. Version 4 uses the `cellpose-4.2.1.1` environment.
+
+Never report GPU use unless `provenance.json` says `device: gpu` and `model_device: cuda`.
+The provenance also records the actual device name, model precision, input hash, version,
+model and parameters. Available hardware alone does not prove GPU execution.
+
+Successful `run_gpu` results save durably before the tool returns. If the save fails, inference
+has already finished: preserve the folder and retry `checkpoint_stage`, not segmentation.
+For CPU scripts, save completed expensive stages with `checkpoint_stage` explicitly. Use
+`saved_checkpoints` to discover and restore completed tiles; compare input hashes, model,
+version and parameters before reuse. Scratch and running processes do not survive a restart.
+
+Estimates are advisory. Long healthy processes can continue within the approved allowance;
+check `compute_allowance` during long work. Save progress and request additional allowance if
+needed. Never lower resolution, omit tiles, or change models to fit a timer.

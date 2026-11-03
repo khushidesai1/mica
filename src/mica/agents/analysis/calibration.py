@@ -21,7 +21,7 @@ class Row(Record):
     event_id: str
     attempt: int = Field(ge=0, le=2)
     project_id: str
-    category: Literal["analysis", "training", "full_segmentation", "full_ingest"]
+    category: Literal["analysis", "training", "full_segmentation", "full_ingest"] = "analysis"
     tier: TierName
     provisioning: Provisioning
     outcome: Literal["complete", "failed", "oom", "preempted", "resized", "cancelled", "stopped"]
@@ -45,7 +45,6 @@ def capture(storage: Storage, event_id: str, record: dict[str, Any], outcome: st
         event_id=event_id,
         attempt=attempt,
         project_id=record["project_id"],
-        category=record.get("launch_category", "analysis"),
         tier=record["tier"],
         provisioning=record.get("provisioning", "SPOT"),
         outcome=outcome,
@@ -65,7 +64,7 @@ def capture(storage: Storage, event_id: str, record: dict[str, Any], outcome: st
     with suppress(Conflict):
         storage.put_if(
             f"{PREFIX}{record['project_id']}/{event_id}-a{attempt}.json",
-            row.model_dump_json().encode(),
+            row.model_dump_json(exclude={"category"}).encode(),
             None,
         )
 
@@ -86,7 +85,7 @@ def recent(storage: Storage, project_id: str, limit: int = 20) -> list[dict[str,
     except Exception:
         logging.getLogger(__name__).warning("Worker history unavailable; continuing without it.")
     return [
-        r.model_dump()
+        r.model_dump(exclude={"category"})
         for r in sorted(rows, key=lambda r: (r.started, r.event_id, r.attempt), reverse=True)[
             : max(0, min(limit, 20))
         ]

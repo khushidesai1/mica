@@ -208,6 +208,8 @@ class RuntimeStore:
             return record
 
     def update_index(self, record: RuntimeRecord) -> None:
+        from .toolkit_catalog import environment_descriptor
+
         key = f"{PREFIX}/index.json"
         for _ in range(10):
             try:
@@ -221,6 +223,7 @@ class RuntimeStore:
                 "request": record.request,
                 "created_at": record.created_at,
                 "size_bytes": record.size_bytes,
+                "environment": environment_descriptor(record),
             }
             try:
                 self.storage.put_if(key, json.dumps(index, sort_keys=True).encode(), generation)

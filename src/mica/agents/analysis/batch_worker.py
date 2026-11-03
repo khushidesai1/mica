@@ -310,20 +310,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
 
         async def save_result(result: dict[str, Any]) -> dict[str, Any]:
             assert stages is not None
-            fingerprint = json.dumps(
-                {
-                    key: result.get(key)
-                    for key in (
-                        "input_sha256",
-                        "version",
-                        "model",
-                        "model_sha256",
-                        "model_precision",
-                        "parameters",
-                    )
-                },
-                sort_keys=True,
-            )
+            fingerprint = result["fingerprint"]
             value = await asyncio.to_thread(
                 stages.capture_result, result["output_dir"], fingerprint
             )

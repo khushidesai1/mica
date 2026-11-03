@@ -14,7 +14,7 @@ steps:
 images: ['${_SLACK_IMAGE}']
 substitutions:
   _SCIENCE_IMAGE: REPLACE_WITH_EXISTING_PINNED_SCIENCE_IMAGE
-  _SLACK_IMAGE: us-central1-docker.pkg.dev/azizilab-aml/pistachio-staging/slack-agent:claude
+  _SLACK_IMAGE: us-central1-docker.pkg.dev/azizilab-aml/mica-staging/slack-agent:claude
 options:
   logging: CLOUD_LOGGING_ONLY
 timeout: 1800s

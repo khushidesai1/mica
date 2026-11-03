@@ -3,6 +3,7 @@
 ARG SLACK_AGENT_IMAGE
 FROM ${SLACK_AGENT_IMAGE} AS cpu
 USER root
+COPY skills/skills/cellpose /opt/pistachio/plugin/skills/cellpose
 COPY deploy/cellpose-models.json /opt/cellpose/manifest.json
 COPY cellpose-assets /opt/cellpose/models
 COPY docker/requirements-cellpose-sam-cpu.txt /opt/cellpose/requirements-cpu.txt
@@ -10,7 +11,6 @@ RUN python -m venv /opt/cellpose/4.2.1.1 && \
     uv pip install --python /opt/cellpose/4.2.1.1/bin/python --torch-backend cpu --require-hashes --only-binary :all: --no-cache \
       -r /opt/cellpose/requirements-cpu.txt && \
     uv pip check --python /opt/cellpose/4.2.1.1/bin/python
-COPY tools/cellpose_segment.py /opt/pistachio/tools/cellpose_segment.py
 USER 65532:65532
 
 FROM cpu AS gpu

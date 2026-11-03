@@ -28,10 +28,10 @@ def test_bash_status_hides_commands_and_limits_descriptions():
     assert describe_tool(block) == "x" * 80
     crop = ToolUseBlock(
         id="tile",
-        name="mcp__pistachio__cellpose_segment",
-        input={"version": "4.2.1.1", "input_path": "scratch/tiles/tile_02.npy"},
+        name="mcp__pistachio__run_gpu",
+        input={"environment": "cellpose-4.2.1.1", "script": "code/segment.py"},
     )
-    assert describe_tool(crop) == "Segmenting cells with Cellpose-SAM: tile_02.npy"
+    assert describe_tool(crop) == "Running GPU script: segment.py"
 
 
 def result(**kwargs):

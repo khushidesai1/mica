@@ -5,7 +5,7 @@ import pytest
 from test_analysis_batch import bridge  # noqa: F401
 from test_gpu_compute import approved, click, gpu, start  # noqa: F401
 
-from mica.agents.analysis import cellpose_tools, compute_approval, recovery, tiers
+from mica.agents.analysis import compute_approval, gpu_tools, recovery, tiers
 from mica.agents.analysis.checkpoints import Stages, cleanup_temporary
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.storage import LocalStorage
@@ -126,19 +126,18 @@ def test_durable_masks_survive_terminal_cleanup_and_new_request(tmp_path):
             foreign.restore_saved(saved["checkpoint_id"])
 
 
-async def test_cellpose_saves_before_success_and_never_repeats_inference_on_save_failure(
+async def test_gpu_saves_before_success_and_never_repeats_computation_on_save_failure(
     tmp_path, monkeypatch
 ):
-    result = {"version": "4.2.1.1", "model": "cpsam", "output_dir": "outputs/tile"}
+    result = {"exit_status": 0, "timed_out": False, "output_dir": "outputs/tile"}
     segment = AsyncMock(return_value=result)
-    monkeypatch.setattr(cellpose_tools, "segment", segment)
+    monkeypatch.setattr(gpu_tools, "execute", segment)
     save = AsyncMock(return_value={"checkpoint_id": "a" * 32, "durable": True})
-    tool = cellpose_tools.tools(tmp_path, tmp_path, Settings(_env_file=None), save)[1]
+    tool = gpu_tools.tools(tmp_path, tmp_path, Settings(_env_file=None, gpu_worker=True), save)[0]
     args = {
-        "input_path": "tile.npy",
+        "script": "code/segment.py",
         "output_dir": "outputs/tile",
-        "version": "4.2.1.1",
-        "model": "cpsam",
+        "environment": "cellpose-4.2.1.1",
     }
     reply = await tool.handler(args)
     assert json.loads(reply["content"][0]["text"])["checkpoint"]["durable"]

@@ -123,10 +123,28 @@ The model cannot edit this catalog, cloud permissions, quotas or deployment ceil
 Existing requests without flexible profiles keep their original machine definitions and estimates;
 image/configuration changes still require fresh confirmation under the existing approval rules.
 
+CPU requests specify an advisory `expected_hours` alongside their memory and tier requirements.
+`AGENT_ON_DEMAND_AFTER_HOURS` defaults to 2; CPU requests at or above that estimate use on-demand
+unless Spot was explicitly requested. Retired workload categories do not size workers. Remove
+the obsolete `AGENT_LAUNCH_HEAVY_TIER` setting when updating operator configuration.
+
+GPU execution uses `run_gpu` with a named environment from `toolkit_catalog.py`. Bash remains
+CPU-only. Image environments and validated saved package runtimes share this registry with
+the conversation's compute catalog; saved runtimes must be restored with `ensure_packages`
+before use. Scripts run offline and unprivileged, with only workspace writes, read-only inputs
+and project data, and all allocated NVIDIA devices. Output folders save durably before success.
+`MCP_TOOL_TIMEOUT` covers the run allowance and package-setup timeout; it does not extend the
+approved worker deadline. Cellpose's adapter is bundled at
+`/opt/pistachio/plugin/skills/cellpose/scripts/segment.py`, using the existing pinned environments
+and model weights.
+
 For a new GPU architecture, use `scripts/check_gpu_hardware.py` for bounded CUDA arithmetic in
-the actual fixed-tool sandbox, including device and credential isolation. It performs no model
+the actual general-tool sandbox, including device and credential isolation. It performs no model
 inference or scientific workflow and uses no project mounts. Reuse prior T4/L4 inference evidence
 when scientific dependencies are unchanged, and record unobserved hardware separately.
+When the GPU tool or adapter changes, `scripts/check_cellpose_gpu.py` verifies one synthetic crop,
+actual CUDA provenance and a durable-save round trip. The separate offline CPU gate executes the
+skill script directly. These checks use temporary local data and never scientific project data.
 
 Run live Slack smoke checks only in the owner's private DM, never in shared project channels.
 Simulate malformed model output, outages, and retry timing locally with fakes; do not inject

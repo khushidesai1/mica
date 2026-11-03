@@ -20,6 +20,7 @@ from . import (
     reference_repos,
     surface,
     tiers,
+    toolkit_catalog,
 )
 from .direct import (
     ROUTING_SECONDS,
@@ -119,7 +120,7 @@ class Constraints(Input):
 
 class Worker(Input):
     task: str = Field(min_length=5, max_length=16000)
-    category: Literal["training", "full_segmentation", "full_ingest", "analysis"]
+    expected_hours: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     tier: Literal["standard", "large", "xlarge", "gpu"] = "standard"
     gpu_type: tiers.GPUType | None = None
     constraints: Constraints | None = None
@@ -180,25 +181,23 @@ DESCRIPTIONS = {
         " not in start_worker."
     ),
     ("start_worker"): (
-        "Start computation or run code only when needed: analyses, large/binary"
-        " file processing, generated downloadable reports/plots, or executing a"
-        " package. task describes the authorized work, not a success claim. Use"
-        " analysis/standard for ordinary tasks; training, full_segmentation and"
-        " full_ingest identify heavier work. CPU tiers are standard, large, "
-        "xlarge; GPU choices come from compute_capabilities and require approval. "
-        "Prefer GPU for substantial Cellpose-SAM segmentation; bounded crops "
-        "can use CPU. Repository reading alone needs read_sources. "
-        "reference_repos selects available source snapshots. write_paths names "
-        "explicit requested GCS destinations; output grants and overwrite "
-        "approval are enforced separately. constraints records assessed GPU sizing and "
-        "user limits: tier_explicit, max_tier, allow_resize, "
-        "on_demand, allow_gpu_fallback, min_memory_gib (host RAM), "
-        "min_gpu_memory_gib (VRAM/device), gpu_sizing, gpu_hours, "
-        "compute_budget_usd. CPU constraints can be null. Runtime estimates"
-        " are advisory; long tasks may checkpoint and continue. Never shrink "
-        "scientific scope merely because it is long. Never invent consent, "
-        "budgets, write access or required hardware; GPU requests still require"
-        " confirmation."
+        "Run code for analyses, large/binary files, downloadable reports/plots or "
+        "package execution. task states the authorized work. Size CPU tiers "
+        "(standard, large, xlarge) from assessed min_memory_gib, data size and "
+        "calibration history. expected_hours is advisory; long CPU jobs use "
+        "on-demand unless Spot was requested. GPU choices come from "
+        "compute_capabilities and require approval. Request a GPU when the work "
+        "runs a CUDA model (deep-learning segmentation, scVI-family models, "
+        "training) at a scale where CPU would take hours. Bounded crops, statistics "
+        "and plotting stay on CPU. Repository reading uses read_sources. "
+        "reference_repos selects source snapshots. write_paths names explicit GCS "
+        "destinations; grants and overwrite approvals are separate. constraints "
+        "records assessed sizing and user limits: tier_explicit, max_tier, "
+        "allow_resize, on_demand, allow_gpu_fallback, min_memory_gib (host RAM), "
+        "min_gpu_memory_gib (VRAM/device), gpu_sizing, gpu_hours, compute_budget_usd. "
+        "Long tasks may checkpoint and continue; never shrink scientific scope "
+        "merely because it is long. Never invent consent, budgets, write access "
+        "or hardware requirements."
     ),
     ("propose_transfer"): (
         "Request an AtoMx sample transfer through the managed transfer service."
@@ -404,7 +403,10 @@ async def run(
     remaining = min(float(record.get("routing_budget", ROUTING_SECONDS)), ROUTING_SECONDS)
     deadline = started + remaining
     data = {**context, **await pending_context(bridge, record, grant)}
-    data["compute_capabilities"] = tiers.capabilities(bridge.settings)
+    runtime_records = await asyncio.to_thread(
+        toolkit_catalog.saved_runtimes, storage, bridge.settings
+    )
+    data["compute_capabilities"] = tiers.capabilities(bridge.settings, runtime_records)
     data["project_access"] = {
         "allowed": grant.allowed,
         "has_accessible_projects": bool(grant.doc.visible(grant.email)),
@@ -628,7 +630,7 @@ async def run(
                         if surface.is_email(record) and value.write_paths:
                             raise ValueError(surface.EMAIL_READ_ONLY)
                         worker = WorkerChoice(
-                            category=value.category,
+                            expected_hours=value.expected_hours,
                             tier=value.tier,
                             gpu_type=value.gpu_type,
                             workload=value.task[:200],

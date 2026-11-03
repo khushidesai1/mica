@@ -22,6 +22,6 @@ timeout: 1800s
 options:
   logging: CLOUD_LOGGING_ONLY
 substitutions:
-  _API_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/api@sha256:REPLACE
-  _SCIENCE_BASE_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/science@sha256:REPLACE
-  _SCIENCE_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/science:worker-refresh
+  _API_IMAGE: us-central1-docker.pkg.dev/example/mica-staging/api@sha256:REPLACE
+  _SCIENCE_BASE_IMAGE: us-central1-docker.pkg.dev/example/mica-staging/science@sha256:REPLACE
+  _SCIENCE_IMAGE: us-central1-docker.pkg.dev/example/mica-staging/science:worker-refresh

@@ -646,12 +646,6 @@ async def handle(
             ),
             "transfer_tool": await transfer_service.context(grant.project_id, grant.email),
             "analysis_tools": [spatial_analysis_capability()],
-            "cellpose_tools": {
-                "versions": ["3.1.1.3", "4.2.1.1"],
-                "sam_models": ["cpsam", "cpsam_v2"],
-                "tool": "cellpose_segment",
-                "input": "one 2D image crop; tile large images",
-            },
             "gpu_available": bool(tiers.available_gpus(bridge.settings)),
             "gpu_types": tiers.available_gpus(bridge.settings),
             "compute_capabilities": tiers.capabilities(bridge.settings),

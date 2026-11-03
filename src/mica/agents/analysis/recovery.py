@@ -59,7 +59,6 @@ def initialize(record: dict[str, Any], settings: Settings, *, now: float) -> Non
         tier=choice.get("tier", "standard"),
         provisioning=choice.get("provisioning", "SPOT"),
         launch_reason=choice.get("reason", ""),
-        launch_category=choice.get("category", "analysis"),
         constraints=choice.get("constraints", {}),
         request_deadline=record.get("gpu_approved_at", now)
         + (

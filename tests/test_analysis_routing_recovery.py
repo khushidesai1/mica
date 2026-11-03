@@ -25,7 +25,7 @@ def test_short_reason_is_display_metadata(reason):
         {"category": "analysis", "reason": None},
         {"category": "analysis", "reason": 100},
         {"category": "analysis", "reason": "Normal", "workload": []},
-        {"category": "unknown", "reason": "Normal"},
+        {"expected_hours": float("nan"), "reason": "Normal"},
         {"category": "analysis", "tier": "arbitrary", "reason": "Normal"},
     ],
 )

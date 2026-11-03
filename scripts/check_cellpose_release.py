@@ -43,7 +43,7 @@ def main():
                 [
                     sys.executable,
                     "-I",
-                    "/opt/pistachio/tools/cellpose_segment.py",
+                    "/opt/pistachio/plugin/skills/cellpose/scripts/segment.py",
                     "--request",
                     json.dumps(request),
                 ],

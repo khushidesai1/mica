@@ -157,7 +157,7 @@ async def test_inventory_then_compute_in_one_request(chat, monkeypatch):
     )
     client = Client(
         tool("list_folders", paths=[]),
-        tool("start_worker", category="full_ingest", tier="large", task="Full sample ingest"),
+        tool("start_worker", expected_hours=3, tier="large", task="Full sample ingest"),
     )
     monkeypatch.setattr(conversation, "run", CONVERSATION_RUN)
     monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: client)

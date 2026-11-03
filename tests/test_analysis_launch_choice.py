@@ -17,24 +17,43 @@ from mica.agents.analysis.tiers import WorkerUnavailable, capabilities, launch_c
 
 
 @pytest.mark.parametrize(
-    "category,tier,instruction,wanted,mode",
+    "hours,tier,instruction,wanted,mode",
     [
-        ("analysis", "standard", None, "standard", "SPOT"),
-        ("analysis", "large", None, "large", "SPOT"),
-        ("analysis", "xlarge", True, "xlarge", "STANDARD"),
-        ("training", "standard", None, "large", "STANDARD"),
-        ("full_segmentation", "large", False, "large", "SPOT"),
-        ("full_ingest", "xlarge", None, "xlarge", "STANDARD"),
+        (None, "standard", None, "standard", "SPOT"),
+        (1.5, "large", None, "large", "SPOT"),
+        (0.5, "xlarge", True, "xlarge", "STANDARD"),
+        (2, "standard", None, "standard", "STANDARD"),
+        (8, "large", False, "large", "SPOT"),
+        (4, "xlarge", None, "xlarge", "STANDARD"),
     ],
 )
-def test_launch_table(category, tier, instruction, wanted, mode):
+def test_launch_table(hours, tier, instruction, wanted, mode):
     choice = launch_choice(
         tiers.WorkerChoice(
-            category=category, tier=tier, on_demand=instruction, reason="Measured input requirement"
+            expected_hours=hours, tier=tier, on_demand=instruction,
+            reason="Measured input requirement"
         ),
         Settings(_env_file=None),
     )
     assert (choice["tier"], choice["provisioning"]) == (wanted, mode)
+    assert "category" not in choice
+
+
+def test_duration_threshold_is_configured_and_old_categories_never_size_workers():
+    legacy = tiers.WorkerChoice.model_validate(
+        {"category": "training", "reason": "Historical training record"}
+    )
+    assert "category" not in legacy.model_dump()
+    assert launch_choice(legacy, Settings(_env_file=None))["tier"] == "standard"
+    settings = Settings(_env_file=None, on_demand_after_hours=4)
+    worker = legacy.model_copy(update={"expected_hours": 3})
+    assert launch_choice(worker, settings)["provisioning"] == "SPOT"
+    settings.on_demand_after_hours = 3
+    assert launch_choice(worker, settings)["provisioning"] == "STANDARD"
+    # A long estimate chooses provisioning, not a new execution ceiling.
+    long = tiers.WorkerChoice(expected_hours=720, reason="Measured month-long workload")
+    assert launch_choice(long, settings)["provisioning"] == "STANDARD"
+    assert tiers.resolve("standard", settings).max_seconds == settings.max_run_seconds
 
 
 def test_cannot_silently_clamp_and_explicit_small_initial_tier():
@@ -108,7 +127,9 @@ async def running_heavy(chat):
     chat.decision.return_value = conversation.Decision(
         route="compute",
         reply="Training.",
-        worker=tiers.WorkerChoice(category="training", reason="Train Amici on a full sample."),
+        worker=tiers.WorkerChoice(
+            expected_hours=3, tier="large", reason="Train Amici on a full sample."
+        ),
     )
     event = await chat.accept(payload(text="Train Amici"))
     assert await chat.process(event, 0) == "running"
@@ -183,7 +204,7 @@ async def test_heavy_runs_launch_without_shared_cap(chat, monkeypatch, tier):
     chat.decision.return_value = conversation.Decision(
         route="compute",
         reply="Training.",
-        worker=tiers.WorkerChoice(category="training", tier=tier, reason="Full sample training"),
+        worker=tiers.WorkerChoice(expected_hours=3, tier=tier, reason="Full sample training"),
     )
     events = []
     for i in range(24):
