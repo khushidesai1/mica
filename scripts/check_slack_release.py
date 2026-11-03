@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import httpx
@@ -24,6 +25,7 @@ from mica.agents.analysis import (
     memory_archive,
     memory_workspace,
     project_memory,
+    prompts,
     reference_repos,
     write_access,
 )
@@ -180,7 +182,9 @@ def check(source: Path, mode: str) -> None:
         memory_workspace.materialize(work / "memory-work", snapshot, settings)
         assert memory_workspace.proposal(work / "memory-work", snapshot, settings).changes == {}
         assert "viridis" in project_memory.context(snapshot, "heatmaps", settings)
-        assert project_memory.GUIDE_POLICY in direct.SYSTEM
+        assert project_memory.GUIDE_POLICY in prompts.build_system_append(
+            SimpleNamespace(survey_only=True), settings
+        )
         for removed in (
             "user_memory",
             "conversation_memory",

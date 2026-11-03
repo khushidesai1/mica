@@ -186,7 +186,8 @@ def rsync_mtime_matches(source: dict[str, Any], destination: dict[str, Any]) -> 
 
 def verify(
     source: str, destination: str, before_path: Path, after_path: Path,
-    destination_path: Path, output: Path,
+    destination_path: Path, output: Path, *, retained_path: Path | None = None,
+    historical_paths: list[Path] | None = None,
 ) -> dict[str, Any]:
     buckets(source, destination)
     inputs = [read_evidence(path) for path in [before_path, after_path, destination_path]]
@@ -197,13 +198,26 @@ def verify(
         inventory_records(header, rows, bucket)
         for (header, rows), bucket in zip(inputs, [source, source, destination], strict=True)
     ]
+    retained = retained_copies(
+        retained_path, historical_paths or [], source, destination, str(next(iter(numbers)))
+    )
     problems: Counter[str] = Counter()
     records = []
-    for name in sorted(set(before) | set(after) | set(copied)):
+    retained_count = 0
+    for name in sorted(set(before) | set(after) | set(copied) | set(retained)):
         a, b, c = before.get(name), after.get(name), copied.get(name)
         if a != b:
             problems["source_changed"] += 1
             continue
+        if name in retained:
+            original, reviewed_copy = retained[name]
+            if b is not None:
+                problems["retained_source_present"] += 1
+                continue
+            if c != reviewed_copy:
+                problems["retained_copy_changed_or_missing"] += 1
+                continue
+            b = original
         if b is None:
             problems["destination_extra"] += 1
             continue
@@ -225,14 +239,76 @@ def verify(
             "source_metageneration": b["metageneration"],
             "destination_metageneration": c["metageneration"],
         })
+        if name in retained:
+            retained_count += 1
+            records[-1]["retained"] = True
     result = {
         "verified": not problems, "matched": len(records), "issues": dict(problems),
         "source_objects": len(after), "destination_objects": len(copied),
     }
+    if retained_path is not None:
+        result["retained_objects"] = retained_count
     write_evidence(output, {
         "type": "copy-verification", "project": PROJECT, "source": source,
         "destination": destination, "at": datetime.now(UTC).isoformat(), **result,
     }, records)
+    return result
+
+
+def retained_copies(
+    manifest: Path | None, historical_paths: list[Path], source: str,
+    destination: str, project_number: str,
+) -> dict[str, tuple[dict[str, Any], dict[str, Any]]]:
+    """Verify an exact retention list against prior complete source inventories.
+
+    This preserves previously copied historical task data after source lifecycle
+    expiry. It cannot authorize new extras or changes to the reviewed destination
+    generation, and cannot retain mutable project/control-plane records.
+    """
+    if manifest is None:
+        if historical_paths:
+            raise ValueError("Historical inventories require a reviewed retention manifest")
+        return {}
+    header, rows = read_evidence(manifest)
+    if (
+        header.get("type") != "retained-copies" or header.get("project") != PROJECT
+        or header.get("project_number") != project_number or header.get("source") != source
+        or header.get("destination") != destination or not historical_paths or not rows
+    ):
+        raise ValueError("Retention manifest scope/evidence is incomplete")
+    historical: dict[tuple[str, str], dict[str, Any]] = {}
+    for path in historical_paths:
+        old_header, old_rows = read_evidence(path)
+        if old_header.get("project_number") != project_number:
+            raise ValueError("Historical inventory project number differs")
+        for name, record in inventory_records(old_header, old_rows, source).items():
+            key = (name, record["generation"])
+            if key in historical and historical[key] != record:
+                raise ValueError("Historical generation evidence conflicts")
+            historical[key] = record
+    result = {}
+    for row in rows:
+        name = row.get("name", "")
+        if (
+            row.get("kind") != "retained" or name in result
+            or not name.startswith(("tasks/", "paused/", "inputs/"))
+            or any(part in {"", ".", ".."} for part in name.split("/"))
+        ):
+            raise ValueError("Retain only explicitly reviewed historical task objects")
+        original = historical.get((name, row.get("source_generation", "")))
+        copied = row.get("destination_record")
+        if original is None or not isinstance(copied, dict):
+            raise ValueError("Retained copy lacks historical source evidence")
+        if (
+            copied.get("kind") != "object" or copied.get("name") != name
+            or not str(copied.get("generation", "")).isdigit()
+            or not str(copied.get("metageneration", "")).isdigit()
+            or any(original.get(key) != copied.get(key)
+                   for key in ("size", "crc32c", "md5", "metadata_hash"))
+            or not rsync_mtime_matches(original, copied)
+        ):
+            raise ValueError("Retained content or metadata differs from historical source")
+        result[name] = (original, copied)
     return result
 
 
@@ -300,6 +376,8 @@ def main() -> int:
     check.add_argument("--source-after", type=Path, required=True)
     check.add_argument("--destination-inventory", type=Path, required=True)
     check.add_argument("--output", type=Path, required=True)
+    check.add_argument("--retained-copies", type=Path)
+    check.add_argument("--historical-source-inventory", type=Path, action="append", default=[])
     proposal = commands.add_parser("snapshot-proposals")
     proposal.add_argument("--mapping", type=Path, required=True)
     proposal.add_argument("--snapshots", type=Path, required=True)
@@ -328,6 +406,8 @@ def main() -> int:
             result = verify(
                 args.source, args.destination, args.source_before, args.source_after,
                 args.destination_inventory, args.output,
+                retained_path=args.retained_copies,
+                historical_paths=args.historical_source_inventory,
             )
         else:
             result = snapshot_proposals(args.mapping, args.snapshots, args.output)
