@@ -10,9 +10,9 @@ from pathlib import Path
 from mica.agents.analysis import recovery, tiers
 from mica.agents.analysis.checkpoints import Stages
 from mica.agents.analysis.config import Settings
-from mica.agents.analysis.direct import WorkerChoice
 from mica.agents.analysis.resources import Sampler
 from mica.agents.analysis.storage import LocalStorage
+from mica.agents.analysis.tiers import WorkerChoice
 
 with tempfile.TemporaryDirectory(prefix="compute-image-check-") as temp:
     work = Path(temp)
@@ -58,7 +58,8 @@ with tempfile.TemporaryDirectory(prefix="compute-image-check-") as temp:
     default = tiers.launch_choice(None, settings)
     assert default["tier"] == "standard" and default["provisioning"] == "SPOT"
     heavy = tiers.launch_choice(
-        WorkerChoice(category="full_ingest", reason="Full data ingest"), settings
+        WorkerChoice(expected_hours=3, tier="large", min_memory_gib=128, reason="Full data ingest"),
+        settings,
     )
     assert heavy["tier"] == "large" and heavy["provisioning"] == "STANDARD"
     record = {"launch": default}
