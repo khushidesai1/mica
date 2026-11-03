@@ -229,6 +229,21 @@ without accepting arbitrary metadata changes. The separate Storage Transfer Serv
 generations always come from the API, never this marker. Recapture inventories created by an older
 tool version if source objects already had the modification-time field. A successful bulk-copy
 check while the old stack is live still requires a final frozen sync before cutover.
+
+If source lifecycle expiry has removed historical task data that an earlier migration already
+copied, preserve those copies explicitly. Do not delete the last surviving checkpoint merely
+to make a mirror comparison pass. `verify --retained-copies <manifest.jsonl>` additionally
+requires one or more `--historical-source-inventory <complete-inventory.jsonl>` arguments.
+The integrity-checked manifest has type `retained-copies`, the same project/project number,
+source and destination, and exact rows containing `kind: retained`, `name`,
+`source_generation`, and the reviewed full `destination_record` from a destination inventory.
+Only historical `tasks/`, `paused/`, and `inputs/` objects are eligible. Every retained object
+must match a prior source generation's checksums and metadata, be absent from both current
+source inventories, and retain its exact reviewed destination generation and metadata.
+Unlisted extras, missing retained copies, changed source objects, and mutable project records
+still fail verification. The resulting mapping distinguishes retained objects and supports
+generation-correct snapshot proposals. This option authorizes no deletion or record mutation.
+
 Use `snapshot-proposals --help` for dry-run persisted-reference patches, and review those
 proposals separately. Neither helper creates resources, transfers object bodies, nor changes
 live records. A checked-in migration tool or successful offline plan does not mean any cloud
