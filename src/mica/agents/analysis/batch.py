@@ -160,6 +160,8 @@ def job_spec(
                 "AGENT_RUNTIME_TIMEOUT_SECONDS": str(settings.runtime_timeout_seconds),
                 "AGENT_RUNTIME_MAX_LOCAL_GB": str(settings.runtime_max_local_gb),
                 "AGENT_RUNTIME_DENYLIST": settings.runtime_denylist,
+                "AGENT_RUNTIME_MAX_SOURCE_BUILDS": str(settings.runtime_max_source_builds),
+                "AGENT_RUNTIME_FAILURE_TTL_HOURS": str(settings.runtime_failure_ttl_hours),
             }
         )
     runnable = batch_v1.Runnable(
@@ -480,6 +482,7 @@ class BatchBridge:
                     record.get("stop_reason") or record.get("cancel_requested")
                 ):
                     await self.notify_stop(event_id, record)
+                await observability.report_runtime_failure(self, event_id, record)
                 await self.cleanup_terminal(event_id, record)
                 await self.record_terminal(event_id, record)
                 await self.repository.set_connector_state(key, record)
@@ -624,6 +627,7 @@ class BatchBridge:
                 await self.schedule(event_id, tick + 1)
                 record["tick"] = tick + 1
             record.pop("identity_unavailable_since", None)
+            await observability.report_runtime_failure(self, event_id, record)
             await self.cleanup_terminal(event_id, record)
             await self.record_terminal(event_id, record)
             await self.repository.set_connector_state(key, record)

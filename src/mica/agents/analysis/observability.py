@@ -33,6 +33,7 @@ Cause = Literal[
     "compute_control_failed",
     "compute_deadline",
     "reference_repo_failed",
+    "runtime_install_failed",
     "memory_editor_failed",
     "memory_compaction_retry",
     "memory_compaction_exhausted",
@@ -60,6 +61,10 @@ CATALOG: dict[str, tuple[str, str]] = {
     "compute_failed": ("compute", "The worker stopped without completing the request."),
     "compute_control_failed": ("compute", "The service could not submit or inspect its worker."),
     "compute_deadline": ("compute", "The request exhausted its computation time allowance."),
+    "runtime_install_failed": (
+        "runtime",
+        "A requested Python package runtime could not be installed; the worker can continue.",
+    ),
     "reference_repo_failed": (
         "reference",
         "A project reference repository could not be loaded; the request continues without it.",
@@ -216,6 +221,33 @@ async def record_failure(
             "failure_reporter persistence_unavailable cause=%s",
             cause if cause in CATALOG else "unknown",
         )
+
+
+async def report_runtime_failure(
+    bridge: BatchBridge, event_id: str, record: dict[str, Any],
+) -> None:
+    """Use trusted request context for worker receipts; no worker-supplied identity or text."""
+    from .config import CHECKPOINT_PREFIX
+    from .recovery import read_json
+
+    if "attempt" not in record:
+        return
+    try:
+        receipt = await asyncio.to_thread(
+            read_json, bridge.storage,
+            f"{CHECKPOINT_PREFIX}/events/{event_id}/runtime-failure.json",
+        )
+        if not receipt or set(receipt) != {"event_id", "attempt", "cause"}:
+            return
+        if (
+            receipt["event_id"] != event_id or receipt["cause"] != "runtime_install_failed"
+            or type(receipt["attempt"]) is not int
+            or not 0 <= receipt["attempt"] <= record["attempt"]
+        ):
+            return
+        await report(bridge, "runtime_install_failed", event_id, record, unit="runtime-install")
+    except Exception:
+        log.warning("failure_reporter runtime_receipt_unavailable")
 
 
 async def report(

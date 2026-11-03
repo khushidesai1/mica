@@ -75,7 +75,14 @@ class Settings(BaseSettings):
     runtime_max_new_per_turn: int = Field(default=3, ge=1, le=10)
     runtime_timeout_seconds: int = Field(default=900, ge=1, le=900)
     runtime_max_local_gb: float = Field(default=60, gt=0)
-    runtime_denylist: str = ""
+    runtime_max_source_builds: int = Field(default=5, ge=0, le=20)
+    runtime_failure_ttl_hours: float = Field(default=24, gt=0)
+    runtime_denylist: str = (
+        "awscli,boto3,botocore,google-cloud-storage,google-cloud-secret-manager,"
+        "google-cloud-compute,google-cloud-run,google-cloud-batch,google-cloud-resource-manager,"
+        "google-cloud-iam,azure-identity,azure-mgmt-resource,azure-keyvault-secrets,"
+        "keyring,keyrings-alt,fabric,sh,plumbum,paramiko,pysftp,asyncssh,ftputil,scapy,python-nmap"
+    )
     return_scripts_default: bool = False
     attachment_max_files: int = Field(default=10, ge=1, le=20)
     attachment_max_mb: int = Field(default=100, ge=1, le=500)

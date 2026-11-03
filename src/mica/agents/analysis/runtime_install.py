@@ -31,11 +31,13 @@ from .runtime_policy import (
     POLICY_VERSION,
     PackageRequest,
     RuntimeKind,
+    RuntimePolicyError,
     normalized_requirement,
     request_key,
 )
 from .runtime_sandbox import PROBE, sandbox_command
-from .runtime_wheels import check_wheel
+from .runtime_sdist import ADMIN_BUILD, SourceDistribution, extract_source
+from .runtime_wheels import check_pure_wheel, check_wheel
 
 
 class RuntimeFailure(ValueError):
@@ -110,6 +112,7 @@ class RuntimeRecord:
     reason: str = ""
     note: str = ""
     sources: list[dict[str, str]] = field(default_factory=list)
+    source_built: list[dict[str, str]] = field(default_factory=list)
 
 
 class Installer:
@@ -124,6 +127,7 @@ class Installer:
         self.network: dict[str, str] = {}
         self.mirror: WheelMirror | None = None
         self.built: Path | None = None
+        self.source_built: list[dict[str, str]] = []
 
     def environment(self) -> dict[str, str]:
         return {
@@ -316,6 +320,13 @@ class Installer:
                 "--exclude-newer",
                 age,
                 *self.index_args(),
+                # uv caches empty simple-index responses from the initial wheel-only solve.
+                # Refresh only our newly published local wheels before the one retry.
+                *[
+                    arg
+                    for name in (self.mirror.local_wheels if self.mirror else ())
+                    for arg in ("--refresh-package", name)
+                ],
                 *(["-c", str(constraints)] if kind == "overlay" else []),
                 "-o",
                 str(lock),
@@ -370,6 +381,7 @@ class Installer:
         request = self.pin_request(request)
         self.settings.runtime_root.mkdir(parents=True, exist_ok=True)
         self.deadline = time.monotonic() + self.settings.runtime_timeout_seconds
+        self.source_built = []
         with tempfile.TemporaryDirectory(
             prefix=".setup-", dir=self.settings.runtime_root
         ) as scratch:
@@ -381,6 +393,7 @@ class Installer:
                     self.scratch / "downloads",
                     self.settings.csv("runtime_denylist"),
                     int(self.settings.runtime_max_gb * 1024**3),
+                    min_age_days=self.settings.runtime_min_age_days,
                 )
             ) as mirror:
                 self.network = (
@@ -419,17 +432,19 @@ class Installer:
         if kind == "isolated":
             specs += ["matplotlib", "pandas", "anndata"]
         try:
-            lock = self.resolve(specs, kind, pins)
+            lock = self.resolve_runtime(specs, kind, pins, version)
         except ResolutionFailure as exc:
             if kind != "overlay" or "No solution found" not in str(exc):
                 raise
             note = "Base constraints conflict; using isolated runtime. " + str(exc)[-1500:]
             kind = "isolated"
-            lock = self.resolve(specs + ["matplotlib", "pandas", "anndata"], kind, pins)
+            lock = self.resolve_runtime(
+                specs + ["matplotlib", "pandas", "anndata"], kind, pins, version
+            )
         packages = parse_lock(lock)
         denied: set[str] = {canonicalize_name(n) for n in self.settings.csv("runtime_denylist")}
         if denied & packages.keys():
-            raise RuntimeFailure("Resolution includes a package denied by runtime policy.")
+            raise RuntimePolicyError("Resolution includes a package denied by runtime policy.")
         key = request_key(request, kind, version, fingerprint)
         path = self.settings.runtime_root / ("r_" + key[:16])
         if path.exists():
@@ -495,6 +510,7 @@ class Installer:
                 created_at=now,
                 reason=reason,
                 note=note,
+                source_built=list(self.source_built),
                 sources=[
                     {"url": source.url, "commit": source.commit} for source in request.sources
                 ],
@@ -564,96 +580,78 @@ class Installer:
             )
         return replace(request, sources=sources)
 
+    def resolve_runtime(
+        self,
+        specs: list[str],
+        kind: RuntimeKind,
+        base: dict[str, str],
+        python_version: str,
+    ) -> str:
+        try:
+            return self.resolve(specs, kind, base)
+        except ResolutionFailure as exc:
+            if not self.mirror:
+                raise
+            if self.mirror.policy_errors:
+                raise RuntimePolicyError(self.mirror.policy_errors[-1]) from exc
+            candidates = self.mirror.source_candidates(str(exc), specs, python_version)
+            if not candidates:
+                raise
+            if self.source_built:
+                raise RuntimeFailure(
+                    "Source-build retry did not resolve the dependencies. " + ADMIN_BUILD
+                ) from exc
+            if len(candidates) > self.settings.runtime_max_source_builds:
+                raise RuntimePolicyError(
+                    "Runtime source-build limit exceeded; request an admin-built runtime."
+                ) from exc
+            for source in candidates:
+                self.build_sdist(source)
+            # One retry; the pinned wheel-only solver remains authoritative for every dependency.
+            return self.resolve(specs, kind, base)
+
+    def build_sdist(self, source: SourceDistribution) -> None:
+        assert self.mirror is not None
+        archive = self.scratch / source.filename
+        self.mirror.fetch_source(source, archive)
+        source_path = extract_source(
+            source,
+            archive,
+            self.scratch / ("source-pypi-" + source.name),
+            int(self.settings.runtime_max_gb * 1024**3),
+        )
+        try:
+            wheel, name, version = self.build_wheel(source_path, "pypi-" + source.name, pure=True)
+        except RuntimePolicyError:
+            raise
+        except (RuntimeFailure, ValueError) as exc:
+            raise RuntimeFailure(ADMIN_BUILD + " " + str(exc)[-1500:]) from exc
+        if (name, version) != (source.name, source.version):
+            raise RuntimeFailure("Built wheel does not match the pinned PyPI source")
+        self.publish_built(wheel)
+        self.source_built.append(
+            {
+                "name": name,
+                "version": version,
+                "url": source.url,
+                "source_sha256": source.sha256,
+                "wheel_sha256": file_sha256(wheel),
+            }
+        )
+
+    def publish_built(self, wheel: Path) -> None:
+        assert self.built is not None
+        installed = self.built / wheel.name
+        shutil.copyfile(wheel, installed)
+        if self.mirror:
+            self.mirror.add_wheel(installed)
+
     def build_sources(self, request: PackageRequest) -> PackageRequest:
-        if not shutil.which("bwrap"):
-            raise RuntimeFailure("Offline source builder unavailable: bubblewrap is required.")
-        self.built = self.scratch / "built"
-        self.built.mkdir()
         specs = set(request.specs)
-        denied: set[str] = {canonicalize_name(n) for n in self.settings.csv("runtime_denylist")}
         for i, source in enumerate(request.sources):
             source_path = self.scratch / f"source-{i}"
             runtime_source.checkout(source, source_path, lambda args: self.run(args, git=True))
-            pyproject = source_path / "pyproject.toml"
-            if pyproject.exists() and pyproject.stat().st_size > 64 * 1024:
-                raise RuntimeFailure("Source build configuration is too large")
-            config = tomllib.loads(pyproject.read_text()) if pyproject.exists() else {}
-            build_system = config.get("build-system", {})
-            if not isinstance(build_system, dict):
-                raise RuntimeFailure("Invalid source build configuration")
-            raw = build_system.get("requires", ["setuptools", "wheel"])
-            if (
-                not isinstance(raw, list)
-                or len(raw) > 20
-                or not all(isinstance(v, str) for v in raw)
-            ):
-                raise RuntimeFailure("Invalid source build requirements")
-            requirements = [normalized_requirement(value) for value in raw] + ["pip"]
-            if any(canonicalize_name(Requirement(r).name) in denied for r in requirements):
-                raise RuntimeFailure("Build requirement denied by runtime policy")
-            lock = self.resolve(requirements, "isolated", {})
-            build_packages = parse_lock(lock)
-            if denied & build_packages.keys():
-                raise RuntimeFailure("Build dependency denied by runtime policy")
-            build_env = self.scratch / f"build-env-{i}"
-            self.skeleton(build_env, "isolated")
-            build_lock = self.scratch / f"build-{i}.txt"
-            build_lock.write_text(lock)
-            self.run(
-                [
-                    self.uv,
-                    "pip",
-                    "install",
-                    "--python",
-                    str(build_env / "bin/python"),
-                    "--no-deps",
-                    "--require-hashes",
-                    "--only-binary",
-                    ":all:",
-                    "--no-config",
-                    "--no-sources",
-                    "--no-python-downloads",
-                    *self.index_args(),
-                    "-r",
-                    str(build_lock),
-                ]
-            )
-            destination = self.scratch / f"wheel-output-{i}"
-            destination.mkdir()
-            args = [
-                "pip",
-                "wheel",
-                "--no-deps",
-                "--no-index",
-                "--no-build-isolation",
-                "--disable-pip-version-check",
-                "--no-cache-dir",
-                "--find-links",
-                str(self.built),
-                "--wheel-dir",
-                str(destination),
-                str(source_path),
-            ]
-            script = (
-                PROBE
-                + f"\nimport sys, runpy\nsys.argv = {args!r}\n"
-                + ("runpy.run_module('pip', run_name='__main__')\n")
-            )
-            self.run(
-                sandbox_command(
-                    build_env,
-                    [str(build_env / "bin/python"), "-I", "-c", script],
-                    read_only=(self.settings.sci_python.resolve().parent.parent,),
-                    writable=(source_path, destination),
-                )
-            )
-            wheels = list(destination.glob("*.whl"))
-            if len(wheels) != 1:
-                raise RuntimeFailure("Source build must produce exactly one wheel")
-            wheel = wheels[0]
-            if any(path.is_symlink() for path in destination.rglob("*")):
-                raise RuntimeFailure("Build output must not contain symlinks")
-            name, version = check_wheel(wheel, denied, int(self.settings.runtime_max_gb * 1024**3))
+            wheel, name, version = self.build_wheel(source_path, f"catalog-{i}")
             expected = [e for e in request.entries if e.source == source and e.spec]
             if expected and not all(
                 Requirement(e.spec or "").specifier.contains(version)
@@ -661,12 +659,100 @@ class Installer:
                 for e in expected
             ):
                 raise RuntimeFailure("Built wheel does not match the reviewed catalog version")
-            installed = self.built / wheel.name
-            shutil.copyfile(wheel, installed)
-            if self.mirror:
-                self.mirror.add_wheel(installed)
+            self.publish_built(wheel)
             specs.add(f"{name}=={version}")
         return replace(request, specs=tuple(sorted(specs)))
+
+    def build_wheel(
+        self,
+        source_path: Path,
+        label: str,
+        *,
+        pure: bool = False,
+    ) -> tuple[Path, str, str]:
+        if not shutil.which("bwrap"):
+            raise RuntimeFailure("Offline source builder unavailable: bubblewrap is required.")
+        self.built = self.scratch / "built"
+        self.built.mkdir(exist_ok=True)
+        denied: set[str] = {canonicalize_name(n) for n in self.settings.csv("runtime_denylist")}
+        pyproject = source_path / "pyproject.toml"
+        if pyproject.exists() and pyproject.stat().st_size > 64 * 1024:
+            raise RuntimeFailure("Source build configuration is too large")
+        config = tomllib.loads(pyproject.read_text()) if pyproject.exists() else {}
+        build_system = config.get("build-system", {})
+        if not isinstance(build_system, dict):
+            raise RuntimeFailure("Invalid source build configuration")
+        raw = build_system.get("requires", ["setuptools", "wheel"])
+        if not isinstance(raw, list) or len(raw) > 20 or not all(isinstance(v, str) for v in raw):
+            raise RuntimeFailure("Invalid source build requirements")
+        requirements = [normalized_requirement(value) for value in raw] + ["pip"]
+        if any(canonicalize_name(Requirement(r).name) in denied for r in requirements):
+            raise RuntimePolicyError("Build requirement denied by runtime policy")
+        lock = self.resolve(requirements, "isolated", {})
+        build_packages = parse_lock(lock)
+        if denied & build_packages.keys():
+            raise RuntimePolicyError("Build dependency denied by runtime policy")
+        build_env = self.scratch / f"build-env-{label}"
+        self.skeleton(build_env, "isolated")
+        build_lock = self.scratch / f"build-{label}.txt"
+        build_lock.write_text(lock)
+        self.run(
+            [
+                self.uv,
+                "pip",
+                "install",
+                "--python",
+                str(build_env / "bin/python"),
+                "--no-deps",
+                "--require-hashes",
+                "--only-binary",
+                ":all:",
+                "--no-config",
+                "--no-sources",
+                "--no-python-downloads",
+                *self.index_args(),
+                "-r",
+                str(build_lock),
+            ]
+        )
+        destination = self.scratch / f"wheel-output-{label}"
+        destination.mkdir()
+        args = [
+            "pip",
+            "wheel",
+            "--no-deps",
+            "--no-index",
+            "--no-build-isolation",
+            "--disable-pip-version-check",
+            "--no-cache-dir",
+            "--find-links",
+            str(self.built),
+            "--wheel-dir",
+            str(destination),
+            str(source_path),
+        ]
+        script = (
+            PROBE
+            + f"\nimport sys, runpy\nsys.argv = {args!r}\n"
+            + ("runpy.run_module('pip', run_name='__main__')\n")
+        )
+        self.run(
+            sandbox_command(
+                build_env,
+                [str(build_env / "bin/python"), "-I", "-c", script],
+                read_only=(self.settings.sci_python.resolve().parent.parent,),
+                writable=(source_path, destination),
+            )
+        )
+        wheels = list(destination.glob("*.whl"))
+        if len(wheels) != 1:
+            raise RuntimeFailure("Source build must produce exactly one wheel")
+        wheel = wheels[0]
+        if any(path.is_symlink() for path in destination.rglob("*")):
+            raise RuntimeFailure("Build output must not contain symlinks")
+        validator = check_pure_wheel if pure else check_wheel
+        name, version = validator(wheel, denied, int(self.settings.runtime_max_gb * 1024**3))
+        return wheel, name, version
 
     def import_names(self, request: PackageRequest, path: Path) -> tuple[str, ...]:
         known = {
