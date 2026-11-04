@@ -10,9 +10,9 @@ from pathlib import Path
 from mica.agents.analysis import recovery, tiers
 from mica.agents.analysis.checkpoints import Stages
 from mica.agents.analysis.config import Settings
-from mica.agents.analysis.direct import WorkerChoice
 from mica.agents.analysis.resources import Sampler
 from mica.agents.analysis.storage import LocalStorage
+from mica.agents.analysis.tiers import WorkerChoice
 
 with tempfile.TemporaryDirectory(prefix="compute-image-check-") as temp:
     work = Path(temp)
