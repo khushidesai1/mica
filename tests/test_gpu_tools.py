@@ -102,7 +102,9 @@ def test_gpu_command_keeps_workspace_writable_but_inputs_and_data_read_only(work
     )
     monkeypatch.setattr(runtime_sandbox, "gpu_devices", lambda: devices)
     environment = Environment("test", sys.executable, True, ("torch",))
-    args = tools.command(request(), work / "code/run.py", work, work / "data", environment)
+    args = tools.command(
+        request(), work / "code/run.py", work, work / "data", environment, script_fd=17
+    )
     assert all(
         flag in args for flag in ("--unshare-all", "--clearenv", "--proc", "--die-with-parent")
     )
@@ -113,6 +115,9 @@ def test_gpu_command_keeps_workspace_writable_but_inputs_and_data_read_only(work
     protected = [args[i + 1] for i, arg in enumerate(args) if arg == "--ro-bind" and i > writable]
     assert str(work / "inputs") in protected and str(work / "data") in protected
     assert not any("KEY" in value or "TOKEN" in value for value in args)
+    pinned = args.index("--ro-bind-data")
+    assert args[pinned + 1:pinned + 3] == ["17", str(work / "code/run.py")]
+    assert pinned < args.index("--") and not any("/proc/self/fd/" in arg for arg in args)
     (work / "inputs").rmdir()
     (work / "inputs").symlink_to(work.parent)
     with pytest.raises(ValueError, match="inputs mount"):

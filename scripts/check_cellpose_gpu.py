@@ -12,7 +12,7 @@ from check_gpu_hardware import assert_controller, probe
 
 from mica.agents.analysis.checkpoints import Stages, cleanup_temporary, digest
 from mica.agents.analysis.config import Settings
-from mica.agents.analysis.gpu_tools import tools
+from mica.agents.analysis.gpu_tools import script_binding, tools
 from mica.agents.analysis.runtime_sandbox import PROBE, sandbox_command
 from mica.agents.analysis.storage import LocalStorage
 from mica.agents.analysis.toolkit_catalog import environments
@@ -39,9 +39,31 @@ async def offline():
             writable=(work,), protected=(work / "inputs", work / "data"), cwd=work,
             read_only=(Path("/opt/cellpose/models"), Path("/opt/cellpose/manifest.json")),
         )
-        subprocess.run(
-            command, check=True, timeout=60, env={"PATH": "/usr/local/bin:/usr/bin:/bin"}
-        )
+        source = work / "code/pinned.py"
+        source.write_text("raise AssertionError('Mutable source path was executed')")
+        pinned_code = PROBE + """
+import torch
+assert not torch.cuda.is_available()
+assert 'MICA_PINNED_SCRIPT_BINDING_PASSED' in Path(__file__).read_text()
+try:
+    Path(__file__).write_text('must not overwrite the pinned script')
+except OSError:
+    pass
+else:
+    raise AssertionError('Pinned script became writable')
+print('MICA_PINNED_SCRIPT_BINDING_PASSED')
+"""
+        with tempfile.TemporaryFile() as script:
+            script.write(pinned_code.encode())
+            script.seek(0)
+            boundary = command.index("--")
+            pinned_command = command[:boundary] + script_binding(source, script.fileno()) + [
+                "--", interpreter, "-I", str(source),
+            ]
+            subprocess.run(
+                pinned_command, check=True, timeout=60, pass_fds=(script.fileno(),),
+                env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
+            )
         assert len(tools(work, work / "data", Settings(_env_file=None, gpu_worker=True))) == 1
         if os.environ.get("VERIFY_CPU_CELLPOSE") == "1":
             subprocess.run([
