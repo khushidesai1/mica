@@ -264,6 +264,7 @@ class BatchBridge:
         from slack_sdk.web.async_client import AsyncWebClient
 
         from .email_delivery import deliver
+        from .transfer_state import is_handoff
         from .transport import SlackTransport
 
         if phase == "failed" and not record.get("cancel_requested"):
@@ -280,7 +281,7 @@ class BatchBridge:
             terminal = phase in {"complete", "failed", "denied", "cancelled"}
             if terminal:
                 record["terminal_reply"] = text
-                if phase == "complete" and record.get("reply_handoff") == "atomx":
+                if phase == "complete" and is_handoff(record.get("reply_handoff")):
                     # The transfer controller sends action links and its actual outcome.
                     # Finishing this routing turn is not the completion of the transfer.
                     record.update(notice_phase=phase, notice_text=text)

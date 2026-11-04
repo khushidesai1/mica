@@ -189,6 +189,7 @@ async def test_transfer_handoff_does_not_email_preparation_receipt(mail, monkeyp
     request = TransferRequest(sample="sample", destination="gs://lab-data/liver/raw/")
     reply = await transfers.request(grant, record, eid, request)
     assert "Preparing" in reply
+    assert record["reply_handoff"] == "transfer"
     assert await direct.finish(mail, eid, record, reply)
     pending = await transfers.pending(eid)
     assert pending["state"] == "prepare"
@@ -492,3 +493,50 @@ async def test_explicit_gmail_rate_limit_retries_safely(mail):
     with pytest.raises(HttpError):
         await deliver(mail, eid, record, "Answer", kind="final")
     assert await deliver(mail, eid, record, "Answer", kind="final") == "retry-success"
+
+
+@pytest.mark.parametrize("prefix", ["transfer", "atomx"])
+async def test_new_transfer_email_uses_generic_outbox_and_redacted_receipt(mail, prefix):
+    eid, record = await email_record(mail)
+    await deliver(mail, eid, record, "Private action link", kind=prefix + "-" + "a" * 24)
+    keys = mail.store.keys(f"projects/_gmail/outbox/{eid}/")
+    assert keys == [f"projects/_gmail/outbox/{eid}/transfer-{'a' * 24}.json"]
+    receipt = json.loads(mail.store.get(keys[0])[0])
+    assert receipt["text"] == "Private transfer action (link redacted)"
+    assert len(sent_messages(mail)) == 1
+    await deliver(mail, eid, record, "Private action link", kind="transfer-" + "a" * 24)
+    assert len(sent_messages(mail)) == 1
+
+
+@pytest.mark.parametrize("prefix", ["transfer", "atomx"])
+async def test_saved_legacy_transfer_receipt_prevents_another_send(mail, prefix):
+    eid, record = await email_record(mail)
+    old = f"projects/_gmail/outbox/{eid}/atomx-{'b' * 24}.json"
+    mail.store.put(old, json.dumps({"status": "sent", "gmail_id": "old-sent"}).encode())
+    result = await deliver(mail, eid, record, "same result", kind=prefix + "-" + "b" * 24)
+    assert result == "old-sent"
+    assert sent_messages(mail) == []
+    assert mail.store.keys(f"projects/_gmail/outbox/{eid}/") == [old]
+
+
+async def test_ambiguous_or_conflicting_legacy_transfer_receipts_stay_held(mail, monkeypatch):
+    eid, record = await email_record(mail)
+    old = f"projects/_gmail/outbox/{eid}/atomx-{'c' * 24}.json"
+    new = f"projects/_gmail/outbox/{eid}/transfer-{'c' * 24}.json"
+    mail.store.put(old, json.dumps({"status": "sending", "delivery_id": "uncertain"}).encode())
+    monkeypatch.setattr(email_delivery, "sent_match", lambda *args: None)
+    with pytest.raises(email_delivery.UnconfirmedDelivery):
+        await deliver(mail, eid, record, "same result", kind="transfer-" + "c" * 24)
+    assert mail.store.keys(f"projects/_gmail/outbox/{eid}/") == [old]
+    mail.store.put(new, json.dumps({"status": "sent", "gmail_id": "other"}).encode())
+    with pytest.raises(email_delivery.UnconfirmedDelivery, match="Multiple transfer outboxes"):
+        await deliver(mail, eid, record, "same result", kind="transfer-" + "c" * 24)
+    assert sent_messages(mail) == []
+
+
+@pytest.mark.parametrize("handoff", ["transfer", "atomx"])
+async def test_generic_and_legacy_handoffs_suppress_preparation_email(mail, handoff):
+    eid, record = await email_record(mail)
+    record["reply_handoff"] = handoff
+    await mail.notify(eid, record, "complete", "Preparing the transfer")
+    assert sent_messages(mail) == []

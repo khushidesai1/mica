@@ -12,6 +12,8 @@ if TYPE_CHECKING:
     from .runtime_install import RuntimeRecord
     from .storage import Storage
 
+BUNDLED_SKILLS = ("mica:spatial-analysis", "mica:cellpose", "mica:project-knowledge")
+
 
 @dataclass(frozen=True)
 class Source:

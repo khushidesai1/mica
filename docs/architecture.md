@@ -197,3 +197,13 @@ safety net. Named files are deduplicated and carried in checkpoint
 `pending_outputs`; unsafe, empty, oversized and unsupported attachments return per-file errors.
 Memory writers supply missing entry headers from the path and application attribution before
 validation, preserving existing valid headers and superseded status.
+
+
+Transfer controllers use the generic `transfer` reply handoff and scheduled-task namespace.
+The email outbox writes `transfer-<digest>` stages, while a compatibility helper recognizes
+prior saved handoffs and outboxes. An existing legacy receipt remains authoritative; an
+ambiguous receipt or conflicting old/new pair is held for reconciliation, never resent.
+Provider commands, connection receipts and failure codes keep their existing identifiers.
+Core modules obtain trusted skill IDs from the toolkit registry rather than naming individual
+methods. A source-boundary test keeps provider and incident-specific method names out of the
+conversation, compute, delivery and failure-assessment mechanisms.

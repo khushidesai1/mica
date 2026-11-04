@@ -8,7 +8,6 @@ import copy
 import hashlib
 import json
 import mimetypes
-import re
 import uuid
 from email.message import EmailMessage
 from email.parser import BytesParser
@@ -19,7 +18,7 @@ from pydantic import BaseModel, Field
 
 from mica.connectors import gmail_client
 
-from . import access, command_intent
+from . import access, command_intent, transfer_state
 from .config import CHECKPOINT_PREFIX
 from .storage import Conflict
 from .surface import EMAIL_STATE_PREFIX
@@ -134,17 +133,31 @@ async def _deliver(
 ) -> str:
     from googleapiclient.errors import HttpError
 
-    if kind not in {"ack", "final"} and not re.fullmatch(r"atomx-[a-f0-9]{24}", kind):
+    stages = (kind,) if kind in {"ack", "final"} else transfer_state.mail_stages(kind)
+    if not stages:
         raise ValueError("Invalid email delivery stage")
     storage = bridge.storage
+    existing: list[tuple[str, dict[str, Any], str]] = []
+    for stage in stages:
+        path = f"{EMAIL_STATE_PREFIX}/outbox/{event_id}/{stage}.json"
+        try:
+            raw, version = await asyncio.to_thread(storage.get, path)
+            existing.append((stage, json.loads(raw), version))
+        except FileNotFoundError:
+            pass
+    if len(existing) > 1:
+        raise UnconfirmedDelivery(
+            "Multiple transfer outboxes require reconciliation; no message sent"
+        )
+    saved: dict[str, Any]
+    generation: str | None
+    if existing:
+        kind, saved, generation = existing[0]
+    else:
+        kind, saved, generation = stages[0], {}, None
     key = f"{EMAIL_STATE_PREFIX}/outbox/{event_id}/{kind}.json"
     message_id = f"<mica.{event_id}.{kind}@{gmail_client.mailbox(bridge.app).split('@')[1]}>"
     api = await asyncio.to_thread(gmail_client.service, bridge.app)
-    try:
-        raw, generation = await asyncio.to_thread(storage.get, key)
-        saved = json.loads(raw)
-    except FileNotFoundError:
-        saved, generation = {}, None
     if saved.get("status") in {"sent", "suppressed"}:
         return str(saved.get("gmail_id") or "suppressed")
     if saved:
@@ -272,7 +285,9 @@ async def _deliver(
         "status": "sending",
         "audience": audience,
         "scope": "account" if account_reply else "project",
-        "text": "Private AtoMx action (link redacted)" if kind.startswith("atomx-") else text,
+        "text": (
+            "Private transfer action (link redacted)" if transfer_state.mail_stages(kind) else text
+        ),
         "artifacts": included,
         "message_id": message_id,
         "delivery_id": delivery_id,
