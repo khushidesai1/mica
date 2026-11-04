@@ -90,6 +90,7 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     monkeypatch.setattr(batch, "GCSStorage", lambda bucket: storage)
     monkeypatch.setattr(slack_analysis, "GCSStorage", lambda bucket: storage)
     monkeypatch.setattr(BatchBridge, "schedule", AsyncMock())
+    monkeypatch.setattr("mica.agents.analysis.job_lifecycle.enqueue", AsyncMock())
     slack = AsyncMock()
     slack.chat_postMessage.return_value = {"ts": "9.0"}
     monkeypatch.setattr("slack_sdk.web.async_client.AsyncWebClient", lambda **kw: slack)

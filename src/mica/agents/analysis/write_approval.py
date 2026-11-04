@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import time
 from html import escape
@@ -14,7 +13,7 @@ from google.api_core.exceptions import NotFound
 from pydantic import BaseModel, Field
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import access, write_access
+from . import access, approvals, write_access
 from .storage import Conflict, Storage
 from .write_broker import relative_path
 
@@ -34,7 +33,7 @@ class Approval(BaseModel):
     paths: list[str]
     inspected_at: float
     expires_at: float
-    status: Literal["pending", "approved", "cancelled"] = "pending"
+    status: Literal["pending", "approved", "cancelled", "expired"] = "pending"
     approved_at: float = 0
 
 
@@ -45,13 +44,12 @@ def key(event_id: str) -> str:
 
 
 def load(storage: Storage, event_id: str) -> tuple[Approval, str] | None:
-    try:
-        raw, generation = storage.get(key(event_id))
-    except FileNotFoundError:
+    saved = approvals.load_json(storage, key(event_id))
+    if saved is None:
         return None
-    if "generations" in json.loads(raw):
+    if "generations" in saved[0]:
         raise ValueError("This overwrite request expired during an update. Send it again.")
-    return Approval.model_validate_json(raw), generation
+    return Approval.model_validate(saved[0]), saved[1]
 
 
 def targets(paths: list[str], grant: write_access.WriteGrant) -> list[str]:
@@ -187,11 +185,11 @@ async def ready(
             access_signature=record["access_signature"],
             paths=existing,
             inspected_at=inspected_at,
-            expires_at=time.time() + 3600,
+            expires_at=KIND.deadline(),
         )
         try:
             await asyncio.to_thread(
-                storage.put_if, key(event_id), approval.model_dump_json().encode(), None
+                approvals.save, storage, key(event_id), approval, None
             )
         except Conflict:
             saved = await asyncio.to_thread(load, storage, event_id)
@@ -203,71 +201,85 @@ async def ready(
     if approval.status == "approved" and 0 < approval.approved_at <= approval.expires_at:
         record.update(status="pending", overwrite_checked=True, overwrite_paths=approval.paths)
         return True
-    if approval.status == "cancelled" or time.time() >= approval.expires_at:
+    if approval.status == "expired" or approvals.expired(approval.expires_at):
+        await expire_record(bridge, storage, event_id, record)
+        return False
+    if approval.status == "cancelled":
         record["status"] = "failed"
         record["cancel_requested"] = approval.status == "cancelled"
         await bridge.notify(
-            event_id, record, "failed", "Overwrite request cancelled or expired. Nothing started."
+            event_id, record, "failed", "Overwrite request cancelled. Nothing started."
         )
         return False
+    await approvals.watch(bridge, KIND, event_id, approval.expires_at, record)
     record.update(status="awaiting_approval", overwrite_approval=True)
     await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
     text, content = blocks(approval, grant.uri)
     if record.get("notice_text") != text:
-        await AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5).chat_update(
-            channel=record["payload"]["event"]["channel"],
-            ts=record["notice_ts"],
-            text=text,
-            blocks=content,
+        await approvals.card(
+            AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
+            record["payload"]["event"]["channel"], record["notice_ts"], text, content,
         )
         record.update(notice_text=text, notice_phase="overwrite")
     return False
 
 
 def is_action(payload: dict[str, Any]) -> bool:
-    return payload.get("type") == "block_actions" and any(
-        str(a.get("action_id", "")).startswith(ACTION_PREFIXES) for a in payload.get("actions", [])
-    )
+    return KIND.matches(payload)
 
 
-async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]) -> dict[str, Any]:
+
+async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]) -> dict[str, Any]:
     actions = payload.get("actions", [])
     if len(actions) != 1 or actions[0].get("action_id") not in {
-        prefix + action for prefix in ACTION_PREFIXES for action in ("approve", "cancel")
+        prefix + action for prefix in ACTION_PREFIXES for action in ("approve", "cancel", "again")
     }:
         raise ValueError("Invalid overwrite action")
     event_id = str(actions[0].get("value", ""))
     key(event_id)
-    mutex = f"claude-poll:{event_id}"
-    claim = await bridge.repository.begin_event(mutex, lease_seconds=60)
-    if claim.status != "claimed":
-        raise ValueError("Request is being updated. Try again shortly.")
-    try:
+    async with approvals.lease(bridge, f"claude-poll:{event_id}"):
         record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
         saved = await asyncio.to_thread(load, storage, event_id)
         if not record or not saved:
             raise ValueError("Unknown overwrite request")
         event = record["payload"]["event"]
-        if (
-            payload.get("team", {}).get("id") != record["payload"]["team_id"]
-            or payload.get("user", {}).get("id") != event["user"]
-            or payload.get("channel", {}).get("id") != event["channel"]
-            or payload.get("message", {}).get("ts") != record.get("notice_ts")
-        ):
-            raise ValueError("Only the requester can confirm this run in its original thread.")
+        approvals.requester(payload, record)
         approval, generation = saved
         await asyncio.to_thread(validate, bridge, storage, record, approval)
+        if actions[0]["action_id"].endswith("again"):
+            if approval.status not in {"expired", "pending"}:
+                return {}
+            async with approvals.lease(bridge, "claude-intake:" + record["thread_key"]):
+                if record["status"] != "awaiting_approval":
+                    await approvals.renew_run(bridge, event_id, record)
+                if approval.status == "expired":
+                    approval.inspected_at = time.time()
+                    await asyncio.to_thread(inspect, approval.paths)
+                    approval.status, approval.expires_at = "pending", KIND.deadline()
+                    await asyncio.to_thread(
+                        approvals.save, storage, key(event_id), approval, generation
+                    )
+                await ready(bridge, event_id, record, storage)
+                await approvals.save_record(bridge, event_id, record)
+                await bridge.schedule(event_id, record["tick"])
+            return {}
+        if approval.status == "expired":
+            await expire_record(bridge, storage, event_id, record)
+            return {}
         if record["status"] != "awaiting_approval":
             return {}  # A duplicate click must never restart a run.
         if approval.status == "pending":
-            if time.time() >= approval.expires_at:
-                raise ValueError("This overwrite request expired. Send it again.")
+            if approvals.expired(approval.expires_at):
+                await expire_record(bridge, storage, event_id, record)
+                raise ValueError(
+                    "This overwrite request expired. Use Request again for fresh confirmation."
+                )
             approval.status = (
                 "approved" if actions[0]["action_id"].endswith("approve") else "cancelled"
             )
             approval.approved_at = time.time() if approval.status == "approved" else 0
             await asyncio.to_thread(
-                storage.put_if, key(event_id), approval.model_dump_json().encode(), generation
+                approvals.save, storage, key(event_id), approval, generation
             )
         record["status"] = "pending" if approval.status == "approved" else "failed"
         record["cancel_requested"] = approval.status == "cancelled"
@@ -280,12 +292,37 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
         # Keep the existing queued poll as a durable fallback if this immediate enqueue fails.
         if approval.status == "approved":
             await bridge.schedule(event_id, record["tick"])
-        await AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5).chat_update(
-            channel=event["channel"],
-            ts=record["notice_ts"],
-            text=text,
-            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+        await approvals.card(
+            AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
+            event["channel"], record["notice_ts"], text,
         )
         return {}
-    finally:
-        await bridge.repository.release_event(mutex, claim.token)
+
+
+async def expire_record(
+    bridge: BatchBridge, storage: Storage, event_id: str, record: dict[str, Any]
+) -> None:
+    saved = await asyncio.to_thread(load, storage, event_id)
+    if saved:
+        await approvals.expire_run(bridge, storage, KIND, event_id, record, *saved)
+
+
+async def expire(bridge: BatchBridge, storage: Storage, event_id: str) -> None:
+    async with approvals.lease(bridge, f"claude-poll:{event_id}"):
+        record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
+        if record and record.get("overwrite_approval"):
+            await expire_record(bridge, storage, event_id, record)
+
+
+async def decide(bridge: BatchBridge, storage: Storage, payload: dict[str, Any], background: Any
+                 ) -> dict[str, Any]:
+    return await _handle(bridge, storage, payload)
+
+
+KIND = approvals.Kind("write", ACTION_PREFIXES, key, 3600, decide, expire)
+
+
+async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]) -> dict[str, Any]:
+    from fastapi import BackgroundTasks
+
+    return await approvals.handle(bridge, storage, payload, BackgroundTasks())

@@ -365,3 +365,23 @@ async def test_shared_admin_selector_never_resolves_private_project_names(chat, 
     saved = await chat.repository.get_connector_state("claude-event:" + eid)
     assert "private conversation" in saved["notice_text"]
     assert "liver" not in saved["notice_text"] and chat.pid not in saved["notice_text"]
+
+
+async def test_expiry_timer_and_renewed_command_require_fresh_confirmation(chat):
+    from mica.agents.analysis import approvals
+
+    eid = await proposal(chat, target="liver-renamed")
+    saved, generation = approvals.load_json(chat.store, command_approval.key(eid))
+    saved["expires"] = 1
+    approvals.save(chat.store, command_approval.key(eid), saved, generation)
+    await command_approval.KIND.expire(chat, chat.store, eid)
+    assert Registry(chat.store).load().projects[chat.pid].name == "liver"
+    assert "Request again" in str(chat.test_slack.chat_update.call_args.kwargs["blocks"])
+    await command_approval.handle(chat, chat.store, action(eid, "again"))
+    assert Registry(chat.store).load().projects[chat.pid].name == "liver"
+    assert approvals.load_json(chat.store, command_approval.key(eid))[0]["state"] == "pending"
+    await command_approval.KIND.expire(chat, chat.store, eid)
+    assert approvals.load_json(chat.store, command_approval.key(eid))[0]["state"] == "pending"
+    await command_approval.handle(chat, chat.store, action(eid))
+    assert Registry(chat.store).load().projects[chat.pid].name == "liver-renamed"
+    chat.test_client.create_job.assert_not_called()

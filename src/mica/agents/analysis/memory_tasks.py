@@ -113,6 +113,7 @@ def eligible(bridge: BatchBridge, record: dict[str, Any]) -> bool:
             or (record.get("status") == "failed" and record.get("direct_decision"))
         )
         and conversation_turn(record)
+        and not record.get("approval_expired")
         and not record.get("memory_editor_done")
         and "memory_reply" in record
     )

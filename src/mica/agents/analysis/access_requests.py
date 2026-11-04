@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import access, identity, surface
+from . import access, approvals, identity, surface
 from .registry import ProjectEntry, Registry, RegistryDoc
 from .storage import Storage
 
@@ -43,7 +43,7 @@ class AccessRequest(BaseModel):
     owner: str
     request: str
     expires: float
-    state: Literal["pending", "approved", "denied"] = "pending"
+    state: Literal["pending", "approved", "denied", "expired"] = "pending"
     owner_channel: str = ""
     message_ts: str = ""
     delivery: str = "pending"
@@ -51,6 +51,7 @@ class AccessRequest(BaseModel):
     decided_by: str = ""
     decided_at: float = 0
     notification: str = "pending"
+    notification_ts: str = ""
 
 
 def key(request_id: str) -> str:
@@ -89,12 +90,16 @@ def blocks(row: AccessRequest) -> list[dict[str, Any]]:
                         "Awaiting your review · expires after 24 hours. "
                         "Choose the exact project before approving."
                         if row.state == "pending"
-                        else f"{row.state.capitalize()} · reviewed by {row.decided_by}"
+                        else ("Expired · no permissions changed" if row.state == "expired"
+                              else f"{row.state.capitalize()} · reviewed by {row.decided_by}")
                     ),
                 }
             ],
         },
     ]
+    if row.state == "expired":
+        result.extend(approvals.expiry_blocks(KIND, row.id,
+            "This access approval expired. The request is saved; no permissions changed."))
     if row.state == "pending":
         result.append(
             {
@@ -115,6 +120,9 @@ def blocks(row: AccessRequest) -> list[dict[str, Any]]:
 
 
 def requester_reply(row: AccessRequest) -> str:
+    if row.state == "expired":
+        return ("This access approval expired. Your request is saved; "
+                "use Request again for a fresh review.")
     if row.state == "denied":
         return "The owner declined this access request. Please contact them before trying again."
     if row.state == "approved":
@@ -163,10 +171,7 @@ async def propose(bridge: BatchBridge, record: dict[str, Any], grant: access.Gra
             f"{int(time.time() // 86400)}"
         ).encode()
     ).hexdigest()[:32]
-    claim = await bridge.repository.begin_event(key(request_id), lease_seconds=60)
-    if claim.status != "claimed":
-        raise RuntimeError("Access request is being prepared; retry")
-    try:
+    async with approvals.lease(bridge, key(request_id)):
         saved = await bridge.repository.get_connector_state(key(request_id))
         row = (
             AccessRequest.model_validate(saved)
@@ -182,7 +187,7 @@ async def propose(bridge: BatchBridge, record: dict[str, Any], grant: access.Gra
                 project=grant.project_id,
                 owner=owner,
                 request=str(event.get("text", ""))[:1000],
-                expires=time.time() + 86400,
+                expires=KIND.deadline(),
             )
         )
         if row.email != grant.email or row.owner != owner:
@@ -212,26 +217,19 @@ async def propose(bridge: BatchBridge, record: dict[str, Any], grant: access.Gra
                 raise ValueError("The owner approval requires a private conversation.")
             row.message_ts, row.delivery = sent["ts"], "sent"
             await save(bridge, row)
+        await approvals.watch(bridge, KIND, row.id, row.expires)
         record["access_request_id"] = row.id
         return requester_reply(row)
-    finally:
-        await bridge.repository.release_event(key(request_id), claim.token)
+
 
 
 def is_action(payload: dict[str, Any]) -> bool:
-    if payload.get("type") == "view_submission":
-        return bool(payload.get("view", {}).get("callback_id") == CALLBACK)
-    actions = payload.get("actions", [])
-    return (
-        payload.get("type") == "block_actions"
-        and isinstance(actions, list)
-        and len(actions) == 1
-        and isinstance(actions[0], dict)
-        and str(actions[0].get("action_id", "")).startswith(PREFIX)
-    )
+    return KIND.matches(payload)
 
 
-async def notify_decision(bridge: BatchBridge, storage: Storage, request_id: str) -> None:
+async def notify_decision(
+    bridge: BatchBridge, storage: Storage, request_id: str, *, retry: bool = False
+) -> None:
     """Retry card edits safely; never repeat an ambiguous requester notification."""
     claim = await bridge.repository.begin_event(key(request_id), lease_seconds=60)
     if claim.status != "claimed":
@@ -240,12 +238,8 @@ async def notify_decision(bridge: BatchBridge, storage: Storage, request_id: str
         raw = await bridge.repository.get_connector_state(key(request_id))
         row = AccessRequest.model_validate(raw)
         client = client_for(bridge)
-        await client.chat_update(
-            channel=row.owner_channel,
-            ts=row.message_ts,
-            text=f"Mica access request {row.state}",
-            blocks=blocks(row),
-        )
+        await approvals.card(client, row.owner_channel, row.message_ts,
+                             f"Mica access request {row.state}", blocks(row))
         if row.notification != "pending":
             return
         row.notification = "sending"
@@ -254,7 +248,9 @@ async def notify_decision(bridge: BatchBridge, storage: Storage, request_id: str
             "The owner approved project access. Send your request again to start; "
             "existing write and compute approvals still apply."
             if row.state == "approved"
-            else "The owner declined this access request. Nothing was run."
+            else ("This access approval expired. Your request is saved; no permissions changed."
+                  if row.state == "expired"
+                  else "The owner declined this access request. Nothing was run.")
         )
         if row.state == "approved":
             current = await asyncio.to_thread(Registry(storage).load)
@@ -271,30 +267,35 @@ async def notify_decision(bridge: BatchBridge, storage: Storage, request_id: str
                     "The owner reviewed this request, but access has since changed. "
                     "Please contact them."
                 )
-        await client.chat_postMessage(
+        sent = await client.chat_postMessage(
             channel=row.channel,
             thread_ts=row.thread,
             text=reply,
-            client_msg_id=str(uuid5(NAMESPACE_URL, key(row.id) + ":decision")),
+            client_msg_id=str(uuid5(NAMESPACE_URL, key(row.id) + f":{row.state}:{row.expires}")),
+            blocks=approvals.expiry_blocks(KIND, row.id, reply) if row.state == "expired" else None,
             unfurl_links=False,
             unfurl_media=False,
         )
-        row.notification = "sent"
+        row.notification, row.notification_ts = "sent", str(sent["ts"])
         await save(bridge, row)
     except Exception:
         log.warning("access_request_notification_pending id=%s", request_id)
+        if retry:
+            raise
     finally:
         await bridge.repository.release_event(key(request_id), claim.token)
 
 
-async def handle(
+async def _handle(
     bridge: BatchBridge, storage: Storage, payload: dict[str, Any], background: BackgroundTasks
 ) -> dict[str, Any]:
     team, user = payload.get("team", {}).get("id", ""), payload.get("user", {}).get("id", "")
     actor = f"{team}:{user}"
-    if (
-        not bridge.settings.access_request_owner_id
-        or actor != bridge.settings.access_request_owner_id
+    again = payload.get("type") == "block_actions" and len(payload.get("actions", [])) == 1 and (
+        payload["actions"][0].get("action_id") == PREFIX + "again"
+    )
+    if not bridge.settings.access_request_owner_id or (
+        not again and actor != bridge.settings.access_request_owner_id
     ):
         raise PermissionError("Only the designated Mica owner can review access requests.")
     submission = payload.get("type") == "view_submission"
@@ -307,17 +308,29 @@ async def handle(
     else:
         action = payload["actions"][0]
         request_id, verb = str(action.get("value", "")), action["action_id"].removeprefix(PREFIX)
-    if verb not in {"review", "deny", "approve"}:
+    if verb not in {"review", "deny", "approve", "again"}:
         raise ValueError("Unknown access action.")
-    claim = await bridge.repository.begin_event(key(request_id), lease_seconds=60)
-    if claim.status != "claimed":
-        raise ValueError("This request is being reviewed. Please retry.")
-    try:
+    async with approvals.lease(bridge, key(request_id)):
         raw = await bridge.repository.get_connector_state(key(request_id))
         if not raw:
             raise ValueError("This access request is unavailable.")
         row = AccessRequest.model_validate(raw)
-        if row.owner != actor or row.team != team:
+        requester_again = again and actor != row.owner
+        if row.team != team or row.owner != bridge.settings.access_request_owner_id:
+            raise PermissionError("This request belongs to another owner or workspace.")
+        if requester_again:
+            container = payload.get("container", {})
+            if (user != row.user or payload.get("channel", {}).get("id") != row.channel
+                    or payload.get("message", {}).get("ts") != row.notification_ts
+                    or container.get("channel_id", row.channel) != row.channel
+                    or container.get("message_ts", row.notification_ts) != row.notification_ts
+                    or not row.notification_ts):
+                raise PermissionError("Use the expired request card in your original conversation.")
+            principal = await asyncio.to_thread(identity.resolve_email,
+                bridge.app, bridge.settings, storage, team, user)
+            if principal != row.email:
+                raise PermissionError("Requester identity changed.")
+        elif row.owner != actor:
             raise PermissionError("This request belongs to another owner or workspace.")
         if submission:
             if (
@@ -326,7 +339,7 @@ async def handle(
                 or payload["view"].get("id") != row.review.get("view_id")
             ):
                 raise PermissionError("This approval view is stale. Reopen the original card.")
-        else:
+        elif not requester_again:
             channel, ts = payload.get("channel", {}).get("id"), payload.get("message", {}).get("ts")
             container = payload.get("container", {})
             if (
@@ -337,11 +350,30 @@ async def handle(
                 or container.get("message_ts", ts) != ts
             ):
                 raise PermissionError("Use the original access request card in your DM.")
+        if again:
+            if row.state == "expired":
+                row.state, row.expires, row.review = "pending", KIND.deadline(), {}
+                row.notification, row.delivery = "pending", "refreshing"
+                await save(bridge, row)
+            elif row.state != "pending" or row.delivery != "refreshing":
+                return {}
+            await approvals.card(client_for(bridge), row.owner_channel, row.message_ts,
+                                 "Mica access approval needed", blocks(row))
+            if row.notification_ts:
+                await approvals.card(client_for(bridge), row.channel, row.notification_ts,
+                                     "A fresh owner review was requested. Nothing has been run.")
+            await approvals.watch(bridge, KIND, row.id, row.expires)
+            row.delivery = "sent"
+            await save(bridge, row)
+            return {}
         if row.state != "pending":
             background.add_task(notify_decision, bridge, storage, row.id)
             return {}
-        if row.expires < time.time():
-            raise ValueError("This request expired. Ask the requester to send a fresh message.")
+        if approvals.expired(row.expires):
+            row.state, row.review, row.notification = "expired", {}, "pending"
+            await save(bridge, row)
+            background.add_task(notify_decision, bridge, storage, row.id)
+            raise ValueError("This request expired. Use Request again for a fresh owner review.")
         if verb == "deny":
             row.state, row.decided_by, row.decided_at = "denied", actor, time.time()
         else:
@@ -471,5 +503,27 @@ async def handle(
         await save(bridge, row)
         background.add_task(notify_decision, bridge, storage, row.id)
         return {}
-    finally:
-        await bridge.repository.release_event(key(request_id), claim.token)
+
+
+
+async def expire(bridge: BatchBridge, storage: Storage, request_id: str) -> None:
+    async with approvals.lease(bridge, key(request_id)):
+        raw = await bridge.repository.get_connector_state(key(request_id))
+        if not raw:
+            return
+        row = AccessRequest.model_validate(raw)
+        if row.state not in {"pending", "expired"} or not approvals.expired(row.expires):
+            return
+        if row.state == "pending":
+            row.state, row.review, row.notification = "expired", {}, "pending"
+            await save(bridge, row)
+    await notify_decision(bridge, storage, request_id, retry=True)
+
+
+KIND = approvals.Kind("access", (PREFIX,), key, 86400, _handle, expire, CALLBACK)
+
+
+async def handle(
+    bridge: BatchBridge, storage: Storage, payload: dict[str, Any], background: BackgroundTasks
+) -> dict[str, Any]:
+    return await approvals.handle(bridge, storage, payload, background)

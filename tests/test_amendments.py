@@ -297,3 +297,21 @@ async def test_preexisting_amendment_card_survives_router_removal(bridge):  # no
     await bridge.repository.set_connector_state("claude-event:" + second, record)
     await amendments.handle(bridge, bridge.store, click(second, record))
     assert second in amendments.load(bridge.store, first).items
+
+
+async def test_expired_choice_keeps_followup_and_can_be_reviewed_again(bridge):  # noqa: F811
+    first, second, record = await start(bridge)
+    record["amendment_expires"] = 1
+    await bridge.repository.set_connector_state("claude-event:" + second, record)
+    await amendments.KIND.expire(bridge, bridge.store, second)
+    expired = await bridge.repository.get_connector_state("claude-event:" + second)
+    assert expired["amendment_choice"] == "follow" and expired["previous"] == first
+    assert "Request again" in str(bridge.test_slack.chat_update.call_args.kwargs["blocks"])
+    assert await bridge.process(second, expired["tick"]) == "pending"
+    await amendments.handle(bridge, bridge.store, click(second, expired, "again"))
+    renewed = await bridge.repository.get_connector_state("claude-event:" + second)
+    assert not renewed.get("amendment_choice") and renewed["amendment_expires"] > 1
+    assert not amendments.load(bridge.store, first).items
+    await amendments.handle(bridge, bridge.store, click(second, renewed, "add"))
+    assert second in amendments.load(bridge.store, first).items
+    assert bridge.test_client.create_job.call_count == 1

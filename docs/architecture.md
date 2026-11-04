@@ -162,6 +162,18 @@ confirm actual GPU use. The conversation catalog and worker guidance share the s
 list, including validated saved runtimes. Cellpose is a bundled skill and versioned environment;
 its CPU path uses Bash and its GPU path uses the general tool.
 
+Approval kinds register in `agents/analysis/approvals.py`: compute, administrative commands,
+overwrite, project access and amendments. One signed Slack dispatcher resolves existing action
+prefixes and modal callbacks. Shared helpers own conditional object writes, repository leases,
+expiry and card updates; kind callbacks retain their specific identity, project, cost, scope and
+idempotency checks. Approval objects keep their existing keys and generations. Repository-backed
+access decisions keep their original lease, and registry/addendum mutations retain their own CAS.
+New confirmations schedule a durable expiry check on the existing authenticated task queue.
+Expired cards preserve saved work and offer Request again; renewal never grants access or starts
+computation without another explicit decision. Run renewal cannot overtake a newer thread request.
+Amendment choices expire after one hour and keep the message as a follow-up; they can be reopened
+while the predecessor still runs. Failure notification cards remain separate.
+
 Direct answers and worker answers use the same Markdown-to-Slack conversion, preserving code
 and formatting headings, bold text and links. Saved conversation text and email stay unchanged.
 Slack approvals use the green primary action style. Progress keeps one compact expandable

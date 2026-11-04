@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import re
-import time
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import access, commands, observability, surface, write_access
+from . import access, approvals, commands, observability, surface, write_access
 from .identity import member_email, resolve_email
 from .registry import ProjectEntry
 from .storage import Conflict, Storage
@@ -30,9 +28,8 @@ def key(event_id: str) -> str:
 
 
 def is_action(payload: dict[str, Any]) -> bool:
-    return any(
-        str(action.get("action_id", "")).startswith(PREFIX) for action in payload.get("actions", [])
-    )
+    return KIND.matches(payload)
+
 
 
 def authorize(
@@ -113,17 +110,23 @@ async def propose(
         "thread_key": record["thread_key"],
         "notice_ts": record.get("notice_ts", ""),
         "project": grant.doc.projects[cmd.args[0]].model_dump(mode="json"),
-        "expires": time.time() + 600,
+        "expires": KIND.deadline(),
         "state": "pending",
     }
     try:
         generation = await asyncio.to_thread(
-            storage.put_if, key(event_id), json.dumps(proposal).encode(), None
+            approvals.save, storage, key(event_id), proposal, None
         )
     except Conflict:
-        raw, generation = await asyncio.to_thread(storage.get, key(event_id))
-        proposal = json.loads(raw)
-    if proposal["state"] != "pending" or proposal["expires"] < time.time():
+        saved = await asyncio.to_thread(approvals.load_json, storage, key(event_id))
+        assert saved is not None
+        proposal, generation = saved
+    if proposal["state"] == "expired" or (
+        proposal["state"] == "pending" and approvals.expired(proposal["expires"])
+    ):
+        await expire_record(bridge, storage, event_id, record, proposal, generation)
+        return True
+    if proposal["state"] != "pending":
         return await finish(
             bridge, event_id, record, "This confirmation has ended. Send a new request."
         )
@@ -173,9 +176,10 @@ async def propose(
     if proposal["notice_ts"] != record["notice_ts"]:
         proposal["notice_ts"] = record["notice_ts"]
         await asyncio.to_thread(
-            storage.put_if, key(event_id), json.dumps(proposal).encode(), generation
+            approvals.save, storage, key(event_id), proposal, generation
         )
-    await AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5).chat_update(
+    await approvals.card(
+            AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
         channel=event["channel"],
         ts=record["notice_ts"],
         text=text,
@@ -196,24 +200,26 @@ async def propose(
             },
         ],
     )
+    await approvals.watch(bridge, KIND, event_id, proposal["expires"], record)
     return await finish(bridge, event_id, record, text)
 
 
-async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]) -> dict[str, Any]:
+async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]) -> dict[str, Any]:
     from .direct import dispatch_command
 
     action = payload["actions"][0]
     verb, event_id = action["action_id"].removeprefix(PREFIX), str(action["value"])
-    if verb not in {"confirm", "cancel"}:
+    if verb not in {"confirm", "cancel", "again"}:
         raise ValueError("Unknown confirmation action")
     path = key(event_id)
-    mutex = f"command-approval:{event_id}"
-    claim = await bridge.repository.begin_event(mutex, lease_seconds=240)
-    if claim.status != "claimed":
-        raise ValueError("This confirmation is already being processed.")
-    try:
-        raw, generation = await asyncio.to_thread(storage.get, path)
-        proposal = json.loads(raw)
+    async with approvals.lease(
+        bridge, f"command-approval:{event_id}", seconds=240,
+        busy="This confirmation is already being processed.",
+    ):
+        saved = await asyncio.to_thread(approvals.load_json, storage, path)
+        if saved is None:
+            raise ValueError("This confirmation is unavailable.")
+        proposal, generation = saved
         team = payload.get("team", {}).get("id", "")
         user = payload.get("user", {}).get("id", "")
         channel = payload.get("channel", {}).get("id", "")
@@ -226,32 +232,55 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
             raise ValueError("Requester identity changed.")
         if payload.get("message", {}).get("ts") != proposal.get("notice_ts"):
             raise ValueError("Confirm from the original request message.")
+        if verb == "again":
+            if proposal["state"] not in {"pending", "expired"}:
+                return {}
+            record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
+            if not record or record["thread_key"] != proposal["thread_key"]:
+                raise ValueError("The original request is unavailable.")
+            grant = await asyncio.to_thread(
+                access.resolve, bridge.app, bridge.settings, storage, record
+            )
+            args = proposal["command"]
+            cmd = commands.Command(args["name"], tuple(args["args"]), args["force"])
+            authorize(bridge, storage, cmd, grant, record)
+            record.pop("approval_expired", None)
+            if proposal["state"] == "expired":
+                proposal.update(state="pending", expires=KIND.deadline(),
+                                project=grant.doc.projects[cmd.args[0]].model_dump(mode="json"))
+                await asyncio.to_thread(approvals.save, storage, path, proposal, generation)
+            await propose(bridge, event_id, record, storage, cmd, grant)
+            await approvals.save_record(bridge, event_id, record)
+            return {}
         if proposal["state"] == "cancelled" and proposal.get("notification_pending"):
-            await AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5).chat_update(
-                channel=channel, ts=proposal["notice_ts"], text="Change cancelled.", blocks=[]
+            await approvals.card(
+                AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
+                channel, proposal["notice_ts"], "Change cancelled.", [],
             )
             proposal["notification_pending"] = False
-            await asyncio.to_thread(storage.put_if, path, json.dumps(proposal).encode(), generation)
+            await asyncio.to_thread(approvals.save, storage, path, proposal, generation)
             return {}
         if proposal["state"] in {"completed", "cancelled", "expired"}:
             return {}
-        if proposal["state"] == "pending" and proposal["expires"] < time.time():
-            proposal["state"] = "expired"
-            await asyncio.to_thread(storage.put_if, path, json.dumps(proposal).encode(), generation)
-            raise ValueError("This confirmation expired. Send a new request.")
+        if proposal["state"] == "pending" and approvals.expired(proposal["expires"]):
+            record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
+            if record:
+                await expire_record(bridge, storage, event_id, record, proposal, generation)
+            raise ValueError("This confirmation expired. Use Request again for fresh confirmation.")
         if verb == "cancel":
             if proposal["state"] != "pending":
                 raise ValueError("This change has already started.")
             proposal["state"] = "cancelled"
             proposal["notification_pending"] = True
             generation = await asyncio.to_thread(
-                storage.put_if, path, json.dumps(proposal).encode(), generation
+                approvals.save, storage, path, proposal, generation
             )
-            await AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5).chat_update(
-                channel=channel, ts=proposal["notice_ts"], text="Change cancelled.", blocks=[]
+            await approvals.card(
+                AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
+                channel, proposal["notice_ts"], "Change cancelled.", [],
             )
             proposal["notification_pending"] = False
-            await asyncio.to_thread(storage.put_if, path, json.dumps(proposal).encode(), generation)
+            await asyncio.to_thread(approvals.save, storage, path, proposal, generation)
             return {}
         record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
         if not record or record["thread_key"] != proposal["thread_key"]:
@@ -276,7 +305,7 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
         if proposal["state"] == "pending":
             proposal["state"] = "executing"
             generation = await asyncio.to_thread(
-                storage.put_if, path, json.dumps(proposal).encode(), generation
+                approvals.save, storage, path, proposal, generation
             )
         record["command_expected_project"] = proposal["project"]
         try:
@@ -285,7 +314,41 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
             await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
         proposal["state"] = "completed"
         proposal["result"] = record.get("notice_text", "")
-        await asyncio.to_thread(storage.put_if, path, json.dumps(proposal).encode(), generation)
+        await asyncio.to_thread(approvals.save, storage, path, proposal, generation)
         return {}
-    finally:
-        await bridge.repository.release_event(mutex, claim.token)
+
+
+async def expire_record(
+    bridge: BatchBridge, storage: Storage, event_id: str, record: dict[str, Any],
+    proposal: dict[str, Any], generation: str,
+) -> None:
+    if (proposal["state"] not in {"pending", "expired"}
+            or not approvals.expired(proposal["expires"])):
+        return
+    proposal["state"] = "expired"
+    await asyncio.to_thread(approvals.save, storage, key(event_id), proposal, generation)
+    record["status"] = "complete"  # Release the queue without claiming the change ran.
+    await approvals.expired_card(bridge, KIND, event_id, record)
+    await approvals.save_record(bridge, event_id, record)
+
+
+async def expire(bridge: BatchBridge, storage: Storage, event_id: str) -> None:
+    async with approvals.lease(bridge, f"command-approval:{event_id}", seconds=240):
+        saved = await asyncio.to_thread(approvals.load_json, storage, key(event_id))
+        record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
+        if saved and record:
+            await expire_record(bridge, storage, event_id, record, *saved)
+
+
+async def decide(bridge: BatchBridge, storage: Storage, payload: dict[str, Any], background: Any
+                 ) -> dict[str, Any]:
+    return await _handle(bridge, storage, payload)
+
+
+KIND = approvals.Kind("command", (PREFIX,), key, 600, decide, expire)
+
+
+async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]) -> dict[str, Any]:
+    from fastapi import BackgroundTasks
+
+    return await approvals.handle(bridge, storage, payload, BackgroundTasks())

@@ -305,3 +305,31 @@ async def test_signed_route_dispatches_owner_actions_before_legacy_mapping(appro
     assert await connector.slack_actions(http, background) == {}
     saved = await bridge.repository.get_connector_state(requests.key(row.id))
     assert saved["state"] == "denied"
+
+
+async def test_access_expiry_notifies_requester_and_safe_renewal_never_grants(approvals):
+    bridge = approvals
+    _, _, _, row, _ = await request(bridge, private=True)
+    row.expires = 1
+    await requests.save(bridge, row)
+    await requests.KIND.expire(bridge, bridge.store, row.id)
+    saved = requests.AccessRequest.model_validate(
+        await bridge.repository.get_connector_state(requests.key(row.id))
+    )
+    assert saved.state == "expired" and saved.notification == "sent"
+    message = bridge.approval_client.chat_postMessage.call_args.kwargs
+    assert message["channel"] == row.channel and "Request again" in str(message["blocks"])
+    retry = click(saved, "again", user={"id": "U2"}, channel={"id": row.channel},
+                  message={"ts": saved.notification_ts},
+                  container={"channel_id": row.channel, "message_ts": saved.notification_ts})
+    forged = copy.deepcopy(retry)
+    forged["message"]["ts"] = "other"
+    with pytest.raises(PermissionError, match="original conversation"):
+        await requests.handle(bridge, bridge.store, forged, BackgroundTasks())
+    await requests.handle(bridge, bridge.store, retry, BackgroundTasks())
+    renewed = requests.AccessRequest.model_validate(
+        await bridge.repository.get_connector_state(requests.key(row.id))
+    )
+    assert renewed.state == "pending" and not renewed.review and renewed.expires > 1
+    assert not Registry(bridge.store).load().can_use(bridge.pid, "bob@example.com")
+    bridge.test_client.create_job.assert_not_called()
