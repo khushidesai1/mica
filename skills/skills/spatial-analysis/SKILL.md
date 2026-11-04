@@ -61,8 +61,9 @@ Proseg's `um_per_px` must come from verified sample metadata or the user, not it
   Never point `store_path`, `output_path`, or `temp_dir`
   into the read-only data mount, `inputs/`, or an existing result directory. Proseg removes
   its temp directory on success. Use distinct temp directories and check for existing files.
-- The supplied image is CPU-only. Set `gpu=False` explicitly and use the cached `cyto3` model.
-  Other models are unavailable. Do not infer that a GPU exists from the upstream default.
+- The bundled `/opt/sap` environment is CPU-only. Set `gpu=False` explicitly and use its cached
+  `cyto3` model. For GPU Cellpose, follow the separate Cellpose skill and registered CUDA
+  environment through `run_gpu`. Do not infer GPU execution from the upstream SAP default.
 - Cellpose requires an active Dask client. The Slack sandbox forbids TCP listeners, so use
   an in-process scheduler with no dashboard; do not disable the sandbox:
 

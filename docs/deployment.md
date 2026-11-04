@@ -138,6 +138,15 @@ approved worker deadline. Cellpose's adapter is bundled at
 `/opt/pistachio/plugin/skills/cellpose/scripts/segment.py`, using the existing pinned environments
 and model weights.
 
+GPU worker guidance requires checking imports and a small CUDA operation through `run_gpu`
+before loading large inputs or training. Missing NVIDIA devices in Bash are expected under its CPU sandbox.
+The environment catalog includes the GPU image's pinned Torch/CUDA package versions;
+`ensure_packages` returns the registered environment id and CUDA metadata for immediate use.
+That metadata does not establish device or driver compatibility. When a method such as ResolVI
+needs packages beyond a registered CUDA environment, use an isolated package runtime with
+supported version constraints and repeat the small preflight. If no usable runtime is available,
+report the failure; a requested GPU task must not silently become a full-data CPU probe or run.
+
 For a new GPU architecture, use `scripts/check_gpu_hardware.py` for bounded CUDA arithmetic in
 the actual general-tool sandbox, including device and credential isolation. It performs no model
 inference or scientific workflow and uses no project mounts. Reuse prior T4/L4 inference evidence

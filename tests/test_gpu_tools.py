@@ -39,6 +39,24 @@ def test_gpu_tool_is_registered_only_on_gpu_workers_and_uses_run_allowance(tmp_p
     assert not any("cellpose_" in name for name in gpu.allowed_tools)
 
 
+@pytest.mark.parametrize("runtimes", [False, True])
+def test_gpu_worker_requires_real_tool_preflight_before_large_work(tmp_path, runtimes):
+    ctx = Context(tmp_path, tmp_path / "data", project_md="")
+    settings = Settings(_env_file=None, gpu_worker=True, runtimes_enabled=runtimes)
+    prompt = build_options(ctx, settings).system_prompt["append"]
+    assert "run with /opt/sci/bin/python" not in prompt
+    assert "Use run_gpu with a CUDA environment id" in prompt
+    assert "Bash intentionally hides GPU" in prompt
+    assert "Before loading\nlarge inputs or training" in prompt
+    assert "complete a small CUDA operation" in prompt
+    assert "full-data CPU probe/training without explicit user approval" in prompt
+    if runtimes:
+        assert "scvi/ResolVI" in prompt and "isolated=true" in prompt
+        assert "nvidia-smi's CUDA label alone\ndo not prove compatibility" in prompt
+    else:
+        assert "cannot install packages" in prompt and "ensure_packages" not in prompt
+
+
 def test_environment_requires_known_cuda_environment_and_installed_interpreter(monkeypatch):
     settings = Settings(_env_file=None, gpu_worker=True)
     with pytest.raises(ValueError, match="approved GPU"):

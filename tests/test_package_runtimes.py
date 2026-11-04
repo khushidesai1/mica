@@ -8,6 +8,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock
 from zipfile import ZipFile
 
@@ -443,6 +444,72 @@ async def test_mcp_install_failure_records_receipt_and_next_call_can_continue(se
     manager.ensure.return_value = event
     result = await tool.handler({"packages": ["docrep"], "reason": "Continue"})
     assert json.loads(result["content"][0]["text"])["status"] == "ready"
+
+
+@pytest.mark.parametrize("cuda", [False, True])
+async def test_package_result_identifies_gpu_environment_without_claiming_validation(
+    settings, cuda
+):
+    settings.gpu_worker = True
+    runtime = record(settings)
+    runtime.python = str(settings.runtime_root / runtime.id / "bin/python")
+    runtime.packages = {
+        "torch": "2.7.1" if cuda else "2.7.1+cpu",
+        "nvidia-cuda-runtime-cu12": "12.6.77",
+    }
+    manager = RuntimeManager(settings)
+    manager.ensure = Mock(return_value=manager.record(runtime, "Ready", reused=True, saved=True))
+    result = await ensure_tool(manager).handler({"packages": ["torch"], "reason": "Use CUDA"})
+    body = json.loads(result["content"][0]["text"])
+    assert body["environment"]["id"] == runtime.id
+    assert body["environment"]["cuda"] is cuda
+    assert body["gpu_validation"] == "not_run"
+    if cuda:
+        assert "small CUDA operation" in body["execution_guidance"]
+    else:
+        assert "not registered for CUDA" in body["execution_guidance"]
+        assert "do not replace requested GPU work" in body["execution_guidance"]
+
+
+async def test_saved_cuda_runtime_can_be_selected_by_existing_gpu_tool_in_same_turn(
+    settings, tmp_path, monkeypatch
+):
+    from mica.agents.analysis import gpu_tools
+
+    settings.gpu_worker = True
+    runtime = record(settings)
+    runtime.python = str(settings.runtime_root / runtime.id / "bin/python")
+    runtime.packages = {"torch": "2.7.1", "nvidia-cuda-runtime-cu12": "12.6.77"}
+    python = Path(runtime.python)
+    python.parent.mkdir(parents=True)
+    python.write_text("# Selection fixture, never executed\n")
+    installer = Mock()
+    installer.identity.return_value = ("3.12.12", "base", {})
+    manager = RuntimeManager(settings, installer=installer)
+    manager.store = Mock()
+    manager.store.find.return_value = runtime
+    save = AsyncMock(return_value={"fixture": True})
+
+    async def select_only(request, work, data, config, records):
+        selected = gpu_tools.select_environment(request.environment, config, records)
+        return {"environment": selected.id, "exit_status": 0, "timed_out": False}
+
+    monkeypatch.setattr(gpu_tools, "execute", select_only)
+    tool = gpu_tools.tools(
+        tmp_path, tmp_path, settings, save, records=lambda: manager.records.values()
+    )[0]
+    request = {
+        "environment": runtime.id, "script": "code/run.py", "output_dir": "outputs/check"
+    }
+    assert (await tool.handler(request))["isError"]
+    restored = await ensure_tool(manager).handler({"packages": ["torch"], "reason": "Restore"})
+    body = json.loads(restored["content"][0]["text"])
+    assert body["environment"]["id"] == runtime.id and body["environment"]["cuda"]
+    assert body["gpu_validation"] == "not_run"
+    assert not (await tool.handler(request))["isError"]
+    manager.store.restore.assert_called_once_with(runtime, installer)
+    installer.create.assert_not_called()
+    save.assert_awaited_once()
 
 
 def test_setup_notice_includes_built_source_packages(settings):

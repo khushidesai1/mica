@@ -21,7 +21,7 @@ from .runtime_install import Installer, RuntimeFailure, RuntimeRecord
 from .runtime_policy import RuntimePolicyError, normalize
 from .runtime_store import RuntimeStore, encode
 from .storage import Conflict, Storage
-from .toolkit_catalog import CATALOG
+from .toolkit_catalog import CATALOG, environment_view
 
 log = logging.getLogger(__name__)
 TOOL_NAME = "mcp__pistachio__ensure_packages"
@@ -317,6 +317,28 @@ def ensure_tool(manager: RuntimeManager) -> SdkMcpTool[Any]:
                 args.get("isolated", False),
             )
             result = {**asdict(event), "status": "ready", "size_mb": event.size_bytes / 1024**2}
+            registered = environment_view(manager.settings, manager.records.values())
+            environment = next(
+                (
+                    row
+                    for row in registered
+                    if row["id"] == event.runtime_id
+                    or (event.kind == "image" and row["python"] == event.python)
+                ),
+                None,
+            )
+            result["environment"] = environment
+            result["gpu_validation"] = "not_run"
+            if manager.settings.gpu_worker:
+                result["execution_guidance"] = (
+                    "Use run_gpu with this environment id. Before loading large inputs or "
+                    "training, verify required imports and a small CUDA operation there. "
+                    "CUDA package metadata does not verify device/driver compatibility."
+                    if environment and environment["cuda"]
+                    else "This environment is not registered for CUDA on this worker. "
+                    "Choose or restore a compatible CUDA environment for run_gpu; "
+                    "do not replace requested GPU work with a full-data CPU run."
+                )
             return {"content": [{"type": "text", "text": json.dumps(result)}]}
         except (ValueError, OSError) as exc:
             if isinstance(exc, RuntimeFailure):
