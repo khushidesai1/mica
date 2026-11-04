@@ -205,7 +205,7 @@ class Transfers:
             "connection:" + url.rsplit("#", 1)[-1].split(".")[0],
             private_link=True,
         )
-        record["reply_handoff"] = "atomx"
+        record["reply_handoff"] = "transfer"
         return (
             "I sent a private link to manage your personal AtoMx connection. "
             "Please use that form; do not send credentials in chat or email."
@@ -221,7 +221,7 @@ class Transfers:
         # Each state change advances the tick; old scheduled deliveries become harmless.
         await job_lifecycle.enqueue(
             self.app,
-            f"atomx-{p['id']}-{p['tick']}",
+            f"transfer-{p['id']}-{p['tick']}",
             f"/api/v1/internal/slack-analysis/transfers/{p['id']}/{p['tick']}",
             delay,
         )
@@ -296,7 +296,7 @@ class Transfers:
             if existing:
                 if existing["state"] not in TERMINAL:
                     await self.schedule(existing)
-                record["reply_handoff"] = "atomx"
+                record["reply_handoff"] = "transfer"
                 return "Your transfer request is recorded in this thread."
             login = await self.login(grant.email)
             snapshot = await project_memory.GitHubMemory(self.settings).read(grant.project_id)
@@ -336,7 +336,7 @@ class Transfers:
             await self.transition(
                 p, "prepare" if request and login.get("status") == "valid" else "login"
             )
-        record["reply_handoff"] = "atomx"
+        record["reply_handoff"] = "transfer"
         return (
             "Preparing your AtoMx transfer request."
             if request

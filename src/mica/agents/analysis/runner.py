@@ -36,7 +36,7 @@ from claude_agent_sdk.types import (
     StreamEvent,
 )
 
-from . import prompts, script_capture, write_worker
+from . import prompts, script_capture, toolkit_catalog, write_worker
 from .attachments import classify
 from .config import Settings
 from .deliverables import send_tool
@@ -179,7 +179,7 @@ def build_options(
             name == "Skill"
             and not ctx.survey_only
             and args.get("skill")
-            in {"mica:spatial-analysis", "mica:cellpose", "mica:project-knowledge"}
+            in toolkit_catalog.BUNDLED_SKILLS
         ):
             return {}
         if name not in tools or args.get("dangerouslyDisableSandbox"):
@@ -364,7 +364,7 @@ def build_options(
         },
         setting_sources=[],
         plugins=[{"type": "local", "path": str(settings.plugin_dir)}],
-        skills=["mica:spatial-analysis", "mica:cellpose", "mica:project-knowledge"]
+        skills=list(toolkit_catalog.BUNDLED_SKILLS)
         if not ctx.survey_only
         else [],
         tools=tools + (["Skill"] if not ctx.survey_only else []),
