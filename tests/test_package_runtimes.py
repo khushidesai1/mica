@@ -4,11 +4,14 @@ import hashlib
 import io
 import json
 import tarfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 from zipfile import ZipFile
 
+import httpx
 import pytest
 
 from mica.agents.analysis import runtime_install, runtime_network, runtime_policy, runtime_tools
@@ -154,6 +157,34 @@ def test_mirror_hides_source_files_from_uv_but_retains_pinned_candidate(mirror, 
     assert len(candidate) == 1 and candidate[0].version == "0.3.2"
     with pytest.raises(ValueError, match="Unrecognized"):
         mirror.get("/files/" + candidate[0].filename)
+
+
+def test_mirror_single_flight_cache_and_transient_failure_over_http(tmp_path, monkeypatch):
+    calls = []
+    document = {"name": "docrep", "files": [index_file()]}
+    with WheelMirror(tmp_path / "http", {"boto3"}, 1024**2) as server:
+        def fetch(url, **kwargs):
+            calls.append(url)
+            if len(calls) == 1:
+                raise httpx.ConnectTimeout("temporary registry failure")
+            time.sleep(0.05)
+            return json.dumps(document).encode()
+
+        monkeypatch.setattr(server, "fetch", fetch)
+        with httpx.Client(trust_env=False, timeout=3) as client:
+            url = server.url + "/simple/docrep/"
+            assert client.get(url).status_code == 502
+            assert not server.policy_errors and not server.simple
+            with ThreadPoolExecutor(max_workers=12) as pool:
+                responses = list(pool.map(lambda _: client.get(url), range(12)))
+            assert all(response.status_code == 200 for response in responses)
+            assert all(not response.json()["files"] for response in responses)
+            assert len(calls) == 2 and server.indexes["docrep"] == document["files"]
+            server.add_wheel(wheel(tmp_path / "built"))
+            assert "/built/docrep/" in client.get(url).json()["files"][0]["url"]
+            assert len(calls) == 2
+            assert client.get(server.url + "/simple/boto3/").status_code == 403
+            assert server.policy_errors == ["Package denied by runtime policy"]
 
 
 def test_source_selection_obeys_age_python_constraints_and_existing_wheels(mirror):
@@ -345,6 +376,42 @@ def test_policy_refusals_are_recomputed_and_not_cached(settings, tmp_path, store
         with pytest.raises(RuntimePolicyError, match="too new"):
             manager.ensure(["docrep"], "Read documentation")
     assert installer.create.call_count == 2 and not manager.failures
+    assert storage is None or not storage.keys(f"{PREFIX}/failures")
+
+
+@pytest.mark.parametrize("stored", [False, True])
+def test_transitive_build_policy_refusal_is_not_cached(
+    settings, mirror, tmp_path, monkeypatch, stored
+):
+    installer = Installer(settings)
+    installer.mirror = mirror
+    source, archive = source_archive(tmp_path)
+    monkeypatch.setattr(
+        mirror, "fetch_source", lambda _, path: path.write_bytes(archive.read_bytes())
+    )
+    monkeypatch.setattr(runtime_install.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(installer, "identity", lambda: ("3.12.12", "base", {}))
+
+    def refuse_build_dependency(specs, kind, base):
+        assert "setuptools" in specs and "boto3" not in specs
+        mirror.policy_errors.append("Package boto3 is denied by runtime policy.")
+        raise ResolutionFailure("No solution found for a transitive build dependency")
+
+    resolve = Mock(side_effect=refuse_build_dependency)
+    monkeypatch.setattr(installer, "resolve", resolve)
+
+    def build(*args, **kwargs):
+        installer.scratch = tmp_path / f"attempt-{resolve.call_count}"
+        installer.scratch.mkdir()
+        installer.build_sdist(source)
+
+    monkeypatch.setattr(installer, "create", build)
+    storage = LocalStorage(tmp_path / "store") if stored else None
+    manager = RuntimeManager(settings, installer=installer, storage=storage)
+    for _ in range(2):
+        with pytest.raises(RuntimePolicyError, match="boto3.*denied"):
+            manager.ensure(["docrep"], "Read documentation")
+    assert resolve.call_count == 2 and not manager.failures
     assert storage is None or not storage.keys(f"{PREFIX}/failures")
 
 
