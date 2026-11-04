@@ -71,7 +71,7 @@ async def offline():
         print("MICA_OFFLINE_GPU_BOUNDARY_PASSED", flush=True)
 
 
-async def main():
+async def main(storage_factory=LocalStorage, *, clean_temporary=True):
     assert os.environ.get("VERIFY_GPU") == "1"
     assert_controller()
     gpu_type = os.environ["VERIFY_GPU_TYPE"]
@@ -101,7 +101,7 @@ async def main():
         (work / "code/check.py").write_text(
             probe(work, data, private, int(os.environ.get("VERIFY_GPU_COUNT", "1")))
         )
-        storage = LocalStorage(root / "storage")
+        storage = storage_factory(root / "storage")
         stages = Stages(storage, work, "a" * 32, 0, thread_key="smoke", project_id="smoke")
 
         async def save(result):
@@ -145,7 +145,8 @@ async def main():
         assert gpu_type.split("-")[0].upper() in provenance["gpu_name"].upper()
         assert provenance["input_shape"] == [256, 256]
         assert len(provenance["input_sha256"]) == 64
-        cleanup_temporary(storage, "a" * 32)
+        if clean_temporary:
+            cleanup_temporary(storage, "a" * 32)
         restored = Stages(
             storage, root / "restored", "b" * 32, 0, thread_key="smoke", project_id="smoke"
         )
@@ -163,6 +164,7 @@ async def main():
                     "durable_save": "passed",
                     "isolation": "passed",
                     "synthetic": True,
+                    "temporary_cleanup_exercised": clean_temporary,
                 }
             ),
             flush=True,
