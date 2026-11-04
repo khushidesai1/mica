@@ -348,6 +348,42 @@ def test_policy_refusals_are_recomputed_and_not_cached(settings, tmp_path, store
     assert storage is None or not storage.keys(f"{PREFIX}/failures")
 
 
+@pytest.mark.parametrize("stored", [False, True])
+def test_transitive_build_policy_refusal_is_not_cached(
+    settings, mirror, tmp_path, monkeypatch, stored
+):
+    installer = Installer(settings)
+    installer.mirror = mirror
+    source, archive = source_archive(tmp_path)
+    monkeypatch.setattr(
+        mirror, "fetch_source", lambda _, path: path.write_bytes(archive.read_bytes())
+    )
+    monkeypatch.setattr(runtime_install.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(installer, "identity", lambda: ("3.12.12", "base", {}))
+
+    def refuse_build_dependency(specs, kind, base):
+        assert "setuptools" in specs and "boto3" not in specs
+        mirror.policy_errors.append("Package boto3 is denied by runtime policy.")
+        raise ResolutionFailure("No solution found for a transitive build dependency")
+
+    resolve = Mock(side_effect=refuse_build_dependency)
+    monkeypatch.setattr(installer, "resolve", resolve)
+
+    def build(*args, **kwargs):
+        installer.scratch = tmp_path / f"attempt-{resolve.call_count}"
+        installer.scratch.mkdir()
+        installer.build_sdist(source)
+
+    monkeypatch.setattr(installer, "create", build)
+    storage = LocalStorage(tmp_path / "store") if stored else None
+    manager = RuntimeManager(settings, installer=installer, storage=storage)
+    for _ in range(2):
+        with pytest.raises(RuntimePolicyError, match="boto3.*denied"):
+            manager.ensure(["docrep"], "Read documentation")
+    assert resolve.call_count == 2 and not manager.failures
+    assert storage is None or not storage.keys(f"{PREFIX}/failures")
+
+
 async def test_mcp_install_failure_records_receipt_and_next_call_can_continue(settings, tmp_path):
     manager = RuntimeManager(
         settings,

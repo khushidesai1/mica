@@ -625,6 +625,8 @@ class Installer:
         except RuntimePolicyError:
             raise
         except (RuntimeFailure, ValueError) as exc:
+            if self.mirror.policy_errors:
+                raise RuntimePolicyError(self.mirror.policy_errors[-1]) from exc
             raise RuntimeFailure(ADMIN_BUILD + " " + str(exc)[-1500:]) from exc
         if (name, version) != (source.name, source.version):
             raise RuntimeFailure("Built wheel does not match the pinned PyPI source")
