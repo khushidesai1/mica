@@ -171,7 +171,7 @@ async def propose(bridge: BatchBridge, record: dict[str, Any], grant: access.Gra
             f"{int(time.time() // 86400)}"
         ).encode()
     ).hexdigest()[:32]
-    async with approvals.lease(bridge, key(request_id)):
+    async with approvals.lease(bridge, key(request_id), busy_error=RuntimeError):
         saved = await bridge.repository.get_connector_state(key(request_id))
         row = (
             AccessRequest.model_validate(saved)
@@ -237,6 +237,8 @@ async def notify_decision(
     try:
         raw = await bridge.repository.get_connector_state(key(request_id))
         row = AccessRequest.model_validate(raw)
+        if row.state == "pending":
+            return  # A renewal won the gap after expiry released its lease.
         client = client_for(bridge)
         await approvals.card(client, row.owner_channel, row.message_ts,
                              f"Mica access request {row.state}", blocks(row))

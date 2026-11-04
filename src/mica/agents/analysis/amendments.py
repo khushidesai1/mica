@@ -306,10 +306,14 @@ async def presented(bridge: BatchBridge, event_id: str, record: dict[str, Any]) 
 
 
 async def expire_record(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> None:
-    if record["status"] != "pending" or record.get("amendment_choice"):
+    if record["status"] != "pending":
         return
-    record.update(amendment_choice="follow", approval_expired=KIND.name)
-    await approvals.save_record(bridge, event_id, record)
+    choice = record.get("amendment_choice")
+    if choice and not (choice == "follow" and record.get("approval_expired") == KIND.name):
+        return
+    if not choice:
+        record.update(amendment_choice="follow", approval_expired=KIND.name)
+        await approvals.save_record(bridge, event_id, record)
     await approvals.expired_card(
         bridge, KIND, event_id, record,
         text="This amendment choice expired. Your message is kept as a follow-up. "

@@ -315,3 +315,20 @@ async def test_expired_choice_keeps_followup_and_can_be_reviewed_again(bridge): 
     await amendments.handle(bridge, bridge.store, click(second, renewed, "add"))
     assert second in amendments.load(bridge.store, first).items
     assert bridge.test_client.create_job.call_count == 1
+
+
+async def test_expired_amendment_card_is_repaired_after_a_temporary_slack_failure(bridge):  # noqa: F811
+    first, second, record = await start(bridge)
+    record["amendment_expires"] = 1
+    await bridge.repository.set_connector_state("claude-event:" + second, record)
+    bridge.test_slack.chat_update.reset_mock()
+    bridge.test_slack.chat_update.side_effect = [RuntimeError("temporary Slack failure"), {}]
+    with pytest.raises(RuntimeError, match="temporary Slack failure"):
+        await amendments.expire(bridge, bridge.store, second)
+    await amendments.expire(bridge, bridge.store, second)
+    saved = await bridge.repository.get_connector_state("claude-event:" + second)
+    assert saved["amendment_choice"] == "follow" and saved["previous"] == first
+    assert saved["approval_expired"] == "amendment"
+    assert bridge.test_slack.chat_update.await_count == 2
+    assert "Request again" in str(bridge.test_slack.chat_update.call_args.kwargs["blocks"])
+    assert not amendments.load(bridge.store, first).items
