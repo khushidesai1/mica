@@ -96,6 +96,11 @@ def open_directory(root: Path, parts: tuple[str, ...], *, create: bool = False) 
         raise
 
 
+def script_binding(source: Path, fd: int) -> list[str]:
+    """Let bwrap retain and copy the descriptor before replacing its proc namespace."""
+    return ["--ro-bind-data", str(fd), str(source)]
+
+
 def command(
     request: RunGPU,
     source: Path,
@@ -119,7 +124,7 @@ def command(
     )
     if script_fd is not None:
         index = args.index("--")
-        args[index:index] = ["--ro-bind", f"/proc/self/fd/{script_fd}", str(source)]
+        args[index:index] = script_binding(source, script_fd)
     return args
 
 
