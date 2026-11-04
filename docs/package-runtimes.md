@@ -62,12 +62,13 @@ Capture and explicitly retain the seeded denylist in the deployed environment. C
 the intended scientific dependency resolution before rollout. Roll back enablement with
 `AGENT_RUNTIMES_ENABLED=false`; saved runtime data remains inert.
 
-Verification needs a small real CPU install using a newer compatible scvi-tools version, followed
-by reuse from another project's private thread and a denied-package check. Check worker NAT egress,
-offline validation and toolkit publication together. Use tiny synthetic data; this does not require
-a GPU job or a full scientific analysis. Record the installed size and increase the configured size
-limit only if the measured runtime requires it. Source-build and policy unit tests use fakes and do
-not claim that the live worker's network or storage permissions have been verified.
+Deployment verification uses one bounded CPU install of a small wheel and a pure-Python source
+package, then remote restore and a denied-package check in actual worker isolation. It checks NAT
+egress, offline validation and toolkit publication without a scientific workload. A newer compatible
+scvi-tools runtime, one tiny synthetic training epoch and reuse from another project's private
+thread remain owner acceptance checks. Record installed size before changing the configured limit.
+Source-build and policy unit tests use fakes and do not claim that live worker network or storage
+permissions have been verified.
 
 This feature does not add check-only mode, CUDA-driver matching or a new runtime browser. Running
 an installed runtime on a GPU still requires the separately enabled GPU execution tool and an
