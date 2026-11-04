@@ -200,11 +200,11 @@ DESCRIPTIONS = {
         "or hardware requirements."
     ),
     ("propose_transfer"): (
-        "Request an AtoMx sample transfer through the managed transfer service."
+        "Request a sample transfer through the managed transfer service."
         " Use the exact sample and optional explicit "
         "export_root/as_sample/destinations. Do not use a compute worker to "
         "transfer data. Never ask for passwords or connection secrets; use "
-        "propose_command/connect atomx for personal connection management. This"
+        "propose_command for personal connection management. This"
         " proposes work; it does not claim completion."
     ),
     ("propose_command"): (
@@ -215,7 +215,7 @@ DESCRIPTIONS = {
         " brief. repos add/remove require an explicitly supplied owner/repo; "
         "reading a repo does not authorize adding it. share/unshare changes "
         "collaborators; add-owner/remove-owner changes ownership. scripts "
-        "controls returning code, not executing it. connect atomx opens private"
+        "controls returning code, not executing it. Connection commands open private"
         " connection management; never request credentials in chat. Code "
         "enforces DM, email, membership and approval policy. Resolve ordinals "
         "only against the supplied unexpired pending choices; ask one concise "

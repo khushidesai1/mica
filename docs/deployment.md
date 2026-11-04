@@ -459,3 +459,15 @@ saved work and asks for fresh confirmation; it cannot resume an old run after it
 has moved on. Preserve original approval keys/action IDs and legacy overwrite aliases during
 rollback. Use the owner's scratch output path for the optional approve/reject live acceptance;
 no real scientific work is needed to verify this controller change.
+
+
+### Generic transfer receipt compatibility
+
+The transfer handoff update is API-only and preserves live worker images and runtime settings.
+Legacy handoffs and private-delivery receipt IDs remain readable during the transition. Generic
+logical email stages retain the previous durable outbox key for new intents, so an older
+controller also sees an ambiguous send and cannot repeat it. Delivery reads either saved
+namespace; if both exist, operator reconciliation is required. Do not rename or delete saved
+outbox objects during rollout. Existing queued transfer
+tasks remain valid because the endpoint and tick checks are unchanged. This release needs
+unit/contract checks; it does not need a live transfer or another scientific/GPU run.

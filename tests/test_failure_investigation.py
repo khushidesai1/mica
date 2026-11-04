@@ -386,3 +386,12 @@ async def test_disabled_investigation_and_resolved_incidents_do_not_call_provide
     config.failure_investigation_enabled = True
     await observability.flush(repository, settings, config)
     assert provider == []
+
+
+@pytest.mark.parametrize("handoff", ["transfer", "atomx"])
+async def test_old_and_new_handoffs_have_generic_failure_evidence(repository, handoff):
+    row = await incident(repository)
+    packet = investigation.evidence(
+        row, "active", {"reply_handoff": handoff}, observability.CATALOG
+    )
+    assert packet["saved_request_state"] == {"reply_handoff": "transfer"}

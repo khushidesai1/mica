@@ -12,6 +12,7 @@ import httpx
 from mica.storage.failures import FailureAssessment, FailureInvestigation, Incident, digest
 
 from .project_memory import SECRET
+from .transfer_state import HANDOFF, HANDOFFS
 
 SECONDS = 8
 MAX_ATTEMPTS = 3
@@ -56,7 +57,7 @@ ENUMS = {
     "tier": {"standard", "large", "xlarge", "gpu"},
     "gpu_type": {"t4", "l4", "a100", "a100-80gb", "h100"},
     "provisioning": {"SPOT", "STANDARD"},
-    "reply_handoff": {"atomx"},
+    "reply_handoff": set(HANDOFFS),
 }
 
 
@@ -82,11 +83,11 @@ def evidence(
         for field, allowed in ENUMS.items():
             value = record.get(field)
             if isinstance(value, str) and value in allowed:
-                state[field] = value
+                state[field] = HANDOFF if field == "reply_handoff" else value
         for field in ("attempt", "preemption_count", "resize_count", "max_run_seconds"):
             value = record.get(field)
             if type(value) is int and 0 <= value <= 31_536_000:
-                state[field] = value
+                state[field] = HANDOFF if field == "reply_handoff" else value
         for field in ("worker_stopped", "cancel_requested"):
             if type(record.get(field)) is bool:
                 state[field] = record[field]
