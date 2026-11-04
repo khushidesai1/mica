@@ -24,7 +24,7 @@ from mica.agents.analysis.runtime_policy import POLICY_VERSION, RuntimePolicyErr
 from mica.agents.analysis.runtime_sdist import SourceDistribution, extract_source
 from mica.agents.analysis.runtime_store import PREFIX, RuntimeStore, encode
 from mica.agents.analysis.runtime_tools import RuntimeManager, ensure_tool
-from mica.agents.analysis.runtime_wheels import check_pure_wheel
+from mica.agents.analysis.runtime_wheels import check_pure_wheel, check_wheel
 from mica.agents.analysis.storage import LocalStorage
 
 
@@ -90,6 +90,29 @@ def source_archive(tmp_path, members=None):
         "https://files.pythonhosted.org/packages/" + path.name,
         hashlib.sha256(path.read_bytes()).hexdigest(),
     ), path
+
+
+def test_vendored_metadata_does_not_replace_root_wheel_identity(tmp_path):
+    path = wheel(tmp_path, name="setuptools", version="84.2.1")
+    with ZipFile(path, "a") as archive:
+        archive.writestr(
+            "setuptools/_vendor/packaging-26.3.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: packaging\nVersion: 26.3\n",
+        )
+        archive.writestr(
+            "setuptools/_vendor/packaging-26.3.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+    assert check_wheel(path, set(), 1024**2) == ("setuptools", "84.2.1")
+    assert check_pure_wheel(path, set(), 1024**2) == ("setuptools", "84.2.1")
+    with pytest.raises(RuntimePolicyError, match="denied"):
+        check_wheel(path, {"setuptools"}, 1024**2)
+    with ZipFile(path, "a") as archive:
+        archive.writestr(
+            "other-1.dist-info/METADATA", "Metadata-Version: 2.1\nName: other\nVersion: 1\n"
+        )
+    with pytest.raises(ValueError, match="Invalid wheel metadata"):
+        check_wheel(path, set(), 1024**2)
 
 
 def record(settings):
