@@ -15,7 +15,7 @@ from typing import Any
 from slack_sdk.web.async_client import AsyncWebClient
 
 from . import attachments, script_capture, thread_history, write_access
-from .access import AccessMonitor, run_root
+from .access import AccessMonitor
 from .config import Settings
 from .data_links import message_text
 from .deliverables import attachment_issue
@@ -459,36 +459,9 @@ class SlackAgent:
         script_notes: list[str] = []
         capture = getattr(self.runner, "script_capture", None)
         if getattr(self.runner, "return_scripts", False) and capture:
-            try:
-                extra = capture.uploads(turn)
-            except (ValueError, OSError):
-                extra = []
-                for path in list(capture.scripts):
-                    capture.skip(path, "attachment copy could not be prepared")
             script_notes = capture.notes(
                 {path.relative_to(ctx.workdir).as_posix() for path in packaged}
             )
-            packaged_hashes = {
-                digest
-                for members in result.delivery_packages.values()
-                for digest in members.values()
-            }
-            unique_extra = []
-            for upload in extra:
-                digest = await asyncio.to_thread(attachments.file_hash, Path(upload["file"]))
-                if digest not in packaged_hashes:
-                    unique_extra.append(upload)
-            extra = unique_extra
-            for upload in extra:
-                path = Path(upload["file"])
-                root = self.run_prefix or run_root(False, "", ctx.project_slug, "", ctx.thread_ts)
-                object_key = f"{root}/turn-{turn}/{path.relative_to(ctx.workdir)}"
-                try:
-                    await asyncio.to_thread(self.storage.upload, object_key, path)
-                    published[path] = object_key
-                except Exception:
-                    log.warning("Could not archive a returned script")
-            uploads.extend(extra)
         if uploads and not await self.permitted(delivery=True):
             raise PermissionError("Project access changed before file delivery")
         if uploads and not self.terminal_delivery:

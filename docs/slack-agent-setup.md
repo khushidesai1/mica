@@ -631,7 +631,7 @@ examples. Published datasets are read from their bucket locations; unpublished d
 be regenerated. Verified publication locations also enter the worker's project-memory proposal.
 
 Within the same request, recovery preserves the active SDK session and cost records, a consistent
-SQLite backup, executed-script copies and immutable completed stages. Worker calls use the
+SQLite backup, trusted code snapshots and immutable completed stages. Worker calls use the
 pinned CLI's one-hour cache and 12,000-character inline Bash output setting. Full SDK tool-result
 text files are copied into `logs/bash/` up to 8 MiB each. One-hour caching does not cover commands
 longer than its TTL, and its cache writes cost more than five-minute writes.

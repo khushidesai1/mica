@@ -57,7 +57,7 @@ def command(
         enabled = args[0] == "on"
         set_scripts(storage, email, enabled, event_id)
         return (
-            "I'll attach the scripts I run from now on. Say `scripts off` to stop."
+            "I'll attach one ZIP of scripts changed during each request. Say `scripts off` to stop."
             if enabled
             else "I'll stop attaching scripts."
         )

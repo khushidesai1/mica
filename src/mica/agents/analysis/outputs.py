@@ -140,7 +140,7 @@ def select_artifacts(
         else:
             kept.append(path)
     total = sum(sizes[p] for p in kept)
-    # Code/notes and executed-script recovery copies take priority over optional reports/logs.
+    # Code/notes and trusted code snapshot copies take priority over optional reports/logs.
     for path in sorted(kept, key=lambda p: sizes[p], reverse=True):
         if total <= budget:
             break

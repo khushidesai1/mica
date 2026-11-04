@@ -108,7 +108,7 @@ async def test_shared_request_hands_off_without_project_list(chat):
     [
         (Proposal(operation="brief"), "TODO"),
         (Proposal(operation="memory"), "PROJECT.md"),
-        (Proposal(operation="scripts", preference="on"), "attach the scripts"),
+        (Proposal(operation="scripts", preference="on"), "one ZIP of scripts changed"),
         (Proposal(operation="use", selector="liver"), "New threads"),
         (Proposal(operation="connect atomx"), "not available"),
     ],

@@ -79,9 +79,10 @@ isolated interpreter for those scripts; do not duplicate the preinstalled scient
 If setup fails, explain the actual failure and an available alternative."""
 NO_RUNTIMES = """Use installed scientific packages. You cannot install packages in this worker.
 If a necessary package is absent, explain what is missing."""
-SCRIPTS = """The user receives the scripts you run. Keep them reproducible and refer to filenames;
-do not paste whole scripts into the reply. Use prepare_folder_attachment to resend a complete
-script folder without rerunning its analysis."""
+SCRIPTS = """The user receives one ZIP of code/ scripts changed this turn, snapshotted after code
+execution tools. These snapshots do not prove successful execution. Keep code reproducible and
+refer to filenames instead of pasting whole scripts. Use send_files to resend a complete folder
+without rerunning its analysis."""
 
 INIT = """Survey the data using the bounded inventory saved as init_inventory.json in your
 working directory, and write the shared project guide for {data_path}.
