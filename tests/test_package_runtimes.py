@@ -24,7 +24,7 @@ from mica.agents.analysis.runtime_policy import POLICY_VERSION, RuntimePolicyErr
 from mica.agents.analysis.runtime_sdist import SourceDistribution, extract_source
 from mica.agents.analysis.runtime_store import PREFIX, RuntimeStore, encode
 from mica.agents.analysis.runtime_tools import RuntimeManager, ensure_tool
-from mica.agents.analysis.runtime_wheels import check_pure_wheel
+from mica.agents.analysis.runtime_wheels import check_pure_wheel, check_wheel
 from mica.agents.analysis.storage import LocalStorage
 
 
@@ -90,6 +90,29 @@ def source_archive(tmp_path, members=None):
         "https://files.pythonhosted.org/packages/" + path.name,
         hashlib.sha256(path.read_bytes()).hexdigest(),
     ), path
+
+
+def test_vendored_metadata_does_not_replace_root_wheel_identity(tmp_path):
+    path = wheel(tmp_path, name="setuptools", version="84.2.1")
+    with ZipFile(path, "a") as archive:
+        archive.writestr(
+            "setuptools/_vendor/packaging-26.3.dist-info/METADATA",
+            "Metadata-Version: 2.1\nName: packaging\nVersion: 26.3\n",
+        )
+        archive.writestr(
+            "setuptools/_vendor/packaging-26.3.dist-info/WHEEL",
+            "Wheel-Version: 1.0\nRoot-Is-Purelib: true\nTag: py3-none-any\n",
+        )
+    assert check_wheel(path, set(), 1024**2) == ("setuptools", "84.2.1")
+    assert check_pure_wheel(path, set(), 1024**2) == ("setuptools", "84.2.1")
+    with pytest.raises(RuntimePolicyError, match="denied"):
+        check_wheel(path, {"setuptools"}, 1024**2)
+    with ZipFile(path, "a") as archive:
+        archive.writestr(
+            "other-1.dist-info/METADATA", "Metadata-Version: 2.1\nName: other\nVersion: 1\n"
+        )
+    with pytest.raises(ValueError, match="Invalid wheel metadata"):
+        check_wheel(path, set(), 1024**2)
 
 
 def record(settings):
@@ -322,6 +345,42 @@ def test_policy_refusals_are_recomputed_and_not_cached(settings, tmp_path, store
         with pytest.raises(RuntimePolicyError, match="too new"):
             manager.ensure(["docrep"], "Read documentation")
     assert installer.create.call_count == 2 and not manager.failures
+    assert storage is None or not storage.keys(f"{PREFIX}/failures")
+
+
+@pytest.mark.parametrize("stored", [False, True])
+def test_transitive_build_policy_refusal_is_not_cached(
+    settings, mirror, tmp_path, monkeypatch, stored
+):
+    installer = Installer(settings)
+    installer.mirror = mirror
+    source, archive = source_archive(tmp_path)
+    monkeypatch.setattr(
+        mirror, "fetch_source", lambda _, path: path.write_bytes(archive.read_bytes())
+    )
+    monkeypatch.setattr(runtime_install.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(installer, "identity", lambda: ("3.12.12", "base", {}))
+
+    def refuse_build_dependency(specs, kind, base):
+        assert "setuptools" in specs and "boto3" not in specs
+        mirror.policy_errors.append("Package boto3 is denied by runtime policy.")
+        raise ResolutionFailure("No solution found for a transitive build dependency")
+
+    resolve = Mock(side_effect=refuse_build_dependency)
+    monkeypatch.setattr(installer, "resolve", resolve)
+
+    def build(*args, **kwargs):
+        installer.scratch = tmp_path / f"attempt-{resolve.call_count}"
+        installer.scratch.mkdir()
+        installer.build_sdist(source)
+
+    monkeypatch.setattr(installer, "create", build)
+    storage = LocalStorage(tmp_path / "store") if stored else None
+    manager = RuntimeManager(settings, installer=installer, storage=storage)
+    for _ in range(2):
+        with pytest.raises(RuntimePolicyError, match="boto3.*denied"):
+            manager.ensure(["docrep"], "Read documentation")
+    assert resolve.call_count == 2 and not manager.failures
     assert storage is None or not storage.keys(f"{PREFIX}/failures")
 
 
