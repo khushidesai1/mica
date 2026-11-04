@@ -136,8 +136,11 @@ class Installer:
             "UV_CACHE_DIR": str(self.scratch / "uv-cache"),
             "UV_PYTHON_DOWNLOADS": "never",
             "UV_NO_CONFIG": "1",
-            "UV_HTTP_RETRIES": "0",
-            "UV_HTTP_TIMEOUT": "30",
+            "UV_HTTP_RETRIES": "1",
+            # Bound mirror/NAT pressure and leave room for its upstream 30-second timeout.
+            # The overall installer deadline still bounds all attempts.
+            "UV_CONCURRENT_DOWNLOADS": "4",
+            "UV_HTTP_TIMEOUT": "45",
             "UV_NO_PROGRESS": "1",
             "UV_KEYRING_PROVIDER": "disabled",
             "GIT_CONFIG_NOSYSTEM": "1",
