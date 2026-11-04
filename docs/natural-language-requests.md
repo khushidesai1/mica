@@ -1,9 +1,11 @@
 # Natural-language requests
 
 Mica accepts ordinary requests in Slack and email, alongside the existing exact commands.
-The application checks identity and interprets account/control intent before loading project
-memory or starting computation. The model proposes an operation; application code resolves
-the project, checks access, and returns the actual result.
+The application checks identity and project access before loading project memory or starting
+computation. One conversation loop handles ordinary questions and account/control requests;
+without project access it exposes only account commands and owner access requests. The model
+proposes an operation; application code resolves the project, checks access, and returns the
+actual result.
 
 Examples:
 
@@ -81,10 +83,10 @@ is retained for auditing and is never replaced by a synthetic command.
 
 ## Release checks
 
-The command-intent prompt and schema are included in the routing snapshot. Offline tests cover
-account admission, exact-command compatibility, email audience changes, cancellation ordering,
-confirmation replay/failure, and project creation. The control-plane uses the existing bounded
-router client, and classification plus project routing share the same per-request time budget.
+The conversation prompt and tool schemas are included in the routing snapshot. Offline tests
+cover account admission, exact-command compatibility, email audience changes, cancellation
+ordering, confirmation replay/failure, and project creation. The conversation and active-work
+control check share the same per-request time budget.
 Existing worker request/result formats remain compatible; the email thread key is supplied
 through the existing `thread_ts` field.
 

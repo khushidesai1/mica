@@ -170,7 +170,7 @@ async def _deliver(
         audience = "sender_only"
         if record.get("account_visibility") != command_intent.visibility(grant):
             # Rebuild a read-only list from current visibility; never replay a mutation here.
-            intent = record.get("command_intent", {}).get("proposal") or {}
+            intent = record.get("direct_decision", {}).get("command_proposal") or {}
             exact = record["payload"]["event"].get("text", "").strip().lower()
             if intent.get("operation") == "projects" or exact in {"projects", "switch"}:
                 from . import commands

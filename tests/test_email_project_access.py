@@ -12,7 +12,14 @@ from test_email_transport import sent_messages
 from test_gmail_intake import SENDER, mail, signing  # noqa: F401
 from test_natural_language_commands import action
 
-from mica.agents.analysis import access, channel_access, command_approval, command_intent, direct
+from mica.agents.analysis import (
+    access,
+    channel_access,
+    command_approval,
+    command_intent,
+    conversation,
+    direct,
+)
 from mica.agents.analysis.identity import IdentityUnavailable, member_email, recipient_email
 from mica.agents.analysis.registry import Registry
 from mica.connectors import gmail
@@ -112,14 +119,14 @@ async def test_exact_external_share_completes_instead_of_staying_on_it(bridge):
 async def test_natural_external_share_preserves_owner_confirmation(bridge, monkeypatch):
     monkeypatch.setattr(command_approval, "AsyncWebClient", lambda **kw: bridge.test_slack)
     monkeypatch.setattr(
-        command_intent,
-        "classify",
+        conversation,
+        "run",
         AsyncMock(
-            return_value=command_intent.Intent(
+            return_value=conversation.Decision(reply="Request received.",
                 route="command",
-                proposal=command_intent.Proposal(
+                command_proposal=command_intent.Proposal(
                     operation="share", selector="liver", target=EXTERNAL
-                ),
+                ).model_dump(),
             )
         ),
     )
@@ -176,7 +183,7 @@ async def test_owner_and_email_only_member_use_unpublished_project(mail, monkeyp
     mail.app.allowed_emails = ("unrelated@example.org",)
     mail.settings.access_mode = "channel"
     monkeypatch.setattr(access, "resolve_email", Mock(side_effect=AssertionError("Slack actor")))
-    direct.decide.return_value = direct.Decision(route="reply", reply="Project answer.")
+    conversation.run.return_value = conversation.Decision(route="reply", reply="Project answer.")
     # The creator already has the project selected, independent of channel publication.
     eid, record = await intake(mail, "owner", SENDER, "Tell me about this project")
     assert await direct.handle(mail, eid, record, mail.store)
@@ -203,7 +210,7 @@ async def test_first_invitation_routes_first_email_without_selection(mail):
     Registry(mail.store).update(
         "grant", SENDER, "share", lambda d: d.share(mail.pid, SENDER, EXTERNAL)
     )
-    direct.decide.return_value = direct.Decision(route="reply", reply="Project answer.")
+    conversation.run.return_value = conversation.Decision(route="reply", reply="Project answer.")
     eid, record = await intake(mail, "first-question", EXTERNAL, "Tell me about my project")
     grant = access.resolve(mail.app, mail.settings, mail.store, record)
     assert grant.allowed and grant.project_id == mail.pid
@@ -234,4 +241,4 @@ async def test_unshared_verified_sender_cannot_read_unpublished_project(mail):
     eid, record = await intake(mail, "unauthorized", EXTERNAL, "use liver")
     with pytest.raises(ValueError, match="unavailable"):
         await direct.handle(mail, eid, record, mail.store)
-    direct.decide.assert_not_awaited()
+    conversation.run.assert_not_awaited()

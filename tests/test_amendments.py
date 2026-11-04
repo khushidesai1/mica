@@ -151,7 +151,7 @@ async def test_commands_cannot_be_amended(bridge, monkeypatch):  # noqa: F811
     # interactive buttons would be rendered for it.
     second = await bridge.accept(payload("4.0", "1.0"), principal="alice@example.com")
     record = await bridge.repository.get_connector_state("claude-event:" + second)
-    record.update(amendable=first, notice_ts="9.0", command_intent={"route": "command"})
+    record.update(amendable=first, notice_ts="9.0", conversation_amendable=False)
     await bridge.repository.set_connector_state("claude-event:" + second, record)
     with pytest.raises(ValueError, match="Commands"):
         await amendments.handle(bridge, bridge.store, click(second, record))
@@ -289,3 +289,11 @@ async def test_follow_up_long_final_reply_uses_normal_chunks_and_clears_buttons(
     final_parts = [call.kwargs for call in deliveries if "Result line." in call.kwargs["text"]]
     assert len(final_parts) > 1
     assert all(part["blocks"] == [] for part in final_parts)
+
+
+async def test_preexisting_amendment_card_survives_router_removal(bridge):  # noqa: F811
+    first, second, record = await start(bridge)
+    record.pop("conversation_amendable")
+    await bridge.repository.set_connector_state("claude-event:" + second, record)
+    await amendments.handle(bridge, bridge.store, click(second, record))
+    assert second in amendments.load(bridge.store, first).items

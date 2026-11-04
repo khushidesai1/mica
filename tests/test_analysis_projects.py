@@ -74,7 +74,7 @@ async def test_rename_preserves_channel_threads_and_project_content(chat):  # no
     projects = await message(chat, "switch", "15.0", user="U2", channel="D2")
     assert "switch liver-atlas" in projects["notice_text"]
     await message(chat, "Continue this project", "16.0", channel="C1", thread="13.0")
-    assert chat.decision.call_args.args[2]["project_name"] == "liver-atlas"
+    assert chat.decision.call_args.args[5]["project_name"] == "liver-atlas"
     assert json.loads(chat.store.get(pointer)[0])["context"]["project_slug"] == chat.pid
     renamed = await message(chat, f"rename {chat.pid} liver-final", "17.0")
     assert "Project renamed to liver-final" in renamed["notice_text"]
@@ -140,7 +140,8 @@ async def test_unbound_dm_controls_and_structured_help(chat):  # noqa: F811
     full = await message(chat, "help all", "13.0")
     assert "• `share <project> @user-or-email`" in full["notice_text"]
     assert "• `memory`" in full["notice_text"]
-    chat.decision.assert_not_called()
+    chat.decision.assert_awaited_once()
+    assert chat.decision.call_args.args[5] == {"request": "hello"}
     chat.test_client.create_job.assert_not_called()
 
 
@@ -186,13 +187,13 @@ async def test_switch_keeps_thread_context_and_routes_new_threads(chat):  # noqa
     chat.decision.assert_awaited_once()
 
     fresh = await message(chat, "Describe the project", "13.0")
-    context = chat.decision.call_args.args[2]
+    context = chat.decision.call_args.args[5]
     assert context["project_name"] == "brain" and context["brief"] == "Brain brief"
     assert not context["recent_messages"]
     fresh_state = json.loads(chat.store.get(checkpoint_key(fresh["thread_key"]))[0])
     assert fresh_state["context"]["project_slug"] == target
     await message(chat, "What species are these?", "14.0", thread="10.0")
-    assert chat.decision.call_args.args[2]["project_name"] == "liver"
+    assert chat.decision.call_args.args[5]["project_name"] == "liver"
     chat.test_client.create_job.assert_not_called()
 
 
@@ -255,12 +256,12 @@ async def test_init_selects_new_project_and_offers_switch_back(chat, monkeypatch
     assert doc.bound("T1", "D1") == target
     assert chat.store.get(checkpoint)[0] == original_context
     assert (await chat.memory_backend.read(chat.pid)).files["PROJECT.md"] == original_brief
-    assert chat.decision.call_args.args[2]["project_name"] == "brain"
+    assert chat.decision.call_args.args[5]["project_name"] == "brain"
 
     await message(chat, "switch liver", "12.0", thread="11.0")
     assert Registry(chat.store).load().bound("T1", "D1") == chat.pid
     await message(chat, "Describe this project", "13.0")
-    assert chat.decision.call_args.args[2]["project_name"] == "liver"
+    assert chat.decision.call_args.args[5]["project_name"] == "liver"
     chat.test_client.create_job.assert_not_called()
 
 

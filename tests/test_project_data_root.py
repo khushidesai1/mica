@@ -10,7 +10,14 @@ from test_email_transport import sent_messages
 from test_gmail_intake import SENDER, email_record, mail, signing  # noqa: F401
 from test_natural_language_commands import action
 
-from mica.agents.analysis import access, command_approval, command_intent, commands, direct
+from mica.agents.analysis import (
+    access,
+    command_approval,
+    command_intent,
+    commands,
+    conversation,
+    direct,
+)
 from mica.agents.analysis.registry import Registry
 
 URI = "gs://lab-data/liver/processed"
@@ -19,14 +26,15 @@ URI = "gs://lab-data/liver/processed"
 async def propose(bridge, monkeypatch, *, natural=True, uri=URI, user="U1", shared=False):
     monkeypatch.setattr(command_approval, "AsyncWebClient", lambda **kw: bridge.test_slack)
     monkeypatch.setattr(
-        command_intent,
-        "classify",
+        conversation,
+        "run",
         AsyncMock(
-            return_value=command_intent.Intent(
+            return_value=conversation.Decision(
+                reply="Request received.",
                 route="command",
-                proposal=command_intent.Proposal(
+                command_proposal=command_intent.Proposal(
                     operation="data-root", selector="liver", scope=uri
-                ),
+                ).model_dump(),
             )
         ),
     )
@@ -65,7 +73,7 @@ async def test_owner_confirms_actual_registry_change_and_replay(bridge, monkeypa
     await command_approval.handle(bridge, bridge.store, action(eid))
     assert Registry(bridge.store).load() == after
     bridge.test_client.create_job.assert_not_called()
-    direct.decide.assert_not_awaited()
+    assert conversation.run.await_count == int(natural)
 
 
 async def test_member_cannot_change_project_data_root(bridge, monkeypatch):
@@ -113,7 +121,7 @@ async def test_invented_uri_clarifies_instead_of_editing_brief(bridge, monkeypat
     assert await direct.handle(bridge, eid, record, bridge.store)
     assert "exact gs://" in record["notice_text"]
     assert Registry(bridge.store).load() == before
-    direct.decide.assert_not_awaited()
+    conversation.run.assert_awaited_once()
 
 
 async def test_changed_settings_and_removed_bucket_invalidate_confirmation(bridge, monkeypatch):
@@ -142,14 +150,15 @@ async def test_email_handoff_is_sender_only_without_mutation(mail, monkeypatch, 
     record["payload"]["event"]["text"] = text
     record["payload"]["_email"]["recipients"] = [SENDER, "bob@example.com"]
     monkeypatch.setattr(
-        command_intent,
-        "classify",
+        conversation,
+        "run",
         AsyncMock(
-            return_value=command_intent.Intent(
+            return_value=conversation.Decision(
+                reply="Request received.",
                 route="command",
-                proposal=command_intent.Proposal(
+                command_proposal=command_intent.Proposal(
                     operation="data-root", selector="liver", scope=URI
-                ),
+                ).model_dump(),
             )
         ),
     )
@@ -159,7 +168,7 @@ async def test_email_handoff_is_sender_only_without_mutation(mail, monkeypatch, 
     assert "Slack" in record["notice_text"]
     assert len(sent_messages(mail)) == 1
     assert str(sent_messages(mail)[0]["To"]) == SENDER
-    direct.decide.assert_not_awaited()
+    assert conversation.run.await_count == int(natural)
 
 
 async def test_existing_conversation_uses_new_root_and_preserves_history(bridge):
@@ -189,9 +198,11 @@ async def test_existing_conversation_uses_new_root_and_preserves_history(bridge)
         access.resolve(bridge.app, bridge.settings, bridge.store, record).signature
         != grant.signature
     )
-    direct.decide.return_value = direct.Decision(route="reply", reply="Current data folder.")
+    conversation.run.return_value = conversation.Decision(
+        route="reply", reply="Current data folder."
+    )
     assert await direct.handle(bridge, eid, record, bridge.store)
-    context = direct.decide.call_args.args[2]
+    context = conversation.run.call_args.args[5]
     assert context["data_uri"] == URI
     assert context["data_path"].endswith("/lab-data/liver/processed")
     saved = json.loads(bridge.store.get(access.checkpoint_key(record["thread_key"]))[0])

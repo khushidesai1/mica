@@ -11,7 +11,7 @@ from test_analysis_direct import chat  # noqa: F401
 
 from mica.agents.analysis import (
     access,
-    direct,
+    conversation,
     job_lifecycle,
     memory_tasks,
     write_approval,
@@ -27,7 +27,7 @@ OPEN = (
 
 
 async def fail(chat, monkeypatch, *, ts="1.0", thread=None, text=REQUEST):
-    chat.decision.return_value = direct.Decision(route="compute", reply="Running Proseg.")
+    chat.decision.return_value = conversation.Decision(route="compute", reply="Running Proseg.")
     monkeypatch.setattr(write_approval, "ready", AsyncMock(side_effect=ValueError(NOTICE)))
     event = await chat.accept(payload(ts, thread, text))
     assert await chat.process(event, 0) == "failed"
@@ -56,11 +56,11 @@ async def test_failed_request_reaches_followup_router_once_with_original_intent(
     ]
     assert record["memory_reply"] == NOTICE and record["terminal_recorded"]
 
-    async def followup(key, model, context, **kwargs):
+    async def followup(_bridge, _event_id, _record, _storage, _grant, context, _files, **kwargs):
         previous = context["recent_messages"][-1]
         assert previous["user"] == REQUEST and not previous["success"]
         assert context["request"] == "then do this just for tma17"
-        return direct.Decision(route="compute", reply="Same Proseg/AtoMx method, TMA17 only.")
+        return conversation.Decision(route="compute", reply="Same Proseg/AtoMx method, TMA17 only.")
 
     chat.decision.side_effect = followup
     monkeypatch.setattr(write_approval, "ready", AsyncMock(return_value=True))
@@ -88,7 +88,7 @@ async def test_before_routing_failure_keeps_history_but_never_queues_memory(chat
 
 async def test_history_write_failure_retries_terminal_hook_without_duplicate(chat, monkeypatch):
     event = await chat.accept(payload(text=REQUEST))
-    chat.decision.return_value = direct.Decision(route="compute", reply="Running.")
+    chat.decision.return_value = conversation.Decision(route="compute", reply="Running.")
     monkeypatch.setattr(write_approval, "ready", AsyncMock(side_effect=ValueError(NOTICE)))
     put = chat.store.put
     failed = False
@@ -136,7 +136,7 @@ async def test_cancelled_pending_compute_never_adds_history_or_memory(chat, monk
     chat.settings.memory_auto_edit = True
     queued = AsyncMock()
     monkeypatch.setattr(job_lifecycle, "enqueue", queued)
-    chat.decision.return_value = direct.Decision(route="compute", reply="Running.")
+    chat.decision.return_value = conversation.Decision(route="compute", reply="Running.")
 
     async def awaiting(bridge, event, record, store):
         record.update(status="awaiting_approval", overwrite_approval=True)
@@ -180,7 +180,7 @@ async def test_pending_line_updates_on_retry_and_disappears_on_success(chat, mon
         await memory_tasks.process(chat, event, chat.store)
     assert editor.call_args.args[2]["files"]["open.md"] == OPEN
     assert (await chat.memory_backend.read(chat.pid)).files["open.md"].text.count("Proseg TMA") == 1
-    chat.decision.return_value = direct.Decision(route="reply", reply="The retry completed.")
+    chat.decision.return_value = conversation.Decision(route="reply", reply="The retry completed.")
     editor.return_value = {"open.md": OPEN.split("\n\n")[0] + "\n\nNo pending work.\n"}
     event = await chat.accept(payload("3.0", "1.0", "The retry is complete."))
     assert await chat.process(event, 0) == "complete"

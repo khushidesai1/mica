@@ -9,7 +9,7 @@ from pydantic import SecretStr
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from mica.agents.analysis import direct
+from mica.agents.analysis import conversation, direct
 from mica.api import slack_analysis
 
 
@@ -61,8 +61,8 @@ async def test_slack_email_allowlist_is_enforced(bridge):
 async def test_reused_name_never_inherits_other_users_brief(chat, monkeypatch):
     monkeypatch.setattr(direct, "inventory", lambda *a, **kw: {"entries": []})
 
-    async def decide(key, model, context, **kwargs):
-        return direct.Decision(route="reply", reply="Draft ready.", guide=context["brief"])
+    async def decide(_bridge, _event_id, _record, _storage, _grant, context, _files, **kwargs):
+        return conversation.Decision(route="reply", reply="Draft ready.", guide=context["brief"])
 
     chat.decision.side_effect = decide
     chat.github.seed({f"projects/{chat.pid}/PROJECT.md": "ALICE-SECRET"})
@@ -111,7 +111,7 @@ async def test_nonmember_channel_commands_never_read_or_compute(chat, command):
         "remembers and tidies" if command == "save brief" else "share liver bob@example.com"
     ) in result["notice_text"]
     assert "Species" not in result["notice_text"]
-    assert chat.decision.await_count == calls
+    assert chat.decision.await_count == calls + (command == "change the brief")
     chat.test_client.delete_job.assert_not_called()
 
 
@@ -119,7 +119,7 @@ async def test_share_use_unshare_and_natural_language_commands(chat):
     await message(chat, "share liver <@U2>", "10.0")
     await message(chat, "use liver", "11.0", user="U2", channel="D2")
     await message(chat, "use log scale", "12.0", user="U2", channel="D2")
-    assert chat.decision.call_args.args[2]["request"] == "use log scale"
+    assert chat.decision.call_args.args[5]["request"] == "use log scale"
     await message(chat, "unshare liver <mailto:bob@example.com|bob@example.com>", "13.0")
     calls = chat.decision.await_count
     result = await message(chat, "brief", "14.0", user="U2", channel="D2", thread="12.0")
@@ -137,7 +137,8 @@ async def test_channel_publication_is_explicit_and_revocable(chat):
     await message(chat, "unpublish liver <#C1>", "14.0")
     result = await message(chat, "Describe project", "15.0", channel="C1", thread="13.0")
     assert "unpublished" in result["notice_text"]
-    assert chat.decision.await_count == calls
+    assert chat.decision.await_count == calls + 1
+    assert set(chat.decision.call_args.args[5]) == {"request"}
 
 
 async def test_worker_grant_rechecks_membership_and_protocol(chat):
@@ -149,7 +150,7 @@ async def test_worker_grant_rechecks_membership_and_protocol(chat):
 
     await message(chat, "share liver <@U2>", "10.0")
     await message(chat, "use liver", "11.0", user="U2", channel="D2")
-    chat.decision.return_value = direct.Decision(route="compute", reply="Compute.")
+    chat.decision.return_value = conversation.Decision(route="compute", reply="Compute.")
     body = payload("12.0", text="plot", user="U2", channel="D2")
     event_id = (await slack_analysis.receive(services(chat), body))["event_id"]
     await chat.process(event_id, 0)
@@ -175,7 +176,7 @@ async def test_queued_compute_denied_after_unshare(chat):
     await message(chat, "use liver", "11.0", user="U2", channel="D2")
     chat.settings.max_concurrent_runs = 1
     await chat.repository.begin_event("claude-slot:0", lease_seconds=10800)
-    chat.decision.return_value = direct.Decision(route="compute", reply="Compute.")
+    chat.decision.return_value = conversation.Decision(route="compute", reply="Compute.")
     body = payload("12.0", text="plot", user="U2", channel="D2")
     event_id = (await slack_analysis.receive(services(chat), body))["event_id"]
     assert await chat.process(event_id, 0) == "pending"
