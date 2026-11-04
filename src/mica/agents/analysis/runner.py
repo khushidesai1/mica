@@ -39,7 +39,7 @@ from claude_agent_sdk.types import (
 from . import prompts, script_capture, write_worker
 from .attachments import classify
 from .config import Settings
-from .deliverables import folder_tool, send_tool
+from .deliverables import send_tool
 from .limits import MAX_VISUAL_READS, PREVIEW_MAX_BYTES, SDK_MAX_BUFFER_BYTES
 from .outputs import MAX_ATTACHMENT_BYTES, changed_files, retain_tool_outputs, snapshot_outputs
 from .progress import ActivityState, ProgressUpdate, TaskProgress
@@ -145,17 +145,11 @@ def build_options(
             )
         )
         compute_tools.append(
-            folder_tool(
-                ctx.workdir,
-                delivery_packages if delivery_packages is not None else {},
-                limit=attachment_limit,
-            )
-        )
-        compute_tools.append(
             send_tool(
                 ctx.workdir,
                 named_outputs if named_outputs is not None else set(),
                 manifest=compute.manifest if compute else None,
+                prepared=delivery_packages,
                 limit=attachment_limit,
             )
         )
@@ -270,17 +264,13 @@ def build_options(
             visual_reads += 1
         if compute and name == "Bash":
             compute.sampler.begin(event.get("tool_use_id") or _tool_id or "", args)
-        if capture and name == "Bash":
-            await asyncio.to_thread(
-                capture.before, str(event.get("tool_use_id") or _tool_id or ""), args
-            )
         return {}
 
     async def captured_script(
         event: HookInput, tool_id: str | None, _context: HookContext
     ) -> HookJSONOutput:
-        if capture and event.get("tool_name") == "Bash":
-            capture.after(str(event.get("tool_use_id") or tool_id or ""), dict(event))
+        if capture and event.get("tool_name") in {"Bash", "mcp__pistachio__run_gpu"}:
+            await asyncio.to_thread(capture.snapshot)
         return {}
 
     async def amendment_feedback(
@@ -433,7 +423,7 @@ def build_options(
                 {
                     "PostToolUse": [
                         HookMatcher(
-                            matcher="Bash",
+                            matcher="Bash|mcp__pistachio__run_gpu" if capture else "Bash",
                             hooks=([resource_feedback] if compute else [])
                             + ([captured_script] if capture else []),
                         ),
@@ -445,7 +435,7 @@ def build_options(
                     ],
                     "PostToolUseFailure": [
                         HookMatcher(
-                            matcher="Bash",
+                            matcher="Bash|mcp__pistachio__run_gpu" if capture else "Bash",
                             hooks=([resource_feedback] if compute else [])
                             + ([captured_script] if capture else []),
                         ),
@@ -513,7 +503,6 @@ def describe_tool(block: ToolUseBlock) -> str:
         "mcp__pistachio__checkpoint_stage": "Saving completed work",
         "mcp__pistachio__recover_worker": "Preparing to continue on another worker",
         "mcp__pistachio__recall_thread": "Reviewing earlier work in this thread",
-        "mcp__pistachio__prepare_folder_attachment": "Preparing files for delivery",
     }
     if block.name in operations:
         return operations[block.name]
@@ -628,6 +617,8 @@ class Runner:
         if self.return_scripts and not ctx.survey_only:
             self.script_capture = script_capture.Capture(ctx.workdir, self.script_manifest)
             self.script_manifest = None
+        else:
+            self.script_capture = None
         before, start = snapshot_outputs(ctx.workdir / "outputs"), time.monotonic()
         result = TurnResult(session_id=ctx.session_id)
         delivery_packages: dict[Path, dict[Path, str]] = {}
@@ -830,6 +821,19 @@ class Runner:
             if self.history:
                 with suppress(OSError):
                     retain_tool_outputs(ctx.workdir, result.session_id)
+        if (
+            self.return_scripts and self.script_capture
+            and not (self.compute and self.compute.pending)
+        ):
+            provided = {
+                digest for members in delivery_packages.values() for digest in members.values()
+            }
+            try:
+                snapshots = await asyncio.to_thread(self.script_capture.uploads, 0, provided)
+                named_outputs.update(Path(upload["file"]) for upload in snapshots)
+            except (ValueError, OSError):
+                for path in list(self.script_capture.scripts):
+                    self.script_capture.skip(path, "attachment copy could not be prepared")
         result.files = sorted(set(changed_files(ctx.workdir / "outputs", before)) | named_outputs)
         result.delivery_packages = delivery_packages
         if self.compute:

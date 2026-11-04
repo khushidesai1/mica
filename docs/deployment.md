@@ -339,20 +339,27 @@ text/configuration files, source scripts and ZIPs in `outputs/` are eligible at 
 failure, rather than being silently skipped. Prepared ZIPs and source files are retained with
 run provenance for resends.
 
-For a folder containing scripts, the worker's `prepare_folder_attachment` tool creates a
-complete ZIP from `code/` or an `outputs/` subfolder. It includes every regular file and empty
+The worker's `send_files` tool accepts individual output files or complete folders. A folder
+under `code/` or an `outputs/` subfolder becomes one ZIP. It includes every regular file and empty
 subdirectory, including unchanged helpers and binary results, and preserves relative paths.
-The tool returns the package path, file count, sizes and a bounded path inventory. It refuses
+The tool returns the package path, file count, size and any per-path errors. It refuses
 links, special files, changing trees, over 10,000 entries, or a tree/package exceeding the
 surface's budget (200 MB Slack; 17 MB email). It never returns a partial archive as success.
 Existing credential checks for source scripts remain in force. Large folders use the approved
 recursive GCS publisher; packaging does not grant bucket write access.
 
-ZIPs are for script-containing folders. Ordinary reports and figures remain direct attachments.
+Explicit folder requests are ZIPs; individual reports and figures remain direct attachments.
 When a folder is packaged, only its figure/PDF previews accompany the ZIP; contained scripts
 and tables are not sent again individually. Email's combined attachment/MIME limit still
 applies, and any omitted attachments are named in the final reply. Model text and tool results
 say a package is prepared, not delivered; actual delivery is recorded after the transport succeeds.
+
+With `scripts on`, the worker snapshots changed scripts beneath `code/` after Bash and GPU
+execution tools, regardless of shell syntax or exit status. One ZIP contains their last snapshots;
+these copies do not establish successful execution. Unchanged scripts from earlier turns are not
+included automatically. Snapshots retain the ten-script and 1 MB-per-script limits, credential
+checks and trusted checkpoint validation. The ZIP uses the normal archival, pending-output and
+delivery path, including resends after transport failure.
 
 This behavior runs in the conversation worker, so an API-only rollout is insufficient. Use the
 coordinated Slack release pipeline and its complete-folder image gate, preserving existing jobs

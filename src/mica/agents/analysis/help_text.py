@@ -69,7 +69,7 @@ Owners confirm changes in private Slack; project members can read the selected c
 
 *Script attachments*
 • `scripts` — Show your setting (off by default).
-• `scripts on` / `scripts off` — Attach scripts you run, or stop attaching them (DM or channel).
+• `scripts on` / `scripts off` — Attach changed code snapshots, or stop (DM or channel).
 
 *Project memory*
 • `memory` — Show the project index and current work.

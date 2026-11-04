@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from test_analysis_slack import bot, event, send  # noqa: F401
 
-from mica.agents.analysis.deliverables import attachment_issue, folder_tool, package_folder
+from mica.agents.analysis.deliverables import attachment_issue, package_folder, send_tool
 from mica.agents.analysis.outputs import retention_reason
 from mica.agents.analysis.runner import TurnResult
 
@@ -65,12 +65,13 @@ def test_packaging_cannot_expose_unapproved_workspace_folders(tmp_path, folder):
         package_folder(tmp_path, folder)
 
 
-def test_ordinary_figures_do_not_get_zipped(tmp_path):
+def test_explicit_figure_folder_is_a_complete_zip(tmp_path):
     folder = tmp_path / "outputs/figures"
     folder.mkdir(parents=True)
     (folder / "figure.png").write_bytes(b"figure")
-    with pytest.raises(ValueError, match="No scripts"):
-        package_folder(tmp_path, "outputs/figures")
+    package = package_folder(tmp_path, "outputs/figures")
+    with zipfile.ZipFile(tmp_path / package["attachment"]) as archive:
+        assert archive.read("figures/figure.png") == b"figure"
 
 
 def test_copied_scripts_are_deliverable_without_claiming_they_ran(tmp_path):
@@ -83,13 +84,15 @@ def test_copied_scripts_are_deliverable_without_claiming_they_ran(tmp_path):
 async def test_tool_returns_package_and_exact_members_for_delivery(tmp_path):
     root = tree(tmp_path)
     prepared = {}
-    reply = await folder_tool(tmp_path, prepared).handler({"folder": "outputs/stitch"})
+    reply = await send_tool(tmp_path, set(), prepared=prepared).handler(
+        {"paths": ["outputs/stitch"]}
+    )
     result = json.loads(reply["content"][0]["text"])
-    assert result["status"] == "ready_for_attachment"
-    assert set(prepared[tmp_path / result["attachment"]]) == set(
+    assert result["accepted"] == [result["packages"]["outputs/stitch"]["attachment"]]
+    assert set(prepared[tmp_path / result["accepted"][0]]) == set(
         p for p in root.rglob("*") if p.is_file()
     )
-    assert result["paths_truncated"] is False
+    assert result["packages"]["outputs/stitch"]["files"] == 5
 
 
 async def test_actual_missing_script_case_delivers_nested_python_files(bot):
@@ -115,7 +118,9 @@ async def test_script_zip_plus_figures_has_no_duplicate_script_or_table_attachme
     async def run(ctx, prompt, status):
         root = tree(ctx.workdir)
         prepared = {}
-        await folder_tool(ctx.workdir, prepared).handler({"folder": "outputs/stitch"})
+        await send_tool(ctx.workdir, set(), prepared=prepared).handler(
+            {"paths": ["outputs/stitch"]}
+        )
         return TurnResult(
             "session",
             "Sending the complete folder.",
@@ -145,29 +150,6 @@ async def test_unsupported_output_is_an_explicit_delivery_failure(bot):
     await send(bot, event("Send results"))
     assert "unsupported attachment type" in bot.last_reply
     assert bot.last_error == "File delivery incomplete"
-
-
-async def test_identical_automatic_script_snapshot_is_not_sent_beside_zip(bot):
-    from types import SimpleNamespace
-
-    async def run(ctx, prompt, status):
-        root = tree(ctx.workdir)
-        prepared = {}
-        await folder_tool(ctx.workdir, prepared).handler({"folder": "outputs/stitch"})
-        copy = ctx.workdir / "outputs/returned-scripts/turn-1/restitch.py"
-        copy.parent.mkdir(parents=True)
-        copy.write_bytes((root / "restitch.py").read_bytes())
-        bot.runner.return_scripts = True
-        bot.runner.script_capture = SimpleNamespace(
-            uploads=lambda turn: [{"file": str(copy), "filename": copy.name}],
-            notes=lambda provided=None: [],
-        )
-        return TurnResult("session", "Script package.", list(prepared), delivery_packages=prepared)
-
-    bot.runner.run_turn = run
-    await send(bot, event("Send scripts"))
-    uploads = bot.client.files_upload_v2.call_args.kwargs["file_uploads"]
-    assert len(uploads) == 1 and uploads[0]["filename"].endswith(".zip")
 
 
 def test_changed_tree_fails_without_partial_archive(tmp_path, monkeypatch):

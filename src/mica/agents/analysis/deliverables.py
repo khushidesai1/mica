@@ -101,10 +101,6 @@ def package_folder(work: Path, folder: str, *, limit: int = MAX_ATTACHMENT_BYTES
     entries, total = inventory(target, limit)
     if not entries:
         raise ValueError("Folder is empty; nothing to attach.")
-    if not any(p.suffix.lower() in SCRIPT_SUFFIXES for p, n, _ in entries if n >= 0):
-        raise ValueError(
-            "No scripts in this folder. Send reports and figures directly, without a ZIP."
-        )
     output = work / "outputs"
     if output.is_symlink():
         raise ValueError("outputs/ must not be a symlink.")
@@ -163,64 +159,39 @@ def package_folder(work: Path, folder: str, *, limit: int = MAX_ATTACHMENT_BYTES
     }
 
 
-def folder_tool(
-    work: Path, prepared: dict[Path, dict[Path, str]], *, limit: int = MAX_ATTACHMENT_BYTES
-) -> SdkMcpTool[Any]:
-    from claude_agent_sdk import tool
-
-    @tool(
-        "prepare_folder_attachment",
-        "Prepare a complete ZIP of a script-containing code/ or outputs/ subfolder for delivery. "
-        "Use only when sending scripts; ordinary reports/figures go directly. Includes all "
-        "nested files, helper scripts, and empty folders with paths preserved; never filters "
-        "by extension. Rejects links, special files and oversized trees instead of partial ZIPs. "
-        f"Budget: {limit:,} bytes uncompressed and compressed, {MAX_FOLDER_ENTRIES:,} entries. "
-        "For outputs/gcs/ use publish_gcs instead. Returns the exact package path and inventory; "
-        "this prepares delivery but does not confirm sending. Keep desired figures in outputs/ "
-        "for individual previews too.",
-        {
-            "type": "object",
-            "properties": {"folder": {"type": "string"}},
-            "required": ["folder"],
-            "additionalProperties": False,
-        },
-    )
-    async def prepare(args: dict[str, Any]) -> dict[str, Any]:
-        try:
-            if set(args) != {"folder"} or not isinstance(args["folder"], str):
-                raise ValueError("Provide one folder path.")
-            result = await asyncio.to_thread(package_folder, work, args["folder"], limit=limit)
-            prepared[work / result["attachment"]] = {
-                work / Path(args["folder"]).parent / name: result["sha256"][name]
-                for name in result["paths"]
-            }
-            del result["sha256"]
-            result["paths_truncated"] = len(result["paths"]) > 100
-            result["paths"] = result["paths"][:100]
-            return {"content": [{"type": "text", "text": json.dumps(result)}]}
-        except (ValueError, OSError) as exc:
-            message = (
-                str(exc) if isinstance(exc, ValueError) else "Folder could not be read safely."
-            )
-            return {"content": [{"type": "text", "text": message}], "isError": True}
-
-    return prepare
-
-
 def select_files(
-    work: Path, paths: list[str], *, limit: int = MAX_ATTACHMENT_BYTES
+    work: Path,
+    paths: list[str],
+    *,
+    limit: int = MAX_ATTACHMENT_BYTES,
+    prepared: dict[Path, dict[Path, str]] | None = None,
 ) -> dict[str, Any]:
     """Validate explicit attachments with the same no-link policy as folder delivery."""
     accepted: list[str] = []
     errors: dict[str, str] = {}
+    packages = {}
     for raw in dict.fromkeys(paths):
         try:
             relative = Path(raw)
             if relative.is_absolute():
                 relative = relative.relative_to(work)
-            if relative.parts[:1] != ("outputs",) or ".." in relative.parts:
-                raise ValueError("Choose a file under outputs/.")
+            if ".." in relative.parts or not relative.parts:
+                raise ValueError("Choose a workspace output file or code/output folder.")
             path = work / relative
+            if path.is_dir():
+                package = package_folder(work, relative.as_posix(), limit=limit)
+                if prepared is not None:
+                    prepared[work / package["attachment"]] = {
+                        work / relative.parent / name: digest
+                        for name, digest in package["sha256"].items()
+                    }
+                accepted.append(package["attachment"])
+                packages[raw] = {
+                    key: package[key] for key in ("attachment", "files", "archive_bytes")
+                }
+                continue
+            if relative.parts[:1] != ("outputs",):
+                raise ValueError("Choose a file under outputs/ or a folder under code/.")
             issue = attachment_issue(path, work)
             if issue:
                 raise ValueError(issue)
@@ -235,7 +206,7 @@ def select_files(
             errors[raw] = (
                 str(exc) if isinstance(exc, ValueError) else "File could not be read safely."
             )
-    return {"accepted": accepted, "errors": errors}
+    return {"accepted": accepted, "errors": errors, **({"packages": packages} if packages else {})}
 
 
 def send_tool(
@@ -243,20 +214,22 @@ def send_tool(
     named: set[Path],
     *,
     manifest: dict[str, Any] | None = None,
+    prepared: dict[Path, dict[Path, str]] | None = None,
     limit: int = MAX_ATTACHMENT_BYTES,
 ) -> SdkMcpTool[Any]:
     from claude_agent_sdk import tool
 
     @tool(
         "send_files",
-        "Send completed files under outputs/ as attachments at turn end, including unchanged "
-        "files requested again. No touch or regeneration is needed. Nested files are supported. "
-        "Accepts figures, PDFs, tables, text/config, scripts and ZIPs; each must be an ordinary "
-        f"nonempty file under {limit:,} bytes. Returns accepted paths and per-file errors now; "
-        "the application confirms delivery later. Inspect figures before requesting delivery. "
-        "Local paths are not user-accessible. Use prepare_folder_attachment for complete script "
-        "folders; send ordinary figures/reports directly. outputs/gcs/ is bucket staging: use "
-        "publish_gcs for approved destinations and report only confirmed locations and counts.",
+        "Send completed files under outputs/ or complete code/output folders as attachments "
+        "at turn end, including unchanged files requested again. A folder becomes one ZIP "
+        "with every nested file and empty directory preserved. Links, unsafe scripts and "
+        f"trees over {limit:,} bytes or {MAX_FOLDER_ENTRIES:,} entries fail without a partial ZIP. "
+        "Ordinary files must be nonempty supported figures, PDFs, tables, text/config, scripts "
+        "or ZIPs. Returns accepted paths and per-path errors; the application confirms delivery "
+        "later. Inspect figures first and send individual figures when previews are useful. "
+        "Local paths are not user-accessible. For outputs/gcs/ use publish_gcs with approved "
+        "destinations and report only confirmed locations and counts.",
         {
             "type": "object",
             "properties": {
@@ -278,7 +251,7 @@ def send_tool(
                 "content": [{"type": "text", "text": "Provide up to 100 file paths."}],
                 "isError": True,
             }
-        result = await asyncio.to_thread(select_files, work, paths, limit=limit)
+        result = await asyncio.to_thread(select_files, work, paths, limit=limit, prepared=prepared)
         named.update(work / path for path in result["accepted"])
         if manifest is not None:
             pending = set(manifest.get("pending_outputs", []))
