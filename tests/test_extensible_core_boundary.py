@@ -24,7 +24,7 @@ def test_transfer_values_accept_only_known_legacy_forms():
     assert transfer_state.is_handoff("transfer") and transfer_state.is_handoff("atomx")
     assert not transfer_state.is_handoff({"atomx": True})
     assert not transfer_state.is_handoff("arbitrary")
-    expected = ("transfer-" + "a" * 24, "atomx-" + "a" * 24)
+    expected = ("atomx-" + "a" * 24, "transfer-" + "a" * 24)
     assert transfer_state.mail_stages(expected[0]) == expected
     assert transfer_state.mail_stages(expected[1]) == expected
     assert transfer_state.mail_stages("atomx-../private") == ()

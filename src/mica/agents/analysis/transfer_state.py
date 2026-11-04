@@ -14,9 +14,11 @@ def is_handoff(value: Any) -> bool:
 
 
 def mail_stages(value: str) -> tuple[str, ...]:
-    """Write generic outboxes; continue an existing legacy receipt without another send."""
+    """Accept generic stages but keep new intents visible to older delivery controllers."""
     matched = re.fullmatch(r"(?:transfer|atomx)-([a-f0-9]{24})", value)
     if matched is None:
         return ()
     suffix = matched[1]
-    return ("transfer-" + suffix, "atomx-" + suffix)
+    # An older in-flight controller must see an ambiguous new send before it retries.
+    # Keep one canonical persisted identity; do not dual-write competing send intents.
+    return ("atomx-" + suffix, "transfer-" + suffix)

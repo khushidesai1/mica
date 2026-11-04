@@ -496,11 +496,11 @@ async def test_explicit_gmail_rate_limit_retries_safely(mail):
 
 
 @pytest.mark.parametrize("prefix", ["transfer", "atomx"])
-async def test_new_transfer_email_uses_generic_outbox_and_redacted_receipt(mail, prefix):
+async def test_new_transfer_email_uses_legacy_readable_outbox_and_redacted_receipt(mail, prefix):
     eid, record = await email_record(mail)
     await deliver(mail, eid, record, "Private action link", kind=prefix + "-" + "a" * 24)
     keys = mail.store.keys(f"projects/_gmail/outbox/{eid}/")
-    assert keys == [f"projects/_gmail/outbox/{eid}/transfer-{'a' * 24}.json"]
+    assert keys == [f"projects/_gmail/outbox/{eid}/atomx-{'a' * 24}.json"]
     receipt = json.loads(mail.store.get(keys[0])[0])
     assert receipt["text"] == "Private transfer action (link redacted)"
     assert len(sent_messages(mail)) == 1
@@ -509,13 +509,33 @@ async def test_new_transfer_email_uses_generic_outbox_and_redacted_receipt(mail,
 
 
 @pytest.mark.parametrize("prefix", ["transfer", "atomx"])
-async def test_saved_legacy_transfer_receipt_prevents_another_send(mail, prefix):
+@pytest.mark.parametrize("stored_prefix", ["transfer", "atomx"])
+async def test_saved_transfer_receipt_prevents_another_send(mail, prefix, stored_prefix):
     eid, record = await email_record(mail)
-    old = f"projects/_gmail/outbox/{eid}/atomx-{'b' * 24}.json"
+    old = f"projects/_gmail/outbox/{eid}/{stored_prefix}-{'b' * 24}.json"
     mail.store.put(old, json.dumps({"status": "sent", "gmail_id": "old-sent"}).encode())
     result = await deliver(mail, eid, record, "same result", kind=prefix + "-" + "b" * 24)
     assert result == "old-sent"
     assert sent_messages(mail) == []
+    assert mail.store.keys(f"projects/_gmail/outbox/{eid}/") == [old]
+
+
+async def test_ambiguous_new_transfer_intent_is_visible_to_a_legacy_reader(mail, monkeypatch):
+    eid, record = await email_record(mail)
+    suffix = "d" * 24
+    mail.gmail.users().messages().send.return_value.execute.side_effect = TimeoutError(
+        "Accepted, then timeout"
+    )
+    with pytest.raises(TimeoutError):
+        await email_delivery._deliver(mail, eid, record, "Private link", kind="transfer-" + suffix)
+    old = f"projects/_gmail/outbox/{eid}/atomx-{suffix}.json"
+    assert json.loads(mail.store.get(old)[0])["status"] == "sending"
+    # The prior reader knows only the requested legacy key and has no alias fallback.
+    monkeypatch.setattr(email_delivery.transfer_state, "mail_stages", lambda kind: (kind,))
+    monkeypatch.setattr(email_delivery, "sent_match", lambda *args: None)
+    with pytest.raises(email_delivery.UnconfirmedDelivery):
+        await email_delivery._deliver(mail, eid, record, "Private link", kind="atomx-" + suffix)
+    assert len(sent_messages(mail)) == 1  # Only the original ambiguous attempt.
     assert mail.store.keys(f"projects/_gmail/outbox/{eid}/") == [old]
 
 
