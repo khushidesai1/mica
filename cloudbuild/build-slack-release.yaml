@@ -66,7 +66,7 @@ steps:
       - -ceu
       - |
         if [ '${_VERIFY_CELLPOSE}' = '1' ]; then
-          docker run --rm --network=none --privileged -v /workspace:/workspace:ro --entrypoint python '${_SLACK_IMAGE}' /workspace/scripts/check_cellpose_gpu.py
+          docker run --rm --network=none --privileged -e VERIFY_CPU_CELLPOSE=1 -v /workspace:/workspace:ro --entrypoint python '${_SLACK_IMAGE}' /workspace/scripts/check_cellpose_gpu.py
         fi
   - id: verify-gpu-worker
     name: gcr.io/cloud-builders/docker
