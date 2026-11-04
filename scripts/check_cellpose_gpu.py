@@ -1,159 +1,197 @@
-"""Operator live gate: synthetic inference inside the actual fixed-tool sandbox."""
+"""Bounded operator gate: one synthetic SAM crop through the skill and generic GPU tool."""
 
 import asyncio
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
-from mica.agents.analysis.cellpose_tools import SegmentRequest, command, tools
+from check_gpu_hardware import assert_controller, probe
+
 from mica.agents.analysis.checkpoints import Stages, cleanup_temporary, digest
 from mica.agents.analysis.config import Settings
-from mica.agents.analysis.runtime_sandbox import PROBE
+from mica.agents.analysis.gpu_tools import script_binding, tools
+from mica.agents.analysis.runtime_sandbox import PROBE, sandbox_command
 from mica.agents.analysis.storage import LocalStorage
+from mica.agents.analysis.toolkit_catalog import environments
 
 
-async def main():
-    gpu = os.environ.get("VERIFY_GPU") == "1"
-    gpu_type = os.environ.get("VERIFY_GPU_TYPE", "")
-    if gpu:
-        assert gpu_type in {"t4", "l4"}, "Specify the GPU hardware being verified"
-        assert os.environ.get("MICA_SANDBOX_PARENT_SENTINEL") == "sentinel-not-a-credential", (
-            "Start the trusted controller with the fake parent credential for isolation checks"
-        )
-    assert os.geteuid() == 65532, "Worker must remain unprivileged"
-    capabilities = next(
-        line.split()[1]
-        for line in Path("/proc/self/status").read_text().splitlines()
-        if line.startswith("CapEff:")
-    )
-    assert int(capabilities, 16) == 0, "Worker unexpectedly has effective Linux capabilities"
-    if gpu:
-        status = dict(
-            line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines()
-        )
-        assert int(status["CapBnd"].strip(), 16) == 0, (
-            "GPU worker must drop all bounding capabilities"
-        )
-        assert status["NoNewPrivs"].strip() == "1", "GPU worker must not gain privileges"
-        proc_mounts = [
-            line.split()[4]
-            for line in Path("/proc/self/mountinfo").read_text().splitlines()
-            if line.split()[4].startswith("/proc/")
-        ]
-        assert not proc_mounts, f"GPU runtime blocks private procfs with submounts: {proc_mounts}"
-    with tempfile.TemporaryDirectory(prefix="cellpose-tool-gate-") as temp:
+async def offline():
+    """Exercise the packaged sandbox without exposing hardware or loading extra models."""
+    assert os.geteuid() == 65532
+    status = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines())
+    assert int(status["CapEff"].strip(), 16) == 0
+    with tempfile.TemporaryDirectory(prefix="mica-offline-gate-") as temp:
         work = Path(temp)
-        # The trusted controller doesn't import scientific packages from the base interpreter.
+        for folder in (work / "code", work / "inputs", work / "outputs", work / "data"):
+            folder.mkdir()
+        settings = Settings(_env_file=None, gpu_worker=False)
+        assert not tools(work, work / "data", settings)
+        registered = {row.id: row for row in environments(settings)}
+        assert not any(row.cuda for row in registered.values())
+        runtime = Path(registered["cellpose-4.2.1.1"].python).parent.parent
+        interpreter = str(runtime / "bin/python")
+        command = sandbox_command(
+            runtime, [interpreter, "-I", "-c", PROBE +
+                      "\nimport torch\nassert not torch.cuda.is_available()"],
+            writable=(work,), protected=(work / "inputs", work / "data"), cwd=work,
+            read_only=(Path("/opt/cellpose/models"), Path("/opt/cellpose/manifest.json")),
+        )
+        source = work / "code/pinned.py"
+        source.write_text("raise AssertionError('Mutable source path was executed')")
+        pinned_code = PROBE + """
+import torch
+assert not torch.cuda.is_available()
+assert 'MICA_PINNED_SCRIPT_BINDING_PASSED' in Path(__file__).read_text()
+try:
+    Path(__file__).write_text('must not overwrite the pinned script')
+except OSError:
+    pass
+else:
+    raise AssertionError('Pinned script became writable')
+print('MICA_PINNED_SCRIPT_BINDING_PASSED')
+"""
+        with tempfile.TemporaryFile() as script:
+            script.write(pinned_code.encode())
+            script.seek(0)
+            boundary = command.index("--")
+            pinned_command = command[:boundary] + script_binding(source, script.fileno()) + [
+                "--", interpreter, "-I", str(source),
+            ]
+            subprocess.run(
+                pinned_command, check=True, timeout=60, pass_fds=(script.fileno(),),
+                env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
+            )
+        assert len(tools(work, work / "data", Settings(_env_file=None, gpu_worker=True))) == 1
+        if os.environ.get("VERIFY_CPU_CELLPOSE") == "1":
+            subprocess.run([
+                "/opt/sap/bin/python", "-I", "-c",
+                "import numpy as np,tifffile,sys; y,x=np.mgrid[:64,:64]; "
+                "tifffile.imwrite(sys.argv[1],np.exp(-((x-32)**2+(y-32)**2)/32).astype('float32'))",
+                str(work / "inputs/crop.tif"),
+            ], check=True, timeout=30)
+            shutil.copyfile(
+                "/opt/pistachio/plugin/skills/cellpose/scripts/segment.py", work / "code/segment.py"
+            )
+            request = json.dumps({
+                "input_path": "inputs/crop.tif", "output_dir": "outputs/cpu", "version": "4.2.1.1",
+                "model": "cpsam", "device": "cpu", "diameter": 20,
+            })
+            separator = command.index("--")
+            subprocess.run(
+                command[:separator + 1] +
+                [interpreter, "-I", str(work / "code/segment.py"), "--request", request],
+                check=True, timeout=300, env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
+            )
+            result = json.loads((work / "outputs/cpu/provenance.json").read_text())
+            assert result["device"] == result["model_device"] == "cpu"
+            assert result["input_shape"] == [64, 64]
+            assert (work / "outputs/cpu/masks.tif").stat().st_size > 0
+            print("MICA_CPU_SKILL_CROP_PASSED", flush=True)
+        print("MICA_OFFLINE_GPU_BOUNDARY_PASSED", flush=True)
+
+
+async def main(storage_factory=LocalStorage, *, clean_temporary=True):
+    assert os.environ.get("VERIFY_GPU") == "1"
+    assert_controller()
+    gpu_type = os.environ["VERIFY_GPU_TYPE"]
+    assert gpu_type in {"t4", "l4", "a100", "a100-80gb", "h100"}
+    with tempfile.TemporaryDirectory(prefix="mica-skill-gate-") as temp:
+        root = Path(temp)
+        work, data, private = root / "work", root / "data", root / "private"
+        for folder in (work / "code", work / "inputs", data, private):
+            folder.mkdir(parents=True)
+        for folder in (work / "inputs", data):
+            (folder / "readable.txt").write_text("synthetic")
         subprocess.run(
             [
                 "/opt/sap/bin/python",
                 "-I",
                 "-c",
-                "import numpy as np,tifffile,sys; y,x=np.mgrid[:64,:64]; "
-                "tifffile.imwrite(sys.argv[1],np.exp(-((x-32)**2+(y-32)**2)/32).astype('float32'))",
-                str(work / "crop.tif"),
+                "import numpy as np,tifffile,sys; y,x=np.mgrid[:256,:256]; "
+                "tifffile.imwrite(sys.argv[1],np.exp(-((x-128)**2+(y-128)**2)/128).astype('float32'))",
+                str(work / "inputs/crop.tif"),
             ],
             check=True,
+            timeout=30,
         )
-        settings = Settings(_env_file=None, gpu_worker=gpu, max_run_seconds=600)
-        storage = LocalStorage(work / "cloud")
+        shutil.copyfile(
+            "/opt/pistachio/plugin/skills/cellpose/scripts/segment.py", work / "code/segment.py"
+        )
+        (work / "code/check.py").write_text(
+            probe(work, data, private, int(os.environ.get("VERIFY_GPU_COUNT", "1")))
+        )
+        storage = storage_factory(root / "storage")
         stages = Stages(storage, work, "a" * 32, 0, thread_key="smoke", project_id="smoke")
 
-        async def save_result(result):
-            return stages.capture_result(result["output_dir"], json.dumps(result, sort_keys=True))
+        async def save(result):
+            return stages.capture_result(result["output_dir"], result["fingerprint"])
 
-        segment_tool = tools(work, work / "data", settings, save_result)[1]
-        for version, model in [("3.1.1.3", "cyto3"), ("4.2.1.1", "cpsam"), ("4.2.1.1", "cpsam_v2")]:
-            request = SegmentRequest(
-                input_path="crop.tif",
-                output_dir="outputs/" + model,
-                version=version,
-                model=model,
-                diameter=20,
+        settings = Settings(_env_file=None, gpu_worker=True, max_run_seconds=600)
+        tool = tools(work, data, settings, save)[0]
+        for script, folder, arguments in (
+            ("code/check.py", "outputs/hardware", []),
+            (
+                "code/segment.py",
+                "outputs/sam",
+                [
+                    "--request",
+                    json.dumps(
+                        {
+                            "input_path": "inputs/crop.tif",
+                            "output_dir": "outputs/sam",
+                            "version": "4.2.1.1",
+                            "model": "cpsam",
+                            "device": "gpu",
+                            "diameter": 20,
+                        }
+                    ),
+                ],
+            ),
+        ):
+            reply = await tool.handler(
+                {
+                    "environment": "cellpose-4.2.1.1",
+                    "script": script,
+                    "arguments": arguments,
+                    "output_dir": folder,
+                    "input_fingerprint": "256x256-synthetic-crop-cpsam-diameter20",
+                }
             )
-            # Same runtime, namespace and device bindings as the real tool; assert network,
-            # metadata and parent credentials are absent before inference.
-            output = work / "probe"
-            output.mkdir(exist_ok=True)
-            args = command(request, work / "crop.tif", output, settings)
-            start = args.index("--")
-            python = args[start + 1]
-            probe = (
-                PROBE
-                + "\nassert not Path('/dev/sda').exists() and not Path('/dev/nvme0n1').exists()"
-                + "\nimport torch\nassert torch.cuda.is_available() == "
-                + repr(gpu)
-            )
-            if gpu:
-                probe += (
-                    "\nfor environ in Path('/proc').glob('[0-9]*/environ'):"
-                    "\n    try:"
-                    "\n        assert b'sentinel-not-a-credential' not in environ.read_bytes(), "
-                    "'Parent environment exposed through proc'"
-                    "\n    except (PermissionError, FileNotFoundError, ProcessLookupError):"
-                    "\n        pass"
-                )
-            subprocess.run(
-                args[: start + 1] + [python, "-I", "-c", probe],
-                check=True,
-                timeout=60,
-                # Match segment(): credentials stay in this trusted controller;
-                # the bwrap supervisor and tool both receive a sanitized environment.
-                env={"PATH": "/usr/local/bin:/usr/bin:/bin"},
-            )
-            try:
-                reply = await segment_tool.handler(request.model_dump())
-                assert not reply.get("isError"), reply
-                result = json.loads(reply["content"][0]["text"])
-            except Exception:
-                log = work / request.output_dir / "execution.log"
-                if log.exists():
-                    print(log.read_text(errors="replace")[-8000:], flush=True)
-                raise
-            assert result["version"] == version and result["model"] == model
-            assert result["device"] == ("gpu" if gpu else "cpu")
-            assert result["model_device"] == ("cuda" if gpu else "cpu")
-            if gpu:
-                assert gpu_type.upper() in result["gpu_name"]
-            expected_precision = (
-                "bfloat16" if gpu and gpu_type == "l4" and version.startswith("4.") else "float32"
-            )
-            assert result["model_precision"] == expected_precision
-            assert result["input_shape"] == [64, 64]
+            assert not reply.get("isError"), reply
+            result = json.loads(reply["content"][0]["text"])
+        provenance = json.loads((work / "outputs/sam/provenance.json").read_text())
+        assert provenance["device"] == "gpu" and provenance["model_device"] == "cuda"
+        assert gpu_type.split("-")[0].upper() in provenance["gpu_name"].upper()
+        assert provenance["input_shape"] == [256, 256]
+        assert len(provenance["input_sha256"]) == 64
+        if clean_temporary:
             cleanup_temporary(storage, "a" * 32)
-            restored = Stages(
-                storage,
-                work / "restored",
-                "b" * 32,
-                0,
-                thread_key="smoke",
-                project_id="smoke",
-            )
-            restored.restore_saved(result["checkpoint"]["checkpoint_id"])
-            assert digest(work / request.output_dir / "masks.tif") == digest(
-                restored.work / request.output_dir / "masks.tif"
-            )
-            print(
-                json.dumps(
-                    {
-                        "version": version,
-                        "model": model,
-                        "device": result["device"],
-                        "model_device": result["model_device"],
-                        "gpu_name": result["gpu_name"],
-                        "model_precision": result["model_precision"],
-                        "sandbox_segmentation": "passed",
-                        "durable_result_after_cleanup": "passed",
-                        "isolation": "passed",
-                        "cell_count": result["cell_count"],
-                        "synthetic": True,
-                    }
-                ),
-                flush=True,
-            )
+        restored = Stages(
+            storage, root / "restored", "b" * 32, 0, thread_key="smoke", project_id="smoke"
+        )
+        restored.restore_saved(result["checkpoint"]["checkpoint_id"])
+        assert digest(work / "outputs/sam/masks.tif") == digest(
+            restored.work / "outputs/sam/masks.tif"
+        )
+        print(
+            json.dumps(
+                {
+                    "skill": "cellpose",
+                    "model": provenance["model"],
+                    "gpu": provenance["gpu_name"],
+                    "device": provenance["device"],
+                    "durable_save": "passed",
+                    "isolation": "passed",
+                    "synthetic": True,
+                    "temporary_cleanup_exercised": clean_temporary,
+                }
+            ),
+            flush=True,
+        )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main() if os.environ.get("VERIFY_GPU") == "1" else offline())

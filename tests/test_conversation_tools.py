@@ -113,6 +113,24 @@ async def test_plain_reply_private_thinking_and_provider_settings(turn):
     assert record["routing_budget"] <= direct.ROUTING_SECONDS
 
 
+async def test_conversation_catalog_includes_validated_saved_environments(turn):
+    from test_environment_catalog import runtime
+
+    from mica.agents.analysis.runtime_store import RuntimeStore
+
+    bridge = turn[0]
+    bridge.settings.runtimes_enabled = True
+    record = runtime(bridge.settings)
+    RuntimeStore(bridge.store, bridge.settings).update_index(record)
+    client = Client(reply())
+    await run(turn, client)
+    context = json.loads(client.calls[0]["messages"][0]["content"][0]["text"])
+    assert any(
+        row["id"] == record.id
+        for row in context["compute_capabilities"]["environments"]["cpu"]
+    )
+
+
 async def test_approved_public_reference_is_read_directly_without_project_registration(
     turn, monkeypatch
 ):
@@ -243,7 +261,7 @@ async def test_terminal_worker_is_saved_and_replayed_without_model(turn, monkeyp
         tool(
             "start_worker",
             task="Count rows in the requested CSV",
-            category="analysis",
+            expected_hours=0.5,
             tier="standard",
             write_paths=["gs://lab-data/results/count.csv"],
         )
@@ -263,7 +281,7 @@ async def test_terminal_worker_is_saved_and_replayed_without_model(turn, monkeyp
 async def test_worker_arguments_are_validated_without_provider_grammar(turn):
     bridge, _, record, _ = turn
     client = Client(
-        tool("start_worker", task="Run the request", category="analysis", tier="invented"),
+        tool("start_worker", task="Run the request", expected_hours=0.5, tier="invented"),
         reply("I cannot allocate that unsupported worker."),
     )
     decision = await run(turn, client)
@@ -285,13 +303,13 @@ async def test_128_gib_gpu_request_explains_limit_without_downgrade_or_allocatio
         tool(
             "start_worker",
             task="Train with GPU and 128 GiB host RAM",
-            category="training",
+            expected_hours=3,
             tier="gpu",
             gpu_type="l4",
             constraints={"min_memory_gib": 128},
         ),
         # A repair turn must not discard the explicit minimum and launch the smaller VM.
-        tool("start_worker", task="Try with less RAM", category="training", tier="gpu"),
+        tool("start_worker", task="Try with less RAM", expected_hours=3, tier="gpu"),
     )
     monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: sdk)
     assert await bridge.process(event_id, 0) == "complete"
@@ -456,7 +474,7 @@ async def test_email_write_paths_are_repairable_read_only_error(turn, monkeypatc
         tool(
             "start_worker",
             task="Create the requested report",
-            category="analysis",
+            expected_hours=0.5,
             write_paths=["gs://lab-data/results/report.csv"],
         ),
         reply(EMAIL_READ_ONLY),

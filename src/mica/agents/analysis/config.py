@@ -89,7 +89,7 @@ class Settings(BaseSettings):
     max_turns: int = Field(default=500, ge=1)
     max_budget_usd_per_turn: float = Field(default=5, gt=0)
     max_concurrent_runs: int = Field(default=3, ge=1)
-    launch_heavy_tier: Literal["standard", "large", "xlarge"] = "large"
+    on_demand_after_hours: float = Field(default=2, gt=0, le=336)
     max_tier: Literal["standard", "large", "xlarge"] = "xlarge"
     gpu_tier_enabled: bool = False
     gpu_flexible_sizing: bool = False

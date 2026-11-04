@@ -133,14 +133,15 @@ def build_options(
     compute = compute_manager if not ctx.survey_only else None
     compute_tools = compute.tools() if compute else []
     if not ctx.survey_only:
-        from . import cellpose_tools
+        from . import gpu_tools
 
         compute_tools.extend(
-            cellpose_tools.tools(
+            gpu_tools.tools(
                 ctx.workdir,
                 ctx.data_path,
                 settings,
                 save_result=compute.save_result if compute else None,
+                records=lambda: manager.records.values() if manager else (),
             )
         )
         compute_tools.append(
@@ -343,6 +344,9 @@ def build_options(
         ]
         if compute:
             sections.append(compute.prompt())
+        from .toolkit_catalog import environment_prompt
+
+        sections.append(environment_prompt(settings, manager.records.values() if manager else ()))
         if manager:
             sections.append(manager.toolkit())
         return {
@@ -390,9 +394,15 @@ def build_options(
             **({"CLAUDE_CODE_PROMPT_CACHE_TTL": "1h"} if history else {}),
             **(
                 {
-                    "MCP_TOOL_TIMEOUT": str(settings.max_run_seconds * 1000)
-                    if gcs_publisher
-                    else "1200000"
+                    "MCP_TOOL_TIMEOUT": str(
+                        1000
+                        * max(
+                            settings.max_run_seconds
+                            if gcs_publisher or settings.gpu_worker
+                            else 1200,
+                            settings.runtime_timeout_seconds + 60 if runtimes else 0,
+                        )
+                    )
                 }
                 if runtimes or gcs_publisher or not ctx.survey_only
                 else {}
@@ -491,16 +501,9 @@ def build_options(
 
 def describe_tool(block: ToolUseBlock) -> str:
     args = block.input
-    if block.name == "mcp__pistachio__cellpose_segment":
-        label = (
-            "Segmenting cells with Cellpose-SAM"
-            if str(args.get("version", "")).startswith("4.")
-            else "Segmenting cells with Cellpose 3"
-        )
-        crop = Path(str(args.get("input_path", ""))).name
-        return f"{label}: {crop[:60]}" if crop else label
-    if block.name == "mcp__pistachio__cellpose_versions":
-        return "Checking available Cellpose versions"
+    if block.name == "mcp__pistachio__run_gpu":
+        script = Path(str(args.get("script", ""))).name
+        return f"Running GPU script: {script[:60]}" if script else "Running GPU computation"
     if block.name == TOOL_NAME:
         packages = args.get("packages") or ["packages"]
         return f"Setting up {str(packages[0])[:60]}…"

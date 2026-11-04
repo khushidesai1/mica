@@ -15,6 +15,7 @@
 !scripts/check_spatial_release.py
 !scripts/check_cellpose_release.py
 !scripts/check_cellpose_gpu.py
+!scripts/check_gpu_hardware.py
 !src/
 !src/**
 !tools/

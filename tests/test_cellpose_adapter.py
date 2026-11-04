@@ -7,8 +7,24 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tools import cellpose_segment
-from tools.cellpose_segment import load_image, validate_shape
+from skills.skills.cellpose.scripts import segment as cellpose_segment
+from skills.skills.cellpose.scripts.segment import load_image, validate_shape
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"version": "latest"}, {"model": "cyto3"}, {"device": []},
+        {"model_dir": "/tmp/unreviewed"}, {"batch_size": 10000},
+        {"flow_threshold": float("nan")}, {"channels": [0, 0]},
+    ],
+)
+def test_skill_adapter_retains_version_model_and_parameter_validation(changes):
+    with pytest.raises(ValueError):
+        cellpose_segment.normalize({
+            "input_path": "crop.tif", "output_dir": "outputs/crop",
+            "version": "4.2.1.1", "model": "cpsam", **changes,
+        })
 
 
 @pytest.mark.parametrize(
@@ -60,6 +76,8 @@ def test_sam_uses_supported_precision_and_records_it(
         )
     )
     monkeypatch.setattr(cellpose_segment, "MODEL_MANIFEST", manifest)
+    monkeypatch.setitem(cellpose_segment.MODEL_DIRS, "4.2.1.1", str(tmp_path))
+    (tmp_path / "crop.tif").write_bytes(b"synthetic")
     monkeypatch.setattr(cellpose_segment, "version", lambda _: "4.2.1.1")
     monkeypatch.setattr(
         cellpose_segment, "load_image", lambda _: np.zeros((8, 8), dtype=np.float32)
@@ -86,7 +104,7 @@ def test_sam_uses_supported_precision_and_records_it(
     cellpose_segment.run(
         {
             "model_dir": str(tmp_path),
-            "input_path": "crop.tif",
+            "input_path": str(tmp_path / "crop.tif"),
             "version": "4.2.1.1",
             "device": device,
             "model": "cpsam",

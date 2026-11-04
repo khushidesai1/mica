@@ -12,11 +12,11 @@ from test_analysis_batch import bridge  # noqa: F401
 from test_gpu_compute import GPU_IMAGE, click, gpu, start  # noqa: F401
 
 from mica.agents.analysis import (
-    cellpose_tools,
     compute_approval,
     conversation,
     gpu_capacity,
     recovery,
+    runtime_sandbox,
     tiers,
 )
 from mica.agents.analysis.batch import job_spec
@@ -161,7 +161,7 @@ def test_device_enumeration_only_exposes_real_nvidia_character_devices(monkeypat
             st_mode=stat.S_IFCHR if str(path) in devices else stat.S_IFLNK
         ),
     )
-    assert set(map(str, cellpose_tools.gpu_devices())) == devices
+    assert set(map(str, runtime_sandbox.gpu_devices())) == devices
 
 
 async def test_approved_80_gib_fallback_preserves_resources_and_binds_spot_mode(

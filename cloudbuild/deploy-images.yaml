@@ -29,5 +29,5 @@ options:
   logging: CLOUD_LOGGING_ONLY
 substitutions:
   _PYTHON_IMAGE: python:3.12.12-slim
-  _API_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/api:bootstrap
-  _SCIENCE_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/science:bootstrap
+  _API_IMAGE: us-central1-docker.pkg.dev/example/mica-staging/api:bootstrap
+  _SCIENCE_IMAGE: us-central1-docker.pkg.dev/example/mica-staging/science:bootstrap

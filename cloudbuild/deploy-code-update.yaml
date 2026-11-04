@@ -105,7 +105,7 @@ options:
 substitutions:
   _PYTHON_IMAGE: python:3.12.12-slim
   _SCIENCE_BASE_IMAGE: python:3.12.12-slim
-  _API_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/api:code-update
-  _SCIENCE_IMAGE: us-central1-docker.pkg.dev/example/pistachio-staging/science:code-update
-  _CLOUD_RUN_SERVICE: pistachio-staging
+  _API_IMAGE: us-central1-docker.pkg.dev/example/mica-staging/api:code-update
+  _SCIENCE_IMAGE: us-central1-docker.pkg.dev/example/mica-staging/science:code-update
+  _CLOUD_RUN_SERVICE: mica-staging
   _REGION: us-central1
