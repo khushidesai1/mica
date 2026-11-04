@@ -123,10 +123,11 @@ def save(
 async def lease(
     bridge: BatchBridge, key: str, *, seconds: int = 60,
     busy: str = "Request is being updated. Try again shortly.",
+    busy_error: type[Exception] = ValueError,
 ) -> AsyncIterator[None]:
     claim = await bridge.repository.begin_event(key, lease_seconds=seconds)
     if claim.status != "claimed":
-        raise ValueError(busy)
+        raise busy_error(busy)
     try:
         yield
     finally:
