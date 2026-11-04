@@ -45,6 +45,8 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
         self.denied = {canonicalize_name(name) for name in denied}
         self.cutoff = datetime.now(UTC) - timedelta(days=min_age_days)
         self.indexes: dict[str, list[dict[str, Any]]] = {}
+        self.simple: dict[str, bytes] = {}
+        self.index_locks: dict[str, threading.Lock] = {}
         self.policy_errors: list[str] = []
         self.urls: dict[str, str] = {}
         self.local_wheels: dict[str, Path] = {}
@@ -79,10 +81,15 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
                 except RuntimePolicyError as exc:
                     mirror.policy_errors.append(str(exc))
                     self.send_error(403, "Package source refused by runtime policy")
-                except (ValueError, httpx.HTTPError, OSError):
+                except httpx.HTTPError:
+                    self.send_error(502, "Package registry request failed")
+                except (ValueError, OSError):
                     self.send_error(403, "Package source refused by runtime policy")
 
-        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler, False)
+        self.server.request_queue_size = 64
+        self.server.server_bind()
+        self.server.server_activate()
         self.server.daemon_threads = True
         self.url = f"http://127.0.0.1:{self.server.server_port}"
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
@@ -121,8 +128,9 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
                 headers={"Accept": "application/vnd.pypi.simple.v1+json" if metadata else "*/*"},
             ) as response,
         ):
+            response.raise_for_status()
             if response.status_code != 200:
-                raise ValueError("Registry fetch failed")
+                raise ValueError("Unexpected registry response")
             body = bytearray()
             with destination.open("wb") if destination else nullcontext(None) as target:
                 for chunk in response.iter_bytes():
@@ -284,24 +292,29 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
                     ],
                 }
                 return json.dumps(doc).encode(), "application/vnd.pypi.simple.v1+json"
-            doc = json.loads(self.fetch(f"https://pypi.org/simple/{name}/", metadata=True))
-            self.indexes[name] = doc["files"]
-            wheels = []
-            for original in doc["files"]:
-                item = dict(original)
-                if not item["filename"].endswith(".whl"):
-                    continue
-                url = item["url"]
-                if urlsplit(url).hostname != "files.pythonhosted.org":
-                    raise ValueError("Untrusted artifact host")
-                key = hashlib.sha256(url.encode()).hexdigest() + "/" + item["filename"]
-                self.urls[key] = url
-                # uv may fetch PEP 658 wheel metadata alongside a wheel.
-                self.urls[key + ".metadata"] = url + ".metadata"
-                item["url"] = f"{self.url}/files/{key}"
-                wheels.append(item)
-            doc["files"] = wheels
-            return json.dumps(doc).encode(), "application/vnd.pypi.simple.v1+json"
+            with self.lock:
+                index_lock = self.index_locks.setdefault(name, threading.Lock())
+            with index_lock:
+                if name not in self.simple:
+                    doc = json.loads(self.fetch(f"https://pypi.org/simple/{name}/", metadata=True))
+                    self.indexes[name] = doc["files"]
+                    wheels = []
+                    for original in doc["files"]:
+                        item = dict(original)
+                        if not item["filename"].endswith(".whl"):
+                            continue
+                        url = item["url"]
+                        if urlsplit(url).hostname != "files.pythonhosted.org":
+                            raise ValueError("Untrusted artifact host")
+                        key = hashlib.sha256(url.encode()).hexdigest() + "/" + item["filename"]
+                        self.urls[key] = url
+                        # uv may fetch PEP 658 wheel metadata alongside a wheel.
+                        self.urls[key + ".metadata"] = url + ".metadata"
+                        item["url"] = f"{self.url}/files/{key}"
+                        wheels.append(item)
+                    doc["files"] = wheels
+                    self.simple[name] = json.dumps(doc).encode()
+                return self.simple[name], "application/vnd.pypi.simple.v1+json"
         if path.startswith("/built/"):
             parts = path.split("/")
             built_wheel = self.local_wheels.get(parts[2]) if len(parts) == 4 else None

@@ -4,11 +4,14 @@ import hashlib
 import io
 import json
 import tarfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, Mock
 from zipfile import ZipFile
 
+import httpx
 import pytest
 
 from mica.agents.analysis import runtime_install, runtime_network, runtime_policy, runtime_tools
@@ -154,6 +157,34 @@ def test_mirror_hides_source_files_from_uv_but_retains_pinned_candidate(mirror, 
     assert len(candidate) == 1 and candidate[0].version == "0.3.2"
     with pytest.raises(ValueError, match="Unrecognized"):
         mirror.get("/files/" + candidate[0].filename)
+
+
+def test_mirror_single_flight_cache_and_transient_failure_over_http(tmp_path, monkeypatch):
+    calls = []
+    document = {"name": "docrep", "files": [index_file()]}
+    with WheelMirror(tmp_path / "http", {"boto3"}, 1024**2) as server:
+        def fetch(url, **kwargs):
+            calls.append(url)
+            if len(calls) == 1:
+                raise httpx.ConnectTimeout("temporary registry failure")
+            time.sleep(0.05)
+            return json.dumps(document).encode()
+
+        monkeypatch.setattr(server, "fetch", fetch)
+        with httpx.Client(trust_env=False, timeout=3) as client:
+            url = server.url + "/simple/docrep/"
+            assert client.get(url).status_code == 502
+            assert not server.policy_errors and not server.simple
+            with ThreadPoolExecutor(max_workers=12) as pool:
+                responses = list(pool.map(lambda _: client.get(url), range(12)))
+            assert all(response.status_code == 200 for response in responses)
+            assert all(not response.json()["files"] for response in responses)
+            assert len(calls) == 2 and server.indexes["docrep"] == document["files"]
+            server.add_wheel(wheel(tmp_path / "built"))
+            assert "/built/docrep/" in client.get(url).json()["files"][0]["url"]
+            assert len(calls) == 2
+            assert client.get(server.url + "/simple/boto3/").status_code == 403
+            assert server.policy_errors == ["Package denied by runtime policy"]
 
 
 def test_source_selection_obeys_age_python_constraints_and_existing_wheels(mirror):
