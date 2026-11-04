@@ -257,3 +257,30 @@ async def test_signed_slack_action_routes_to_run_confirmation(replacing, monkeyp
         assert error.value.status_code == 401
         assert write_approval.load(replacing.store, event_id)[0].status == "pending"
     replacing.test_client.create_job.assert_not_called()  # Only the scheduled poll may launch.
+
+
+async def test_expired_overwrite_keeps_outputs_and_requires_new_confirmation(replacing):
+    from mica.agents.analysis import approvals
+
+    event_id, record = await start(replacing)
+    row, generation = write_approval.load(replacing.store, event_id)
+    row.expires_at = 1
+    approvals.save(replacing.store, write_approval.key(event_id), row, generation)
+    saved_path = f"tasks/slack-analysis/events/{event_id}/completed-output.csv"
+    replacing.store.put(saved_path, b"saved result")
+    await write_approval.KIND.expire(replacing, replacing.store, event_id)
+    assert write_approval.load(replacing.store, event_id)[0].status == "expired"
+    assert replacing.test_slack.chat_update.call_args.kwargs["blocks"][-1]["elements"][0][
+        "action_id"
+    ] == write_approval.ACTION_PREFIX + "again"
+    legacy = click(event_id, record, "again")
+    legacy["actions"][0]["action_id"] = "pistachio_overwrite_again"
+    await write_approval.handle(replacing, replacing.store, legacy)
+    renewed = write_approval.load(replacing.store, event_id)[0]
+    assert renewed.status == "pending" and renewed.approved_at == 0
+    assert replacing.inspect.call_count == 2  # Fresh destination inspection before the new card.
+    assert replacing.store.get(saved_path)[0] == b"saved result"
+    replacing.test_client.create_job.assert_not_called()
+    await write_approval.handle(replacing, replacing.store, click(event_id, record, "cancel"))
+    await write_approval.KIND.expire(replacing, replacing.store, event_id)
+    assert write_approval.load(replacing.store, event_id)[0].status == "cancelled"

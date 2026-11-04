@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field
 
-from . import access, project_memory, surface
+from . import access, approvals, project_memory, surface
 from .config import CHECKPOINT_PREFIX
 from .storage import Storage, update_model
 
@@ -136,37 +136,48 @@ def buttons(event_id: str) -> list[dict[str, Any]]:
 
 
 def is_action(payload: dict[str, Any]) -> bool:
-    return payload.get("type") == "block_actions" and any(
-        str(action.get("action_id", "")).startswith(ACTION_PREFIX)
-        for action in payload.get("actions", [])
-    )
+    return KIND.matches(payload)
 
 
-async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]) -> dict[str, Any]:
+
+async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]) -> dict[str, Any]:
     actions = payload.get("actions", [])
     if len(actions) != 1 or actions[0].get("action_id") not in {
         ACTION_PREFIX + "add",
         ACTION_PREFIX + "follow",
+        ACTION_PREFIX + "again",
     }:
         raise ValueError("Invalid amendment action")
     event_id = str(actions[0].get("value", ""))
     key(event_id)
-    mutex = f"claude-poll:{event_id}"
-    claim = await bridge.repository.begin_event(mutex, lease_seconds=60)
-    if claim.status != "claimed":
-        raise ValueError("Request is being updated. Try again shortly.")
-    try:
+    async with approvals.lease(bridge, f"claude-poll:{event_id}"):
         record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
         if not record or not record.get("amendable"):
             raise ValueError("This request is no longer available to amend.")
         event = record["payload"]["event"]
-        if (
-            payload.get("team", {}).get("id") != record["payload"]["team_id"]
-            or payload.get("user", {}).get("id") != event["user"]
-            or payload.get("channel", {}).get("id") != event["channel"]
-            or payload.get("message", {}).get("ts") != record.get("notice_ts")
-        ):
-            raise ValueError("Only the requester can choose in the original thread.")
+        approvals.requester(payload, record)
+        if actions[0]["action_id"] == ACTION_PREFIX + "again":
+            if record.get("approval_expired") != KIND.name or record["status"] != "pending":
+                return {}
+            previous = await bridge.repository.get_connector_state(
+                "claude-event:" + record["amendable"]
+            )
+            if not previous or not eligible(bridge, record, previous):
+                raise ValueError(
+                    "The earlier request finished. This message is kept as a follow-up."
+                )
+            record.pop("amendment_choice", None)
+            record.pop("approval_expired", None)
+            record.pop("amendment_expires", None)
+            await presented(bridge, event_id, record)
+            record.pop("notice_text", None)
+            await bridge.notify(event_id, record, "waiting", WAITING)
+            await approvals.save_record(bridge, event_id, record)
+            return {}
+        if (not record.get("amendment_choice") and record.get("amendment_expires")
+                and approvals.expired(record["amendment_expires"])):
+            await expire_record(bridge, event_id, record)
+            raise ValueError("This choice expired. Use Request again or keep the saved follow-up.")
         if record.get("amendment_choice") or record["status"] != "pending":
             return {}
         target = record["amendable"]
@@ -234,8 +245,6 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
         finally:
             await bridge.repository.release_event(parent_mutex, parent_claim.token)
         return {}
-    finally:
-        await bridge.repository.release_event(mutex, claim.token)
 
 
 async def reconcile(
@@ -247,6 +256,8 @@ async def reconcile(
         return "follow"
     previous = await bridge.repository.get_connector_state(f"claude-event:{target}")
     done = previous is None or previous["status"] in {"complete", "failed"}
+    if record.get("approval_expired") == KIND.name and not done:
+        return "wait"
     doc = await asyncio.to_thread(close if done else load, bridge.storage, target)
     item = doc.items.get(event_id)
     if item:
@@ -287,3 +298,47 @@ async def reconcile(
         record["amendment_choice"] = "follow"
         await bridge.notify(event_id, record, "waiting", FOLLOW_UP)
     return "follow"
+
+
+async def presented(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> None:
+    deadline = record.setdefault("amendment_expires", KIND.deadline())
+    await approvals.watch(bridge, KIND, event_id, deadline, record)
+
+
+async def expire_record(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> None:
+    if record["status"] != "pending":
+        return
+    choice = record.get("amendment_choice")
+    if choice and not (choice == "follow" and record.get("approval_expired") == KIND.name):
+        return
+    if not choice:
+        record.update(amendment_choice="follow", approval_expired=KIND.name)
+        await approvals.save_record(bridge, event_id, record)
+    await approvals.expired_card(
+        bridge, KIND, event_id, record,
+        text="This amendment choice expired. Your message is kept as a follow-up. "
+             "Request again to review adding it while the earlier task is still running.",
+    )
+    await approvals.save_record(bridge, event_id, record)
+
+
+async def expire(bridge: BatchBridge, storage: Storage, event_id: str) -> None:
+    async with approvals.lease(bridge, f"claude-poll:{event_id}"):
+        record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
+        if (record and record.get("amendable") and record.get("amendment_expires")
+                and approvals.expired(record["amendment_expires"])):
+            await expire_record(bridge, event_id, record)
+
+
+async def decide(bridge: BatchBridge, storage: Storage, payload: dict[str, Any], background: Any
+                 ) -> dict[str, Any]:
+    return await _handle(bridge, storage, payload)
+
+
+KIND = approvals.Kind("amendment", (ACTION_PREFIX,), key, 3600, decide, expire)
+
+
+async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]) -> dict[str, Any]:
+    from fastapi import BackgroundTasks
+
+    return await approvals.handle(bridge, storage, payload, BackgroundTasks())

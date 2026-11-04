@@ -492,3 +492,67 @@ async def test_gpu_access_revoked_during_preparation_never_submits(gpu, monkeypa
     saved = await gpu.repository.get_connector_state("claude-event:" + event_id)
     assert saved["cancel_requested"]
     gpu.test_client.create_job.assert_not_called()
+
+
+async def test_expired_gpu_card_keeps_work_and_renews_without_starting(gpu):
+    from mica.agents.analysis import approvals, memory_tasks
+
+    event_id, record = await start(gpu)
+    row, generation = compute_approval.load(gpu.store, event_id)
+    row.expires_at = 1
+    approvals.save(gpu.store, compute_approval.key(event_id), row, generation)
+    marker = f"tasks/slack-analysis/events/{event_id}/saved-work.txt"
+    gpu.store.put(marker, b"keep this")
+    await compute_approval.KIND.expire(gpu, gpu.store, event_id)
+    expired = await gpu.repository.get_connector_state("claude-event:" + event_id)
+    assert expired["status"] == "failed" and expired["approval_expired"] == "compute"
+    assert not memory_tasks.eligible(gpu, expired)
+    card = gpu.test_slack.chat_update.call_args.kwargs["blocks"]
+    assert card[-1]["elements"][0]["text"]["text"] == "Request again"
+    await compute_approval.handle(gpu, gpu.store, click(event_id, expired, "again"))
+    pending = compute_approval.load(gpu.store, event_id)[0]
+    assert pending.status == "pending" and pending.approved_at == 0
+    assert gpu.store.get(marker)[0] == b"keep this"
+    gpu.test_client.create_job.assert_not_called()
+    await compute_approval.KIND.expire(gpu, gpu.store, event_id)  # Late old timer is harmless.
+    assert compute_approval.load(gpu.store, event_id)[0].status == "pending"
+    record = await gpu.repository.get_connector_state("claude-event:" + event_id)
+    await compute_approval.handle(gpu, gpu.store, click(event_id, record))
+    assert await gpu.process(event_id, record["tick"]) == "running"
+    assert gpu.test_client.create_job.call_count == 1
+
+
+async def test_expired_gpu_renewal_cannot_reorder_a_thread_or_override_access(gpu):
+    from mica.agents.analysis import approvals
+
+    event_id, record = await start(gpu)
+    row, generation = compute_approval.load(gpu.store, event_id)
+    row.expires_at = 1
+    approvals.save(gpu.store, compute_approval.key(event_id), row, generation)
+    await compute_approval.KIND.expire(gpu, gpu.store, event_id)
+    await gpu.accept(payload("4.0", "3.0", text="Something else"))
+    with pytest.raises(ValueError, match="conversation moved on"):
+        await compute_approval.handle(gpu, gpu.store, click(event_id, record, "again"))
+    gpu.app.slack_user_map["T1:U1"] = "other@example.com"
+    with pytest.raises(ValueError, match="access changed"):
+        await compute_approval.handle(gpu, gpu.store, click(event_id, record, "again"))
+    gpu.test_client.create_job.assert_not_called()
+
+
+async def test_renewal_retries_presentation_without_restarting_or_extending(gpu):
+    from mica.agents.analysis import approvals
+
+    event_id, record = await start(gpu)
+    row, generation = compute_approval.load(gpu.store, event_id)
+    row.expires_at = 1
+    approvals.save(gpu.store, compute_approval.key(event_id), row, generation)
+    await compute_approval.KIND.expire(gpu, gpu.store, event_id)
+    gpu.test_slack.chat_update.side_effect = RuntimeError("temporary Slack outage")
+    with pytest.raises(RuntimeError, match="Slack outage"):
+        await compute_approval.handle(gpu, gpu.store, click(event_id, record, "again"))
+    deadline = compute_approval.load(gpu.store, event_id)[0].expires_at
+    gpu.test_slack.chat_update.side_effect = None
+    await compute_approval.handle(gpu, gpu.store, click(event_id, record, "again"))
+    assert compute_approval.load(gpu.store, event_id)[0].expires_at == deadline
+    assert compute_approval.load(gpu.store, event_id)[0].status == "pending"
+    gpu.test_client.create_job.assert_not_called()

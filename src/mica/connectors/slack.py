@@ -463,37 +463,7 @@ async def slack_actions(request: Request, background_tasks: BackgroundTasks) -> 
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=400, detail="invalid Slack payload") from exc
 
-    from mica.agents.analysis import (
-        access_requests,
-        amendments,
-        command_approval,
-        compute_approval,
-        failure_actions,
-        transfer_interactions,
-        write_approval,
-    )
-
-    if access_requests.is_action(payload):
-        from mica.agents.analysis.batch import BatchBridge
-        from mica.agents.analysis.storage import GCSStorage
-
-        try:
-            return await access_requests.handle(
-                BatchBridge(services.settings, services.repository),
-                GCSStorage(services.settings.gcs_bucket), payload, background_tasks,
-            )
-        except (ValueError, PermissionError) as exc:
-            if payload.get("type") == "view_submission":
-                return {"response_action": "errors", "errors": {"project": str(exc)}}
-            from slack_sdk.web.async_client import AsyncWebClient
-
-            await AsyncWebClient(
-                token=services.settings.slack_bot_token, timeout=5
-            ).chat_postEphemeral(
-                channel=payload.get("channel", {}).get("id", ""),
-                user=payload.get("user", {}).get("id", ""), text=str(exc),
-            )
-            return {}
+    from mica.agents.analysis import approvals, failure_actions, transfer_interactions
 
     if failure_actions.is_action(payload):
         from mica.agents.analysis.config import Settings
@@ -507,43 +477,25 @@ async def slack_actions(request: Request, background_tasks: BackgroundTasks) -> 
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    if (
-        write_approval.is_action(payload) or command_approval.is_action(payload)
-        or compute_approval.is_action(payload) or amendments.is_action(payload)
-    ):
+    if approvals.is_action(payload):
         from slack_sdk.web.async_client import AsyncWebClient
 
         from mica.agents.analysis.batch import BatchBridge
         from mica.agents.analysis.storage import GCSStorage
 
         try:
-            if compute_approval.is_action(payload):
-                return await compute_approval.handle(
-                    BatchBridge(services.settings, services.repository),
-                    GCSStorage(services.settings.gcs_bucket), payload,
-                )
-            if amendments.is_action(payload):
-                return await amendments.handle(
-                    BatchBridge(services.settings, services.repository),
-                    GCSStorage(services.settings.gcs_bucket), payload,
-                )
-            if command_approval.is_action(payload):
-                return await command_approval.handle(
-                    BatchBridge(services.settings, services.repository),
-                    GCSStorage(services.settings.gcs_bucket), payload,
-                )
-            return await write_approval.handle(
+            return await approvals.handle(
                 BatchBridge(services.settings, services.repository),
-                GCSStorage(services.settings.gcs_bucket),
-                payload,
+                GCSStorage(services.settings.gcs_bucket), payload, background_tasks,
             )
         except (ValueError, PermissionError) as exc:
+            if payload.get("type") == "view_submission":
+                return {"response_action": "errors", "errors": {"project": str(exc)}}
             await AsyncWebClient(
                 token=services.settings.slack_bot_token, timeout=5
             ).chat_postEphemeral(
                 channel=payload.get("channel", {}).get("id", ""),
-                user=payload.get("user", {}).get("id", ""),
-                text=str(exc),
+                user=payload.get("user", {}).get("id", ""), text=str(exc),
             )
             return {}
 

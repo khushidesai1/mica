@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import access, surface
+from . import access, approvals, surface
 from .storage import Conflict, Storage
 from .tiers import gpu_choices, gpu_estimate, gpu_mode, gpu_seconds, resolve, selected_gpu_choice
 
@@ -36,7 +36,7 @@ class Approval(BaseModel):
     model_allowance: float = Field(gt=0)
     expires_at: float
     approved_at: float = 0
-    status: Literal["pending", "approved", "cancelled"] = "pending"
+    status: Literal["pending", "approved", "cancelled", "expired"] = "pending"
 
 
 def key(event_id: str) -> str:
@@ -47,11 +47,7 @@ def key(event_id: str) -> str:
 
 
 def load(storage: Storage, event_id: str) -> tuple[Approval, str] | None:
-    try:
-        raw, generation = storage.get(key(event_id))
-        return Approval.model_validate_json(raw), generation
-    except FileNotFoundError:
-        return None
+    return approvals.load_model(storage, key(event_id), Approval)
 
 
 def choices(record: dict[str, Any]) -> str:
@@ -122,11 +118,11 @@ async def ready(
                 for name in gpu_choices(record)
             ),
             model_allowance=bridge.settings.max_budget_usd_per_turn,
-            expires_at=time.time() + 3600,
+            expires_at=KIND.deadline(),
         )
         try:
             await asyncio.to_thread(
-                storage.put_if, key(event_id), approval.model_dump_json().encode(), None
+                approvals.save, storage, key(event_id), approval, None
             )
         except Conflict:
             saved = await asyncio.to_thread(load, storage, event_id)
@@ -143,10 +139,13 @@ async def ready(
         if record["status"] == "awaiting_approval":
             record["status"] = "pending"
         return True
-    if approval.status == "cancelled" or time.time() >= approval.expires_at:
+    if approval.status == "expired" or approvals.expired(approval.expires_at):
+        await expire_record(bridge, storage, event_id, record)
+        return False
+    if approval.status == "cancelled":
         record.update(status="failed", cancel_requested=approval.status == "cancelled")
         await bridge.notify(
-            event_id, record, "failed", "GPU request cancelled or expired. Nothing started."
+            event_id, record, "failed", "GPU request cancelled. Nothing started."
         )
         return False
     mode = record["launch"]["provisioning"]
@@ -196,10 +195,12 @@ async def ready(
             + ("\n*Parallelism:* " + html.escape(str(assessment["multi_gpu_reason"]), quote=False)
                if assessment.get("multi_gpu_reason") else "")
         )
+    await approvals.watch(bridge, KIND, event_id, approval.expires_at, record)
     record.update(status="awaiting_approval", gpu_approval=True)
     await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
     if record.get("notice_text") != text:
-        await AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5).chat_update(
+        await approvals.card(
+            AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
             channel=record["payload"]["event"]["channel"],
             ts=record["notice_ts"],
             text=text,
@@ -264,17 +265,17 @@ async def ready(
 
 
 def is_action(payload: dict[str, Any]) -> bool:
-    return payload.get("type") == "block_actions" and any(
-        str(a.get("action_id", "")).startswith(PREFIX) for a in payload.get("actions", [])
-    )
+    return KIND.matches(payload)
 
 
-async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]) -> dict[str, Any]:
+
+async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]) -> dict[str, Any]:
     actions = payload.get("actions", [])
     if len(actions) != 1 or actions[0].get("action_id") not in {
         PREFIX + "approve",
         PREFIX + "cancel",
         PREFIX + "allowance",
+        PREFIX + "again",
     }:
         raise ValueError("Invalid GPU action")
     action = actions[0]
@@ -282,29 +283,38 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
     selected = str(action.get("selected_option", {}).get("value", ""))
     event_id = selected.split(":")[0] if changing else str(action.get("value", ""))
     key(event_id)
-    mutex = f"claude-poll:{event_id}"
-    claim = await bridge.repository.begin_event(mutex, lease_seconds=60)
-    if claim.status != "claimed":
-        raise ValueError("Request is being updated. Try again shortly.")
-    try:
+    async with approvals.lease(bridge, f"claude-poll:{event_id}"):
         record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
         saved = await asyncio.to_thread(load, storage, event_id)
         if not record or not saved:
             raise ValueError("Unknown GPU request")
         event = record["payload"]["event"]
-        if (
-            payload.get("team", {}).get("id") != record["payload"]["team_id"]
-            or payload.get("user", {}).get("id") != event["user"]
-            or payload.get("channel", {}).get("id") != event["channel"]
-            or payload.get("message", {}).get("ts") != record.get("notice_ts")
-        ):
-            raise ValueError("Only the requester can confirm this run in its original thread.")
+        approvals.requester(payload, record)
         approval, generation = saved
         await asyncio.to_thread(validate, bridge, storage, record, approval)
+        if action["action_id"] == PREFIX + "again":
+            if approval.status not in {"expired", "pending"}:
+                return {}
+            async with approvals.lease(bridge, "claude-intake:" + record["thread_key"]):
+                if record["status"] != "awaiting_approval":
+                    await approvals.renew_run(bridge, event_id, record)
+                if approval.status == "expired":
+                    approval.status, approval.expires_at = "pending", KIND.deadline()
+                    await asyncio.to_thread(
+                        approvals.save, storage, key(event_id), approval, generation
+                    )
+                await ready(bridge, event_id, record, storage)
+                await approvals.save_record(bridge, event_id, record)
+                await bridge.schedule(event_id, record["tick"])
+            return {}
+        if approval.status == "expired":
+            await expire_record(bridge, storage, event_id, record)
+            return {}
         if record["status"] != "awaiting_approval" or approval.status != "pending":
             return {}
-        if time.time() >= approval.expires_at:
-            raise ValueError("This GPU request expired. Send it again.")
+        if approvals.expired(approval.expires_at):
+            await expire_record(bridge, storage, event_id, record)
+            raise ValueError("This GPU request expired. Use Request again for fresh confirmation.")
         if changing:
             seconds = int(selected.split(":", 1)[1])
             if not record["launch"].get("flexible_compute") or not 600 <= seconds <= min(
@@ -314,7 +324,7 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
             record["launch"]["max_seconds"] = seconds
             approval.seconds, approval.choices = seconds, choices(record)
             await asyncio.to_thread(
-                storage.put_if, key(event_id), approval.model_dump_json().encode(), generation
+                approvals.save, storage, key(event_id), approval, generation
             )
             await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
             await ready(bridge, event_id, record, storage)
@@ -323,7 +333,7 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
         approval.status = "approved" if actions[0]["action_id"].endswith("approve") else "cancelled"
         approval.approved_at = time.time() if approval.status == "approved" else 0
         await asyncio.to_thread(
-            storage.put_if, key(event_id), approval.model_dump_json().encode(), generation
+            approvals.save, storage, key(event_id), approval, generation
         )
         record.update(
             status="pending" if approval.status == "approved" else "failed",
@@ -337,12 +347,37 @@ async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any])
             if approval.status == "approved"
             else "Cancelled. Nothing started."
         )
-        await AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5).chat_update(
-            channel=event["channel"],
-            ts=record["notice_ts"],
-            text=text,
-            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+        await approvals.card(
+            AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
+            event["channel"], record["notice_ts"], text,
         )
         return {}
-    finally:
-        await bridge.repository.release_event(mutex, claim.token)
+
+
+async def expire_record(
+    bridge: BatchBridge, storage: Storage, event_id: str, record: dict[str, Any]
+) -> None:
+    saved = await asyncio.to_thread(load, storage, event_id)
+    if saved:
+        await approvals.expire_run(bridge, storage, KIND, event_id, record, *saved)
+
+
+async def expire(bridge: BatchBridge, storage: Storage, event_id: str) -> None:
+    async with approvals.lease(bridge, f"claude-poll:{event_id}"):
+        record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
+        if record and record.get("gpu_approval"):
+            await expire_record(bridge, storage, event_id, record)
+
+
+async def decide(bridge: BatchBridge, storage: Storage, payload: dict[str, Any], background: Any
+                 ) -> dict[str, Any]:
+    return await _handle(bridge, storage, payload)
+
+
+KIND = approvals.Kind("compute", (PREFIX,), key, 3600, decide, expire)
+
+
+async def handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]) -> dict[str, Any]:
+    from fastapi import BackgroundTasks
+
+    return await approvals.handle(bridge, storage, payload, BackgroundTasks())

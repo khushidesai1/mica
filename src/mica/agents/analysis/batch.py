@@ -301,6 +301,7 @@ class BatchBridge:
             else {}
         )
         if phase == "waiting" and text == amendments.WAITING:
+            await amendments.presented(self, event_id, record)
             status = {"blocks": amendments.buttons(event_id)}
         elif record.get("amendable") and not status:
             status = {"blocks": []}  # Remove old buttons without bypassing text chunk limits.
@@ -660,7 +661,8 @@ class BatchBridge:
         from . import recovery
         from .direct import record_exchange
 
-        if record["status"] not in {"complete", "failed"} or record.get("terminal_recorded"):
+        if (record["status"] not in {"complete", "failed"} or record.get("terminal_recorded")
+                or record.get("approval_expired")):
             return
         if memory_tasks.conversation_turn(record):
             storage = self.storage

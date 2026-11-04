@@ -442,3 +442,20 @@ Required regression evidence includes requester-bound allowance selection, uncha
 limits across continuation, and result restoration after terminal cleanup. Exercise those paths
 in the worker image with synthetic local storage. The final GPU smoke remains a small synthetic
 crop/isolation check; do not rerun a whole-slide workload for deployment.
+
+
+### Shared approval lifecycle
+
+Approval registry changes are API-only. Keep current worker pins, GPU allowances, mailbox secrets
+and access settings. The existing Cloud Tasks identity invokes the authenticated
+`/api/v1/internal/slack-analysis/approvals/<kind>/<id>` expiry endpoint; no new queue, IAM binding
+or secret is needed. Fresh confirmations schedule deadline-specific tasks, and an old timer
+rechecks the current saved deadline before doing anything. Existing active compute/write polls
+also check expiry. Older dormant command/access cards without a timer are checked when opened.
+
+Run offline fake-clock tests for all kinds, generation conflicts, requester/owner binding,
+expired-card renewal, delayed timers, duplicate decisions and queue ordering. A renewal retains
+saved work and asks for fresh confirmation; it cannot resume an old run after its conversation
+has moved on. Preserve original approval keys/action IDs and legacy overwrite aliases during
+rollback. Use the owner's scratch output path for the optional approve/reject live acceptance;
+no real scientific work is needed to verify this controller change.

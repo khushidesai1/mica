@@ -152,6 +152,29 @@ async def process(event_id: str, tick: int, request: Request) -> dict[str, str]:
     return {"status": status}
 
 
+@router.post("/approvals/{kind_name}/{identifier}", include_in_schema=False)
+async def expire_approval(kind_name: str, identifier: str, request: Request) -> dict[str, str]:
+    from mica.agents.analysis import approvals
+
+    services: Services = request.app.state.services
+    if services.settings.slack_agent_backend != "claude_batch":
+        raise HTTPException(503, "Claude Slack rollout is disabled")
+    principal = await get_principal(request)
+    if principal.id != services.settings.cloud_tasks_service_account.lower():
+        raise HTTPException(403, "Untrusted task dispatcher")
+    await admit(request, draining=True)
+    try:
+        kind = approvals.resolve(kind_name)
+        kind.key(identifier)
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid approval") from exc
+    await kind.expire(
+        BatchBridge(services.settings, services.repository),
+        GCSStorage(services.settings.gcs_bucket), identifier,
+    )
+    return {"status": "checked"}
+
+
 @router.post("/memory/{event_id}", include_in_schema=False)
 async def process_memory(event_id: str, request: Request) -> dict[str, str]:
     from mica.agents.analysis import memory_tasks
