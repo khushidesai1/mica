@@ -5,20 +5,22 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import shutil
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from claude_agent_sdk import SdkMcpTool, create_sdk_mcp_server, tool
 from claude_agent_sdk.types import McpSdkServerConfig
 
-from .config import Settings
+from .config import CHECKPOINT_PREFIX, Settings
 from .runtime_install import Installer, RuntimeFailure, RuntimeRecord
-from .runtime_policy import normalize
+from .runtime_policy import RuntimePolicyError, normalize
 from .runtime_store import RuntimeStore, encode
-from .storage import Storage
+from .storage import Conflict, Storage
 from .toolkit_catalog import CATALOG
 
 log = logging.getLogger(__name__)
@@ -38,14 +40,17 @@ class RuntimeEvent:
     reason: str
     note: str = ""
     saved: bool = False
+    source_built: list[dict[str, str]] = field(default_factory=list)
 
     def notice(self) -> str:
         if self.reused or not self.saved:
             return ""
         packages = ", ".join(f"{name} {version}" for name, version in self.installed.items())
+        built = ", ".join(f"{p['name']} {p['version']}" for p in self.source_built)
         return (
             f"Set up {packages} ({self.kind} runtime, {self.package_count} packages, "
             f"{self.size_bytes / 1024**3:.2f} GB). It's saved for future runs."
+            + (f" Built from pure-Python source: {built}." if built else "")
         )
 
 
@@ -57,17 +62,20 @@ class RuntimeManager:
         installer: Installer | None = None,
         principal: str = "",
         storage: Storage | None = None,
+        event_id: str = "",
+        attempt: int = 0,
     ) -> None:
         self.settings = settings
         self.installer = installer or Installer(settings)
         self.principal = principal
+        self.event_id, self.attempt = event_id, attempt
         self.store = RuntimeStore(storage, settings) if storage is not None else None
         self.pending_restores: list[RuntimeEvent] = []
         self.events: list[RuntimeEvent] = []
         self.thread_ids: set[str] = set()
         self.records: dict[str, RuntimeRecord] = {}
         self.catalog_status: dict[str, str] = {}
-        self.failures: dict[tuple[str, ...], str] = {}
+        self.failures: dict[tuple[tuple[str, ...], bool], tuple[float, str]] = {}
         self.restore_errors: list[str] = []
         self.new_count = 0
         self.lock = threading.Lock()
@@ -95,6 +103,7 @@ class RuntimeManager:
             reason,
             record.note,
             saved,
+            record.source_built,
         )
         self.events.append(event)
         return event
@@ -123,12 +132,19 @@ class RuntimeManager:
                 failure = self.store.failure(failure_key)
                 if failure:
                     raise RuntimeFailure(
-                        "Previous setup failed; change the inputs to retry. " + failure
+                        "Previous setup failed; retry after cache expiry or change the inputs. "
+                        + failure
                     )
             else:
                 failure_key = ""
-            if not self.store and request.specs in self.failures:
-                raise RuntimeFailure(self.failures[request.specs])
+            local_key = (request.specs, isolated)
+            previous = self.failures.get(local_key)
+            if (
+                not self.store
+                and previous
+                and (time.time() - previous[0] < self.settings.runtime_failure_ttl_hours * 3600)
+            ):
+                raise RuntimeFailure(previous[1])
             if self.new_count >= self.settings.runtime_max_new_per_turn:
                 raise RuntimeFailure("This turn's new-runtime limit has been reached.")
             self.new_count += 1
@@ -136,8 +152,10 @@ class RuntimeManager:
                 record = self.installer.create(
                     request, reason=reason, isolated=isolated, principal=self.principal
                 )
+            except RuntimePolicyError:
+                raise
             except (ValueError, OSError) as exc:
-                self.failures[request.specs] = str(exc)[-3000:]
+                self.failures[local_key] = (time.time(), str(exc)[-3000:])
                 if self.store:
                     self.store.save_failure(failure_key, str(exc))
                 raise RuntimeFailure(str(exc)[-3000:]) from exc
@@ -161,6 +179,25 @@ class RuntimeManager:
                     (self.store.path(record.id) / "runtime.json").write_bytes(encode(record))
             return self.record(record, reason, reused=reused, saved=self.store is not None)
 
+    async def report_failure(self) -> None:
+        """Persist a bounded, idempotent receipt for the controller's existing polling loop."""
+        if not self.store or not re.fullmatch(r"[a-f0-9]{32}", self.event_id):
+            return
+        receipt = {
+            "event_id": self.event_id,
+            "attempt": self.attempt,
+            "cause": "runtime_install_failed",
+        }
+        key = f"{CHECKPOINT_PREFIX}/events/{self.event_id}/runtime-failure.json"
+        try:
+            await asyncio.to_thread(
+                self.store.storage.put_if, key, json.dumps(receipt).encode(), None
+            )
+        except Conflict:
+            pass  # One incident observation per request, including retries and worker handoffs.
+        except Exception:
+            log.warning("Runtime install failure receipt could not be saved")
+
     def restore_thread(self, ids: list[str]) -> None:
         if not self.store or not ids:
             return
@@ -181,10 +218,12 @@ class RuntimeManager:
                         record.kind == "overlay" and record.base_fingerprint != base[1]
                     ):
                         # A new ID is intentional; scripts must use the returned interpreter.
-                        packages = [e.name for e in CATALOG if e.name == record.catalog] or (
-                            record.request
-                            + [f"git+{s['url']}@{s['commit']}" for s in record.sources]
-                        )
+                        packages = [e.name for e in CATALOG if e.name == record.catalog]
+                        if not packages and record.sources:
+                            raise RuntimePolicyError(
+                                "Refreshing this source runtime needs a reviewed catalog entry."
+                            )
+                        packages = packages or record.request
                         event = self.ensure(
                             packages,
                             "Refresh stale thread runtime",
@@ -249,7 +288,8 @@ class RuntimeManager:
 def ensure_tool(manager: RuntimeManager) -> SdkMcpTool[Any]:
     @tool(
         "ensure_packages",
-        "Set up public Python packages in a separate offline analysis runtime.",
+        "Set up public Python packages in a separate offline analysis runtime. "
+        "Dependencies without wheels are built from source only if they are pure Python.",
         {
             "type": "object",
             "properties": {
@@ -279,9 +319,12 @@ def ensure_tool(manager: RuntimeManager) -> SdkMcpTool[Any]:
             result = {**asdict(event), "status": "ready", "size_mb": event.size_bytes / 1024**2}
             return {"content": [{"type": "text", "text": json.dumps(result)}]}
         except (ValueError, OSError) as exc:
+            if isinstance(exc, RuntimeFailure):
+                await manager.report_failure()
             message = "\n".join(str(exc).splitlines()[-30:])[-3000:]
             return {"content": [{"type": "text", "text": message}], "isError": True}
         except Exception as exc:
+            await manager.report_failure()
             log.exception("Package runtime service failed")
             message = (
                 f"Package setup could not finish ({type(exc).__name__}); check the worker logs."
@@ -292,7 +335,8 @@ def ensure_tool(manager: RuntimeManager) -> SdkMcpTool[Any]:
 
 
 def create_server(
-    manager: RuntimeManager | None, extra_tools: list[SdkMcpTool[Any]] | None = None,
+    manager: RuntimeManager | None,
+    extra_tools: list[SdkMcpTool[Any]] | None = None,
 ) -> McpSdkServerConfig:
     tools = ([ensure_tool(manager)] if manager else []) + (extra_tools or [])
     return create_sdk_mcp_server("pistachio", "1.0.0", tools)

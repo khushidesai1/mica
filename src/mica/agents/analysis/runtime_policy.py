@@ -11,11 +11,14 @@ from typing import Literal
 from packaging.requirements import InvalidRequirement, Requirement
 from packaging.utils import canonicalize_name
 
-from .runtime_source import parse_source
 from .toolkit_catalog import Source, ToolkitEntry, lookup
 
-POLICY_VERSION = 1
+POLICY_VERSION = 2
 RuntimeKind = Literal["overlay", "isolated", "image"]
+
+
+class RuntimePolicyError(ValueError):
+    """A current policy refusal; never persist it as an installation failure."""
 
 
 @dataclass(frozen=True)
@@ -54,14 +57,15 @@ def normalize(packages: list[str], *, denylist: set[str] | None = None) -> Packa
         if not isinstance(value, str):
             raise ValueError("Package specs must be strings.")
         if value.startswith("git+"):
-            source = parse_source(value)
-            if source not in sources:
-                sources.append(source)
-            continue
+            raise RuntimePolicyError(
+                "Agent-supplied Git sources are not allowed; use a reviewed catalog entry."
+            )
         entry = lookup(value.strip())
         spec = normalized_requirement(entry.spec if entry and entry.spec else value.strip())
         if canonicalize_name(Requirement(spec).name) in denied:
-            raise ValueError(f"Package {Requirement(spec).name} is denied by runtime policy.")
+            raise RuntimePolicyError(
+                f"Package {Requirement(spec).name} is denied by runtime policy."
+            )
         specs.add(spec)
         if entry and entry not in entries:
             entries.append(entry)

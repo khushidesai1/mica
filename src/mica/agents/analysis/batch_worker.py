@@ -398,7 +398,10 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         )
 
     runtimes = (
-        RuntimeManager(settings, storage=storage, principal=request["principal"])
+        RuntimeManager(
+            settings, storage=storage, principal=request["principal"],
+            event_id=event_id, attempt=attempt,
+        )
         if settings.runtimes_enabled
         else None
     )

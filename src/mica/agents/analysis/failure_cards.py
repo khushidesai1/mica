@@ -12,6 +12,7 @@ VERSION = 3
 PREFIX = "mica_failure_"
 CATEGORIES = {
     "compute": "Compute",
+    "runtime": "Package setup",
     "routing": "Routing",
     "turn": "Conversation",
     "access": "Access",
