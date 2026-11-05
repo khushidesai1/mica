@@ -187,6 +187,7 @@ def publish(
     run_prefix: str = "",
     *,
     attachments: Sequence[dict[str, Any]] = (),
+    keep_scripts: bool = True,
 ) -> dict[Path, str]:
     root = run_prefix or run_root(False, "", ctx.project_slug, "", ctx.thread_ts)
     prefix = f"{root}/turn-{turn}"
@@ -195,6 +196,8 @@ def publish(
         sorted(set(result.files) | set(files_under(ctx.workdir / "code"))), ctx.workdir
     )
     for path in retained:
+        if not keep_scripts and path.relative_to(ctx.workdir).parts[0] == "code":
+            continue
         key = f"{prefix}/{path.relative_to(ctx.workdir)}"
         storage.upload(key, path)
         published[path] = key

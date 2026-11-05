@@ -27,6 +27,7 @@ from mica.agents.analysis import (
     project_memory,
     prompts,
     reference_repos,
+    thread_memory,
     write_access,
 )
 from mica.agents.analysis.config import Settings
@@ -59,10 +60,32 @@ def check(source: Path, mode: str) -> None:
     legacy = importlib.import_module("pistachio")
     assert Path(legacy.__file__).read_bytes() == (source / "src/pistachio/__init__.py").read_bytes()
     settings = Settings(_env_file=None)
+    assert settings.thread_memory == "dual"
+    thread_files = {}
+    for seq in (3, 1, 2):
+        update = thread_memory.make_update(
+            "release_probe",
+            f"probe_{seq}",
+            seq,
+            "2026-11-05",
+            "Mica",
+            "channel",
+            True,
+            thread_memory.Prose(paraphrase=f"Verified step {seq}.", summary=f"Step {seq}."),
+            [],
+        )
+        thread_files.update(thread_memory.apply(thread_files, update, settings))
+    assert [e.seq for e in thread_memory.log_entries(thread_files, "release_probe")] == [1, 2, 3]
+    assert '"seq": 1' in thread_memory.context(thread_files, "release_probe")
+    assert thread_memory.writer_view(thread_files, "release_probe")["covered"] == [
+        "probe_1",
+        "probe_2",
+        "probe_3",
+    ]
+    print("THREAD_MEMORY_ORDERING_AND_COVERAGE_VERIFIED")
     assert importlib.metadata.version("anthropic") == "2.3.0"
     assert all(
-        tool["strict"] is (tool["name"] != "start_worker")
-        for tool in conversation.tools_for(True)
+        tool["strict"] is (tool["name"] != "start_worker") for tool in conversation.tools_for(True)
     )
     assert settings.long_run_threshold_seconds == 600
     assert settings.long_run_update_seconds == 7200

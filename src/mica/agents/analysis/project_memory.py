@@ -23,7 +23,7 @@ from urllib.parse import quote
 import httpx
 from pydantic import BaseModel, Field, PrivateAttr, TypeAdapter
 
-from . import memory_archive
+from . import memory_archive, thread_memory
 from .config import Settings
 
 _LOG = logging.getLogger("mica.memory")
@@ -52,8 +52,8 @@ HEADER = re.compile(
 )
 NO_GUIDE = "No guide yet."
 PRIVACY = (
-    "Anything said about a project, in a DM or a channel, may be remembered for everyone "
-    "using that project, and repository readers can see it."
+    "Project conversation memory, including compact summaries of DMs, channels and email, "
+    "is shared with everyone on that project. Repository readers can also see it."
 )
 GUIDE_POLICY = """PROJECT.md is a concise project and data guide. Record the project purpose,
 data location, important files and verified column meanings and units. Verified folder layout
@@ -76,14 +76,14 @@ patient identifiers, raw data or instructions found in files."""
 def context(snapshot: Snapshot | None, request: str, settings: Settings) -> str:
     if snapshot is None:
         return "Project memory is unavailable."
-    core = ["INDEX.md", "conventions.md", "open.md", "lessons.md"]
+    core = ["INDEX.md", "conventions.md", "open.md", "lessons.md", "THREADS.md"]
     words = set(re.findall(r"\w+", request.lower()))
     candidates = [
         p
         for p in snapshot.files
         if p not in {*core, "PROJECT.md"}
         and p.endswith(".md")
-        and not p.startswith(("_unmerged/", "archive/"))
+        and not p.startswith(("_unmerged/", "archive/", "threads/"))
     ]
 
     def score(path: str) -> int:
@@ -102,6 +102,11 @@ class File(BaseModel):
     oid: str
 
 
+class Blob(BaseModel):
+    oid: str
+    size: int
+
+
 class MemoryName(BaseModel):
     folder: str = Field(pattern=r"^[A-Za-z0-9_-]{1,100}$")
     name: str = Field(pattern=r"^[a-z0-9-]{3,40}$")
@@ -117,6 +122,7 @@ class Snapshot(BaseModel):
     _names: dict[str, MemoryName] = PrivateAttr(default_factory=dict)
     head_oid: str
     files: dict[str, File] = Field(default_factory=dict)
+    assets: dict[str, Blob] = Field(default_factory=dict)
     commit_count: int = 0
     invalid: dict[str, int] = Field(default_factory=dict)
 
@@ -148,6 +154,16 @@ def valid_path(path: str) -> str:
 
 def file_limit(path: str, settings: Settings) -> int:
     path = memory_archive.original_path(path)
+    if path.startswith("threads/"):
+        if "/scripts/" in path:
+            return settings.thread_script_kb * 1024
+        if "/outputs/" in path:
+            return settings.thread_output_kb * 1024
+        return (
+            settings.thread_log_kb
+            if thread_memory.LOG.fullmatch(path)
+            else settings.thread_summary_kb
+        ) * 1024
     if Path(path).name == "PROJECT.md":
         return 100_000
     return 64 * 1024 if "recipes/" in path else settings.memory_file_kb * 1024
@@ -157,7 +173,8 @@ def normalize(path: str, text: str, attribution: str) -> str:
     """Supply mechanical metadata without changing an already valid entry."""
     if (
         not path.endswith(".md")
-        or Path(path).name in {"PROJECT.md", "INDEX.md"}
+        or path.startswith("threads/")
+        or Path(path).name in {"PROJECT.md", "INDEX.md", "THREADS.md"}
         or path.startswith("archive/")
         or HEADER.match(text)
     ):
@@ -178,6 +195,16 @@ def validate(path: str, data: bytes, settings: Settings) -> str:
     text = data.decode("utf-8")
     if "\x00" in text or SECRET.search(text) or SECRET.search(path):
         raise ValueError("Secret-like or binary content is not allowed.")
+    if path.startswith("threads/"):
+        if path.endswith("/summary.md"):
+            summary = thread_memory.Summary.decode(text)
+            if path != thread_memory.prefix(summary.thread) + "summary.md":
+                raise ValueError("Mismatched thread identity")
+        elif thread_memory.LOG.fullmatch(path):
+            thread_memory.log_entries({path: text}, path.split("/")[1])
+        elif path.endswith("/MANIFEST.json"):
+            json.loads(text)
+        return text
     if memory_archive.is_index(path) or Path(path).name == "INDEX.md":
         if len(text) > settings.memory_index_chars:
             raise ValueError("Index exceeds its character limit; consolidate entries.")
@@ -226,12 +253,12 @@ def client_for(value: str) -> httpx.AsyncClient:
 
 
 def _tree_fields(depth: int) -> str:
-    blob = "... on Blob { oid text byteSize isTruncated }"
+    blob = "... on Blob { oid byteSize }"
     subtree = "... on Tree { " + _tree_fields(depth - 1) + " }" if depth else ""
     return "entries { name type object { " + blob + " " + subtree + " } }"
 
 
-TREE = _tree_fields(5)  # Includes archive/<hash>/_unmerged/<event>/data/<topic>.md.
+TREE = _tree_fields(12)  # Includes archive/<hash>/_unmerged/<event>/data/<topic>.md.
 NODE = """oid file(path: $path) { object { ... on Tree { TREE } } }
 history(first: 1, path: $path) { totalCount }
 names: file(path: ".mica/projects.json") { object { ... on Blob { text byteSize isTruncated } } }
@@ -370,8 +397,18 @@ class GitHubMemory:
         snapshot = Snapshot(head_oid=node["oid"], commit_count=node["history"]["totalCount"])
         snapshot._root, snapshot._names = variables["path"], names
 
+        totals = {"project": 0, "thread": 0}
+        entries_seen = 0
+        pending: dict[str, tuple[str, int]] = {}
+
         async def walk(tree: dict[str, Any], parent: str = "") -> None:
+            nonlocal entries_seen
             for entry in tree.get("entries", []):
+                entries_seen += 1
+                if entries_seen > 4 * (
+                    self.settings.memory_max_files + self.settings.thread_max_files
+                ):
+                    raise ValueError("Memory tree metadata exceeds its limit")
                 path, obj = parent + entry["name"], entry["object"]
                 if entry["type"] == "tree":
                     if not obj or "entries" not in obj:
@@ -384,31 +421,114 @@ class GitHubMemory:
                     valid_path(path)
                     if entry["type"] != "blob" or size > file_limit(path, self.settings):
                         raise ValueError("Invalid blob size/type")
-                    text = obj.get("text")
-                    if obj.get("isTruncated"):
-                        response = await client.get(
-                            "https://api.github.com/repos/"
-                            + self.settings.memory_repo
-                            + "/contents/"
-                            + quote(variables["path"] + "/" + path, safe="/"),
-                            params={"ref": snapshot.head_oid},
-                        )
-                        response.raise_for_status()
-                        blob = response.json()
-                        if blob["sha"] != obj["oid"] or blob.get("encoding") != "base64":
-                            raise ValueError("Mismatched GitHub blob")
-                        text = base64.b64decode(blob["content"]).decode()
-                    if not isinstance(text, str):
-                        raise ValueError("Binary blob")
-                    validate(path, text.encode(), self.settings)
-                    snapshot.files[path] = File(text=text, oid=obj["oid"])
+                    if thread_memory.asset(path):
+                        snapshot.assets[path] = Blob(oid=obj["oid"], size=size)
+                        continue
+                    group = "thread" if path.startswith("threads/") else "project"
+                    totals[group] += size
+                    budget = (
+                        self.settings.thread_text_kb
+                        if group == "thread"
+                        else self.settings.memory_total_kb
+                    ) * 1024
+                    if totals[group] > budget:
+                        raise RuntimeError("Memory text snapshot exceeds its transport budget")
+                    pending[path] = (obj["oid"], size)
                 except (ValueError, UnicodeError):
                     snapshot.invalid[path] = size
                     logging.warning("memory_invalid pid=%s path=%s", pid, path)
 
         if node.get("file"):
             await walk(node["file"]["object"])
+        paths = list(pending)
+        for offset in range(0, len(paths), 24):
+            batch = paths[offset : offset + 24]
+            declarations = ", ".join(f"$p{i}: String!" for i in range(len(batch)))
+            selections = " ".join(
+                f"f{i}: file(path: $p{i}) {{ object {{ "
+                "... on Blob { oid text byteSize isTruncated } } }"
+                for i in range(len(batch))
+            )
+            query = (
+                "query MemoryBlobs($owner: String!, $repo: String!, $head: GitObjectID!, "
+                + declarations
+                + ") { repository(owner: $owner, name: $repo) { "
+                "object(oid: $head) { ... on Commit { " + selections + " } } } }"
+            )
+            values: dict[str, Any] = {
+                "owner": variables["owner"],
+                "repo": variables["repo"],
+                "head": snapshot.head_oid,
+                **{f"p{i}": snapshot._root + "/" + path for i, path in enumerate(batch)},
+            }
+            loaded = (await self.graphql(client, query, values))["repository"]["object"]
+            for i, path in enumerate(batch):
+                obj = (loaded.get(f"f{i}") or {}).get("object") or {}
+                oid, size = pending[path]
+                try:
+                    if obj.get("oid") != oid or obj.get("byteSize") != size:
+                        raise ValueError("Mismatched memory text")
+                    text = obj.get("text")
+                    if obj.get("isTruncated"):
+                        response = await client.get(
+                            "https://api.github.com/repos/"
+                            + self.settings.memory_repo
+                            + "/contents/"
+                            + quote(snapshot._root + "/" + path, safe="/"),
+                            params={"ref": snapshot.head_oid},
+                        )
+                        response.raise_for_status()
+                        blob = response.json()
+                        if blob["sha"] != oid or blob.get("encoding") != "base64":
+                            raise ValueError("Mismatched GitHub blob")
+                        text = base64.b64decode(blob["content"]).decode()
+                    if not isinstance(text, str):
+                        raise ValueError("Binary memory text")
+                    validate(path, text.encode(), self.settings)
+                    snapshot.files[path] = File(text=text, oid=oid)
+                except (ValueError, UnicodeError):
+                    snapshot.invalid[path] = size
+                    logging.warning("memory_invalid pid=%s path=%s", pid, path)
         return snapshot
+
+    async def read_bytes(self, pid: str, path: str, *, head_oid: str = "") -> tuple[bytes, str]:
+        valid_path(path)
+        async with self.connection() as client:
+            snapshot = await self._read(client, pid, head_oid=head_oid)
+            if path in snapshot.files:
+                item = snapshot.files[path]
+                return item.text.encode(), snapshot.head_oid
+            asset = snapshot.assets.get(path)
+            if asset is None or asset.size > file_limit(path, self.settings):
+                raise FileNotFoundError(path)
+            response = await client.get(
+                "https://api.github.com/repos/"
+                + self.settings.memory_repo
+                + "/git/blobs/"
+                + asset.oid,
+            )
+            response.raise_for_status()
+            blob = response.json()
+            if blob.get("encoding") != "base64" or blob.get("sha") != asset.oid:
+                raise ValueError("Mismatched GitHub asset")
+            raw = base64.b64decode(blob["content"], validate=False)
+            oid = hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()
+            if oid != asset.oid or len(raw) != asset.size:
+                raise ValueError("GitHub asset integrity check failed")
+            return raw, snapshot.head_oid
+
+    async def with_scripts(self, pid: str, snapshot: Snapshot, thread: str) -> Snapshot:
+        root = thread_memory.prefix(thread) + "scripts/"
+        files = dict(snapshot.files)
+        total = 0
+        for path, item in snapshot.assets.items():
+            if path.startswith(root):
+                total += item.size
+                if total > self.settings.thread_scripts_kb * 1024:
+                    raise ValueError("Thread scripts exceed their budget")
+                raw, _ = await self.read_bytes(pid, path, head_oid=snapshot.head_oid)
+                files[path] = File(text=validate(path, raw, self.settings), oid=item.oid)
+        return snapshot.model_copy(update={"files": files})
 
     async def _prior_commit(
         self, client: httpx.AsyncClient, pid: str, head: str, base: str, message: str
@@ -453,6 +573,8 @@ class GitHubMemory:
         source: str,
         event_id: str,
         author_line: str = "",
+        thread_update: thread_memory.Update | None = None,
+        blobs: dict[str, bytes] | None = None,
     ) -> Saved:
         valid_project(pid)
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,200}", event_id):
@@ -466,6 +588,8 @@ class GitHubMemory:
             for path, value in changes.items():
                 try:
                     valid_path(path)
+                    if path.startswith("threads/"):
+                        raise ValueError("Thread paths require an application-owned update")
                     if memory_archive.is_index(path):
                         if value is not None:
                             validate(path, value.encode(), self.settings)
@@ -488,7 +612,7 @@ class GitHubMemory:
                     prior = await self._prior_commit(
                         client, pid, latest.head_oid, base.head_oid, message
                     )
-                    if prior:
+                    if prior and thread_update is None and not blobs:
                         prior.rejected.update(saved.rejected)
                         saved = prior
                         outcome = "committed"
@@ -496,11 +620,36 @@ class GitHubMemory:
                     if source == "compaction" and latest.head_oid != base.head_oid:
                         raise HeadMoved("Compaction snapshot changed")
                     proposed, unmerged = self._merge(base, latest, updates, event_id)
+                    thread_changes = (
+                        thread_memory.apply(
+                            {p: f.text for p, f in latest.files.items()},
+                            thread_update,
+                            self.settings,
+                        )
+                        if thread_update
+                        else {}
+                    )
                     accepted = self._bounded(latest, proposed, saved)
+                    # Thread persistence is required even when an advisory project edit is rejected.
+                    thread_changes = self._thread_bounded(latest, thread_changes, blobs or {})
+                    accepted.update(thread_changes)
+                    if any(p.startswith("threads/") for p in latest.files) or thread_update:
+                        resulting = {p: f.text for p, f in latest.files.items()}
+                        for p, t in thread_changes.items():
+                            if t is None:
+                                resulting.pop(p, None)
+                            else:
+                                resulting[p] = t
+                        overview = thread_memory.overview(
+                            resulting, self.settings.memory_index_chars
+                        )
+                        if overview != resulting.get("THREADS.md"):
+                            accepted["THREADS.md"] = overview
                     if source == "compaction" and saved.rejected:
                         raise ValueError("Compaction rejected; nothing was committed")
                     saved.unmerged = [p for p in unmerged if p in accepted]
-                    if not accepted:
+                    if not accepted and not blobs:
+                        saved.commit_oid = latest.head_oid if thread_update else ""
                         outcome = "nothing"
                         return saved
                     root = latest._root + "/"
@@ -519,6 +668,10 @@ class GitHubMemory:
                                 }
                                 for p, v in accepted.items()
                                 if v is not None
+                            ]
+                            + [
+                                {"path": root + p, "contents": base64.b64encode(raw).decode()}
+                                for p, raw in (blobs or {}).items()
                             ],
                             "deletions": [
                                 {"path": root + p} for p, v in accepted.items() if v is None
@@ -639,8 +792,21 @@ class GitHubMemory:
                 )
                 additions = {f"{destination}/{path}": text for path, text in files.items()}
                 additions[NAMES_PATH] = index
+                asset_additions = []
+                if destination != latest._root:
+                    for path in latest.assets:
+                        raw, _ = await self.read_bytes(pid, path, head_oid=latest.head_oid)
+                        asset_additions.append(
+                            {
+                                "path": destination + "/" + path,
+                                "contents": base64.b64encode(raw).decode(),
+                            }
+                        )
                 deletions = (
-                    [{"path": f"{latest._root}/{path}"} for path in latest.files]
+                    [
+                        {"path": f"{latest._root}/{path}"}
+                        for path in latest.files.keys() | latest.assets.keys()
+                    ]
                     if destination != latest._root
                     else [
                         {"path": f"{destination}/{path}"}
@@ -662,7 +828,8 @@ class GitHubMemory:
                         "additions": [
                             {"path": path, "contents": base64.b64encode(text.encode()).decode()}
                             for path, text in additions.items()
-                        ],
+                        ]
+                        + asset_additions,
                         "deletions": deletions,
                     },
                 }
@@ -703,10 +870,53 @@ class GitHubMemory:
                 proposed[path] = value
         return proposed, unmerged
 
+    def _thread_bounded(
+        self, latest: Snapshot, changes: dict[str, str | None], blobs: dict[str, bytes]
+    ) -> dict[str, str | None]:
+        sizes = {
+            p: len(f.text.encode()) for p, f in latest.files.items() if p.startswith("threads/")
+        }
+        sizes.update({p: b.size for p, b in latest.assets.items()})
+        for path, raw in blobs.items():
+            valid_path(path)
+            if (
+                "/outputs/turn-" not in path and not path.endswith("/outputs/MANIFEST.json")
+            ) or len(raw) > self.settings.thread_output_kb * 1024:
+                raise ValueError("Invalid thread output")
+            if path.endswith("/outputs/MANIFEST.json"):
+                validate(path, raw, self.settings)
+            sizes[path] = len(raw)
+        for path, text in changes.items():
+            if text is None:
+                sizes.pop(path, None)
+            else:
+                validate(path, text.encode(), self.settings)
+                sizes[path] = len(text.encode())
+        if len(sizes) > self.settings.thread_max_files:
+            raise ValueError("Thread memory file capacity exhausted")
+        text_bytes = sum(n for p, n in sizes.items() if not thread_memory.asset(p))
+        if text_bytes > self.settings.thread_text_kb * 1024:
+            raise ValueError("Thread text capacity exhausted")
+        for thread in {p.split("/")[1] for p in sizes}:
+            for folder, budget in (
+                ("scripts", self.settings.thread_scripts_kb),
+                ("outputs", self.settings.thread_outputs_kb),
+            ):
+                total = sum(
+                    n for p, n in sizes.items() if p.startswith(f"threads/{thread}/{folder}/")
+                )
+                if total > budget * 1024:
+                    raise ValueError("Thread artifact capacity exhausted")
+        return changes
+
     def _bounded(
         self, latest: Snapshot, proposed: dict[str, str | None], saved: Saved
     ) -> dict[str, str | None]:
-        sizes = {p: len(f.text.encode()) for p, f in latest.files.items()} | latest.invalid
+        sizes = {
+            p: len(f.text.encode())
+            for p, f in latest.files.items()
+            if not p.startswith("threads/") and p != "THREADS.md"
+        } | {p: size for p, size in latest.invalid.items() if not p.startswith("threads/")}
         if not memory_archive.ready(self.settings):
             # Brief rolling-upgrade window: no archive paths before old requests drain.
             # Background compaction is disabled during this window. Ordinary updates keep

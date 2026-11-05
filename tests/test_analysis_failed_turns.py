@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from analysis_helpers import memory_edits
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
@@ -108,14 +109,16 @@ async def test_history_write_failure_retries_terminal_hook_without_duplicate(cha
     assert len((await checkpoint(chat, event))[1]["messages"]) == 1
 
 
-async def test_failed_user_message_is_not_truncated_and_history_retains_twelve(chat, monkeypatch):
+async def test_failed_user_message_is_not_truncated_and_working_window_retains_four(
+    chat, monkeypatch
+):
     text = REQUEST + " Detail " * 1000
     first = await fail(chat, monkeypatch, text=text)
     assert (await checkpoint(chat, first))[1]["messages"][0]["user"] == text
     for n in range(2, 15):
         latest = await fail(chat, monkeypatch, ts=f"{n}.0", thread="1.0")
     messages = (await checkpoint(chat, latest))[1]["messages"]
-    assert len(messages) == 12 and all(m["id"] != first for m in messages)
+    assert len(messages) == 4 and all(m["id"] != first for m in messages)
 
 
 @pytest.mark.parametrize("text", ["help", "cancel", "write grant", "memory"])
@@ -156,7 +159,7 @@ async def test_routed_failure_uses_editor_not_missing_worker_proposal(chat, monk
     chat.settings.memory_auto_edit = True
     queued = AsyncMock()
     monkeypatch.setattr(job_lifecycle, "enqueue", queued)
-    editor = AsyncMock(return_value={"open.md": OPEN, "lessons.md": OPEN})
+    editor = AsyncMock(return_value=memory_edits({"open.md": OPEN, "lessons.md": OPEN}))
     monkeypatch.setattr(memory_tasks, "edit", editor)
     event = await fail(chat, monkeypatch)
     assert queued.call_args.args[2].endswith("/memory/" + event)
@@ -173,7 +176,7 @@ async def test_routed_failure_uses_editor_not_missing_worker_proposal(chat, monk
 async def test_pending_line_updates_on_retry_and_disappears_on_success(chat, monkeypatch):
     chat.settings.memory_auto_edit = True
     monkeypatch.setattr(job_lifecycle, "enqueue", AsyncMock())
-    editor = AsyncMock(return_value={"open.md": OPEN})
+    editor = AsyncMock(return_value=memory_edits({"open.md": OPEN}))
     monkeypatch.setattr(memory_tasks, "edit", editor)
     for n in [1, 2]:
         event = await fail(chat, monkeypatch, ts=f"{n}.0", thread="1.0" if n > 1 else None)
@@ -181,7 +184,9 @@ async def test_pending_line_updates_on_retry_and_disappears_on_success(chat, mon
     assert editor.call_args.args[2]["files"]["open.md"] == OPEN
     assert (await chat.memory_backend.read(chat.pid)).files["open.md"].text.count("Proseg TMA") == 1
     chat.decision.return_value = conversation.Decision(route="reply", reply="The retry completed.")
-    editor.return_value = {"open.md": OPEN.split("\n\n")[0] + "\n\nNo pending work.\n"}
+    editor.return_value = memory_edits(
+        {"open.md": OPEN.split("\n\n")[0] + "\n\nNo pending work.\n"}
+    )
     event = await chat.accept(payload("3.0", "1.0", "The retry is complete."))
     assert await chat.process(event, 0) == "complete"
     await memory_tasks.process(chat, event, chat.store)
@@ -194,7 +199,9 @@ async def test_growth_below_file_pressure_commits_without_compaction(chat, monke
     queued = AsyncMock()
     monkeypatch.setattr(job_lifecycle, "enqueue", queued)
     expanded = OPEN + "Additional attributed pending work.\n" * 50
-    monkeypatch.setattr(memory_tasks, "edit", AsyncMock(return_value={"open.md": expanded}))
+    monkeypatch.setattr(
+        memory_tasks, "edit", AsyncMock(return_value=memory_edits({"open.md": expanded}))
+    )
     event = await fail(chat, monkeypatch)
     await memory_tasks.process(chat, event, chat.store)
     await memory_tasks.process(chat, event, chat.store)

@@ -390,7 +390,20 @@ async def compact_idle_projects(principal: PrincipalDep, services: ServicesDep) 
     from mica.agents.analysis import observability
 
     failures = await observability.maintenance(services.repository, services.settings, purge=True)
-    return {"compacted_projects": await services.tasks.close_idle_projects(), **failures}
+    from mica.agents.analysis import memory_artifacts, memory_compaction, memory_tasks
+    from mica.agents.analysis.batch import BatchBridge
+
+    memory_retried = await memory_tasks.maintenance(
+        BatchBridge(services.settings, services.repository)
+    )
+    await memory_compaction.idle(BatchBridge(services.settings, services.repository))
+    artifacts = await memory_artifacts.sweep(BatchBridge(services.settings, services.repository))
+    return {
+        **artifacts,
+        "compacted_projects": await services.tasks.close_idle_projects(),
+        "memory_retried": memory_retried,
+        **failures,
+    }
 
 
 @router.post("/internal/maintenance/log-failure", include_in_schema=False)

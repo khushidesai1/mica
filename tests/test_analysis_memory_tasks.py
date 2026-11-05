@@ -10,13 +10,21 @@ import pytest
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from mica.agents.analysis import job_lifecycle, memory_tasks
+from mica.agents.analysis import job_lifecycle, memory_tasks, thread_memory
+
+
+def compact_edit():
+    return {
+        "_thread": thread_memory.Prose(
+            paraphrase="Explained the analysis result.", summary="Discussed interpretation."
+        ).model_dump_json()
+    }
 
 
 async def test_delivery_queues_but_does_not_run_editor(chat, monkeypatch):
     chat.settings.memory_auto_edit = True
     enqueue = AsyncMock()
-    editor = AsyncMock(return_value={})
+    editor = AsyncMock(side_effect=lambda *args: compact_edit())
     monkeypatch.setattr(job_lifecycle, "enqueue", enqueue)
     monkeypatch.setattr(memory_tasks, "edit", editor)
     event = await chat.accept(payload(text="Explain this result"))
@@ -39,7 +47,7 @@ async def test_failure_logs_type_only_and_retries(chat, monkeypatch, caplog):
         await memory_tasks.process(chat, event, chat.store)
     assert "ReadTimeout" in caplog.text and "PRIVATE CONTENT" not in caplog.text
     editor.side_effect = None
-    editor.return_value = {}
+    editor.return_value = compact_edit()
     await memory_tasks.process(chat, event, chat.store)
     assert editor.await_count == 2
 
@@ -58,7 +66,7 @@ async def test_editor_has_time_for_45_second_response(chat, monkeypatch):
         # Simulate elapsed model time without adding 45 s to the offline suite.
         assert budgets[-1] > 45
         await asyncio.sleep(0)
-        return {}
+        return compact_edit()
 
     monkeypatch.setattr(memory_tasks.asyncio, "timeout", capture)
     monkeypatch.setattr(memory_tasks, "edit", slow_model)
@@ -128,3 +136,37 @@ async def test_http_timeout_is_90_seconds(monkeypatch):
     monkeypatch.setattr(memory_tasks.httpx, "AsyncClient", client)
     await memory_tasks.edit("test", "model", {})
     assert budgets == [90]
+
+
+async def test_rejected_save_stays_pending_and_maintenance_redrives(chat, monkeypatch):
+    from mica.agents.analysis.project_memory import Saved
+
+    chat.settings.memory_auto_edit = True
+    queued = AsyncMock()
+    monkeypatch.setattr(job_lifecycle, "enqueue", queued)
+    monkeypatch.setattr(memory_tasks, "edit", AsyncMock(return_value=compact_edit()))
+    event = await chat.accept(payload(text="Explain this result"))
+    await chat.process(event, 0)
+    commit = chat.memory_backend.commit
+    monkeypatch.setattr(
+        chat.memory_backend, "commit", AsyncMock(return_value=Saved(rejected={"*": "storage_full"}))
+    )
+    with pytest.raises(RuntimeError, match="rejected"):
+        await memory_tasks.process(chat, event, chat.store)
+    key = "claude-event:" + event
+    record = await chat.repository.get_connector_state(key)
+    assert record["memory_pending"] and not record.get("memory_editor_done")
+    await chat.repository.patch_connector_state(key, {"memory_due": 0})
+    assert await memory_tasks.maintenance(chat) == 1
+    assert queued.call_args.args[1] == f"claude-memory-{event}-1"
+    monkeypatch.setattr(chat.memory_backend, "commit", commit)
+    await memory_tasks.process(chat, event, chat.store)
+    record = await chat.repository.get_connector_state(key)
+    assert record["memory_editor_done"] and "memory_pending" not in record
+    # A stale terminal poll can overwrite the async projection; the receipt repairs it.
+    record.pop("memory_editor_done")
+    await chat.repository.set_connector_state(key, record)
+    count = queued.await_count
+    await memory_tasks.enqueue(chat, event, record)
+    assert queued.await_count == count
+    assert (await chat.repository.get_connector_state(key))["memory_editor_done"]

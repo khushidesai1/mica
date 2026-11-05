@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from analysis_helpers import conversation_mock, seed_project
+from analysis_helpers import conversation_mock, memory_edits, seed_project
 from test_analysis_batch import bridge, payload  # noqa: F401
 
 from mica.agents.analysis import batch, conversation, direct
@@ -33,7 +33,9 @@ async def test_direct_edits_save_and_followups_never_create_workers(chat, monkey
     monkeypatch.setattr(
         memory_tasks,
         "edit",
-        AsyncMock(return_value={"PROJECT.md": "# Project\nSpecies: human (Alice provided)"}),
+        AsyncMock(
+            return_value=memory_edits({"PROJECT.md": "# Project\nSpecies: human (Alice provided)"})
+        ),
     )
     first = await chat.accept(payload(text="These are human samples"))
     assert await chat.process(first, 0) == "complete"
@@ -62,7 +64,9 @@ async def test_compute_uses_direct_brief_and_cached_routing(chat, monkeypatch):
     monkeypatch.setattr(
         memory_tasks,
         "edit",
-        AsyncMock(return_value={"PROJECT.md": "# Project\nSpecies: human (Alice provided)"}),
+        AsyncMock(
+            return_value=memory_edits({"PROJECT.md": "# Project\nSpecies: human (Alice provided)"})
+        ),
     )
     first = await chat.accept(payload(text="These are human samples"))
     await chat.process(first, 0)

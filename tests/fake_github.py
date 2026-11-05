@@ -10,7 +10,7 @@ import httpx
 
 
 def blob_oid(text: str) -> str:
-    data = text.encode()
+    data = text.encode() if isinstance(text, str) else text
     return hashlib.sha1(f"blob {len(data)}\0".encode() + data).hexdigest()
 
 
@@ -33,7 +33,11 @@ class FakeGitHub:
             else:
                 files[path] = text
         parent = self.head
-        self.head = hashlib.sha1((self.head + json.dumps(changes)).encode()).hexdigest()
+        self.head = hashlib.sha1(
+            (
+                self.head + json.dumps(changes, default=lambda raw: base64.b64encode(raw).decode())
+            ).encode()
+        ).hexdigest()
         self.trees[self.head] = files
         self.commits.insert(
             0,
@@ -54,8 +58,10 @@ class FakeGitHub:
                 text = files[path]
                 obj = {
                     "oid": blob_oid(text),
-                    "text": text if path not in self.truncated else "",
-                    "byteSize": len(text.encode()),
+                    "text": (text if isinstance(text, str) else None)
+                    if path not in self.truncated
+                    else "",
+                    "byteSize": len(text.encode() if isinstance(text, str) else text),
                     "isTruncated": path in self.truncated,
                 }
                 kind = "blob"
@@ -71,12 +77,20 @@ class FakeGitHub:
         if self.fail:
             return httpx.Response(self.fail)
         if request.method == "GET":
-            path = request.url.path.split("/contents/", 1)[1]
-            text = self.trees[request.url.params["ref"]][path]
+            if "/git/blobs/" in request.url.path:
+                oid = request.url.path.rsplit("/", 1)[1]
+                text = next(
+                    t for files in self.trees.values() for t in files.values() if blob_oid(t) == oid
+                )
+            else:
+                path = request.url.path.split("/contents/", 1)[1]
+                text = self.trees[request.url.params["ref"]][path]
             return httpx.Response(
                 200,
                 json={
-                    "content": base64.b64encode(text.encode()).decode(),
+                    "content": base64.b64encode(
+                        text.encode() if isinstance(text, str) else text
+                    ).decode(),
                     "encoding": "base64",
                     "sha": blob_oid(text),
                 },
@@ -87,10 +101,13 @@ class FakeGitHub:
             params = variables["input"]
             if params["expectedHeadOid"] != self.head:
                 return httpx.Response(200, json={"errors": [{"type": "STALE_DATA"}]})
-            changes = {
-                item["path"]: base64.b64decode(item["contents"]).decode()
-                for item in params["fileChanges"].get("additions", [])
-            }
+            changes = {}
+            for item in params["fileChanges"].get("additions", []):
+                raw = base64.b64decode(item["contents"])
+                try:
+                    changes[item["path"]] = raw.decode()
+                except UnicodeDecodeError:
+                    changes[item["path"]] = raw
             changes.update(
                 {item["path"]: None for item in params["fileChanges"].get("deletions", [])}
             )
@@ -100,6 +117,26 @@ class FakeGitHub:
             )
         head = variables.get("head") or self.head
         files = self.trees[head]
+        if "MemoryBlobs" in query:
+            selected = {}
+            for key, path in variables.items():
+                if key.startswith("p") and key[1:].isdigit():
+                    value = files.get(path)
+                    selected["f" + key[1:]] = (
+                        {
+                            "object": {
+                                "oid": blob_oid(value),
+                                "text": value,
+                                "byteSize": len(
+                                    value.encode() if isinstance(value, str) else value
+                                ),
+                                "isTruncated": path in self.truncated,
+                            }
+                        }
+                        if value is not None
+                        else None
+                    )
+            return httpx.Response(200, json={"data": {"repository": {"object": selected}}})
         prefix = variables.get("path", "") + "/"
         names = files.get(".mica/projects.json")
         node = {

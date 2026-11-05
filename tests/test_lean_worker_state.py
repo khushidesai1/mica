@@ -127,7 +127,7 @@ def test_durable_history_survives_prompt_window_and_failed_turn(tmp_path):
         success=False,
         history=history,
     )
-    assert len(state["messages"]) == 12 and len(context(state["messages"])) <= 20000
+    assert len(state["messages"]) == 4 and len(context(state["messages"])) <= 20000
     found = history.recall("radius")
     assert "radius 17" in json.dumps(found) and "threshold 5" in json.dumps(found)
     assert "code/ingest.py" in history.recall(event_id="first")["text"]

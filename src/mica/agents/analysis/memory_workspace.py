@@ -5,19 +5,23 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel, Field
 
-from . import memory_archive
+from . import memory_archive, thread_memory
 from .config import CHECKPOINT_PREFIX, Settings
 from .project_memory import Snapshot, file_limit, normalize, valid_path, validate
 from .storage import Storage
 
 
 class Proposal(BaseModel):
+    thread: thread_memory.Prose | None = None
+    scripts: dict[str, str] = Field(default_factory=dict)
+    outputs: list[str] = Field(default_factory=list, max_length=100)
     base_head: str
     changes: dict[str, str | None] = Field(default_factory=dict)
     rejected: dict[str, str] = Field(default_factory=dict)
@@ -49,7 +53,7 @@ def scan(
     for directory, dirs, files in os.walk(root, followlinks=False):
         for name in sorted([*dirs, *files]):
             count += 1
-            if count > 4 * settings.memory_max_files + 20:
+            if count > 4 * (settings.memory_max_files + settings.thread_max_files) + 20:
                 raise ValueError("Too many workspace knowledge entries.")
             target = Path(directory) / name
             path = target.relative_to(root).as_posix()
@@ -58,6 +62,8 @@ def scan(
                 continue
             if name in dirs:
                 continue
+            if path.startswith("threads/") and path.endswith("/turn.json"):
+                continue  # Parsed only for the application-bound current thread below.
             try:
                 valid_path(path)
                 # O_NOFOLLOW plus fstat prevents links/FIFOs/devices from being read.
@@ -100,6 +106,11 @@ def proposal(work: Path, base: Snapshot, settings: Settings, attribution: str = 
     files, rejected = scan(work, settings, attribution)
     changes: dict[str, str | None] = {}
     for path in files.keys() | base.files.keys():
+        if path.startswith("threads/"):
+            before = base.files.get(path)
+            if files.get(path) != (before.text.encode() if before else None):
+                rejected[path] = "Thread memory is application-owned; use this turn's turn.json."
+            continue
         if memory_archive.is_index(path):
             continue
         if any(path == bad or path.startswith(bad + "/") for bad in rejected):
@@ -114,8 +125,39 @@ def proposal(work: Path, base: Snapshot, settings: Settings, attribution: str = 
     return Proposal(base_head=base.head_oid, changes=changes, rejected=rejected)
 
 
-def pending(work: Path, base: Snapshot, settings: Settings, attribution: str = "") -> bytes:
-    return proposal(work, base, settings, attribution).model_dump_json().encode()
+def pending(
+    work: Path, base: Snapshot, settings: Settings, attribution: str = "", thread: str = ""
+) -> bytes:
+    result = proposal(work, base, settings, attribution)
+    if thread and thread_memory.enabled(settings):
+        from .script_capture import read_regular
+
+        path = Path("knowledge") / thread_memory.prefix(thread) / "turn.json"
+        # Recovery checkpoints may precede the final memory proposal.
+        with suppress(FileNotFoundError):
+            result.thread = thread_memory.Prose.model_validate_json(read_regular(work, path))
+        root = thread_memory.prefix(thread) + "scripts/"
+        sizes = {p.removeprefix(root): b.size for p, b in base.assets.items() if p.startswith(root)}
+        total = sum(sizes.values())
+        for path in sorted((work / "code").rglob("*")):
+            if not path.is_file() or path.is_symlink():
+                continue
+            relative = path.relative_to(work / "code").as_posix()
+            try:
+                data = read_regular(work, path.relative_to(work))
+                text = validate(
+                    thread_memory.prefix(thread) + "scripts/" + relative, data, settings
+                )
+                proposed = total - sizes.get(relative, 0) + len(data)
+                if proposed > settings.thread_scripts_kb * 1024 * 9 // 10:
+                    raise ValueError("Thread script capacity reserve")
+                result.scripts[relative] = text
+                total = proposed
+            except (OSError, ValueError):
+                result.rejected["code/" + relative] = (
+                    "Unsafe, secret-like or oversized script; source retained."
+                )
+    return result.model_dump_json().encode()
 
 
 def publication_proposal(
@@ -145,7 +187,10 @@ def publication_proposal(
 
 
 def pending_limit(settings: Settings) -> int:
-    return 6 * settings.memory_total_kb * 1024 + settings.memory_max_files * 1024
+    return (
+        6 * (settings.memory_total_kb + settings.thread_text_kb + settings.thread_scripts_kb) * 1024
+        + (settings.memory_max_files + settings.thread_max_files) * 1024
+    )
 
 
 def decode_pending(data: bytes, settings: Settings) -> Proposal:
@@ -156,6 +201,8 @@ def decode_pending(data: bytes, settings: Settings) -> Proposal:
         raise ValueError("Too many memory proposals")
     for path, text in result.changes.items():
         valid_path(path)
+        if path.startswith("threads/"):
+            raise ValueError("Worker cannot replace thread files")
         if text is not None:
             validate(path, text.encode(), settings)
     return result
@@ -181,3 +228,18 @@ def cancelled(storage: Storage, event_id: str) -> bool:
         return True
     except FileNotFoundError:
         return False
+
+
+def restore_scripts(work: Path, base: Snapshot, thread: str, settings: Settings) -> None:
+    root = thread_memory.prefix(thread) + "scripts/"
+    for path, item in base.files.items():
+        if not path.startswith(root) or path.endswith("/MANIFEST.json"):
+            continue
+        validate(path, item.text.encode(), settings)
+        target = work / "code" / path.removeprefix(root)
+        if not target.resolve().is_relative_to((work / "code").resolve()):
+            raise ValueError("Unsafe script restoration")
+        if any(p.is_symlink() for p in (target, *target.parents) if p != work.parent):
+            raise ValueError("Symlink in script restoration")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(item.text)

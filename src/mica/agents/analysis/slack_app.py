@@ -14,7 +14,7 @@ from typing import Any
 
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import attachments, script_capture, thread_history, write_access
+from . import attachments, script_capture, thread_history, thread_memory, write_access
 from .access import AccessMonitor
 from .config import Settings
 from .data_links import message_text
@@ -67,6 +67,7 @@ class SlackAgent:
         self.last_error: str | None = None
         self.delivered: list[dict[str, Any]] = []
         self.thread_files: list[dict[str, Any]] = []
+        self.memory_outputs: list[str] = []
         self.event_id = ""
         self.run_prefix, self.authorized = run_prefix, authorized
         self.publish_gcs = publish_gcs
@@ -414,6 +415,7 @@ class SlackAgent:
                 self.settings.model,
                 self.run_prefix,
                 attachments=self.thread_files,
+                keep_scripts=not thread_memory.enabled(self.settings),
             )
         except Exception:
             log.exception("Provenance upload failed: %s", key)
@@ -422,6 +424,7 @@ class SlackAgent:
                 "The run finished, but saving its provenance failed. "
                 "Please check the service logs.",
             )
+        self.memory_outputs = sorted(published.values())
         if not await self.permitted(delivery=True):
             raise PermissionError("Project access changed before delivery")
         uploads = []

@@ -5,6 +5,7 @@ import json
 from unittest.mock import AsyncMock
 
 import pytest
+from analysis_helpers import memory_edits
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
@@ -28,7 +29,7 @@ def memory_chat(chat, monkeypatch):  # noqa: F811
 
 async def test_prompt_persists_and_new_thread_and_worker_receive_it(memory_chat, monkeypatch):
     chat = memory_chat
-    editor = AsyncMock(return_value={"conventions.md": CONVENTION})
+    editor = AsyncMock(return_value=memory_edits({"conventions.md": CONVENTION}))
     monkeypatch.setattr(memory_tasks, "edit", editor)
     first = await chat.accept(payload(text="We always use viridis for heatmaps"))
     assert await chat.process(first, 0) == "complete"
@@ -60,11 +61,12 @@ async def test_worker_proposal_is_the_only_writer(memory_chat, monkeypatch):
     manifest = json.loads(chat.store.get(key + "request.json")[0])
     result = "type: result\nsource: verified analysis\nstatus: current\n\nCount: 12.\n"
     chat.store.put(
-        key + "memory-proposal.json",
+        f"projects/_threads/{manifest['thread_key']}/pending/{event_id}/memory-proposal.json",
         json.dumps(
             {
                 "base_head": manifest["memory"]["head_oid"],
                 "changes": {"results/tma101.md": result},
+                "thread": json.loads(memory_edits()["_thread"]),
             }
         ).encode(),
     )
@@ -113,10 +115,10 @@ async def test_dm_fact_is_shared_with_channel_but_not_another_project(memory_cha
 
     chat = memory_chat
     monkeypatch.setattr(
-        memory_tasks, "edit", AsyncMock(return_value={"conventions.md": CONVENTION})
+        memory_tasks, "edit", AsyncMock(return_value=memory_edits({"conventions.md": CONVENTION}))
     )
     await message(chat, "We always use viridis for heatmaps", "1.0")
-    monkeypatch.setattr(memory_tasks, "edit", AsyncMock(return_value={}))
+    monkeypatch.setattr(memory_tasks, "edit", AsyncMock(return_value=memory_edits({})))
     await message(chat, "publish liver <#C1>", "2.0")
     await message(chat, "use liver", "3.0", channel="C1")
     await message(chat, "What colormap?", "4.0", channel="C1")
@@ -134,7 +136,7 @@ async def test_edits_other_init_and_share_keep_older_thread_state(memory_chat, m
 
     chat = memory_chat
     monkeypatch.setattr(
-        memory_tasks, "edit", AsyncMock(return_value={"conventions.md": CONVENTION})
+        memory_tasks, "edit", AsyncMock(return_value=memory_edits({"conventions.md": CONVENTION}))
     )
     monkeypatch.setattr(direct, "inventory", lambda *args, **kwargs: {"entries": []})
     output = await seed_earlier_output(chat)
@@ -180,7 +182,7 @@ async def test_worker_result_materializes_in_next_workspace(memory_chat, monkeyp
 async def test_silent_save_retry_keeps_commit_receipt_and_deduplicates(memory_chat, monkeypatch):
     chat = memory_chat
     monkeypatch.setattr(
-        memory_tasks, "edit", AsyncMock(return_value={"conventions.md": CONVENTION})
+        memory_tasks, "edit", AsyncMock(return_value=memory_edits({"conventions.md": CONVENTION}))
     )
     event = await chat.accept(payload(text="We use viridis"))
     await chat.process(event, 0)
@@ -217,7 +219,7 @@ async def test_memory_lists_saved_convention_before_first_index(memory_chat, mon
 
     chat = memory_chat
     monkeypatch.setattr(
-        memory_tasks, "edit", AsyncMock(return_value={"conventions.md": CONVENTION})
+        memory_tasks, "edit", AsyncMock(return_value=memory_edits({"conventions.md": CONVENTION}))
     )
     await message(chat, "We use viridis for heatmaps", "1.0")
     shown = await message(chat, "memory", "2.0")
