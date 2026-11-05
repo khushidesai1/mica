@@ -258,7 +258,13 @@ def _tree_fields(depth: int) -> str:
     return "entries { name type object { " + blob + " " + subtree + " } }"
 
 
-TREE = _tree_fields(12)  # Includes archive/<hash>/_unmerged/<event>/data/<topic>.md.
+TREE = _tree_fields(6)  # Stay below GitHub's depth limit; descend explicitly at the boundary.
+READ_TREE = """query MemoryTree($owner: String!, $repo: String!, $head: GitObjectID!,
+  $path: String!) {
+  repository(owner: $owner, name: $repo) {
+    object(oid: $head) { ... on Commit { file(path: $path) { object { ... on Tree { TREE } } } } }
+  }
+}""".replace("TREE", TREE)
 NODE = """oid file(path: $path) { object { ... on Tree { TREE } } }
 history(first: 1, path: $path) { totalCount }
 names: file(path: ".mica/projects.json") { object { ... on Blob { text byteSize isTruncated } } }
@@ -412,8 +418,17 @@ class GitHubMemory:
                 path, obj = parent + entry["name"], entry["object"]
                 if entry["type"] == "tree":
                     if not obj or "entries" not in obj:
-                        snapshot.invalid[path] = 0
-                        continue
+                        subtree = await self.graphql(
+                            client,
+                            READ_TREE,
+                            {
+                                "owner": variables["owner"],
+                                "repo": variables["repo"],
+                                "head": snapshot.head_oid,
+                                "path": snapshot._root + "/" + path,
+                            },
+                        )
+                        obj = subtree["repository"]["object"]["file"]["object"]
                     await walk(obj, path + "/")
                     continue
                 size = obj.get("byteSize", 0)

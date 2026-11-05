@@ -49,7 +49,7 @@ class FakeGitHub:
         )
         return self.head
 
-    def tree(self, files, prefix):
+    def tree(self, files, prefix, depth=6):
         entries = []
         names = sorted({p[len(prefix) :].split("/")[0] for p in files if p.startswith(prefix)})
         for name in names:
@@ -66,7 +66,7 @@ class FakeGitHub:
                 }
                 kind = "blob"
             else:
-                obj, kind = self.tree(files, path + "/"), "tree"
+                obj, kind = self.tree(files, path + "/", depth - 1) if depth else {}, "tree"
             entries.append({"name": name, "type": kind, "object": obj})
         return {"entries": entries}
 

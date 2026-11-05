@@ -206,3 +206,16 @@ async def test_asset_rename_preserves_bytes_and_old_project_identity(store):
         0
     ] == b"\x89PNG\xff"
     assert not any(p.startswith("projects/p_test/") for p in github.trees[github.head])
+
+
+async def test_deep_asset_metadata_uses_bounded_queries_without_fetching_bytes(store):
+    backend, github = store
+    path = "threads/t_one/scripts/a/b/c/d/e/f/g/run.py"
+    github.seed({"projects/p_test/" + path: "print(7)"})
+    snapshot = await backend.read("p_test")
+    assert path in snapshot.assets and path not in snapshot.files
+    requests = [json.loads(r.content) for r in github.requests if r.method == "POST"]
+    assert any("MemoryTree" in r["query"] for r in requests)
+    assert not any("MemoryBlobs" in r["query"] for r in requests)
+    # GraphQL fragments do not add schema depth; each directory adds two fields.
+    assert project_memory.TREE.count("entries {") <= 7

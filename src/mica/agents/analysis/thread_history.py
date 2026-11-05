@@ -54,9 +54,12 @@ def update_summary(state: dict[str, Any], row: dict[str, Any], summary: str = ""
     if previous.get("event_id") == row["id"]:
         return
     # A deterministic fallback records status only; it never copies user/assistant text.
-    fallback = f"Event {row['id']}: " + ("completed" if row['success'] else "failed or interrupted")
-    text = (summary.strip()[:SUMMARY_CHARS] if summary.strip() else
-            (str(previous.get("text", ""))[-4500:] + "\n" + fallback)[-SUMMARY_CHARS:])
+    fallback = f"Event {row['id']}: " + ("completed" if row["success"] else "failed or interrupted")
+    text = (
+        summary.strip()[:SUMMARY_CHARS]
+        if summary.strip()
+        else (str(previous.get("text", ""))[-4500:] + "\n" + fallback)[-SUMMARY_CHARS:]
+    )
     state["thread_summary"] = {"event_id": row["id"], "text": text}
 
 
