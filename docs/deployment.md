@@ -340,6 +340,15 @@ addition reuses the configured structured-response model, starts no compute jobs
 new secrets, IAM or infrastructure. Alerts post before assessment and retain their original evidence
 if Claude is unavailable. See the failure log for the bounded inputs, caching and call limits.
 
+Impact-based priority, post-turn outcome review and the request watchdog are API-only as well;
+preserve CPU, GPU and shared-worker image pins. Set `AGENT_OUTCOME_REVIEW_ENABLED=true` to
+review newly completed replies asynchronously. No historical request backfill, worker allocation
+or scientific inference is part of this release. Existing incidents acquire the new labels when
+next due. Independently deploy the reviewed additive outage-alert configuration in
+`infra/failure-logging`; keep its operator email in private tfvars and verify the uptime and
+Scheduler policies without disrupting service. API deployment alone does not establish that
+those external policies were applied or that the operator received a notification.
+
 ## Folder and script delivery
 
 Both conversation surfaces use the same attachment policy. New or modified reports,

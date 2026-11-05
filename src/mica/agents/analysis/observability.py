@@ -13,7 +13,15 @@ from uuid import NAMESPACE_URL, uuid5
 
 from mica.config import Settings as AppSettings
 from mica.storage.base import Repository
-from mica.storage.failures import Incident, Observation, digest
+from mica.storage.failure_catalog import CATALOG as CATALOG
+from mica.storage.failures import (
+    PRIORITY_LABELS,
+    RECOVERABLE_PROCESSING,
+    Incident,
+    Observation,
+    digest,
+    priority,
+)
 
 from . import failure_cards, failure_investigation
 from .config import Settings
@@ -46,48 +54,11 @@ Cause = Literal[
     "atomx_control_failed",
     "atomx_delivery_failed",
     "smoke_test",
+    "request_blocked",
+    "request_stalled",
+    "requests_failing",
 ]
-CATALOG: dict[str, tuple[str, str]] = {
-    "github_catalog_failed": ("catalog", "The scheduled GitHub tool-catalog refresh failed."),
-    "infra_http_error": ("infrastructure", "Cloud Run recorded a failed HTTP request."),
-    "infra_platform_error": ("infrastructure", "Cloud Run reported a platform error."),
-    "routing_exhausted": ("routing", "Request routing exhausted its automatic retries."),
-    "conversation_failed": ("turn", "The conversation could not complete an internal operation."),
-    "access_unverifiable": (
-        "access",
-        "Project access could not be verified within the grace period.",
-    ),
-    "bucket_unavailable": ("access", "The service could not verify access to project storage."),
-    "compute_failed": ("compute", "The worker stopped without completing the request."),
-    "compute_control_failed": ("compute", "The service could not submit or inspect its worker."),
-    "compute_deadline": ("compute", "The request exhausted its computation time allowance."),
-    "runtime_install_failed": (
-        "runtime",
-        "A requested Python package runtime could not be installed; the worker can continue.",
-    ),
-    "reference_repo_failed": (
-        "reference",
-        "A project reference repository could not be loaded; the request continues without it.",
-    ),
-    "memory_editor_failed": ("memory", "Project memory editing failed; its task may retry."),
-    "memory_compaction_retry": ("memory", "Project memory compaction failed and needs a retry."),
-    "memory_compaction_exhausted": (
-        "memory",
-        "Project memory compaction exhausted its safe attempts.",
-    ),
-    "email_delivery_failed": ("delivery", "An email response could not be delivered."),
-    "email_delivery_unconfirmed": (
-        "delivery",
-        "An email send is unconfirmed and needs outbox review.",
-    ),
-    "slack_delivery_failed": ("delivery", "A Slack response could not be delivered."),
-    "atomx_inventory_failed": ("transfer", "The AtoMx inventory worker failed."),
-    "atomx_pull_failed": ("transfer", "The AtoMx transfer worker failed."),
-    "atomx_auth_failed": ("transfer", "The saved AtoMx connection failed authentication."),
-    "atomx_control_failed": ("transfer", "The AtoMx controller could not advance a transfer."),
-    "atomx_delivery_failed": ("delivery", "A private AtoMx Slack response could not be delivered."),
-    "smoke_test": ("test", "Synthetic Mica incident; no user job failed."),
-}
+
 
 
 def label(value: object, limit: int = 100) -> str:
@@ -203,7 +174,7 @@ async def record_failure(
     """No external identity lookup, arbitrary error text, or exception propagation."""
     try:
         record = record or {}
-        kind, _ = CATALOG[cause]
+        kind = CATALOG[cause].kind
         observation = Observation(
             scope=request_scope(app),
             kind=kind,
@@ -271,7 +242,8 @@ async def report(
 
 
 def summarize(row: Incident, *, request_status: str = "unknown") -> str:
-    text = _summary(row, request_status=request_status)
+    text = (PRIORITY_LABELS[priority(row, request_status)] + "\n"
+            + _summary(row, request_status=request_status))
     if row.observation.api_status:
         text += f"\nCloud API status: {row.observation.api_status}"
     assessment = failure_investigation.details(row)
@@ -450,16 +422,7 @@ async def _flush(
                         request_status = status if status in {"complete", "failed"} else "active"
                         if request_status == "complete" and set(
                             row.causes or [row.observation.cause]
-                        ) <= {
-                            "infra_http_error",
-                            "routing_exhausted",
-                            "conversation_failed",
-                            "compute_control_failed",
-                            "compute_failed",
-                            "compute_deadline",
-                            "access_unverifiable",
-                            "bucket_unavailable",
-                        }:
+                        ) <= RECOVERABLE_PROCESSING:
                             request_status = "recovered"
                 except Exception:
                     pass  # Status lookup must not hide an existing incident.
@@ -626,7 +589,24 @@ async def maintenance(
         if purge:
             async with asyncio.timeout(30):
                 return {"failures_purged": await repository.purge_failures(time.time())}
-        return await flush(repository, app, Settings())
+        from . import failure_monitor, outcome_review
+
+        settings = Settings()
+        counts: dict[str, int] = {}
+        for operation in (failure_monitor.stalls, failure_monitor.escalations):
+            try:
+                async with asyncio.timeout(5):
+                    counts.update(await operation(repository, app, time.time()))
+            except Exception:
+                log.warning("failure_reporter detection_unavailable")
+        try:
+            async with asyncio.timeout(26):
+                counts.update(
+                    await outcome_review.review_due(repository, app, settings, time.time())
+                )
+        except Exception:
+            log.warning("failure_reporter outcome_review_unavailable")
+        return {**counts, **await flush(repository, app, settings)}
     except Exception:
         log.warning("failure_reporter maintenance_unavailable")
         return {"failure_maintenance_errors": 1}

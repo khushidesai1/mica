@@ -641,6 +641,9 @@ class BatchBridge:
             )
             raise
         finally:
+            from . import failure_monitor
+
+            await failure_monitor.tick(self.repository, self.app, self.settings, event_id)
             await self.repository.release_event(mutex, claim.token)
 
     async def cleanup_terminal(self, event_id: str, record: dict[str, Any]) -> None:
@@ -711,6 +714,17 @@ class BatchBridge:
                     record["memory_reply"] = reply
                 elif record["status"] == "complete" and exchange and exchange.get("success", True):
                     record["memory_reply"] = exchange["assistant"]
+        from . import outcome_review
+
+        try:
+            async with asyncio.timeout(3):
+                await outcome_review.enqueue(
+                    self.repository, self.app, self.settings, event_id, record, time.time()
+                )
+        except Exception:
+            logging.getLogger("mica.failure_reporter").warning("outcome_projection_unavailable")
+        record.pop("stall_check_at", None)
+        record.pop("stall_check_tick", None)
         record["terminal_recorded"] = True
 
     async def advance(self, event_id: str, record: dict[str, Any]) -> None:

@@ -7,10 +7,33 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .failure_catalog import CATALOG, Priority
+
 DAY = 86400
 RETENTION = 30 * DAY
 QUIET = DAY
 NEVER = 1e15
+PRIORITY_RANK = {"high": 0, "medium": 1, "low": 2}
+PRIORITY_LABELS = {
+    "high": "High · Mica not responding",
+    "medium": "Medium · Couldn't complete",
+    "low": "Low · Background",
+}
+RECOVERABLE_PROCESSING = {
+    "infra_http_error", "routing_exhausted", "conversation_failed", "compute_control_failed",
+    "compute_failed", "compute_deadline", "access_unverifiable", "bucket_unavailable",
+    "request_stalled",
+}
+Blocker = Literal[
+    "compute_hardware", "software_environment", "data_access", "repository_access",
+    "output_delivery", "time_limit", "capability", "internal_error", "other",
+]
+BLOCKER_LABELS: dict[str, str] = {
+    "compute_hardware": "Compute hardware", "software_environment": "Software environment",
+    "data_access": "Data access", "repository_access": "Repository access",
+    "output_delivery": "Output delivery", "time_limit": "Time limit",
+    "capability": "Capability", "internal_error": "Internal error", "other": "Other",
+}
 
 
 class Observation(BaseModel):
@@ -33,6 +56,9 @@ class Observation(BaseModel):
     slack_thread_ts: str = ""
     receipt_scope: str = ""
     api_status: int = 0
+    blockers: list[Blocker] = Field(default_factory=list, max_length=3)
+    affected_requests: int = Field(default=0, ge=0, le=10000)
+    affected_kind: str = ""
 
     @property
     def fingerprint(self) -> str:
@@ -94,6 +120,7 @@ class Incident(BaseModel):
     card_version: int = 0
     investigation: FailureInvestigation | None = None
     sent_investigation: str = ""
+    cause_seen: dict[str, float] = Field(default_factory=dict)
 
     @property
     def resolved(self) -> bool:
@@ -105,12 +132,32 @@ class Incident(BaseModel):
         return o.request_scoped or bool(o.event_id and o.surface in {"slack", "email"})
 
 
+def priority(row: Incident, status: str | None = None) -> Priority:
+    """One impact calculation for persisted queues, cards and assessment evidence."""
+    from mica.services.failure_logs import is_intake
+
+    if row.user_related and (status if status is not None else row.request_status) == "recovered":
+        return "low"
+    causes = row.causes or [row.observation.cause]
+    values: list[Priority] = [CATALOG[c].priority for c in causes if c in CATALOG]
+    o = row.observation
+    if "infra_http_error" in causes:
+        if row.user_related:
+            values.append("medium")
+        elif (is_intake(o.route) and 500 <= o.http_status < 600
+              and row.last_seen - row.first_seen >= 600):
+            values.append("high")
+    return min(values or ["low"], key=PRIORITY_RANK.__getitem__)
+
+
 def document(row: Incident) -> dict[str, Any]:
     """Single-field queue projections; no composite index or infrastructure change."""
     return {
         **row.model_dump(),
         "request_due": row.next_attempt if row.user_related else NEVER,
         "background_due": NEVER if row.user_related else row.next_attempt,
+        **{f"{level}_due": row.next_attempt if priority(row) == level else NEVER
+           for level in PRIORITY_RANK},
     }
 
 
@@ -119,13 +166,11 @@ def prioritized(rows: list[Incident], now: float, limit: int) -> list[Incident]:
         {r.id: r for r in rows if r.next_attempt <= now and r.lease_until <= now}.values(),
         key=lambda r: (r.next_attempt, r.id),
     )
-    requests = [r for r in due if r.user_related]
-    background = [r for r in due if not r.user_related]
-    # Reserve room for one service-health issue, without letting a noisy backlog
-    # displace user failures. With no request failures, send at most one per cycle.
+    urgent = sorted((r for r in due if priority(r) != "low"),
+                    key=lambda r: (PRIORITY_RANK[priority(r)], r.next_attempt, r.id))
+    background = [r for r in due if priority(r) == "low"]
     slots = max(0, limit - int(bool(background) and limit > 1))
-    selected = requests[:slots]
-    return (selected + background[:1])[:limit]
+    return (urgent[:slots] + background[:1])[:limit]
 
 
 def resolved(
@@ -155,11 +200,16 @@ def observed(old: Incident | None, observation: Observation, now: float, episode
             expires_at=now + RETENTION,
             next_attempt=now,
             causes=[observation.cause],
+            cause_seen={observation.cause: now},
         )
     row = old.model_copy(deep=True)
     row.causes = list(dict.fromkeys([*(row.causes or [row.observation.cause]), observation.cause]))
+    row.cause_seen[observation.cause] = now
     if observation.request_scoped:
         previous = row.observation
+        # A new observed failure must be reassessed; an earlier successful parent
+        # request cannot permanently downgrade later or newly discovered failures.
+        row.request_status = ""
         context = {
             field: getattr(observation, field) or getattr(previous, field)
             for field in (
@@ -181,6 +231,8 @@ def observed(old: Incident | None, observation: Observation, now: float, episode
         if observation.source == "cloud_run" and previous.source == "application":
             observation = previous
         observation = observation.model_copy(update=context)
+        if not observation.blockers:
+            observation = observation.model_copy(update={"blockers": previous.blockers})
     row.observation = observation
     row.count += 1
     row.last_seen = max(row.last_seen, now)

@@ -8,12 +8,23 @@ It does not change job execution, request retries, or users' ability to resend r
 
 Create a private operator channel, invite Mica, and configure `AGENT_FAILURE_CHANNEL` with its channel
 ID (`C…` or `G…`). Mica needs its existing `chat:write` permission. An empty setting disables posting,
-not failure recording. No new credentials, scheduler, queue, IAM grant or Terraform apply is needed.
+not failure recording. The Slack sender uses existing credentials, schedules and queues. The independent outage alerts
+below are a separate, reviewed infrastructure addition.
 The channel must be limited to operators allowed to see project identities across the workspace.
 
 Alerts use compact Slack cards with priority/category tags, the requester and project, a short
-explanation, and the current status. User-related issues have red high-priority tags; uncorrelated
-service-health alerts use gray low-priority tags. **Details** opens the full diagnostic record,
+explanation, and the current status. Priority reflects impact, using the same calculation for
+cards, Details, assessment evidence and queue ordering:
+
+- **High · Mica not responding** (red): broken routing/conversation/delivery, a stalled request,
+  several requests failing together, or sustained intake failures.
+- **Medium · Couldn't complete** (orange): Mica replied but could not perform the requested work,
+  or a compute, package, repository or storage operation failed.
+- **Low · Background** (gray): background maintenance, brief unlinked infrastructure errors,
+  and request incidents whose processing errors subsequently recovered.
+
+The highest cause priority wins. A newly recorded cause reopens outcome assessment; a past
+recovery does not permanently downgrade later failures. **Details** opens the full diagnostic record,
 keeping timestamps, routes, revisions and incident IDs out of the main card. Slack clients that
 reject the newer card/tag blocks receive standard Block Kit sections with the same actions.
 
@@ -53,12 +64,13 @@ confirmed parts. The full response is only marked delivered after every part suc
 to receive its single final response.
 
 The existing five-minute `reconcile-batch` schedule delivers at most five due incident messages per
-invocation, independently of the shared task reconciler. User-request incidents are selected first,
-with at most one background/service-health incident per cycle. When both have backlog, four slots
-go to requests and one to service health; infrastructure noise cannot consume the request slots.
-Single-field request/background due-time projections avoid a composite index; a bounded legacy
-query includes preexisting records, which gain projections on their next write. Expect up to five minutes of latency in normal
-operation; backlog, rate limiting or outages can add delay. Repeated occurrences update the same
+invocation, independently of the shared task reconciler. High incidents precede Medium incidents;
+one slot is reserved for Low when both queues have backlog. A Low-only cycle sends at most one.
+Single-field impact due-time projections avoid a composite index; bounded legacy queries include
+preexisting records, which gain projections on their next write. New labels appear when a card
+next becomes due; deployment does not repost historical incidents. Expect up to five minutes of
+normal delivery latency after recording; outcome-review backlog can add further maintenance cycles.
+Backlog, rate limiting or outages can add delay. Repeated occurrences update the same
 message. For background/infrastructure incidents, 24 hours without a new occurrence starts a new
 episode/message. A request keeps its incident even across longer pauses. Active request incidents
 are rechecked on later maintenance runs; unchanged status produces no Slack edit. Completion or
@@ -104,6 +116,49 @@ new assessment, up to three completed attempts per incident. Beyond that cap, ch
 discards the stale assessment and retains the original diagnostics. Resolved incidents are not
 investigated. Turning the setting off stops further model calls. Existing historical cards are
 enriched only when they next become due; deployment does not repost old incidents.
+
+## Completed replies that still could not do the work
+
+`AGENT_OUTCOME_REVIEW_ENABLED` defaults to true. After a conversation turn finishes, the API
+queues a bounded review of the saved request (4,000 characters), planned worker task (4,000),
+and final reply (12,000), using the existing Anthropic credential and
+`AGENT_ROUTING_REPAIR_MODEL`. Unlike the diagnostic assessment above, this classifier reads
+conversation content. Its output is strictly validated enums: completed, partial, not completed,
+clarification or policy denied, plus at most three blocker categories. No input text crosses into
+the incident index, cards or diagnostic assessment. Ordinary questions, valid permission denials,
+clarifications and cancelled turns do not produce a failure card.
+
+Partial or uncompleted work records `request_blocked` (Medium), with the primary blocker as the
+card category: hardware, software environment, data/repository access, output delivery, time,
+capability, internal error or other. An explanation or CPU substitute does not by itself complete
+a requested GPU action. Each request still has one incident. Most already-reported failures skip
+this extra call; a completed request with only recovered processing errors is reviewed because
+recovery of a control API call does not establish that the requested work was completed.
+
+Maintenance processes at most three due reviews per cycle. Each call is bounded to eight seconds
+and 250 output tokens; invalid output or timeout retries once in a later cycle, then remains
+unavailable without inventing an incident. Attempt reservations and cached enum results survive
+process interruption and incident-write retries. Reviews never delay the user's reply, retry work,
+change permissions, allocate a worker, or read project files. Existing historical turns are not
+backfilled automatically. Classification is based on the saved text, not independent verification
+of a scientific result or delivered attachment, and may miss context in short follow-ups.
+
+## Stalls and wider failures
+
+Each live request-processing tick refreshes a 15-minute watchdog projection. Terminal requests
+clear it; approval waits are excluded. The bounded maintenance sweep takes the existing poll
+lease, rereads the request, and records one High `request_stalled` observation per stalled tick.
+It patches only watchdog fields and never restarts the request or worker. Records without a
+watchdog stamp, including frozen migration-era requests, are ignored. Long computations are
+supported: their normal polling ticks keep the stamp fresh regardless of worker duration.
+
+Three distinct requests with the same failure kind within 30 minutes create one High
+`requests_failing` service incident. Outcome-only blockers are excluded. Per-cause timestamps
+prevent unrelated later failures from making old causes appear recent; repeated sweeps and
+observation retries do not inflate counts. The sweep examines a bounded recent-incident window.
+Unlinked HTTP 5xx errors on registered intake routes become High once they continue at least ten
+minutes beyond the episode's first report. A short deploy blip stays Low. New intake routes declare
+that role in the existing route registry; new failure sources declare priority in the cause catalog.
 
 ## Coverage
 
@@ -211,3 +266,27 @@ of the old sink/subscription only after its backlog is drained.
 Cloud Run's [logging documentation](https://docs.cloud.google.com/run/docs/logging) distinguishes
 request, platform and container streams; [log routing documentation](https://docs.cloud.google.com/logging/docs/export/configure_export_v2)
 describes the sink publisher permission.
+
+
+## Independent outage alerts
+
+**A silent failures channel never means Mica is healthy.** Its sender runs inside Mica and relies
+on Firestore and Slack. The optional additive `infra/failure-logging` configuration monitors the
+public `/api/v1/healthz` endpoint from multiple locations every minute and alerts after five minutes
+of failure from at least two locations. A second policy watches a counter of failed completion logs
+for the existing `reconcile-batch` Scheduler job, alerting on at least two failures within ten minutes.
+Both policies notify the approved operator email without calling Mica. They detect service and
+reporter availability, not the correctness of every scientific result or a paused Scheduler job.
+
+Supply `enable_outage_alerts=true` and `notification_email` through private operator tfvars.
+The email is not stored in tracked configuration. Review the saved additive Terraform plan before
+applying it; this stack does not manage Cloud Run, credentials or request queues. The additions
+are one uptime check, two alert policies, one email channel and one log-based counter. Existing
+sink/subscription resources stay unchanged. Verify passing uptime samples, policy/channel wiring
+and operator receipt of a test notification without stopping the service or injecting failures into
+real requests. Synthetic request checks must be labeled and their exact records, incident pointers,
+occurrence receipts and Slack messages removed afterward.
+
+Google documents [public uptime checks](https://docs.cloud.google.com/monitoring/uptime-checks),
+[uptime alert policies](https://docs.cloud.google.com/monitoring/alerts/policies-in-json), and
+[Scheduler completion logs](https://docs.cloud.google.com/scheduler/docs/viewing-logs).
