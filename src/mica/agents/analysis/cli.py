@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from .config import Settings
-from .progress import ActivityState, ProgressUpdate, TaskProgress
+from .progress import ActivityState, ProgressNote, ProgressUpdate, TaskProgress
 from .runner import Context, Runner
 
 
@@ -28,6 +28,8 @@ async def main(args: argparse.Namespace) -> None:
             if isinstance(update, TaskProgress)
             else update.label
             if isinstance(update, ActivityState)
+            else update.text
+            if isinstance(update, ProgressNote)
             else update
         )
         print(text, flush=True)

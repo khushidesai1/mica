@@ -12,7 +12,7 @@ from slack_sdk.errors import SlackApiError
 
 from mica.agents.analysis import slack_app
 from mica.agents.analysis.config import Settings
-from mica.agents.analysis.progress import ActivityState, TaskProgress
+from mica.agents.analysis.progress import ActivityState, ProgressNote, TaskProgress
 from mica.agents.analysis.runner import Context, TurnResult
 from mica.agents.analysis.sessions import Sessions
 from mica.agents.analysis.slack_app import SlackAgent
@@ -143,15 +143,16 @@ def test_formatting():
 
 def test_status_uses_compact_native_disclosure_and_bounded_plain_text():
     block = status_blocks(":pistachio-loading:", "h", ["old", "<!channel> " + "b" * 200])[0]
-    assert block["type"] == "plan" and block["title"] == "Mica is working"
+    assert block["type"] == "plan" and block["title"].startswith("<!channel>")
+    assert len(block["title"]) <= 90
     assert "container" not in repr(block) and "rich_text_title" not in block
     task = block["tasks"][0]
     assert task["status"] == "in_progress"
     text = task["details"]["elements"][0]["elements"][0]
-    assert text["type"] == "text" and text["text"].startswith("Working: <!channel>")
-    assert len(text["text"]) == len("Working: ") + 150
+    assert text["type"] == "text" and text["text"].startswith("<!channel>")
+    assert len(text["text"]) == len("<!channel> ") + 200
     assert status_blocks(":x:", "Thinking…")[0]["title"] == "Mica is thinking"
-    assert "Reviewing your request" in repr(status_blocks(":x:", "Thinking…"))
+    assert "Reviewing your request" not in repr(status_blocks(":x:", "Thinking…"))
 
 
 def test_cleanup_preserves_fresh_work_and_resets_old_session(bot):
@@ -493,8 +494,8 @@ async def test_activity_switches_without_repeating_status_or_posting_messages(bo
     assert [row["blocks"][0]["title"] for row in active] == [
         "Mica is working",
         "Mica is thinking",
-        "Mica is working",
-        "Mica is thinking",
+        "Segmenting Cellpose-SAM: tile_02.npy",
+        "Segmenting Cellpose-SAM: tile_02.npy",
     ]
     assert all(len(row["blocks"]) == 1 and row["blocks"][0]["type"] == "plan" for row in active)
     assert "tile_02.npy" in repr(active[2]["blocks"][0]["tasks"])
@@ -586,3 +587,46 @@ async def test_stopped_turn_delivers_closing_summary_or_original_fallback(bot, s
         assert "Want me to try again" not in bot.last_reply
     else:
         assert "That run stopped early (`error_max_turns`). Want me to try again?" in bot.last_reply
+
+
+async def test_progress_note_survives_tool_updates_and_heartbeat_but_not_completion(
+    bot, monkeypatch
+):
+    clock = SimpleNamespace(now=0)
+    monkeypatch.setattr(slack_app, "time", SimpleNamespace(monotonic=lambda: clock.now))
+    monkeypatch.setattr(slack_app, "HEARTBEAT_SECONDS", 0.005)
+    delivered = asyncio.Event()
+    note = "Found <!channel> & *bold*. Checking counts."
+    next_note = "Counts verified. Saving the result."
+
+    async def receive(**kwargs):
+        if next_note in kwargs["text"]:
+            delivered.set()
+
+    async def compute(ctx, prompt, status):
+        clock.now = 6
+        await status(ProgressNote(note))
+        clock.now = 12
+        await status(TaskProgress("one", "Read table", "Reading"))
+        await status(ProgressNote(next_note))
+        await status(ProgressNote(next_note))
+        assert not delivered.is_set()
+        clock.now = 18
+        await asyncio.wait_for(delivered.wait(), 1)
+        return TurnResult("session", "Final answer.")
+
+    bot.client.chat_update.side_effect = receive
+    bot.runner.run_turn = compute
+    await send(bot, event("check", _notice_ts="9.0"))
+    updates = [call.kwargs for call in bot.client.chat_update.call_args_list]
+    assert [call["blocks"][0]["title"] for call in updates] == [
+        "Mica is working",
+        "Found <!channel> & *bold*.",
+        "Found <!channel> & *bold*.",
+        "Counts verified.",
+        "Mica finished",
+    ]
+    assert "&lt;!channel&gt; &amp; *bold*" in updates[1]["text"]
+    assert note not in repr(updates[-1]) and next_note not in repr(updates[-1])
+    assert bot.client.chat_postMessage.call_count == 1
+    assert bot.last_reply == "Final answer."
