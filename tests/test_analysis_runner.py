@@ -8,6 +8,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
     TextBlock,
+    ThinkingBlock,
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
@@ -17,7 +18,7 @@ from claude_agent_sdk.types import StreamEvent
 from mica.agents.analysis import runner
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.outputs import changed_files, snapshot_outputs
-from mica.agents.analysis.progress import ActivityState, TaskProgress
+from mica.agents.analysis.progress import ActivityState, ProgressNote, TaskProgress
 from mica.agents.analysis.runner import Context, Runner, build_options, describe_tool
 
 
@@ -155,6 +156,9 @@ async def test_security_options_and_native_tool_boundaries(setup):
     ctx, settings = setup
     opts = build_options(ctx, settings)
     assert opts.setting_sources == [] and opts.permission_mode == "dontAsk"
+    assert opts.thinking is None
+    assert "showThinkingSummaries" not in (opts.settings or "")
+    assert "CLAUDE_CODE_THINKING_DISPLAY_UPDATES" not in opts.env
     assert opts.sandbox["failIfUnavailable"] and not opts.sandbox["allowUnsandboxedCommands"]
     assert opts.env["SLACK_BOT_TOKEN"] == opts.env["MICA_SLACK_BOT_TOKEN"] == ""
     assert opts.env["PISTACHIO_SLACK_BOT_TOKEN"] == ""
@@ -564,3 +568,144 @@ async def test_closing_summary_timeout_keeps_fallback(setup, monkeypatch):
     await Runner(settings)._closing_summary(output, build_options(ctx, settings), 0.001, 0.5)
     assert output.text == "Partial work" and not output.summary_generated
     assert output.error == "error_max_turns"
+
+
+def note_stream(kind, *, message_id="message-a", block_type=None, parent=None):
+    event = {"type": kind}
+    if kind == "message_start":
+        event["message"] = {"id": message_id}
+    if block_type:
+        event["content_block"] = {"type": block_type}
+    return StreamEvent(uuid="event", session_id="session", event=event, parent_tool_use_id=parent)
+
+
+def note_message(*blocks, message_id="message-a", parent=None):
+    return AssistantMessage(
+        content=list(blocks), model="test", message_id=message_id, parent_tool_use_id=parent
+    )
+
+
+@pytest.mark.parametrize(
+    "events,note_index",
+    [
+        (
+            [note_message(TextBlock("Found table")), note_message(ToolUseBlock("one", "Read", {}))],
+            1,
+        ),
+        ([note_message(TextBlock("The final answer"))], None),
+        (
+            [
+                note_stream("message_start"),
+                note_message(TextBlock("Found table")),
+                note_stream("content_block_start", block_type="tool_use"),
+                note_message(ToolUseBlock("one", "Read", {})),
+            ],
+            2,
+        ),
+        (
+            [
+                note_message(TextBlock("Found table")),
+                note_stream("message_start", message_id="message-b"),
+                note_message(ToolUseBlock("one", "Read", {}), message_id="message-b"),
+            ],
+            None,
+        ),
+        (
+            [
+                note_message(TextBlock("Found table")),
+                note_message(ToolUseBlock("one", "Read", {}), message_id="message-b"),
+            ],
+            None,
+        ),
+        (
+            [
+                note_message(TextBlock("Found table")),
+                note_message(ToolUseBlock("one", "Read", {}), ToolUseBlock("two", "Read", {})),
+            ],
+            1,
+        ),
+        (
+            [
+                note_message(ThinkingBlock("PRIVATE REASONING", "signature")),
+                note_message(ToolUseBlock("one", "Read", {})),
+            ],
+            None,
+        ),
+        (
+            [
+                note_message(TextBlock("Nested text"), parent="parent"),
+                note_stream("content_block_start", block_type="tool_use", parent="parent"),
+                note_message(ToolUseBlock("one", "Read", {}), parent="parent"),
+            ],
+            None,
+        ),
+        (
+            [
+                note_message(TextBlock(" \t\n")),
+                note_message(
+                    TextBlock("This part of the response was interrupted before it finished.")
+                ),
+                note_message(ToolUseBlock("one", "Read", {})),
+            ],
+            None,
+        ),
+        (
+            [
+                note_message(TextBlock("Found table"), message_id=None),
+                note_message(ToolUseBlock("one", "Read", {}), message_id=None),
+            ],
+            None,
+        ),
+        (
+            [
+                note_stream("message_start"),
+                note_message(TextBlock("Found table"), message_id=None),
+                note_message(ToolUseBlock("one", "Read", {}), message_id=None),
+            ],
+            2,
+        ),
+        (
+            [
+                note_message(TextBlock("Found table")),
+                result(),
+                note_message(ToolUseBlock("one", "Read", {})),
+            ],
+            None,
+        ),
+    ],
+)
+async def test_worker_notes_require_a_following_top_level_tool_in_same_message(
+    setup, monkeypatch, events, note_index
+):
+    ctx, settings = setup
+    _index = -1
+    notes = []
+
+    async def record(update):
+        if isinstance(update, ProgressNote):
+            notes.append((_index, update.text))
+
+    async def query(**kwargs):
+        nonlocal _index
+        for _index, event in enumerate(events):
+            yield event
+        yield result(result="Final answer.")
+
+    monkeypatch.setattr(runner, "query", query)
+    output = await Runner(settings).run_turn(ctx, "check", record)
+    assert notes == ([] if note_index is None else [(note_index, "Found table")])
+    assert output.text == "Final answer."
+    assert "Found table" not in repr(output.run_log)
+    assert "PRIVATE REASONING" not in repr(output)
+
+
+async def test_confirmed_note_cannot_become_partial_answer_after_stream_failure(setup, monkeypatch):
+    async def query(**kwargs):
+        yield note_message(TextBlock("Found table; checking counts"))
+        yield note_message(ToolUseBlock("one", "Read", {}))
+        raise RuntimeError("Stream interrupted")
+
+    monkeypatch.setattr(runner, "query", query)
+    output = await Runner(setup[1]).run_turn(setup[0], "check", AsyncMock())
+    assert output.error == "RuntimeError" and output.text == ""
+    assert "Found table" not in repr(output.run_log)

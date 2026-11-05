@@ -50,6 +50,13 @@ missed notification can be recovered through Slack or the authenticated task API
 Progress delivery is keyed by the immutable progress-event ID, preventing stage transitions from
 reposting the same milestone.
 
+The Claude backend's Slack disclosure uses bounded public narration before tool calls as its
+collapsed title, falling back to specific startup/tool status and then the generic activity state.
+Worker narration is confirmed within one API message; thinking blocks are ignored. Conversation
+requests enable public progress updates while reasoning stays omitted, and fallback responses
+use only text notes. Notes render as plain text, use the existing throttle/heartbeat, and are not
+added to application run logs, history or memory. Terminal cards clear them; email remains final-only.
+
 Batch completion delivery uses a leased event claim. A handler marks the event complete only after
 the state transition and any repaired-attempt submission succeed. Concurrent delivery receives a
 retryable response, and a failed handler releases its claim for redelivery.

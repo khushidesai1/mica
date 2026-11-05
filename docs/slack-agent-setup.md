@@ -59,13 +59,18 @@ built-in Read/Write/Edit/Glob/Grep/Bash tools and the pinned science environment
 A control-service reply acknowledges each accepted input. Direct replies update it in place;
 computation requests update it before any Spot startup. That same
 Slack message reports queue waits, startup elapsed time, worker readiness, and completion/errors.
-The status is one compact native activity disclosure titled “Mica is working” or “Mica is
-thinking”, using Slack's muted progress styling and native status indicator. Expand it to inspect
-concise public activity summaries, the latest tool descriptions and long-run check-ins. Cellpose
+The status is one compact native activity disclosure. Its title shows the latest public progress
+note, then a specific queue/startup/tool status, with “Mica is working” or “Mica is thinking” as
+the fallback. Expand it to inspect the full note, latest tool descriptions and long-run check-ins. Cellpose
 entries name the crop being processed; completion is only shown after confirmation. The disclosure
 has no padded container, large heading, duplicate status line or separate “On it…” acknowledgment.
 Slack owns the disclosure animation and hover styling; no custom border, color or rounded wrapper
-is added. Phase changes come from SDK lifecycle events, never private reasoning text. Identical
+is added. Worker notes are top-level text confirmed by a following tool call in the same API
+message; thinking blocks are never rendered. The conversation API requests public progress
+updates with reasoning omitted, and uses only text notes when a fallback model answers.
+Notes are bounded plain text and stay out of application run logs, history and memory. The final
+answer appears once, and finished/stopped cards discard the note. Email still sends no progress.
+Phase changes come from SDK lifecycle events. Identical
 states are deduplicated and updates are throttled without posting extra messages. Unsupported
 surfaces fall back to small context text. Status failures do not prevent work, and webhook/poll
 deliveries reuse the stored message timestamp.

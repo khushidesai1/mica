@@ -4,7 +4,9 @@ import re
 from collections.abc import Iterator, Sequence
 from typing import Any
 
-from .progress import TaskProgress
+from .progress import TaskProgress, note_headline, public_note
+
+_GENERIC_ACTIVITY = {"Thinking…", "Working on it…", "Mica is thinking", "Mica is working"}
 
 
 def _rich_text(text: str) -> dict[str, Any]:
@@ -22,24 +24,31 @@ def activity_blocks(
     check_in: str = "",
     headline: str = "Mica is working",
     summary: str = "",
+    note: str = "",
 ) -> list[dict[str, Any]]:
     """One compact disclosure with native task rows and public activity details."""
     active = next((task for task in reversed(tasks) if task.status == "in_progress"), None)
     thinking = headline in {"Thinking…", "Mica is thinking"}
     title = "Mica is thinking" if thinking else "Mica is working"
+    note = "" if finished else public_note(note)
     if finished:
         title = "Mica stopped" if error else "Mica finished"
+    else:
+        specific = next(
+            (text for text in (summary, headline, active.title if active else "")
+             if text and text not in _GENERIC_ACTIVITY),
+            "",
+        )
+        title = note_headline(note or specific) or title
     visible = list(tasks[-2:])
     if active is not None and active not in visible:
         visible = [visible[-1], active]
     lines = []
     if error:
         lines.append(f"Stopped: {error[:300]}")
-    if thinking and not finished:
-        lines.append(
-            "Thinking: " + ("Reviewing the latest results." if tasks else "Reviewing your request.")
-        )
-    if summary and not thinking and not active:
+    if note:
+        lines.append(note)
+    if summary and not note and not thinking and not active:
         lines.append(
             ("Last activity: " if finished else "Working: ") + " ".join(summary.split())[:150]
         )
@@ -106,9 +115,9 @@ def activity_fallback(blocks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
 def status_blocks(_emoji: str, headline: str, steps: Sequence[str] = ()) -> list[dict[str, Any]]:
     """Queue, startup and model activity share the same expandable control."""
     current = steps[-1] if steps else headline
-    if current in {"Thinking…", "Working on it…", "Mica is thinking", "Mica is working"}:
+    if current in _GENERIC_ACTIVITY:
         current = ""
-    return activity_blocks([], headline=headline, summary=current)
+    return activity_blocks([], headline=headline, summary=current, note=current)
 
 
 def to_mrkdwn(text: str) -> str:

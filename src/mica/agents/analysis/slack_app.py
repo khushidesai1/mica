@@ -20,7 +20,15 @@ from .config import Settings
 from .data_links import message_text
 from .deliverables import attachment_issue
 from .outputs import ATTACHMENT_SUFFIXES, MAX_ATTACHMENT_BYTES, publish, retention_reason
-from .progress import ActivityState, ProgressUpdate, TaskProgress, check_in_due, run_check_in
+from .progress import (
+    ActivityState,
+    ProgressNote,
+    ProgressUpdate,
+    TaskProgress,
+    check_in_due,
+    public_note,
+    run_check_in,
+)
 from .runner import Context, Runner, TurnResult
 from .sessions import Sessions
 from .slack_format import activity_blocks, chunks, status_blocks, to_mrkdwn
@@ -251,6 +259,7 @@ class SlackAgent:
         steps: list[str] = []
         tasks: dict[str, TaskProgress] = {}
         activity = ActivityState("working")
+        note = ""
         version = 0
         shown = 0
         status_lock = asyncio.Lock()
@@ -271,6 +280,7 @@ class SlackAgent:
                 check_in=check_in,
                 headline=activity.label,
                 summary=pending[-1] if pending else "",
+                note=note,
             )
             await self.transport.update(channel=key[0], ts=status["ts"], text=text, blocks=blocks)
 
@@ -302,8 +312,8 @@ class SlackAgent:
                     await render(
                         activity.label
                         + (
-                            ": " + escape(pending[-1], quote=False)
-                            if activity.state == "working" and pending
+                            ": " + escape(note or pending[-1], quote=False)
+                            if note or (activity.state == "working" and pending)
                             else ""
                         ),
                         pending,
@@ -318,9 +328,18 @@ class SlackAgent:
                         last_check_in = now
 
         async def update(update: ProgressUpdate) -> None:
-            nonlocal version, last_activity, activity
+            nonlocal version, last_activity, activity, note
             if not await self.permitted():
                 raise PermissionError("Project access changed during computation")
+            if isinstance(update, ProgressNote):
+                cleaned = public_note(update.text)
+                if not cleaned or cleaned == note:
+                    return
+                note = cleaned
+                last_activity = time.monotonic()
+                version += 1
+                await flush()
+                return
             if isinstance(update, ActivityState):
                 if activity == update:
                     return

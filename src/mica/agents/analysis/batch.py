@@ -327,6 +327,8 @@ class BatchBridge:
         # Use the same bounded messages as guide display for every response, including
         # built-in commands. Save each confirmed part so a retry resumes the delivery.
         displayed = f"🚩 {text}" if phase in {"failed", "cancelled"} else text
+        if phase in STATUS_PHASES:
+            displayed = escape(displayed, quote=False)
         parts = list(chunks(displayed)) or [""]
         delivery_id = digest(f"{phase}:{displayed}")
         progress = record.get("notice_chunks", {})
