@@ -25,6 +25,7 @@ dependencies = [
   "numpy==2.2.6",
   "openai==3.16.2",
   "openai-agents==0.22.3",
+  "packaging==26.3",
   "pydantic==2.13.5",
   "pydantic-settings==2.15.0",
   "python-multipart==0.0.31",
@@ -35,7 +36,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-slack = ["claude-agent-sdk==0.2.163", "anthropic==2.3.0", "aiohttp==3.14.3", "uv==0.9.6", "packaging==26.3"]
+slack = ["claude-agent-sdk==0.2.163", "anthropic==2.3.0", "aiohttp==3.14.3", "uv==0.9.6"]
 analysis-test = ["anndata==0.11.4", "pandas==2.2.3", "pyarrow==25.0.1", "matplotlib==3.10.3", "pypdfium2==5.14.0"]
 transfer-test = ["paramiko==3.5.1"]
 dev = [

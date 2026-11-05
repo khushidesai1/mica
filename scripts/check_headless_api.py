@@ -5,12 +5,18 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import mica
+from mica.agents.analysis.config import Settings as AnalysisSettings
+from mica.agents.analysis.tiers import capabilities
 from mica.api.app import create_app
 from mica.config import Settings
 from mica.storage.memory import InMemoryRepository
 
 
 def check() -> None:
+    # This runs in the installed API image, where dev/worker dependencies can be absent.
+    # Capability discovery is reached before every direct conversation turn.
+    catalog = capabilities(AnalysisSettings(_env_file=None, runtimes_enabled=True))
+    assert catalog["workers"] and catalog["environments"]["cpu"]
     root = Path(mica.__file__).parent
     for relative in ("api/web.py", "api/templates/index.html", "api/static/pista_logo.svg"):
         assert not (root / relative).exists(), relative
