@@ -100,10 +100,10 @@ async def test_plain_reply_private_thinking_and_provider_settings(turn):
     decision = await run(turn, client)
     assert decision.reply == "The answer."
     request = client.calls[0]
-    assert request["thinking"] == {"type": "adaptive"}
+    assert request["thinking"] == {"type": "adaptive", "display": "updates"}
     assert request["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
     assert request["fallbacks"] == "default"
-    assert request["betas"] == [conversation.FALLBACK_BETA]
+    assert request["betas"] == [conversation.FALLBACK_BETA, conversation.PROGRESS_BETA]
     assert request["output_config"]["effort"] == "medium"
     context = json.loads(request["messages"][0]["content"][0]["text"])
     assert "brief" not in context and context["project_md"] == "guide"
@@ -442,6 +442,8 @@ async def test_natural_init_uses_structured_guide_without_worker(turn, monkeypat
     assert record["direct_init"] is True
     assert "format" in sdk.calls[1]["output_config"]
     assert "tools" not in sdk.calls[1]
+    assert sdk.calls[1]["thinking"] == {"type": "adaptive"}
+    assert sdk.calls[1]["betas"] == [conversation.FALLBACK_BETA]
     stored = json.loads(bridge.store.get(access.checkpoint_key(record["thread_key"]))[0])
     assert stored["context"]["project_slug"] != bridge.pid
     assert "Fresh project" in stored["context"]["project_md"]
@@ -578,3 +580,115 @@ async def test_control_result_keeps_commands_out_of_amendments(
     assert record["conversation_amendable"] is (operation == "none" and amendable)
     assert await conversation.control(bridge, event_id, record, grant) == operation
     assert len(client.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "prefix,expected",
+    [
+        (
+            [{"type": "text", "text": "Found the QC table. Checking counts."}],
+            "Found the QC table. Checking counts.",
+        ),
+        (
+            [{"type": "thinking", "thinking": "Found the QC table.", "signature": "signed"}],
+            "Found the QC table.",
+        ),
+        (
+            [
+                {"type": "text", "text": "First note."},
+                {"type": "thinking", "thinking": "Latest note.", "signature": "signed"},
+            ],
+            "Latest note.",
+        ),
+        (
+            [
+                {"type": "fallback"},
+                {"type": "thinking", "thinking": "PRIVATE", "signature": "signed"},
+                {"type": "text", "text": "Public note."},
+            ],
+            "Public note.",
+        ),
+        (
+            [
+                {"type": "fallback"},
+                {"type": "thinking", "thinking": "PRIVATE", "signature": "signed"},
+            ],
+            "Looking at the attached files…",
+        ),
+        (
+            [{"type": "thinking", "thinking": "", "signature": "signed"}],
+            "Looking at the attached files…",
+        ),
+        ([], "Looking at the attached files…"),
+    ],
+)
+async def test_conversation_notes_precede_tools_and_preserve_signed_blocks(turn, prefix, expected):
+    bridge = turn[0]
+    bridge.notify = AsyncMock()
+    blocks = prefix + tool("view_files", ids=[])[1]
+    client = Client(("tool_use", blocks), reply("Final answer."))
+    decision = await run(turn, client)
+    assert decision.reply == "Final answer."
+    statuses = [call.args[3] for call in bridge.notify.await_args_list]
+    assert statuses[1] == expected
+    if expected != "Looking at the attached files…":
+        assert statuses.count("Mica is thinking") == 1
+    assert client.calls[1]["messages"][1] == {"role": "assistant", "content": blocks}
+    assert "PRIVATE" not in repr(statuses)
+    assert expected not in json.dumps(turn[2]["conversation_steps"])
+    assert decision.reply not in statuses
+
+
+def test_conversation_note_never_uses_final_or_post_tool_text():
+    blocks = [{"type": "text", "text": "Final answer."}]
+    assert conversation.progress_note(blocks, thinking_updates=True) == ""
+    assert (
+        conversation.progress_note(tool("view_files", ids=[])[1] + blocks, thinking_updates=True)
+        == ""
+    )
+
+
+async def test_optional_display_rejection_retries_without_reading_thinking(turn):
+    import httpx
+    from anthropic import BadRequestError
+
+    error = BadRequestError(
+        "thinking.display updates is not supported by the fallback",
+        response=httpx.Response(
+            400, request=httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        ),
+        body={"error": {"type": "invalid_request_error"}},
+    )
+    blocks = [{"type": "thinking", "thinking": "PRIVATE", "signature": "signed"}] + tool(
+        "view_files", ids=[]
+    )[1]
+    client = Client(error, ("tool_use", blocks), reply())
+    turn[0].notify = AsyncMock()
+    await run(turn, client)
+    assert len(client.calls) == 3
+    assert client.calls[0]["thinking"]["display"] == "updates"
+    assert all(call["thinking"] == {"type": "adaptive"} for call in client.calls[1:])
+    assert all(call["betas"] == [conversation.FALLBACK_BETA] for call in client.calls[1:])
+    assert client.calls[1]["timeout"] <= client.calls[0]["timeout"]
+    assert "PRIVATE" not in repr(turn[0].notify.await_args_list)
+
+
+async def test_conversation_status_is_literal_and_email_has_no_progress(turn):
+    from mica.agents.analysis import batch
+
+    bridge, event_id, record, _ = turn
+    bridge.test_slack.reset_mock()
+    note = "Found <!channel> & *bold*. Checking counts."
+    record["notice_ts"] = "9.0"
+    await bridge.notify(event_id, record, "replying", note)
+    sent = bridge.test_slack.chat_update.call_args.kwargs
+    assert sent["text"] == "Found &lt;!channel&gt; &amp; *bold*. Checking counts."
+    assert sent["blocks"][0]["title"] == "Found <!channel> & *bold*."
+    bridge.test_slack.reset_mock()
+    # Exercise the same nonterminal path used by conversation notes on email requests.
+    from unittest.mock import patch
+
+    with patch.object(batch.surface, "is_email", return_value=True):
+        await bridge.notify(event_id, record, "replying", "Next public note.")
+    bridge.test_slack.chat_update.assert_not_called()
+    bridge.test_slack.chat_postMessage.assert_not_called()

@@ -8,7 +8,7 @@ import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
-from anthropic import APIError, AsyncAnthropic
+from anthropic import APIError, AsyncAnthropic, BadRequestError
 from pydantic import BaseModel, ConfigDict, Field
 
 from . import (
@@ -30,6 +30,7 @@ from .direct import (
 )
 from .direct import Decision as ReadDecision
 from .gpu_profiles import Sizing
+from .progress import public_note
 from .storage import Storage
 from .survey import inventory
 from .tiers import WorkerChoice
@@ -39,7 +40,23 @@ if TYPE_CHECKING:
     from .batch import BatchBridge
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+PROGRESS_BETA = "thinking-display-updates-2026-08-18"
 FINAL_RESERVE = 25.0
+
+
+def progress_note(blocks: Sequence[dict[str, Any]], *, thinking_updates: bool) -> str:
+    """Only narration preceding a tool; fallback reasoning is never a note."""
+    thinking_updates = thinking_updates and not any(b["type"] == "fallback" for b in blocks)
+    note = ""
+    for block in blocks:
+        kind = block["type"]
+        if kind == "tool_use":
+            return note
+        if kind == "text" or (kind == "thinking" and thinking_updates):
+            text = public_note(block.get("text" if kind == "text" else "thinking", ""))
+            if text:
+                note = text
+    return ""
 
 
 def start(record: dict[str, Any]) -> None:
@@ -425,6 +442,8 @@ async def run(
     snapshots: dict[str, reference_repos.RepoSnapshot] = {}
     read_remaining = 384 * 1024
     record["conversation_steps"] = []
+    updates_enabled = not init
+    has_note = False
     try:
         for call in range(bridge.settings.conversation_max_calls + 1):
             now = asyncio.get_running_loop().time()
@@ -477,15 +496,33 @@ async def run(
                     "schema": strict_schema(Init),
                 }
             else:
+                if updates_enabled:
+                    request["thinking"]["display"] = "updates"
+                    request["betas"].append(PROGRESS_BETA)
                 request["tools"] = tool_specs
                 request["tool_choice"] = (
                     {"type": "none"}
                     if final
                     else {"type": "auto", "disable_parallel_tool_use": True}
                 )
-            await bridge.notify(event_id, record, "replying", "Mica is thinking")
+            if not has_note:
+                await bridge.notify(event_id, record, "replying", "Mica is thinking")
             async with asyncio.timeout_at(deadline):
-                response = await client.beta.messages.create(**request)
+                try:
+                    response = await client.beta.messages.create(**request)
+                except BadRequestError as exc:
+                    detail = str(exc).lower()
+                    if not updates_enabled or not (
+                        PROGRESS_BETA in detail
+                        or ("display" in detail and ("thinking" in detail or "updates" in detail))
+                    ):
+                        raise
+                    # Optional presentation must not break a model/fallback request.
+                    updates_enabled = False
+                    request["thinking"] = {"type": "adaptive"}
+                    request["betas"] = [FALLBACK_BETA]
+                    request["timeout"] = max(0.01, deadline - asyncio.get_running_loop().time())
+                    response = await client.beta.messages.create(**request)
             blocks = [block.model_dump(exclude_none=True) for block in response.content]
             # Preserve signed thinking exactly in the private provider transcript only.
             messages.append({"role": "assistant", "content": blocks})
@@ -533,11 +570,13 @@ async def run(
                 if name not in {tool["name"] for tool in tool_specs}:
                     raise ValueError("This tool is unavailable in this conversation.")
                 value = MODELS[name].model_validate(args)
+                note = progress_note(blocks, thinking_updates=updates_enabled)
+                has_note = has_note or bool(note)
                 await bridge.notify(
                     event_id,
                     record,
                     "replying",
-                    {
+                    note or {
                         "request_access": "Requesting owner approval…",
                         "list_folders": "Checking the requested folders…",
                         "view_files": "Looking at the attached files…",

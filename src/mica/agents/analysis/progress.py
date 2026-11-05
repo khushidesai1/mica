@@ -1,5 +1,6 @@
-"""Public activity labels derived from tool lifecycle events."""
+"""Public activity labels and bounded, user-facing progress notes."""
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -21,7 +22,29 @@ class ActivityState:
         return f"Mica is {self.state}"
 
 
-ProgressUpdate = str | TaskProgress | ActivityState
+@dataclass(frozen=True)
+class ProgressNote:
+    text: str
+
+
+ProgressUpdate = str | TaskProgress | ActivityState | ProgressNote
+
+
+def _bounded(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    prefix = text[: limit - 1]
+    return (prefix.rsplit(" ", 1)[0] if " " in prefix else prefix).rstrip() + "…"
+
+
+def public_note(text: str) -> str:
+    """Clean public narration; this does not make reasoning safe to display."""
+    text = text.replace("This part of the response was interrupted before it finished.", "")
+    return _bounded(" ".join(text.split()), 300)
+
+
+def note_headline(text: str) -> str:
+    return _bounded(re.split(r"(?<=[.!?])\s+", public_note(text), maxsplit=1)[0], 90)
 
 
 def check_in_due(

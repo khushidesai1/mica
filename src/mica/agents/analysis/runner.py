@@ -42,7 +42,7 @@ from .config import Settings
 from .deliverables import send_tool
 from .limits import MAX_VISUAL_READS, PREVIEW_MAX_BYTES, SDK_MAX_BUFFER_BYTES
 from .outputs import MAX_ATTACHMENT_BYTES, changed_files, retain_tool_outputs, snapshot_outputs
-from .progress import ActivityState, ProgressUpdate, TaskProgress
+from .progress import ActivityState, ProgressNote, ProgressUpdate, TaskProgress, public_note
 from .recovery_tools import RecoveryManager, restored_cost
 from .recovery_tools import run_query as recovery_query
 from .runtime_tools import TOOL_NAME, RuntimeEvent, RuntimeManager, create_server
@@ -635,6 +635,17 @@ class Runner:
         summary_budget = min(0.50, self.settings.max_budget_usd_per_turn * 0.1)
         tasks: dict[str, TaskProgress] = {}
         activity: ActivityState | None = None
+        message_id: str | None = None
+        pending_note: tuple[str, str] | None = None
+
+        async def before_tool(current_id: str | None) -> None:
+            nonlocal pending_note
+            if pending_note and pending_note[0] == current_id:
+                note = pending_note[1]
+                pending_note = None
+                # Confirmed narration must not become a partial answer/history on failure.
+                result.text = ""
+                await on_status(ProgressNote(note))
 
         async def signal(state: Literal["working", "thinking"]) -> None:
             nonlocal activity
@@ -649,6 +660,7 @@ class Runner:
         try:
             for attempt in range(2):
                 details, got_result = "", False
+                message_id, pending_note = None, None
                 try:
                     options = build_options(
                         ctx,
@@ -680,7 +692,17 @@ class Runner:
                     await signal("thinking")
                     async for msg in stream:
                         if isinstance(msg, StreamEvent):
-                            # Observe only the phase marker, never reasoning or text deltas.
+                            if msg.parent_tool_use_id is not None:
+                                continue
+                            if msg.event.get("type") == "message_start":
+                                message_id = msg.event.get("message", {}).get("id")
+                                pending_note = None
+                            if (
+                                msg.event.get("type") == "content_block_start"
+                                and msg.event.get("content_block", {}).get("type") == "tool_use"
+                            ):
+                                await before_tool(message_id)
+                            # Observe thinking phase markers, never reasoning or text deltas.
                             if (
                                 msg.parent_tool_use_id is None
                                 and msg.event.get("type") == "content_block_start"
@@ -689,8 +711,13 @@ class Runner:
                             ):
                                 await signal("thinking")
                         elif isinstance(msg, AssistantMessage):
+                            top_level = msg.parent_tool_use_id is None
+                            if top_level and msg.message_id and msg.message_id != message_id:
+                                message_id, pending_note = msg.message_id, None
                             for block in msg.content:
                                 if isinstance(block, ToolUseBlock):
+                                    if top_level:
+                                        await before_tool(msg.message_id or message_id)
                                     from .memory_workspace import is_read
 
                                     self.memory_reads += int(
@@ -707,8 +734,11 @@ class Runner:
                                     tasks[block.id] = task
                                     await signal("working")
                                     await on_status(task)
-                                elif isinstance(block, TextBlock):
+                                elif isinstance(block, TextBlock) and top_level:
                                     result.text = block.text
+                                    note = public_note(block.text)
+                                    if message_id and note:
+                                        pending_note = (message_id, note)
                         elif isinstance(msg, UserMessage) and isinstance(msg.content, list):
                             for completed in msg.content:
                                 if (
@@ -741,6 +771,7 @@ class Runner:
                             if isinstance(session, str):
                                 result.session_id = self.compute.session_id = session
                         elif isinstance(msg, ResultMessage):
+                            message_id, pending_note = None, None
                             if self.history:
                                 log.info(
                                     "worker_model_usage session=%s usage=%s",
