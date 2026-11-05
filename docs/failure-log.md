@@ -282,11 +282,14 @@ Supply `enable_outage_alerts=true` and `notification_email` through private oper
 The email is not stored in tracked configuration. Review the saved additive Terraform plan before
 applying it; this stack does not manage Cloud Run, credentials or request queues. The additions
 are one uptime check, two alert policies, one email channel and one log-based counter. Existing
-sink/subscription resources stay unchanged. Verify passing uptime samples, policy/channel wiring
-and operator receipt of a test notification without stopping the service or injecting failures into
-real requests. Synthetic request checks must be labeled and their exact records, incident pointers,
+sink/subscription resources stay unchanged. Verify passing uptime samples and policy/channel wiring.
+Google provides no send-test action for email channels; confirm delivery through a separately
+reviewed temporary alert or an actual notification, and keep operator receipt pending until then.
+Do not stop the service or inject failures into real requests. Synthetic request checks must be
+labeled and their exact records, incident pointers,
 occurrence receipts and Slack messages removed afterward.
 
 Google documents [public uptime checks](https://docs.cloud.google.com/monitoring/uptime-checks),
 [uptime alert policies](https://docs.cloud.google.com/monitoring/alerts/policies-in-json), and
-[Scheduler completion logs](https://docs.cloud.google.com/scheduler/docs/viewing-logs).
+[Scheduler completion logs](https://docs.cloud.google.com/scheduler/docs/viewing-logs), and
+[notification-channel testing](https://docs.cloud.google.com/monitoring/support/notification-options#test-notifications).
