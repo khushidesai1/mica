@@ -15,16 +15,17 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from fastapi import BackgroundTasks
 from pydantic import BaseModel
 from slack_sdk.web.async_client import AsyncWebClient
 
 from .storage import Storage
 
 if TYPE_CHECKING:
+    from fastapi import BackgroundTasks
+
     from .batch import BatchBridge
 
-Handler = Callable[["BatchBridge", Storage, dict[str, Any], BackgroundTasks],
+Handler = Callable[["BatchBridge", Storage, dict[str, Any], "BackgroundTasks"],
                    Awaitable[dict[str, Any]]]
 Expiry = Callable[["BatchBridge", Storage, str], Awaitable[None]]
 

@@ -102,6 +102,10 @@ def runtime_cuda(packages: dict[str, str]) -> bool:
     ) and not packages.get("torch", "").endswith("+cpu")
 
 
+# Match the GPU image lockfiles; these versions describe the installed stack, not a driver test.
+CUDA_IMAGE_PACKAGES = ("torch 2.7.1+cu126", "nvidia-cuda-runtime-cu12 12.6.77")
+
+
 def environment_descriptor(record: RuntimeRecord) -> dict[str, Any]:
     """Bounded discovery metadata; it never replaces immutable manifest validation."""
     return {
@@ -165,14 +169,14 @@ def environments(
             "cellpose-3.1.1.3",
             "/opt/cellpose/3.1.1.3/bin/python" if gpu else "/opt/sap/bin/python",
             gpu,
-            ("cellpose 3.1.1.3", "torch"),
+            ("cellpose 3.1.1.3", *(CUDA_IMAGE_PACKAGES if gpu else ("torch",))),
             ("/opt/sap/models",),
         ),
         Environment(
             "cellpose-4.2.1.1",
             "/opt/cellpose/4.2.1.1/bin/python",
             gpu,
-            ("cellpose 4.2.1.1", "torch"),
+            ("cellpose 4.2.1.1", *(CUDA_IMAGE_PACKAGES if gpu else ("torch",))),
             ("/opt/cellpose/models", "/opt/cellpose/manifest.json"),
         ),
     ]

@@ -1,4 +1,5 @@
 from dataclasses import replace
+from pathlib import Path
 
 from mica.agents.analysis import toolkit_catalog
 from mica.agents.analysis.config import Settings
@@ -74,6 +75,31 @@ def test_only_validated_registered_runtime_paths_are_selectable(tmp_path):
     )
     cpu = replace(record, packages={"torch": "2.7.1+cpu"})
     assert not toolkit_catalog.environments(settings, [cpu])[-1].cuda
+
+
+def test_gpu_image_stack_metadata_matches_committed_dependency_locks():
+    rows = {
+        row.id: row
+        for row in toolkit_catalog.environments(Settings(_env_file=None, gpu_worker=True))
+    }
+    root = Path(__file__).resolve().parents[1]
+    for name, filename in (
+        ("cellpose-3.1.1.3", "requirements-cellpose3-gpu.txt"),
+        ("cellpose-4.2.1.1", "requirements-cellpose-sam-gpu.txt"),
+    ):
+        packages = dict(value.split(" ", 1) for value in rows[name].packages)
+        lock = (root / "docker" / filename).read_text()
+        for package in ("torch", "nvidia-cuda-runtime-cu12"):
+            assert any(
+                line.startswith(f"{package}=={packages[package]} ") for line in lock.splitlines()
+            )
+        assert rows[name].cuda
+
+
+def test_cpu_torch_with_cuda_dependency_is_not_advertised_as_cuda():
+    assert not toolkit_catalog.runtime_cuda(
+        {"torch": "2.7.1+cpu", "nvidia-cuda-runtime-cu12": "12.6.77"}
+    )
 
 
 def test_unavailable_saved_runtime_store_does_not_block_conversation(monkeypatch):
