@@ -1,5 +1,9 @@
 project_id           = "azizilab-aml"
-service_name         = "pistachio-staging"
-service_url          = "https://pistachio-staging-h5a7b7akbq-uc.a.run.app"
+service_name         = "mica-staging"
+service_url          = "https://mica-staging-h5a7b7akbq-uc.a.run.app"
 # Copy the currently configured MICA_CLOUD_TASKS_SERVICE_ACCOUNT from the API service.
 push_service_account = "REPLACE_WITH_EXISTING_CONTROL_SERVICE_ACCOUNT"
+# Enable only with a reviewed additive infrastructure plan and a private operator email.
+enable_outage_alerts = false
+scheduler_region    = "us-central1"
+# notification_email belongs in private operator tfvars, never this tracked example.

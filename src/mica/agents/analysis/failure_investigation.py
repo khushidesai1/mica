@@ -9,7 +9,14 @@ from typing import Any
 
 import httpx
 
-from mica.storage.failures import FailureAssessment, FailureInvestigation, Incident, digest
+from mica.storage.failure_catalog import CauseInfo
+from mica.storage.failures import (
+    FailureAssessment,
+    FailureInvestigation,
+    Incident,
+    digest,
+    priority,
+)
 
 from .project_memory import SECRET
 from .transfer_state import HANDOFF, HANDOFFS
@@ -65,7 +72,7 @@ def evidence(
     row: Incident,
     status: str,
     record: dict[str, Any] | None,
-    catalog: dict[str, tuple[str, str]],
+    catalog: dict[str, CauseInfo],
 ) -> dict[str, Any]:
     causes = sorted(c for c in set(row.causes or [row.observation.cause]) if c in catalog)
     packet: dict[str, Any] = {
@@ -73,7 +80,14 @@ def evidence(
         "user_request": row.user_related,
         "request_outcome": status,
         "receipt_available": record is not None,
+        "priority": priority(row, status),
     }
+    if row.observation.blockers:
+        packet["blockers"] = row.observation.blockers
+    if row.observation.affected_requests:
+        packet["affected_requests"] = row.observation.affected_requests
+        if row.observation.affected_kind in {item.kind for item in catalog.values()}:
+            packet["affected_kind"] = row.observation.affected_kind
     if row.observation.http_status in range(500, 600):
         packet["http_status"] = row.observation.http_status
     if row.observation.api_status in range(400, 600):

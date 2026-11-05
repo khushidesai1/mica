@@ -17,7 +17,7 @@ from mica.models import (
     ToolRecord,
 )
 from mica.storage import failures
-from mica.storage.base import EventClaim, preserve_conversation
+from mica.storage.base import EventClaim, FailureProjection, preserve_conversation
 from mica.storage.failures import FailureInvestigation, Incident, Observation
 
 T = TypeVar("T", bound=BaseModel)
@@ -307,6 +307,40 @@ class FirestoreRepository:
         snapshot = await self.client.collection("connector_state").document(key).get()
         return snapshot.to_dict() if snapshot.exists else None
 
+    async def patch_connector_state(
+        self, key: str, updates: dict[str, Any], remove: tuple[str, ...] = ()
+    ) -> None:
+        from google.cloud.firestore import DELETE_FIELD
+
+        await self.client.collection("connector_state").document(key).update(
+            {**updates, **{field: DELETE_FIELD for field in remove}}
+        )
+
+    async def due_connector_states(
+        self, field: FailureProjection, now: float, limit: int = 10
+    ) -> list[tuple[str, dict[str, Any]]]:
+        from google.cloud.firestore_v1.base_query import FieldFilter
+
+        query = (self.client.collection("connector_state")
+                 .where(filter=FieldFilter(field, "<=", now))  # type: ignore[no-untyped-call]
+                 .order_by(field).limit(limit))
+        return [(doc.id, doc.to_dict() or {}) async for doc in query.stream()]
+
+    async def request_failure(self, scope: str, event_id: str) -> Incident | None:
+        group = await self.client.collection("failure_groups").document(
+            failures.digest(scope, "request", event_id)
+        ).get()
+        data = group.to_dict() or {}
+        return await self.get_failure(data["incident"]) if data.get("incident") else None
+
+    async def recent_failures(self, since: float, limit: int = 200) -> list[Incident]:
+        from google.cloud.firestore_v1.base_query import FieldFilter
+
+        query = (self.client.collection("failures")
+                 .where(filter=FieldFilter("last_seen", ">=", since))  # type: ignore[no-untyped-call]
+                 .order_by("last_seen", direction="DESCENDING").limit(limit))
+        return [Incident.model_validate(doc.to_dict()) async for doc in query.stream()]
+
     async def record_failure(self, observation: Observation, now: float) -> Incident:
         from google.cloud import firestore
 
@@ -367,8 +401,9 @@ class FirestoreRepository:
         from google.cloud.firestore_v1.base_query import FieldFilter
 
         rows = []
-        # The third bounded query includes older documents without queue projections.
-        for field in ("request_due", "background_due", "next_attempt"):
+        # The final bounded query includes older documents without impact projections.
+        for field in ("high_due", "medium_due", "low_due",
+                      "request_due", "background_due", "next_attempt"):
             query = (
                 self.client.collection("failures")
                 .where(filter=FieldFilter(field, "<=", now))  # type: ignore[no-untyped-call]

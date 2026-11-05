@@ -10,7 +10,7 @@ from typing import Any
 
 from mica.models import MemoryItem, Project, ProjectSummary, TaskRecord, ToolRecord
 from mica.storage import failures
-from mica.storage.base import EventClaim, preserve_conversation
+from mica.storage.base import EventClaim, FailureProjection, preserve_conversation
 from mica.storage.failures import FailureInvestigation, Incident, Observation
 
 
@@ -224,6 +224,36 @@ class InMemoryRepository:
     async def get_connector_state(self, key: str) -> dict[str, Any] | None:
         value = self.connector_state.get(key)
         return deepcopy(value) if value else None
+
+    async def patch_connector_state(
+        self, key: str, updates: dict[str, Any], remove: tuple[str, ...] = ()
+    ) -> None:
+        async with self._lock:
+            value = self.connector_state[key]
+            value.update(deepcopy(updates))
+            for field in remove:
+                value.pop(field, None)
+
+    async def due_connector_states(
+        self, field: FailureProjection, now: float, limit: int = 10
+    ) -> list[tuple[str, dict[str, Any]]]:
+        async with self._lock:
+            rows = [(key, value) for key, value in self.connector_state.items()
+                    if isinstance(value.get(field), (int, float)) and value[field] <= now]
+            rows.sort(key=lambda item: (item[1][field], item[0]))
+            return deepcopy(rows[:limit])
+
+    async def request_failure(self, scope: str, event_id: str) -> Incident | None:
+        async with self._lock:
+            group = self.failure_groups.get(failures.digest(scope, "request", event_id))
+            row = self.failures.get(group[0]) if group else None
+            return row.model_copy(deep=True) if row else None
+
+    async def recent_failures(self, since: float, limit: int = 200) -> list[Incident]:
+        async with self._lock:
+            rows = sorted((r for r in self.failures.values() if r.last_seen >= since),
+                          key=lambda r: (r.last_seen, r.id), reverse=True)
+            return [r.model_copy(deep=True) for r in rows[:limit]]
 
     async def record_failure(self, observation: Observation, now: float) -> Incident:
         async with self._lock:

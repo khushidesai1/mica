@@ -6,9 +6,9 @@ import json
 from datetime import UTC, datetime
 from typing import Any
 
-from mica.storage.failures import Incident
+from mica.storage.failures import BLOCKER_LABELS, PRIORITY_LABELS, Incident, priority
 
-VERSION = 3
+VERSION = 4
 PREFIX = "mica_failure_"
 CATEGORIES = {
     "compute": "Compute",
@@ -23,7 +23,16 @@ CATEGORIES = {
     "catalog": "Tool catalog",
     "infrastructure": "Infrastructure",
     "test": "Test",
+    "request": "Request",
+    "service": "Service",
 }
+
+
+def category(row: Incident) -> str:
+    o = row.observation
+    if o.blockers:
+        return BLOCKER_LABELS[o.blockers[0]]
+    return CATEGORIES.get(o.kind, "Other")
 
 
 def clipped(text: str, limit: int) -> str:
@@ -62,14 +71,17 @@ def blocks(
     row: Incident, explanations: list[str], status: str, *, link: str = "", native: bool = True
 ) -> list[dict[str, Any]]:
     o = row.observation
-    category = CATEGORIES.get(o.kind, "Other")
-    priority = (
-        "High priority · User request" if row.user_related else "Low priority · Service health"
-    )
+    level = priority(row, status)
+    impact = PRIORITY_LABELS[level]
     state = status_label(row, status)
     who = o.actor or ("Requester unknown" if row.user_related else "No linked user request")
     subtitle = clipped("Requester: " + who, 150) if row.user_related else who
     explanation = explanations[0] if explanations else "An operational failure was recorded."
+    if o.affected_requests:
+        explanation = (
+            f"{o.affected_requests} requests encountered "
+            f"{CATEGORIES.get(o.affected_kind, 'Other').lower()} failures within 30 minutes."
+        )
     if len(explanations) > 1:
         explanation = (
             clipped(explanation, 160) + f" (+{len(explanations) - 1} related issues; see Details)"
@@ -116,10 +128,13 @@ def blocks(
     tags = [
         {
             "type": "tag",
-            "text": priority,
-            "color": "red" if row.user_related and not row.resolved else "gray",
+            "text": impact,
+            "color": (
+                "gray" if row.resolved
+                else {"high": "red", "medium": "orange", "low": "gray"}[level]
+            ),
         },
-        {"type": "tag", "text": category, "color": "blue" if row.user_related else "gray"},
+        {"type": "tag", "text": category(row), "color": "blue" if row.user_related else "gray"},
     ]
     if row.resolved:
         tags.append({"type": "tag", "text": "Resolved", "color": "green"})
@@ -193,9 +208,7 @@ def details_view(row: Incident, explanations: list[str]) -> dict[str, Any]:
     """A readable incident brief, keeping the full evidence behind the card's action."""
     o = row.observation
     status = row.request_status or "unknown"
-    priority = (
-        "High priority · User request" if row.user_related else "Low priority · Service health"
-    )
+    impact = PRIORITY_LABELS[priority(row, status)]
     blocks: list[dict[str, Any]] = [
         heading(title(row)),
         {
@@ -203,7 +216,7 @@ def details_view(row: Incident, explanations: list[str]) -> dict[str, Any]:
             "elements": [
                 {
                     "type": "plain_text",
-                    "text": (f"{CATEGORIES.get(o.kind, 'Other')} · {priority}"),
+                    "text": (f"{category(row)} · {impact}"),
                 }
             ],
         },
@@ -220,6 +233,11 @@ def details_view(row: Incident, explanations: list[str]) -> dict[str, Any]:
                     "Source",
                     {"slack": "Slack", "email": "Email"}.get(o.surface, "Background service"),
                 ),
+                *([("Blockers", ", ".join(BLOCKER_LABELS[b] for b in o.blockers))]
+                  if o.blockers else []),
+                *([("Affected requests", str(o.affected_requests)),
+                   ("Failure category", CATEGORIES.get(o.affected_kind, "Other"))]
+                  if o.affected_requests else []),
             ]
         ),
         {"type": "divider"},

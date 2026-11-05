@@ -6,6 +6,7 @@ import base64
 import binascii
 import json
 import re
+from typing import NamedTuple
 from urllib.parse import urlsplit
 
 from mica.storage.failures import Observation, digest
@@ -19,16 +20,29 @@ REPORTER_PATHS = (
 )
 MAX_ENVELOPE = 512_000
 # Fixed templates, not arbitrary URL segments. Unknown/new endpoints remain visible as "other".
+class Route(NamedTuple):
+    template: str
+    intake: bool = False
+
+
 ROUTES = {
-    r"/api/v1/internal/tasks/[^/]+/process": "/api/v1/internal/tasks/{task_id}/process",
-    r"/api/v1/internal/slack-analysis/process/[^/]+/[0-9]+": (
-        "/api/v1/internal/slack-analysis/process/{event_id}/{attempt}"
+    r"/api/v1/internal/tasks/[^/]+/process": Route("/api/v1/internal/tasks/{task_id}/process"),
+    r"/api/v1/internal/slack-analysis/process/[^/]+/[0-9]+": Route(
+        "/api/v1/internal/slack-analysis/process/{event_id}/{attempt}", True
     ),
-    r"/integrations/slack/events": "/integrations/slack/events",
-    r"/integrations/gmail/push": "/integrations/gmail/push",
-    r"/api/v1/internal/batch/completion": "/api/v1/internal/batch/completion",
-    r"/api/v1/internal/tools/catalog": "/api/v1/internal/tools/catalog",
+    r"/integrations/slack/events": Route("/integrations/slack/events", True),
+    r"/integrations/gmail/push": Route("/integrations/gmail/push", True),
+    r"/api/v1/internal/slack-analysis/(?:transfers|atomx)/[^/]+/[0-9]+": Route(
+        "/api/v1/internal/slack-analysis/transfers/{pending_id}/{tick}", True
+    ),
+    r"/integrations/atomx/action": Route("/integrations/atomx/action", True),
+    r"/api/v1/internal/batch/completion": Route("/api/v1/internal/batch/completion"),
+    r"/api/v1/internal/tools/catalog": Route("/api/v1/internal/tools/catalog"),
 }
+
+
+def is_intake(template: str) -> bool:
+    return any(route.intake and route.template == template for route in ROUTES.values())
 
 
 def parse(body: bytes, *, project: str, service: str) -> Observation | None:
@@ -72,7 +86,8 @@ def parse(body: bytes, *, project: str, service: str) -> Observation | None:
             if any(path.rstrip("/") == p for p in REPORTER_PATHS):
                 return None
             route = next(
-                (template for pattern, template in ROUTES.items() if re.fullmatch(pattern, path)),
+                (route.template for pattern, route in ROUTES.items()
+                 if re.fullmatch(pattern, path)),
                 "unmatched route",
             )
             cause = (

@@ -141,7 +141,9 @@ async def test_resolution_during_delivery_cannot_be_overwritten(
 
 async def test_user_requests_take_priority_over_older_service_noise(repository):
     for i in range(20):
-        await repository.record_failure(observation(str(i), project_id=str(i)), 1000)
+        await repository.record_failure(observation(str(i), project_id=str(i)).model_copy(
+            update={"kind": "infrastructure", "cause": "infra_http_error"}
+        ), 1000)
     for i in range(5):
         await repository.record_failure(
             observation(f"user-{i}", request_scoped=True, event_id=str(i)), 1010
@@ -156,7 +158,9 @@ async def test_user_requests_take_priority_over_older_service_noise(repository):
 
 async def test_infrastructure_only_cycle_is_quieter(repository):
     for i in range(10):
-        await repository.record_failure(observation(str(i), project_id=str(i)), 1000)
+        await repository.record_failure(observation(str(i), project_id=str(i)).model_copy(
+            update={"kind": "infrastructure", "cause": "infra_http_error"}
+        ), 1000)
     assert len(await repository.due_failures(1100, limit=5)) == 1
 
 
@@ -245,7 +249,7 @@ async def test_card_limits_and_tags(repository):
         1000,
     )
     tags, card = failure_cards.blocks(row, ["Error " * 500, "Other issue"], "failed")
-    assert "High priority" in str(tags) and "Compute" in str(tags)
+    assert "Medium · Couldn't complete" in str(tags) and "Compute" in str(tags)
     assert len(card["title"]["text"]) <= 150 and len(card["subtitle"]["text"]) <= 150
     assert len(card["body"]["text"]) <= 200 and len(card["subtext"]["text"]) <= 200
 
