@@ -48,6 +48,20 @@ class ResolutionFailure(RuntimeFailure):
     pass
 
 
+def transient_failure(message: str) -> bool:
+    """Transfer failures can recover without changing the scientific environment."""
+    return any(
+        marker in message.lower()
+        for marker in (
+            "operation timed out", "connection timed out", "connection reset",
+            "connection refused", "temporary failure in name resolution",
+            "failed to lookup address", "network is unreachable", "error sending request",
+            "502 bad gateway", "503 service unavailable", "504 gateway timeout",
+            "incomplete message", "unexpected eof",
+        )
+    )
+
+
 @dataclass
 class LockedPackage:
     version: str
@@ -136,11 +150,11 @@ class Installer:
             "UV_CACHE_DIR": str(self.scratch / "uv-cache"),
             "UV_PYTHON_DOWNLOADS": "never",
             "UV_NO_CONFIG": "1",
-            "UV_HTTP_RETRIES": "1",
-            # Bound mirror/NAT pressure and leave room for its upstream 30-second timeout.
-            # The overall installer deadline still bounds all attempts.
+            "UV_HTTP_RETRIES": "3",
+            # The mirror downloads and validates whole CUDA wheels before responding.
+            # The overall installer deadline still bounds retries and validation.
             "UV_CONCURRENT_DOWNLOADS": "4",
-            "UV_HTTP_TIMEOUT": "45",
+            "UV_HTTP_TIMEOUT": "300",
             "UV_NO_PROGRESS": "1",
             "UV_KEYRING_PROVIDER": "disabled",
             "GIT_CONFIG_NOSYSTEM": "1",
@@ -187,14 +201,18 @@ class Installer:
                 stream.seek(max(0, log.stat().st_size - 32_000))
             text = stream.read().decode(errors="replace")
         if process.returncode:
+            if self.mirror and self.mirror.policy_errors:
+                raise RuntimePolicyError(self.mirror.policy_errors[0])
             error = "\n".join(text.splitlines()[-30:])
             cls = ResolutionFailure if resolution else RuntimeFailure
             raise cls(error)
         return text
 
     def check_size(self) -> None:
-        if directory_size(self.scratch) > self.settings.runtime_max_gb * 1024**3:
-            raise RuntimeFailure("Runtime scratch exceeds the package size limit.")
+        if directory_size(self.scratch) > self.settings.runtime_max_scratch_gb * 1024**3:
+            raise RuntimeFailure("Runtime scratch exceeds the package setup storage limit.")
+        if shutil.disk_usage(self.scratch).free < self.settings.runtime_min_free_disk_gb * 1024**3:
+            raise RuntimeFailure("Package setup would consume the analysis disk reserve.")
         if (
             directory_size(self.settings.runtime_root)
             > self.settings.runtime_max_local_gb * 1024**3
@@ -395,7 +413,7 @@ class Installer:
                 else WheelMirror(
                     self.scratch / "downloads",
                     self.settings.csv("runtime_denylist"),
-                    int(self.settings.runtime_max_gb * 1024**3),
+                    int(self.settings.runtime_max_download_gb * 1024**3),
                     min_age_days=self.settings.runtime_min_age_days,
                 )
             ) as mirror:

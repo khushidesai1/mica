@@ -12,6 +12,9 @@ when the existing versions conflict. Successful runtimes are validated offline a
 saved runtime. Newly installed packages and any pure-Python source builds appear in the setup
 notice; a restore does not repeat that notice.
 
+Pass a complete dependency set as up to 100 package/version requirements in one call. Pin the
+scientifically required versions; a transfer failure is not a reason to substitute versions.
+
 ## Source dependencies and policy
 
 The trusted mirror uses PyPI metadata and `files.pythonhosted.org` artifacts. The resolver remains
@@ -33,7 +36,11 @@ package. The resolved lock and restored runtime are checked again against the de
 A failed installation records a request-specific **Package setup** incident through the worker's
 existing storage receipt and controller polling path. The tool returns its error to Claude so the
 worker can explain it or continue another part of the task. Policy refusals are recomputed rather
-than cached. Other failures expire after 24 hours; changing the policy version or relevant limits
+than cached. Transient download failures are also retryable, including failures saved by older
+workers. HTTP transfers allow three retries and a five-minute read timeout. Repeating the same
+dependency set after a transient failure does not consume another distinct-runtime slot; each
+set still has at most three setup attempts per turn.
+Repeatable installation failures expire after 24 hours; changing the policy version or relevant limits
 also invalidates the old failure key. A failure incident records investigation, not proof that the
 package installation later recovered.
 
@@ -52,10 +59,13 @@ The relevant settings are:
 | `AGENT_RUNTIME_MIN_AGE_DAYS` | `7` |
 | `AGENT_RUNTIME_MAX_SOURCE_BUILDS` | `5` |
 | `AGENT_RUNTIME_FAILURE_TTL_HOURS` | `24` |
-| `AGENT_RUNTIME_MAX_GB` | `8` |
+| `AGENT_RUNTIME_MAX_GB` | `24` GiB per installed environment |
+| `AGENT_RUNTIME_MAX_SCRATCH_GB` | `48` GiB for setup scratch, including the installer cache |
+| `AGENT_RUNTIME_MAX_DOWNLOAD_GB` | `24` GiB transferred per setup |
+| `AGENT_RUNTIME_MIN_FREE_DISK_GB` | `20` GiB reserved for analysis |
 | `AGENT_RUNTIME_MAX_NEW_PER_TURN` | `3` |
-| `AGENT_RUNTIME_TIMEOUT_SECONDS` | `900` |
-| `AGENT_RUNTIME_MAX_LOCAL_GB` | `60` |
+| `AGENT_RUNTIME_TIMEOUT_SECONDS` | `2700` (45 minutes) |
+| `AGENT_RUNTIME_MAX_LOCAL_GB` | `120` GiB total local runtime storage, including setup |
 | `AGENT_RUNTIME_DENYLIST` | Seeded in `analysis.config.Settings` |
 
 Capture and explicitly retain the seeded denylist in the deployed environment. Check it against
@@ -68,10 +78,15 @@ from a separate manager context. It also checks a denied package and removes the
 namespace afterward. This verifies worker NAT egress, source isolation and toolkit publication
 together without a GPU job or scientific training. A newer compatible scvi-tools install, one-epoch
 synthetic training and reuse from another project's private thread remain owner acceptance checks;
-the small deployment fixture does not prove them. Record the installed size and increase the
-configured limit only when a measured runtime requires it. Unit tests with fakes do not prove live
+the small deployment fixture does not prove them. Record installed and setup sizes when tuning
+these allowances. Unit tests with fakes do not prove live
 network or storage permissions.
 
 This feature does not add check-only mode, CUDA-driver matching or a new runtime browser. Running
 an installed runtime on a GPU still requires the separately enabled GPU execution tool and an
 approved GPU worker.
+
+The mirror keeps concurrent requests for a wheel on one verified download. It finishes or
+cancels active download handlers before deleting setup scratch. Downloaded artifacts are still
+validated before the installer receives them. The larger allowances do not change source policy,
+hash checks, credential isolation, GPU approval, or the worker's approved execution deadline.

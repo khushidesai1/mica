@@ -84,10 +84,13 @@ class Settings(BaseSettings):
     runtimes_enabled: bool = False
     runtime_root: Path = Path("/srv/pistachio/runtimes")
     runtime_min_age_days: int = Field(default=7, ge=0)
-    runtime_max_gb: float = Field(default=8, gt=0)
+    runtime_max_gb: float = Field(default=24, gt=0)
+    runtime_max_scratch_gb: float = Field(default=48, gt=0)
+    runtime_max_download_gb: float = Field(default=24, gt=0)
+    runtime_min_free_disk_gb: float = Field(default=20, ge=0)
     runtime_max_new_per_turn: int = Field(default=3, ge=1, le=10)
-    runtime_timeout_seconds: int = Field(default=900, ge=1, le=900)
-    runtime_max_local_gb: float = Field(default=60, gt=0)
+    runtime_timeout_seconds: int = Field(default=2700, ge=1, le=2700)
+    runtime_max_local_gb: float = Field(default=120, gt=0)
     runtime_max_source_builds: int = Field(default=5, ge=0, le=20)
     runtime_failure_ttl_hours: float = Field(default=24, gt=0)
     runtime_denylist: str = (
