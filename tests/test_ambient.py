@@ -84,10 +84,15 @@ def background(bridge, monkeypatch):  # noqa: F811
     monkeypatch.setattr(ambient, "Bucket", lambda name: fake)
     bridge.bucket_fake = fake
     slack = bridge.test_slack
-    slack.conversations_open.side_effect = lambda **kw: {"channel": {"id": "D" + kw["users"][1:]}}
+    slack.conversations_open.side_effect = AssertionError("Ambient must use chat:write only")
+    slack.conversations_list.return_value = {
+        "channels": [{"id": "D1", "user": "U1"}, {"id": "D2", "user": "U2"}]
+    }
     sent = []
 
     async def post(**kw):
+        if kw["channel"].startswith(("U", "W")):
+            kw["channel"] = "D" + kw["channel"][1:]
         ts = f"{100 + len(sent)}.0"
         sent.append({**kw, "ts": ts})
         return {"channel": kw["channel"], "ts": ts}

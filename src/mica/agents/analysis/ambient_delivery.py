@@ -20,6 +20,22 @@ if TYPE_CHECKING:
     from .batch import BatchBridge
 
 
+async def existing_dm(client: AsyncWebClient, user: str) -> str:
+    """Resolve an uncertain user-ID send using im:read, without opening another DM."""
+    cursor = ""
+    for _ in range(5):
+        response = await client.conversations_list(types="im", limit=200, cursor=cursor)
+        channels: list[dict[str, Any]] = response.get("channels", [])
+        for channel in channels:
+            if channel.get("user") == user and str(channel.get("id", "")).startswith("D"):
+                return str(channel["id"])
+        metadata: dict[str, Any] = response.get("response_metadata", {})
+        cursor = str(metadata.get("next_cursor") or "")
+        if not cursor:
+            break
+    raise RuntimeError("Cannot resolve an uncertain ambient DM; operator reconciliation needed")
+
+
 async def post_once(
     bridge: BatchBridge, operation: str, channel: str, text: str, thread_ts: str = ""
 ) -> dict[str, str]:
@@ -33,16 +49,16 @@ async def post_once(
         if saved.get("sent"):
             return {"channel": saved["channel"], "ts": saved["ts"]}
         if not saved:
-            if not channel.startswith("D"):
-                opened = await client.conversations_open(users=channel)
-                channel = str(opened["channel"]["id"])
-            if not channel.startswith("D"):
+            if not channel.startswith(("D", "U", "W")):
                 raise ValueError("Ambient delivery requires a private conversation")
             saved = {"channel": channel, "client_msg_id": str(uuid5(NAMESPACE_URL, operation))}
             await bridge.repository.set_connector_state(key, saved)
         if saved.get("sending"):
             # A timeout after Slack accepted a post is not permission to send it twice.
             # Search the exact conversation; if history is unavailable/ambiguous, fail closed.
+            if not saved["channel"].startswith("D"):
+                saved["channel"] = await existing_dm(client, saved["channel"])
+                await bridge.repository.set_connector_state(key, saved)
             response = await (
                 client.conversations_replies(channel=saved["channel"], ts=thread_ts, limit=100)
                 if thread_ts
@@ -78,7 +94,9 @@ async def post_once(
                 saved["sending"] = False  # Slack explicitly rejected this request.
                 await bridge.repository.set_connector_state(key, saved)
                 raise
-            saved.update(sent=True, ts=str(response["ts"]))
+            if not str(response["channel"]).startswith("D"):
+                raise RuntimeError("Slack did not return a private ambient conversation")
+            saved.update(sent=True, channel=str(response["channel"]), ts=str(response["ts"]))
         await bridge.repository.set_connector_state(key, saved)
         return {"channel": saved["channel"], "ts": saved["ts"]}
     finally:
