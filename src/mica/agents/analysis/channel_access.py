@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError, SlackRequestError
 
+from . import lab
 from .config import Settings
 from .identity import IdentityUnavailable, normalize, recipient_email
 from .storage import Storage, update_model
@@ -141,8 +142,6 @@ def email_for(app: Any, settings: Settings, storage: Storage, team: str, user: s
         for key, entry in load(storage).channels.items()
         if key.startswith(team + ":") and entry.enabled
     ]
-    if not enabled:
-        return None
     client, token = client_for(app), token_for(app)
     unavailable: IdentityUnavailable | None = None
     for channel in enabled:
@@ -161,6 +160,10 @@ def email_for(app: Any, settings: Settings, storage: Storage, team: str, user: s
             unavailable = exc
     if unavailable:
         raise unavailable
+    people = lab.load(storage).members
+    if people:
+        email = profile(app, settings, team, user)
+        return email if email in people else None
     return None
 
 
@@ -272,5 +275,5 @@ def admin_command(
         )
     return (
         "This channel is disabled for Mica access. People retain access only if they "
-        "belong to another enabled channel. Existing messages remain."
+        "belong to another enabled channel or the lab member list. Existing messages remain."
     )
