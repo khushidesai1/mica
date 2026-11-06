@@ -25,6 +25,9 @@ from .storage import Conflict, GCSStorage, LocalStorage, Storage
 if TYPE_CHECKING:
     from .batch import BatchBridge
 
+SWEEP_SECONDS = 90.0
+THREAD_SWEEP_SECONDS = 30.0
+
 
 @dataclass(frozen=True)
 class ObjectInfo:
@@ -356,20 +359,33 @@ async def sweep(
     test_age: float | None = None,
 ) -> dict[str, int]:
     settings, storage = bridge.settings, bridge.storage
-    result = {"memory_outputs_moved": 0, "memory_sources_deleted": 0}
+    result = {"memory_outputs_moved": 0, "memory_sources_deleted": 0, "memory_sweep_deferred": 0}
     if settings.thread_memory != "github_only" and test_age is None:
         return result
     if test_age is not None and not project.startswith("_smoke"):
         raise ValueError("Age overrides require an isolated smoke project")
     backend = project_memory.GitHubMemory(settings)
-    report = await coverage(storage, backend)
+    deadline = asyncio.get_running_loop().time() + SWEEP_SECONDS
+    try:
+        async with asyncio.timeout(SWEEP_SECONDS):
+            report = await coverage(storage, backend)
+            keys = await asyncio.to_thread(checkpoints, storage)
+            progress = await bridge.repository.get_connector_state("memory-artifact-cursor") or {}
+    except TimeoutError:
+        # Unknown coverage never authorizes retention work. Retry on the next daily pass.
+        result["memory_sweep_deferred"] = 1
+        return result
     covered = set(report["verified"])
     now = time.time() if now is None else now
-    keys = await asyncio.to_thread(checkpoints, storage)
-    progress = await bridge.repository.get_connector_state("memory-artifact-cursor") or {}
     cursor = int(progress.get("cursor", 0)) % max(1, len(keys))
     selected = keys if project else (keys[cursor:] + keys[:cursor])[:5]
+    visited = 0
     for key in selected:
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            result["memory_sweep_deferred"] = 1
+            break
+        visited += 1
         thread = key.split("/")[2]
         # Admission uses the same lease. No new turn can enter between the active check
         # and a fenced deletion; existing queued events keep the tail nonterminal.
@@ -377,7 +393,8 @@ async def sweep(
         if lease.status != "claimed":
             continue
         try:
-            async with asyncio.timeout(120):
+            budget = min(THREAD_SWEEP_SECONDS, deadline - asyncio.get_running_loop().time())
+            async with asyncio.timeout(max(0, budget)):
                 tail = await bridge.repository.get_connector_state(f"claude-thread:{thread}") or {}
                 event = (
                     await bridge.repository.get_connector_state(
@@ -598,11 +615,15 @@ async def sweep(
                             result["memory_sources_deleted"] += 1
                         except (FileNotFoundError, Conflict):
                             pass
+        except TimeoutError:
+            # Durable copy receipts make partial work resumable. Rotate past a slow
+            # thread so it cannot block the scheduler or starve other threads.
+            result["memory_sweep_deferred"] = 1
         finally:
             await bridge.repository.release_event(f"claude-intake:{thread}", lease.token)
     if not project:
         await bridge.repository.set_connector_state(
-            "memory-artifact-cursor", {"cursor": (cursor + len(selected)) % max(1, len(keys))}
+            "memory-artifact-cursor", {"cursor": (cursor + visited) % max(1, len(keys))}
         )
     return result
 
