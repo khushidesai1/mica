@@ -6,6 +6,15 @@ threads. Create-only discovery receipts, event-bound output grants and fixed run
 starts idempotent and publishing scoped. Tasks default off; project recipes determine the
 scientific method and the bundled segmentation-report skill provides reusable QC outputs.
 
+Lab admission is configured in `projects/_access/lab.json`, read live by the API and workers.
+Its `members` list admits verified Slack humans in channel mode even outside enabled channels;
+workspace and legacy mapped admission retain their existing behavior. Lab membership does not
+share any projects. The `all_projects` subset can use every current and future project through
+the registry's normal authorization checks, without becoming owners or changing project members.
+Those grants are never serialized into the project registry. Channel publication, owner-only
+actions, and compute/write/transfer confirmations still apply. Future pre-approval features use
+this same lab list instead of introducing another allowlist.
+
 Cloud Run is the authenticated control plane and scales to zero. Firestore holds projects, tasks,
 session items, memories, deduplication records, channel bindings, and the immutable tool registry.
 Cloud Tasks makes task intake asynchronous and limits dispatch concurrency to three. Google Cloud

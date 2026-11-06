@@ -19,7 +19,14 @@ from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
 
 from .config import Settings
-from .runtime_install import Installer, RuntimeFailure, RuntimeRecord, file_sha256, parse_lock
+from .runtime_install import (
+    Installer,
+    RuntimeFailure,
+    RuntimeRecord,
+    file_sha256,
+    parse_lock,
+    transient_failure,
+)
 from .runtime_policy import POLICY_VERSION, PackageRequest, request_key, valid_runtime_id
 from .storage import Conflict, Storage
 
@@ -299,6 +306,10 @@ class RuntimeStore:
                 self.settings.runtime_min_age_days,
                 sorted(self.settings.csv("runtime_denylist")),
                 self.settings.runtime_max_gb,
+                self.settings.runtime_max_scratch_gb,
+                self.settings.runtime_max_download_gb,
+                self.settings.runtime_max_local_gb,
+                self.settings.runtime_min_free_disk_gb,
                 self.settings.runtime_timeout_seconds,
             ]
         )
@@ -313,11 +324,14 @@ class RuntimeStore:
                 0 <= age < self.settings.runtime_failure_ttl_hours * 3600
             ):
                 return None
-            return str(entry["error"])
+            message = str(entry["error"])
+            return None if transient_failure(message) else message
         except (FileNotFoundError, KeyError, TypeError, ValueError):
             return None
 
     def save_failure(self, key: str, message: str) -> None:
+        if transient_failure(message):
+            return
         self.storage.put(
             f"{PREFIX}/failures/{key}.json",
             json.dumps(
