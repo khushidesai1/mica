@@ -327,6 +327,7 @@ def check_worker(work: Path, source: Path, settings: Settings) -> None:
         "mica:cellpose",
         "mica:project-knowledge",
         "mica:segmentation-report",
+        "mica:session-import",
     ]
     plugin = Path("/opt/pistachio/plugin")
     for file in (source / "skills").rglob("*"):

@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from .batch import BatchBridge
 
 Operation = Literal[
+    "import session",
     "init",
     "projects",
     "help",

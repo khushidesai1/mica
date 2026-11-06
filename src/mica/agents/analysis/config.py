@@ -108,6 +108,11 @@ class Settings(BaseSettings):
     )
     return_scripts_default: bool = False
     attachment_max_files: int = Field(default=10, ge=1, le=20)
+    session_import_projects: str = ""
+    session_import_formats: str = "claude-code-jsonl"
+    session_import_slice_chars: int = Field(default=200000, ge=5000, le=500000)
+    session_import_max_passes: int = Field(default=10, ge=1, le=20)
+    session_project_mb: int = Field(default=200, ge=1, le=1000)
     attachment_max_mb: int = Field(default=100, ge=1, le=500)
     attachment_max_message_mb: int = Field(default=250, ge=1, le=1000)
     max_turns: int = Field(default=500, ge=1)

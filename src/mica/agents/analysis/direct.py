@@ -215,6 +215,11 @@ async def dispatch_command(
     from .transfers import Transfers
 
     registry = Registry(storage)
+    if cmd.name == "import session":
+        from . import session_import
+
+        return await finish(bridge, event_id, record,
+                            await session_import.start(bridge, event_id, record, grant))
     if commands.spec(cmd.name).sender_reply:
         command_intent.private_reply(record, grant)
     if commands.spec(cmd.name).connection:
@@ -840,6 +845,15 @@ async def handle(
         heads = await asyncio.to_thread(
             attachments.router_heads, storage, thread_files, current_ids
         )
+        from . import session_sources
+
+        sources = await asyncio.to_thread(session_sources.catalog, storage, grant.project_id)
+        model_context["project_sessions"] = [
+            {"id": source.id, "filename": source.filename, "uploader": source.uploader,
+             "size": source.size, "date": source.date,
+             "note": "Original session evidence; use compute to inspect its anchors"}
+            for source in sources[:100]
+        ]
         model_context["attachments"] = attachments.router_listing(
             thread_files, current_ids, heads, media=media
         )

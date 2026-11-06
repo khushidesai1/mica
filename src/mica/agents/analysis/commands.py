@@ -88,6 +88,7 @@ COMMANDS: dict[str, Spec] = {
     "help all": Spec(sender_reply=True, bare=True),
     "help write": Spec(email_read_only=True, bare=True),
     "init": Spec(natural=True, dm_only=True),
+    "import session": Spec(natural=True, dm_only=True, bare=True, arguments="none"),
     "knowledge": Spec(bare=True, removed=MEMORY_CHANGED),
     "knowledge github": Spec(removed=MEMORY_CHANGED),
     "knowledge show": Spec(removed=MEMORY_CHANGED),
