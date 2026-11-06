@@ -10,6 +10,9 @@ from fastapi import BackgroundTasks
 from pydantic import ValidationError
 from test_analysis_batch import CONVERSATION_RUN, bridge, payload  # noqa: F401
 from test_conversation_tools import Client, tool
+from test_email_transport import sent_messages
+from test_gmail_intake import email_record as intake_email
+from test_gmail_intake import mail, signing  # noqa: F401
 
 from mica.agents.analysis import approvals, conversation, email_delivery, iam_grants, lab, surface
 from mica.agents.analysis import cloud_access as ca
@@ -462,9 +465,91 @@ async def test_direct_routes_nonmember_email_and_approval_before_conversation(cl
     monkeypatch.setattr(
         conversation, "run", AsyncMock(side_effect=AssertionError("No model for approval"))
     )
+    from mica.agents.analysis.registry import Registry
+
+    monkeypatch.setattr(Registry, "load", Mock(side_effect=AssertionError("No project lookup")))
     assert await direct.handle(cloud, "approval", reply, cloud.store)
     assert "Granted" in finish.call_args.args[3]
+    assert reply["reply_scope"] == "cloud_access"
     cloud.grant.assert_called_once()
+
+
+@pytest.mark.parametrize("existing_thread", [False, True])
+async def test_member_cloud_request_has_no_default_project_history(
+    cloud, mail, monkeypatch, existing_thread
+):
+    from mica.agents.analysis import access, memory_tasks
+    from mica.agents.analysis.registry import Registry
+
+    eid, record = await intake_email(mail)
+    text = "Please give outsider@example.com VM access."
+    record["payload"]["event"]["text"] = text
+    record["payload"]["_email"]["original_text"] = text
+    record["payload"]["_email"]["recipients"] = ["alice@example.com", "bob@example.com"]
+    Registry(mail.store).update(
+        "share", "alice@example.com", "share",
+        lambda d: d.share(mail.pid, "alice@example.com", "bob@example.com"),
+    )
+    registry_before = Registry(mail.store).load().model_dump()
+    assert access.resolve(mail.app, mail.settings, mail.store, record).project_id == mail.pid
+    path = access.checkpoint_key(record["thread_key"])
+    if existing_thread:
+        grant = access.resolve(mail.app, mail.settings, mail.store, record)
+        state = {
+            "private_owner": "alice@example.com", "conversation_origin_event": "earlier",
+            "context": {
+                "project_slug": mail.pid, "workdir": "/tmp/existing",
+                "data_path": str(mail.settings.data_mount_root / "example-bucket/data"),
+                "thread_ts": "1.0",
+            },
+            "turn": 1, "messages": [{"id": "earlier", "user": "Analyze", "assistant": "Done"}],
+        }
+        from urllib.parse import urlsplit
+
+        uri = urlsplit(grant.project.data_uri)
+        state["context"]["data_path"] = str(
+            mail.settings.data_mount_root / uri.netloc / uri.path.lstrip("/")
+        )
+        mail.store.put(path, json.dumps(state).encode())
+        checkpoint_before = mail.store.get(path)[0]
+    sdk = Client(tool(
+        "request_cloud_access", bundle="vm", email="outsider@example.com",
+        note="Access for the default Mica project",
+    ))
+    monkeypatch.setattr(conversation, "run", CONVERSATION_RUN)
+    monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **_: sdk)
+    await mail.repository.set_connector_state("claude-event:" + eid, record)
+    assert await mail.process(eid, 0) == "complete"
+    record = await mail.repository.get_connector_state("claude-event:" + eid)
+    assert record["reply_scope"] == "cloud_access"
+    assert not set(record) & {
+        "project_id", "project_name", "memory_project_id", "memory_reply", "memory_due",
+        "failure_project_id", "failure_project_name",
+    }
+    assert not memory_tasks.eligible(mail, record)
+    assert not memory_tasks.conversation_turn(record)
+    assert Registry(mail.store).load().model_dump() == registry_before
+    if existing_thread:
+        assert mail.store.get(path)[0] == checkpoint_before
+    else:
+        assert json.loads(mail.store.get(path)[0]) == {"private_owner": "alice@example.com"}
+    row = await ca.load(mail, ca.digest("email:" + eid))
+    assert row.note == text
+    assert row.policy.gcp_project == "test-project"
+    assert len(sent_messages(mail)) == 1
+    assert sent_messages(mail)[0]["To"] == "alice@example.com"
+    assert "for approval" in sent_messages(mail)[0].get_content()
+    # Retry the saved cloud decision and deliver with the Mica registry unavailable.
+    monkeypatch.setattr(Registry, "load", Mock(side_effect=AssertionError("No project lookup")))
+    from mica.agents.analysis import direct
+
+    assert await direct.handle(mail, eid, record, mail.store)
+    await email_delivery.deliver(mail, "new-delivery", record, "Cloud result", kind="final")
+    assert sent_messages(mail)[-1]["To"] == "alice@example.com"
+    assert sent_messages(mail)[-1].get_content().strip() == "Cloud result"
+    invalid = {**record, "intake_principal": "forged@example.com"}
+    with pytest.raises(PermissionError, match="sender verification"):
+        await email_delivery.deliver(mail, "forged-delivery", invalid, "No", kind="final")
 
 
 async def test_lab_preapproval_disabled_always_asks(cloud):

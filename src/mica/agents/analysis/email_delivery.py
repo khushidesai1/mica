@@ -296,11 +296,12 @@ async def _deliver(
     if not sender or grant.email != sender:
         raise PermissionError("Email sender verification is unavailable")
     # Audience is server-owned event metadata; model/worker replies cannot widen it.
-    account_reply = record.get("reply_scope") == "account"
+    cloud_reply = record.get("reply_scope") == "cloud_access"
+    account_reply = cloud_reply or record.get("reply_scope") == "account"
     audience = record.get("reply_audience", "project_participants")
     if account_reply:
         audience = "sender_only"
-        if record.get("account_visibility") != command_intent.visibility(grant):
+        if not cloud_reply and record.get("account_visibility") != command_intent.visibility(grant):
             # Rebuild a read-only list from current visibility; never replay a mutation here.
             intent = record.get("direct_decision", {}).get("command_proposal") or {}
             exact = record["payload"]["event"].get("text", "").strip().lower()
@@ -395,7 +396,8 @@ async def _deliver(
     if (
         current.email != grant.email
         or (
-            account_reply and command_intent.visibility(current) != command_intent.visibility(grant)
+            account_reply and not cloud_reply
+            and command_intent.visibility(current) != command_intent.visibility(grant)
         )
         or (not account_reply and current.signature != grant.signature)
     ):
@@ -403,7 +405,7 @@ async def _deliver(
     saved = {
         "status": "sending",
         "audience": audience,
-        "scope": "account" if account_reply else "project",
+        "scope": "cloud_access" if cloud_reply else "account" if account_reply else "project",
         "text": (
             "Private transfer action (link redacted)" if transfer_state.mail_stages(kind) else text
         ),
