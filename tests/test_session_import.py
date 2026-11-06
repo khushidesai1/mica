@@ -343,6 +343,16 @@ async def open_import(importer):
     return await importer.repository.get_connector_state(session_import.key(identifier))
 
 
+def test_upload_modal_respects_slack_text_input_limits():
+    view = session_import.modal({"id": "a" * 32})
+    # Slack rejects the entire views.open request above this API limit, before upload.
+    inputs = [b["element"] for b in view["blocks"] if b["type"] == "input"]
+    assert any(element["type"] == "file_input" for element in inputs)
+    for element in inputs:
+        if element["type"] == "plain_text_input":
+            assert 1 <= element["max_length"] <= 3000
+
+
 def action(state, verb="open"):
     return {
         "type": "block_actions",
