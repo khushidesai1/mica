@@ -14,6 +14,18 @@ as an implicit destination. Each sample gets a child folder under the selected b
 Additional files use a documented corresponding folder, or `.additional_files/<sample>/`
 under that raw base. Progress/completion records live under `.mica-transfers/` there.
 
+Name the sample as you know it. Without an export folder, the inventory searches up to three
+folder levels below the SFTP root for export folders (folders that contain `DecodedFiles`). Within
+them it matches slide folders without regard to case, separators, leading zeros, a bare number
+(`37` for `TMA37`) or an appended AtoMx timestamp. An exact folder name wins over loose matches.
+An export named for the sample (for example `TMA37_05_11_2026_22_59_07_541`) that holds a single
+slide folder also matches, whatever that slide folder is called. The latest timestamped run is
+used, directly under the slide folder or one level below it. The bucket folder stays the
+requested name (or `as` name). With an export folder, only that folder is searched; a leading
+slash is optional. If nothing matches, the private notice lists the export and slide folders the
+search saw. If several match, it lists them and asks you to name one, for example
+`transfer "Slide 1" from /TMA37_05_11_2026_22_59_07_541 as TMA37`.
+
 Mica inventories the requested sample using your connection, then privately sends a preview
 with the selected source run, file count, bytes and exact destinations. Open its private form
 to confirm. A changed connection or source requires a new preview. Completion means source

@@ -77,6 +77,57 @@ def failure_notice(result: dict[str, Any]) -> str:
     return "AtoMx job failed. Request a new preview before retrying."
 
 
+PLAN_PROBLEMS = {
+    "No decoded run folder found",
+    "No flatFiles folder for this slide",
+    "Empty export or destination name collision",
+    "Invalid source file",
+    "Source file collides with reserved done.txt marker",
+    "Symlinks and special files are not supported",
+    "Invalid remote entry",
+    "Invalid remote folder name",
+    "Invalid sample name",
+    "Export files unreadable",
+}
+
+
+def clip(value: Any, limit: int = 120) -> str:
+    return " ".join(str(value).split())[:limit]
+
+
+def within(root: str, start: str) -> bool:
+    return not start or root == start or root.startswith(start.rstrip("/") + "/")
+
+
+def missing_sample(name: str, inventory: dict[str, Any], matched: list[dict[str, Any]]) -> str:
+    """Name what the search saw. Artifact text is clipped here and escaped by the caller."""
+    lines = [f"I could not find {name} in your AtoMx exports."]
+    for x in matched[:5]:
+        problem = x.get("problem") if x.get("problem") in PLAN_PROBLEMS else "not transferable"
+        lines.append(f"• `{clip(x['export_root'])}` / `{clip(x['sample'])}` matched: {problem}.")
+    searched = inventory.get("searched") or {}
+    exports = searched.get("exports") or []
+    if exports:
+        lines.append("Export folders I can see, with their DecodedFiles slide folders:")
+        for export in exports[:15]:
+            slides = ", ".join(clip(s, 60) for s in export.get("samples", [])[:8])
+            lines.append(f"• `{clip(export['export_root'])}`: {slides or 'none'}")
+        if int(searched.get("export_count", 0)) > 15:
+            lines.append("…and more.")
+    elif searched:
+        lines.append(
+            "I found no export folders (folders containing DecodedFiles) under "
+            f"`{clip(searched.get('start', '/'))}`."
+        )
+    if searched.get("truncated"):
+        lines.append("The search stopped early. Name the export folder to search it directly.")
+    lines.append(
+        "Ask again with the export and slide folder, for example: "
+        f"transfer <slide folder> from <export folder> as {name}"
+    )
+    return "\n".join(lines)
+
+
 def stamp() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -445,6 +496,9 @@ class Transfers:
             "control_url": self.app.control_plane_url,
         }
         if kind == "pull":
+            # The previewed AtoMx folder may be spelled differently from the bucket name.
+            request["sample"] = p["preview"]["sample"]
+            request["as_sample"] = p["request"]["as_sample"] or p["request"]["sample"]
             request["export_root"] = p["preview"]["export_root"]
             request["plan_fingerprint"] = p["preview"]["plan_fingerprint"]
         if p.get("job_run") != run:
@@ -502,32 +556,39 @@ class Transfers:
             p, "Checking AtoMx…" if kind == "inventory" else "AtoMx transfer started.", ("cancel",)
         )
 
-    async def preview(self, p: dict[str, Any], inventory: dict[str, Any]) -> bool:
+    async def preview(self, p: dict[str, Any], inventory: dict[str, Any]) -> None:
         wanted = p["request"]
         target = wanted["as_sample"] or wanted["sample"]
-        entries = [
+        # The worker marks spelling-insensitive and export-name matches for the request.
+        # Results from older workers carry no flag and keep the exact-name rule.
+        matched = [
             x
             for x in inventory.get("samples", [])
-            if x["sample"] == wanted["sample"]
+            if x.get("matched", x["sample"] == wanted["sample"])
             and x.get("as_sample", x["sample"]) == target
-            and (not wanted["export_root"] or x["export_root"] == wanted["export_root"])
+            and within(x["export_root"], wanted["export_root"])
         ]
+        entries = [x for x in matched if x.get("plan_fingerprint")]
         if not entries:
-            return False
+            raise ValueError(missing_sample(wanted["sample"], inventory, matched))
         if len(entries) != 1:
+            options = "\n".join(
+                f"• `{clip(x['export_root'])}` / `{clip(x['sample'])}`" for x in entries[:10]
+            )
             raise ValueError(
-                "Sample appears in several exports; use transfer <sample> from <export_root>."
+                f"{wanted['sample']} matches several AtoMx folders:\n{options}\n"
+                "Ask again with one of them, for example: "
+                f"transfer {clip(entries[0]['sample'])} from {clip(entries[0]['export_root'])} "
+                f"as {target}"
             )
         item = entries[0]
-        TransferRequest(sample=wanted["sample"], export_root=item["export_root"], as_sample=target)
-        if not item.get("plan_fingerprint"):
-            return False
+        TransferRequest(sample=item["sample"], export_root=item["export_root"], as_sample=target)
         marker_values = await self.available(p)
         login = await self.login(p["requested_by"])
         p.update(preview=item, expires=time.time() + 1800, login_version=login["version"])
         await self.transition(p, "preview", delay=300)
         text = (
-            f"Transfer *{escape(wanted['sample'])}* as *{escape(target)}* from "
+            f"Transfer AtoMx folder *{escape(item['sample'])}* as *{escape(target)}* from "
             f"`{escape(item['export_root'])}` / `{escape(item['run_folder'])}`?\n"
             f"{int(item['n_files']):,} files · {int(item['total_bytes']):,} bytes\n"
             f"Raw: gs://{p['config']['bucket']}/{p['config']['raw_prefix']}{target}/\n"
@@ -541,7 +602,6 @@ class Transfers:
         p["preview_text"] = text
         await self.save(p)
         await self.notify(p, text, ("confirm", "cancel"))
-        return True
 
     async def process(self, pid: str, tick: int) -> str:
         p = await self.pending(pid)
@@ -735,8 +795,7 @@ class Transfers:
             )
         elif state == "SUCCEEDED" and result["status"] == "done":
             if p["job_kind"] == "inventory":
-                if not await self.preview(p, result["inventory"]):
-                    raise ValueError("Sample was not found in the selected AtoMx export.")
+                await self.preview(p, result["inventory"])
             else:
                 marker = result["marker"]
                 if marker.get("run_id") != p["job_run"]:
