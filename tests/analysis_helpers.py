@@ -65,3 +65,11 @@ def conversation_mock(value):
 
     decision.side_effect = respond
     return decision
+
+
+def memory_edits(changes=None):
+    from mica.agents.analysis.thread_memory import Prose
+    return {**(changes or {}), "_thread": Prose(
+        paraphrase="Reviewed the analysis and next steps.",
+        summary="Discussed the analysis and its outstanding work.",
+    ).model_dump_json()}

@@ -83,16 +83,87 @@ for the guide. Correct mistakes in plain language. The old `remember`, `forget`,
 `save brief`, and `clean brief` commands explain this change without editing memory.
 Memory saves run silently; use `memory` or `brief` when you want to inspect saved content.
 
-Failed requests remain in the thread's 12-exchange history with their original user message,
-a short failure notice, and `success: false`. Follow-ups can refer to that intent. Existing
-successful exchanges are preserved; commands and cancelled turns add no exchange or memory task.
-Access checks still prevent reading or writing a project after access is lost.
+## Shared thread memory
 
-A routed failure uses the background editor even if no worker proposal exists. It may update
-only `open.md`, recording one attributed, dated line about pending work and why it stopped.
-Retries update that line; a later success removes resolved work. Failures before routing stay
-in thread history but do not enqueue shared-memory edits. Partial outputs and worker logs are
-not saved as failed-turn results. Routine memory updates remain silent.
+Project conversation memory is shared with every member of that project, including summaries
+of DMs, channels and email. Repository readers can also see it. Memory contains attributed
+paraphrases, never verbatim message logs. The four most recent exchanges remain in the GCS
+checkpoint as temporary working context. Commands and cancelled turns do not add memory.
+
+Each project has an application-generated `THREADS.md` overview and a folder under
+`threads/<thread-key>/` containing `summary.md`, `log.md`, older `log-NNNN.md` pages, and
+`scripts/`. Small retained outputs live in `outputs/turn-N/`; `outputs/MANIFEST.json` records
+copy receipts and reasons a source was retained. Model-authored thread content is a compact
+entry and summary. The application supplies identity, sequence, event id and summary coverage.
+Worker proposals use `knowledge/threads/<this-thread>/turn.json`; other threads are read-only.
+
+Memory saves run after delivery. A late save appends its event once, even if a newer turn saved
+first. A newer summary cannot discard the previous summary's covered events. Readers include
+entries not covered by the summary regardless of their sequence, including entries in older
+log pages. Prompt limits produce explicit continuation paths rather than a claim of complete
+coverage. Thread log pages preserve each compact event; Git history preserves replaced summary
+and script versions without duplicating the growing log into the project archive each turn.
+
+A save is pending before its first queue dispatch. A read-back must verify the compact entry
+and script manifest before the event is marked done. Pending proposals live under
+`projects/_threads/<thread>/pending/<event>/`, outside expiring task transport. Daily maintenance
+re-dispatches pending saves with a new task id and reports saves pending for more than 24 hours.
+Capacity rejection, conflicts and unavailable GitHub never block the user's completed turn or
+silently discard its recovery handoff. Rejected scripts retain their source and a reason.
+Failed routed turns may update pending work in `open.md` and their failure entry; partial
+results are not promoted as verified findings.
+
+The router reads project context before thread context and recent exchanges. `read_sources`
+accepts `memory_paths` for project files and cross-thread lookup under its existing 384 KiB
+content budget. Workers receive bounded text snapshots, including log pages, and the current
+thread's scripts. GitHub requests fetch tree metadata first and selected text in batches;
+other threads' scripts and all output blobs are excluded. Explicit artifact reads verify blob
+identity and byte counts. Workers receive no GitHub credential. The working archive supplies
+`code/` while available; otherwise the current thread's GitHub scripts restore it.
+
+Thread limits are separate from the project's 4 MiB/500-file text limits:
+`AGENT_THREAD_TEXT_KB=4096`, `AGENT_THREAD_MAX_FILES=4000`,
+`AGENT_THREAD_SUMMARY_KB=64` (including coverage metadata), `AGENT_THREAD_LOG_KB=32`,
+`AGENT_THREAD_SCRIPT_KB=256`, `AGENT_THREAD_SCRIPTS_KB=2048`,
+`AGENT_THREAD_OUTPUT_KB=1024`, and `AGENT_THREAD_OUTPUTS_KB=20480`.
+Thread text and file caps apply per project; script/output caps apply per thread. Snapshots and
+proposals also have bounded transport envelopes. Storage exhaustion requires an operator
+capacity decision; compaction does not silently purge history.
+
+## Thread migration and retention
+
+`AGENT_THREAD_MEMORY=dual` is the coordinated-release default: write GitHub and legacy GCS
+history, read legacy thread context. `github` reads GitHub while continuing both writes, so
+rollback to `dual` preserves the history written during that phase. `github_only` stops GCS
+history reads/writes and enables verified expiry. It requires a complete migration report;
+retention markers for rejected artifacts cannot excuse missing conversation history. Do not
+roll back from `github_only` expecting new turns to exist in GCS history.
+
+Preview every existing project thread, including inactive threads, before importing:
+
+```bash
+.venv/bin/python tools/memory_import.py --bucket ARTIFACT_BUCKET --threads
+.venv/bin/python tools/memory_import.py --bucket ARTIFACT_BUCKET --threads --apply
+```
+
+Use `--project PROJECT_ID --thread THREAD_KEY` to scope a rehearsal. The preview reports
+input-token estimates and maximum model calls; model pricing determines actual cost. Apply
+uses the configured memory model and credential. It caches paraphrases, records source
+versions/hashes, verifies imported events and scripts, and is safe to repeat. A changed source
+or resumed thread requires rechecking coverage. Unknown legacy speakers stay explicitly unknown.
+
+The existing authenticated daily maintenance route moves Mica-created run outputs after
+`AGENT_THREAD_OUTPUT_AGE_DAYS=10`, subject to the per-file and per-thread caps. It never moves
+`outputs/gcs/` or user destinations. `AGENT_THREAD_EXPIRY_DAYS=30` begins only after a verified
+copy exists. Deletion rechecks the GitHub content and exact GCS generation. A thread intake
+lease and terminal-state check protect cleanup from new, active and recovering work.
+
+A workspace archive gets an expiry receipt only when every retained script and output has a
+matching GitHub copy. Unmatched/oversized members and legacy SDK transcripts keep the source
+archive. After expiry, an inactive current pointer is conditionally detached before deleting
+its exact generation; the next worker restores scripts from GitHub. Imported history deletes
+only with a matching compact-event receipt. No Terraform, secret, IAM or bucket-lifecycle
+change is part of this workflow.
 
 ## Compaction and operations
 

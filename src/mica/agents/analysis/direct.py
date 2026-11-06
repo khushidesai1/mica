@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import time
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import urlsplit
 
@@ -23,6 +25,7 @@ from . import (
     reference_repos,
     surface,
     thread_history,
+    thread_memory,
     tiers,
     write_access,
 )
@@ -56,6 +59,9 @@ class DecisionFields(BaseModel):
     )
     read_file_ids: list[Annotated[str, Field(max_length=100)]] = Field(
         default_factory=list, max_length=4
+    )
+    memory_paths: list[Annotated[str, Field(max_length=500)]] = Field(
+        default_factory=list, max_length=8
     )
     history_query: str | None = Field(default=None, max_length=500)
     history_event_id: str = Field(default="", max_length=128)
@@ -110,6 +116,7 @@ def record_exchange(
     methods: str = "",
     history: thread_history.History | None = None,
     summary: str = "",
+    keep_summary: bool = True,
 ) -> None:
     full = {
         "id": event_id,
@@ -125,7 +132,10 @@ def record_exchange(
         for previous in state.get("messages", []):
             history.record(previous, only_missing=True)
         history.record(full)
-    thread_history.update_summary(state, full, summary)
+    if keep_summary:
+        thread_history.update_summary(state, full, summary)
+    else:
+        state.pop("thread_summary", None)
     messages = [m for m in state.get("messages", []) if m.get("id") != event_id]
     messages.append(
         {
@@ -138,7 +148,7 @@ def record_exchange(
             "methods": methods[:2000],
         }
     )
-    state["messages"] = messages[-12:]
+    state["messages"] = messages[-4:]
     state["direct_version"] = 1
 
 
@@ -342,7 +352,66 @@ async def read_information(
             attachments.router_text, storage, files, decision.read_file_ids, remaining
         )
         remaining -= sum(len(row.get("text", "").encode()) for row in result["files"])
-    if decision.history_query is not None or decision.history_event_id:
+    if decision.memory_paths:
+        backend = project_memory.GitHubMemory(bridge.settings)
+        result["memory"] = []
+        for path in dict.fromkeys(decision.memory_paths):
+            project_memory.valid_path(path)
+            try:
+                data, head = await backend.read_bytes(grant.project_id, path)
+                kind, media = attachments.classify(Path(path).name, data[: attachments.HEAD_BYTES])
+                if thread_memory.asset(path) and kind in {"image", "pdf", "other"}:
+                    if len(data) > remaining:
+                        result["memory"].append({"path": path, "context_limit": True})
+                        continue
+                    from .config import CHECKPOINT_PREFIX
+
+                    sha = hashlib.sha256(data).hexdigest()
+                    key = f"{CHECKPOINT_PREFIX}/events/{record['event_id']}/memory-artifacts/{sha}"
+                    await asyncio.to_thread(storage.put, key, data)
+                    name = attachments.safe_name(Path(path).name)
+                    file = attachments.ThreadFile(
+                        id="m" + sha[:12],
+                        source="agent",
+                        name=name,
+                        path=f"outputs/memory/{sha[:12]}/{name}",
+                        kind=kind,
+                        media_type=media,
+                        size=len(data),
+                        sha256=sha,
+                        key=key,
+                        event_id=record["event_id"],
+                    )
+                    files.append(file)
+                    grant.state["thread_files"] = attachments.merge(
+                        grant.state.get("thread_files", []), [file.model_dump()]
+                    )
+                    await asyncio.to_thread(
+                        storage.put,
+                        access.checkpoint_key(record["thread_key"]),
+                        json.dumps(grant.state).encode(),
+                    )
+                    result["memory"].append(
+                        {
+                            "path": path,
+                            "file_id": file.id,
+                            "workspace_path": file.path,
+                            "commit": head,
+                        }
+                    )
+                    remaining -= len(data)
+                    continue
+                if len(data) > remaining:
+                    result["memory"].append({"path": path, "context_limit": True})
+                    continue
+                text = data.decode("utf-8")
+                result["memory"].append({"path": path, "text": text, "commit": head})
+                remaining -= len(data)
+            except (ValueError, FileNotFoundError, UnicodeError):
+                result["memory"].append({"path": path, "unavailable": True})
+    if thread_memory.legacy(bridge.settings) and (
+        decision.history_query is not None or decision.history_event_id
+    ):
         history = thread_history.History(storage, record["thread_key"], grant.project_id)
         try:
             result["history"] = await asyncio.to_thread(
@@ -372,8 +441,13 @@ async def handle(
     if not grant.email:
         return await finish(bridge, event_id, record, access.deny_text(grant))
     cmd = commands.parse(event.get("text", ""))
-    if (not grant.allowed and cmd is None and not grant.private
-            and not surface.is_email(record) and bridge.settings.access_request_owner_id):
+    if (
+        not grant.allowed
+        and cmd is None
+        and not grant.private
+        and not surface.is_email(record)
+        and bridge.settings.access_request_owner_id
+    ):
         from . import access_requests
 
         return await finish(
@@ -659,7 +733,17 @@ async def handle(
             "recent_messages": state.get("messages", []),
             "thread_handoff": state.get("thread_summary", {}),
         }
+        messages = model_context.pop("recent_messages")
+        handoff = model_context.pop("thread_handoff")
         model_context["project_memory"] = project_memory.context(memory, text, bridge.settings)
+        model_context["thread_memory"] = (
+            thread_memory.context(
+                {p: f.text for p, f in memory.files.items()}, record["thread_key"]
+            )
+            if memory and thread_memory.github_reads(bridge.settings)
+            else handoff
+        )
+        model_context["recent_messages"] = messages
         from .calibration import history
 
         worker_history = await asyncio.to_thread(history, storage, grant.project_id)
@@ -698,6 +782,7 @@ async def handle(
         record["direct_decision"] = decision.model_dump()
         record["direct_decision_pending"] = False
         record["decision_access"] = grant.signature
+        record["memory_project_id"] = grant.project_id
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
     if decision.route == "command":
         # Re-enter the exact/validated command path using the durable terminal proposal.
@@ -752,7 +837,10 @@ async def handle(
             text,
             decision.reply,
             files=[f["name"] for f in record.get("attachments", [])],
-            history=thread_history.History(storage, record["thread_key"], grant.project_id),
+            history=thread_history.History(storage, record["thread_key"], grant.project_id)
+            if thread_memory.legacy(bridge.settings)
+            else None,
+            keep_summary=not thread_memory.github_reads(bridge.settings),
         )
     else:
         state["direct_version"] = 1

@@ -27,7 +27,9 @@ log = logging.getLogger(__name__)
 # unlike the small telemetry/result records read below. JSON escaping can cost six
 # bytes per source byte; reserve 8 MiB for file metadata and bounded control state.
 # A range read returns only the actual object size, not an allocation of this limit.
-REQUEST_JSON_LIMIT = 6 * (MAX_MEMORY_TOTAL_KB * 1024 + 5 * REFERENCE_MAX_BYTES) + 8 * 1024 * 1024
+REQUEST_JSON_LIMIT = (
+    6 * ((MAX_MEMORY_TOTAL_KB + 32768) * 1024 + 5 * REFERENCE_MAX_BYTES) + 8 * 1024 * 1024
+)
 
 
 def event_prefix(event_id: str) -> str:
@@ -261,8 +263,11 @@ def worker_manifest(record: dict[str, Any], settings: Settings) -> dict[str, Any
     return {
         "recovery": {
             **({"gpu_type": selected_gpu(record)} if record["tier"] == "gpu" else {}),
-            **({"gpu_profile": selected_gpu_choice(record)}
-               if record["tier"] == "gpu" and record["launch"].get("gpu_profile") else {}),
+            **(
+                {"gpu_profile": selected_gpu_choice(record)}
+                if record["tier"] == "gpu" and record["launch"].get("gpu_profile")
+                else {}
+            ),
             **{
                 key: record[key]
                 for key in (

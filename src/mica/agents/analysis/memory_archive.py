@@ -8,10 +8,11 @@ import time
 from collections.abc import Mapping
 
 from .config import Settings
+from .thread_memory import THREAD_ENTRY
 
 CORE = ("PROJECT.md", "conventions.md", "open.md", "lessons.md")
 BASE_ENTRY = (
-    r"(?:PROJECT\.md|INDEX\.md|conventions\.md|lessons\.md|open\.md|"
+    rf"(?:{THREAD_ENTRY}|THREADS\.md|PROJECT\.md|INDEX\.md|conventions\.md|lessons\.md|open\.md|"
     r"(?:data|results)/[A-Za-z0-9][A-Za-z0-9_-]{0,79}\.md|"
     r"recipes/[A-Za-z0-9][A-Za-z0-9_-]{0,79}\.(?:md|py|R|sh))"
 )
@@ -25,7 +26,7 @@ def ready(settings: Settings) -> bool:
 
 
 def is_index(path: str) -> bool:
-    return path == "INDEX.md" or re.fullmatch(ARCHIVE_INDEX, path) is not None
+    return path in {"INDEX.md", "THREADS.md"} or re.fullmatch(ARCHIVE_INDEX, path) is not None
 
 
 def original_path(path: str) -> str:
@@ -52,6 +53,10 @@ def prepare(
     """
     if not before and not changes:
         return {}
+    before = {p: t for p, t in before.items() if not p.startswith("threads/") and p != "THREADS.md"}
+    changes = {
+        p: t for p, t in changes.items() if not p.startswith("threads/") and p != "THREADS.md"
+    }
     files = dict(before)
 
     def preserve(path: str, text: str) -> None:

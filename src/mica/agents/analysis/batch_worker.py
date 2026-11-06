@@ -33,6 +33,7 @@ from . import (
     project_memory,
     surface,
     thread_history,
+    thread_memory,
     write_access,
     write_worker,
 )
@@ -233,6 +234,18 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
     await asyncio.to_thread(
         memory_workspace.materialize, Path(saved["context"]["workdir"]), memory_base, settings
     )
+    if thread_memory.enabled(settings):
+        (Path(saved["context"]["workdir"]) / "knowledge" / thread_memory.prefix(thread_key)).mkdir(
+            parents=True, exist_ok=True
+        )
+    if not restored and thread_memory.enabled(settings):
+        await asyncio.to_thread(
+            memory_workspace.restore_scripts,
+            Path(saved["context"]["workdir"]),
+            memory_base,
+            thread_key,
+            settings,
+        )
     if pending_memory:
         memory_base = memory_workspace.restore_pending(
             pending_memory, Path(saved["context"]["workdir"]), memory_base, settings
@@ -386,8 +399,11 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
 
     runtimes = (
         RuntimeManager(
-            settings, storage=storage, principal=request["principal"],
-            event_id=event_id, attempt=attempt,
+            settings,
+            storage=storage,
+            principal=request["principal"],
+            event_id=event_id,
+            attempt=attempt,
         )
         if settings.runtimes_enabled
         else None
@@ -453,7 +469,15 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         Runner(
             settings,
             runtime_manager=runtimes,
-            history=thread_history.History(storage, thread_key, request["project_id"]),
+            history=thread_history.History(storage, thread_key, request["project_id"])
+            if thread_memory.legacy(settings)
+            else None,
+            thread_key=thread_key,
+            thread_context=json.dumps(
+                thread_memory.writer_view(
+                    {p: f.text for p, f in memory_base.files.items()}, thread_key
+                )
+            ),
             return_scripts=request.get("return_scripts") is True,
             attachment_limit=(17_000_000 if surface.is_email(request) else 200_000_000),
             script_manifest=resume.get("script_manifest") if resume else None,
@@ -494,7 +518,11 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
     agent.access_monitor = monitor
     payload["event"]["_notice_ts"] = request.get("notice_ts")
     payload["event"]["_conversation_context"] = saved.get("messages", [])
-    payload["event"]["_thread_summary"] = saved.get("thread_summary", {}).get("text", "")
+    payload["event"]["_thread_summary"] = (
+        ""
+        if thread_memory.github_reads(settings)
+        else saved.get("thread_summary", {}).get("text", "")
+    )
     payload["event"]["_fresh_session"] = not bool(resume)
     summary_path = Path(saved["context"]["workdir"]) / "notes/turn-summary.md"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
@@ -565,6 +593,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                 settings,
                 f"worker {event_id}; speaker {request['principal']}; "
                 f"thread {thread_key}; {datetime.now(UTC).date()}",
+                thread=thread_key,
             )
             pending_key = f"{prefix}/memory-a{attempt}-{checkpoint_id}.json"
             await asyncio.to_thread(storage.put_if, pending_key, pending, None)
@@ -739,7 +768,11 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             settings,
             f"worker {event_id}; speaker {request['principal']}; "
             f"thread {thread_key}; {datetime.now(UTC).date()}",
+            thread=thread_key,
         )
+        parsed_proposal = memory_workspace.decode_pending(proposal, settings)
+        parsed_proposal.outputs = agent.memory_outputs[:100]
+        proposal = parsed_proposal.model_dump_json().encode()
         receipt = write_worker.Publication(
             destinations=publisher.summarize(set(publisher.uploaded))
         ).receipt()
@@ -752,6 +785,12 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             else f"{prefix}/memory-a{attempt}-{uuid4().hex}.json"
         )
         await asyncio.to_thread(storage.put, proposal_key, proposal)
+        if agent.completed:
+            await asyncio.to_thread(
+                storage.put,
+                f"projects/_threads/{thread_key}/pending/{event_id}/memory-proposal.json",
+                proposal,
+            )
         memory_record = {
             "pending_memory": {"key": proposal_key, "sha256": hashlib.sha256(proposal).hexdigest()}
         }
@@ -838,7 +877,10 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         outputs=[f["name"] for f in agent.delivered],
         success=agent.last_error is None,
         methods=read_methods(state[0].workdir, previous_methods),
-        history=thread_history.History(storage, thread_key, request["project_id"]),
+        history=thread_history.History(storage, thread_key, request["project_id"])
+        if thread_memory.legacy(settings)
+        else None,
+        keep_summary=not thread_memory.github_reads(settings),
         summary=thread_history.read_summary(state[0].workdir, previous_summary),
     )
     storage.put(pointer, json.dumps(checkpoint, default=str).encode())

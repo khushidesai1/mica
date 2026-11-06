@@ -463,48 +463,24 @@ authorized channels. Concurrent conflicting edits are retained in `_unmerged/` f
 | `switch p_… [--force]` in a channel | Owner selects an explicitly published project; replacing a binding requires its current owner too. |
 | `brief` | View the current shared guide, after an access check. |
 | `cancel` | Cancel queued/active computation after an access check. |
-| `memory` | DM: show private profile/preferences and the newest 20 numbered notes. |
-| `remember <text>` | DM: add a private note (up to 600 characters). |
-| `forget <number\|profile\|preferences\|all>` | DM: delete the selected memory and invalidate previous private context. |
+| `memory [path]` | Show the shared project index or an allowed project-memory file. |
 
 Renaming preserves the project ID, data location, briefs, saved outputs, sharing, channel
 bindings, and existing threads. Use the new name or unchanged ID in later commands; a legacy
 project whose ID is its original name still accepts that original ID. Renaming does not edit
 old Slack messages or rewrite project names in saved brief text.
 
-Sharing a project grants access to its shared brief and computation, not another user’s DM
-history or memory. Channel publication is a separate explicit decision: every current or future
-viewer of that Slack channel can read posted content, even if they cannot invoke the agent.
-Removing a member does not retract Slack messages or remove them from a published channel’s
-audience. Unpublish disables future replies there. Old queued workers recheck grants before
-restoring context and before delivering results. Previously submitted pre-ACL workers must be
-drained at cutover.
+Sharing a project grants access to its guide, computation and shared conversation memory,
+including compact summaries of DMs, channels and email. Repository readers can see the saved
+memory too. Channel publication is a separate decision: everyone viewing that Slack channel
+can read posted content. Removing membership does not retract previously posted messages.
+Queued workers recheck access before restoring context and delivering results.
 
-Memory is stored only at `projects/_users/<hash-of-normalized-email>/memory.json`. No personal
-memory is injected into channels or group conversations. DM retrieval may use notes from another
-project belonging to, or currently shared with, that same user. Access filtering happens before
-ranking and before the memory editor receives context. Revoked notes appear as hidden placeholders
-in `memory`; their content is excluded. A block containing contributions from a revoked project
-is hidden as a whole. Notes retain their original project attribution; they are suggestions,
-not facts about the current project. Init displays them in a private reply, never automatically
-in the initial brief. Applying personal memory to the shared guide requires the user’s request; saving
-guide edits deliberately shares their contents through project knowledge.
-
-Profile and preferences are each bounded to 1,500 characters. Up to 200 notes have stable numbers;
-retrieval selects at most five within 2,500 characters, using keyword overlap and recency. Atomic
-writes prevent lost concurrent updates. Permanent operation receipts prevent delayed deliveries
-from resurrecting forgotten content. The post-reply editor proposes at most three changes, rejects
-credential-like text, and sends a confirmation only after saving. It runs as a separate retried task with a 90-second model timeout and a
-150-second task deadline, after the main reply is delivered. Set `AGENT_MEMORY_AUTO_EDIT=false` to disable it;
-explicit memory commands still work. `AGENT_MEMORY_MODEL` defaults to `AGENT_MODEL`.
-
-Routine personal-memory edits, deletions, sharing and unrelated project changes keep the current
-workspace, SDK session and transcript. `forget context` and `forget all` explicitly reset the
-applicable context; retired checkpoints retain audit history and output numbering continues.
-Permission checks and revoke-then-regrant protection remain tied to the current project's access
-revision. Existing saved workdirs stay valid through the migration. Removed memory is excluded
-from future retrieval, while existing conversation context remains until explicitly reset.
-Slack messages, old outputs and audit archives retain their existing lifecycle.
+Project memory saves automatically after conversational turns. Correct remembered facts in
+plain language. `memory` shows the project index and `brief` shows its guide. Legacy `remember`,
+`forget`, `memory context` and `forget context` workflows are retired. Memory is advisory data,
+never authorization or proof that a scientific claim is verified. See
+[project memory](project-memory.md) for budgets, ordering, migration and retention.
 
 DM outputs live at `projects/_users/<user-hash>/runs/<project-id>/<thread-key>/turn-<n>/`.
 Authorized channel outputs retain `projects/<project-id>/runs/<thread-ts>/turn-<n>/`.
@@ -559,39 +535,17 @@ configuration, and authenticate to the existing cloud resources. The deployed ru
 memory are in GCP; the laptop does not need to remain running.
 
 
-## Conversation cache and project guide
+## Project guide and thread context
 
-`knowledge/PROJECT.md` documents project purpose, data location, file/folder uses, and verified
-metadata needed to select or interpret data. Necessary guide changes save automatically with
-versioned history. Observations, hypotheses, results and research TODOs remain outside the guide.
-`brief` shows it; `undo knowledge` reverts the most recent knowledge save. Legacy published guides
-migrate once, leaving the old object as a backup. Unsaved thread drafts are not imported.
+`knowledge/PROJECT.md` records project purpose, data locations, file/folder uses and verified
+metadata. Guide updates save automatically. Preferences, observations, results and pending work
+use the corresponding project-memory entries. `brief` displays the guide.
 
-A hidden Markdown summary (at most 6,000 characters) is stored inside a versioned JSON record:
-
-- DMs: `projects/_users/<user-key>/context/<project-id>.json`, shared only across that person's
-  DM threads for the same project.
-- Channels: `projects/<project-id>/context/channel-<hash-of-team-and-channel>.json`, shared across
-  threads only in that project/channel.
-
-Every chat and compute request receives the authorized summary separately from the guide,
-personal preferences, and recent messages. It is advisory context, not scientific evidence,
-permission to compute, or proof that an old file is available in the current workspace. Updates
-reuse the existing background editor (`AGENT_MEMORY_AUTO_EDIT`, `AGENT_MEMORY_MODEL`), are silent,
-and run only after completed conversational/compute turns. Private preference edits retain their
-existing notices. Whole-summary replacements compact obsolete details instead of accumulating
-notes. Conditional-write conflicts trigger up to two fresh summarization attempts; failures leave
-the latest cache intact without failing the user's completed request. The record holds at most
-256 crash-recovery event IDs; normal permanent deduplication uses the existing event receipts.
-
-`memory context` shows the applicable cache; `forget context` clears it. It remains available
-until cleared. Routine personal-memory edits and individual deletions preserve conversation
-context. `forget context` resets the current scope; `forget all` resets every private project cache. Reset epochs block
-stale background writes, resumed SDK sessions, queued requests, and worker delivery. Clearing
-bypasses an earlier running request in the same thread. Stored outputs, old Slack messages, and
-audit records remain; clearing controls future active context rather than deleting historical
-artifacts. Routine summary updates do not reset working sessions. Uploads retain their existing
-30-day lifecycle. No new database, embeddings, or infrastructure permissions are required.
+The router reads project memory, the current thread's compact summary and uncovered log entries,
+then the last four verbatim exchanges from its working checkpoint. `THREADS.md` lists project
+thread progress. Authorized `memory_paths` lookups can read another thread when the overview
+is ambiguous. Workers Read/Grep the project snapshot before the current thread and other
+threads. A summary's turn number does not imply it covers every earlier event.
 
 ## Long-run limits and closing summaries
 
@@ -618,46 +572,23 @@ events are not swept.
 
 ### Durable memory and lean workspaces
 
-Project knowledge remains versioned in GitHub. Each new human turn starts a fresh SDK session
-with bounded recent exchanges, an 8,000-character cumulative handoff, and selected project
-knowledge. The `recall_thread` tool searches paginated full exchanges from the same thread,
-including failed requests; `event_id` retrieves a record in character-offset pages. Older
-decisions remain retrievable after they leave the 12-exchange prompt window. The full project
-guide is available in `knowledge/PROJECT.md`; its injected excerpt is bounded.
+GitHub is the durable destination for compact thread logs, summaries and accepted scripts.
+The coordinated `dual` → `github` → `github_only` rollout preserves GCS history until every
+legacy conversation is imported and verified. During the first two phases, legacy history
+recall remains available. The final phase uses project memory and disables GCS history access.
 
-Full exchanges and final small workspace archives are retained under
-`projects/_threads/<thread>/history/` and `archives/`, outside the temporary `tasks/` lifecycle.
-Code, notes, text logs and small supported reports are retained. Dataset formats, array stores,
-`outputs/gcs/`, inputs, scratch and caches are excluded from both checkpoints and provenance
-uploads. Code/notes allow text files up to 2 MiB, logs up to 8 MiB, reports up to 200 MB.
-Optional logs/reports are trimmed toward a 1 GiB total; required recovery state and retained
-code/notes take priority. `logs/checkpoint-excluded.json` reports counts, bytes and bounded
-examples. Published datasets are read from their bucket locations; unpublished datasets must
-be regenerated. Verified publication locations also enter the worker's project-memory proposal.
+The workspace archive remains a temporary working copy of code, notes, logs and small reports.
+A worker restores it while available, then falls back to its own thread's GitHub scripts.
+Recovery stages retain their existing same-request integrity and authorization checks. Code
+is omitted from separate provenance uploads when thread memory is enabled. Dataset stores,
+`outputs/gcs/`, scratch and caches retain their existing exclusion rules.
 
-Within the same request, recovery preserves the active SDK session and cost records, a consistent
-SQLite backup, trusted code snapshots and immutable completed stages. Worker calls use the
-pinned CLI's one-hour cache and 12,000-character inline Bash output setting. Full SDK tool-result
-text files are copied into `logs/bash/` up to 8 MiB each. One-hour caching does not cover commands
-longer than its TTL, and its cache writes cost more than five-minute writes.
-
-Existing checkpoints are never bulk-deleted by this change. Their existing 30-day lifecycle
-still applies until migration. Before expiry, an operator can stream a legacy archive into a
-verified durable replacement without deleting its source:
-
-```bash
-.venv/bin/python scripts/migrate_thread_checkpoint.py --bucket ARTIFACT_BUCKET --thread THREAD_KEY
-```
-
-Migration checks the uploaded archive checksum and updates the thread pointer only if it has
-not changed. A failed migration preserves the original pointer and archive. Run large migrations
-as separate maintenance in GCP: gzip archives must be streamed once even when most members are
-excluded. Legacy worker restore also filters datasets while streaming to avoid expanding them
-onto the worker disk. No Terraform, IAM or lifecycle changes are required.
-
-Failed requests remain available to follow-ups in the thread. Routed failures can add concise
-pending work to shared project memory; cancelled turns and commands are excluded. See
-[project memory](project-memory.md) for retention, attribution, and compaction behavior.
+Daily maintenance moves eligible outputs after 10 days and deletes a source only 30 days after
+a verified copy. Archives with rejected scripts, unmatched outputs or legacy SDK transcripts
+remain retained. Cleanup checks active work and source generations; pending memory is retried
+and reported rather than silently dropped. Failed turns retain pending intent without promoting
+partial results. Commands and cancellations add no memory. See
+[project memory](project-memory.md) for exact rollout controls and migration commands.
 
 ## Troubleshooting access checks and stopped runs
 

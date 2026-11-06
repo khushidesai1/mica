@@ -105,6 +105,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bucket", required=True, help="Existing Mica artifact bucket")
     parser.add_argument("--apply", action="store_true")
+    parser.add_argument("--threads", action="store_true")
+    parser.add_argument("--project", default="", help="Limit thread import to one project")
+    parser.add_argument("--thread", default="", help="Limit import to one thread")
     parser.add_argument("--layout-from-memory", metavar="PROJECT_ID")
     parser.add_argument(
         "--layout-fact",
@@ -118,6 +121,24 @@ if __name__ == "__main__":
     if args.layout_fact and not args.layout_from_memory:
         parser.error("--layout-fact requires --layout-from-memory")
     store, memory = GCSStorage(args.bucket), GitHubMemory(Settings())
+    if args.threads:
+        from mica.agents.analysis.thread_import import import_threads
+        import json
+
+        for item in asyncio.run(
+            import_threads(
+                store,
+                memory,
+                apply=args.apply,
+                project=args.project,
+                thread=args.thread,
+                model_key=memory.settings.anthropic_api_key.get_secret_value(),
+            )
+        ):
+            print(json.dumps(item))
+        raise SystemExit(0)
+    if args.project or args.thread:
+        parser.error("--project and --thread require --threads")
     results = (
         [
             asyncio.run(

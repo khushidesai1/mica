@@ -489,3 +489,23 @@ namespace; if both exist, operator reconciliation is required. Do not rename or 
 outbox objects during rollout. Existing queued transfer
 tasks remain valid because the endpoint and tick checks are unchanged. This release needs
 unit/contract checks; it does not need a live transfer or another scientific/GPU run.
+
+
+## Thread memory rollout
+
+Build the API and Claude worker with `cloudbuild/build-slack-release.yaml`, including the
+thread-memory modules and the updated prompt/boundary checks. Start with
+`AGENT_THREAD_MEMORY=dual`. Preserve both worker pins and all unrelated settings. Older
+in-flight workers keep their legacy memory handoff; import their history after they finish.
+Never cancel user computation for the release.
+
+Preview and apply the thread importer as described in [project memory](project-memory.md),
+then verify the complete coverage report in
+`projects/_registry/thread-memory-coverage.json`. Switch to `github` for read-path verification
+while both stores continue receiving writes. Verify cross-thread lookup and a tiny worker
+script/plot in an isolated test project, and record exact smoke paths for cleanup.
+
+After the soak has no pending-memory alerts, recheck migration coverage and active workers
+before switching to `github_only`. This enables expiry; it is a separate operator cutover,
+not implied by merging the release. Keep incomplete import, soak or cutover work in the active
+rollout record. Read-back hash/generation checks and cleanup gates must remain enabled.

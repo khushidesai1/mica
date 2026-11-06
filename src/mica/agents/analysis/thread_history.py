@@ -37,7 +37,7 @@ def excerpt(text: str, limit: int) -> str:
 
 def context(messages: list[dict[str, Any]], limit: int = CONTEXT_CHARS) -> str:
     selected: list[dict[str, Any]] = []
-    for message in reversed(messages[-12:]):
+    for message in reversed(messages[-4:]):
         row = {
             key: excerpt(value, 2500) if isinstance(value, str) else value
             for key, value in message.items()
@@ -53,18 +53,12 @@ def update_summary(state: dict[str, Any], row: dict[str, Any], summary: str = ""
     previous = state.get("thread_summary", {})
     if previous.get("event_id") == row["id"]:
         return
-    fallback = (
-        f"Event {row['id']} ({'completed' if row['success'] else 'failed or interrupted'}):\n"
-        + excerpt(row["user"], 700)
-        + "\n"
-        + excerpt(row["assistant"], 1000)
-        + "\nMethods: "
-        + excerpt(row.get("methods", ""), 1500)
-    )
+    # A deterministic fallback records status only; it never copies user/assistant text.
+    fallback = f"Event {row['id']}: " + ("completed" if row["success"] else "failed or interrupted")
     text = (
         summary.strip()[:SUMMARY_CHARS]
         if summary.strip()
-        else (str(previous.get("text", ""))[-4500:] + "\n\n" + fallback)[-SUMMARY_CHARS:]
+        else (str(previous.get("text", ""))[-4500:] + "\n" + fallback)[-SUMMARY_CHARS:]
     )
     state["thread_summary"] = {"event_id": row["id"], "text": text}
 

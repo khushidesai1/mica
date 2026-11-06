@@ -45,6 +45,19 @@ class Settings(BaseSettings):
     memory_file_kb: int = Field(default=16, ge=1, le=64)
     memory_max_files: int = Field(default=500, ge=1, le=1000)
     memory_total_kb: int = Field(default=4096, ge=1, le=MAX_MEMORY_TOTAL_KB)
+    thread_memory_enabled: bool = False  # Trusted worker flag; no GitHub credentials.
+    thread_memory: Literal["dual", "github", "github_only"] = "dual"
+    thread_text_kb: int = Field(default=4096, ge=64, le=16384)
+    thread_max_files: int = Field(default=4000, ge=10, le=10000)
+    thread_summary_kb: int = Field(default=64, ge=16, le=128)
+    thread_log_kb: int = Field(default=32, ge=4, le=64)
+    thread_script_kb: int = Field(default=256, ge=1, le=1024)
+    thread_scripts_kb: int = Field(default=2048, ge=1, le=16384)
+    thread_output_kb: int = Field(default=1024, ge=1, le=1024)
+    thread_outputs_kb: int = Field(default=20480, ge=1, le=102400)
+    thread_idle_days: int = Field(default=14, ge=1, le=365)
+    thread_output_age_days: int = Field(default=10, ge=1, le=365)
+    thread_expiry_days: int = Field(default=30, ge=1, le=365)
     memory_router_chars: int = Field(default=12000, ge=1, le=64000)
     memory_auto_edit: bool = True
     memory_compaction_enabled: bool = True

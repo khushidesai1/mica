@@ -32,6 +32,7 @@ from . import (
     project_memory,
     surface,
     thread_history,
+    thread_memory,
     write_access,
     write_approval,
     write_broker,
@@ -141,6 +142,21 @@ def job_spec(
             "AGENT_MEMORY_FILE_KB": str(settings.memory_file_kb),
             "AGENT_MEMORY_MAX_FILES": str(settings.memory_max_files),
             "AGENT_MEMORY_TOTAL_KB": str(settings.memory_total_kb),
+            "AGENT_THREAD_MEMORY": settings.thread_memory,
+            "AGENT_THREAD_MEMORY_ENABLED": str(thread_memory.enabled(settings)).lower(),
+            **{
+                "AGENT_" + key.upper(): str(getattr(settings, key))
+                for key in (
+                    "thread_text_kb",
+                    "thread_max_files",
+                    "thread_summary_kb",
+                    "thread_log_kb",
+                    "thread_script_kb",
+                    "thread_scripts_kb",
+                    "thread_output_kb",
+                    "thread_outputs_kb",
+                )
+            },
         }
     )
     environment.update(
@@ -209,9 +225,11 @@ def job_spec(
     policy = batch_v1.AllocationPolicy.InstancePolicy(
         machine_type=shape.machine,
         accelerators=(
-            [batch_v1.AllocationPolicy.Accelerator(
-                type_=shape.accelerator_type, count=shape.gpu_count
-            )]
+            [
+                batch_v1.AllocationPolicy.Accelerator(
+                    type_=shape.accelerator_type, count=shape.gpu_count
+                )
+            ]
             if shape.accelerator_type
             else []
         ),
@@ -414,6 +432,16 @@ class BatchBridge:
 
         if surface_name not in {"slack", "email"}:
             raise ValueError("Unknown intake surface")
+        if self.settings.thread_memory == "github_only":
+            report = json.loads(
+                (
+                    await asyncio.to_thread(
+                        self.storage.get, "projects/_registry/thread-memory-coverage.json"
+                    )
+                )[0]
+            )
+            if not report.get("complete"):
+                raise ValueError("github_only requires a complete thread migration report")
         payload = await scrub_password_paste(self, payload)
         event = payload["event"]
         thread = event.get("thread_ts") or event["ts"]
@@ -441,11 +469,15 @@ class BatchBridge:
             receipt = await self.repository.get_connector_state(receipt_key)
             if not receipt:
                 receipt = {
+                    "event_id": event_id,
                     "surface": surface_name,
                     "payload": payload,
                     "intake_principal": principal,
                     "thread_key": thread_key,
                     "previous": tail.get("tail"),
+                    "seq": max(
+                        int(time.time() * 1000000), int(tail.get("receipt", {}).get("seq", 0)) + 1
+                    ),
                     "status": "pending",
                     "tick": 0,
                     "created": time.time(),
@@ -638,7 +670,11 @@ class BatchBridge:
             raise
         except GoogleAPICallError as exc:
             await observability.report(
-                self, "compute_control_failed", event_id, record or {}, unit=claim.token,
+                self,
+                "compute_control_failed",
+                event_id,
+                record or {},
+                unit=claim.token,
                 api_status=int(exc.code) if exc.code is not None else 0,
             )
             raise
@@ -667,8 +703,11 @@ class BatchBridge:
         from . import recovery
         from .direct import record_exchange
 
-        if (record["status"] not in {"complete", "failed"} or record.get("terminal_recorded")
-                or record.get("approval_expired")):
+        if (
+            record["status"] not in {"complete", "failed"}
+            or record.get("terminal_recorded")
+            or record.get("approval_expired")
+        ):
             return
         if memory_tasks.conversation_turn(record):
             storage = self.storage
@@ -705,7 +744,10 @@ class BatchBridge:
                         success=record["status"] == "complete",
                         history=thread_history.History(
                             storage, record["thread_key"], grant.project_id
-                        ),
+                        )
+                        if thread_memory.legacy(self.settings)
+                        else None,
+                        keep_summary=not thread_memory.github_reads(self.settings),
                     )
                     await asyncio.to_thread(
                         storage.put,
@@ -960,9 +1002,7 @@ class BatchBridge:
             if record.get("provisioning") == "STANDARD":
                 from .tiers import resolve
 
-                shape = (
-                    resolve(record["tier"], self.settings, selected_gpu_choice(record))
-                )
+                shape = resolve(record["tier"], self.settings, selected_gpu_choice(record))
                 reason = (
                     record.get("launch_reason") or "on-demand selected for this request"
                 ).rstrip(".")
@@ -1004,6 +1044,10 @@ class BatchBridge:
                 loaded_memory = await project_memory.GitHubMemory(self.settings).read(
                     grant.project_id, event_id=event_id
                 )
+                if loaded_memory and thread_memory.enabled(self.settings):
+                    loaded_memory = await project_memory.GitHubMemory(self.settings).with_scripts(
+                        grant.project_id, loaded_memory, record["thread_key"]
+                    )
                 memory = loaded_memory or project_memory.Snapshot(head_oid="")
                 await asyncio.to_thread(storage.put, memory_key, memory.model_dump_json().encode())
             from . import reference_repos
@@ -1059,6 +1103,7 @@ class BatchBridge:
                 "access_signature": record["access_signature"],
                 "created": record["created"],
                 "memory": memory.model_dump(include={"head_oid", "files"}),
+                "seq": record.get("seq", int(record["created"] * 1000000)),
                 "run_prefix": access.run_root(
                     record["private"],
                     record["principal"],
