@@ -640,6 +640,8 @@ async def handle(
         )
         state.update(context=ctx, turn=0, is_init=is_init, messages=[])
         state["conversation_origin_event"] = event_id
+        state["thread_memory_origin"] = bridge.settings.thread_memory
+        state["thread_memory_exempt"] = [event_id] if is_init else []
         if surface.is_email(record):
             state["private_owner"] = grant.email
         # Bind the thread before a router/memory failure can end its first turn.

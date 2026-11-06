@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     thread_idle_days: int = Field(default=14, ge=1, le=365)
     thread_output_age_days: int = Field(default=10, ge=1, le=365)
     thread_expiry_days: int = Field(default=30, ge=1, le=365)
+    thread_archive_scan_mb: int = Field(default=64, ge=1, le=256)
+    thread_archive_expanded_mb: int = Field(default=128, ge=1, le=512)
+    thread_archive_scan_seconds: int = Field(default=30, ge=1, le=60)
+    thread_memory_cutover_at: float = Field(default=0, ge=0)
     memory_router_chars: int = Field(default=12000, ge=1, le=64000)
     memory_auto_edit: bool = True
     memory_compaction_enabled: bool = True

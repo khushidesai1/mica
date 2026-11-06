@@ -331,6 +331,10 @@ async def process(bridge: BatchBridge, event_id: str, storage: Storage) -> None:
                 await asyncio.to_thread(storage.put, cache_key, json.dumps(cached).encode())
                 raise RuntimeError("Memory save rejected or conflicted; source retained")
             receipt = await verify(backend, grant.project_id, update) if update else {}
+            if receipt and (thread_ts := grant.state.get("context", {}).get("thread_ts")):
+                receipt["run_root"] = access.run_root(
+                    grant.private, grant.email, grant.project_id, record["thread_key"], thread_ts
+                )
             await memory_compaction.enqueue(bridge, grant.project_id, saved)
             if receipt:
                 await asyncio.to_thread(

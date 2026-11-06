@@ -509,3 +509,11 @@ After the soak has no pending-memory alerts, recheck migration coverage and acti
 before switching to `github_only`. This enables expiry; it is a separate operator cutover,
 not implied by merging the release. Keep incomplete import, soak or cutover work in the active
 rollout record. Read-back hash/generation checks and cleanup gates must remain enabled.
+
+Use the existing quiet-release boundary for the final switch. Run the importer with
+`--verify-cutover --apply` only when its fresh coverage, checkpoint-generation, active/recovery,
+and pending-save checks pass. Bind `AGENT_THREAD_MEMORY_CUTOVER_AT` to the resulting report's
+exact `checked_at` timestamp in the same revision that enables `github_only`; preserve all image
+pins. Resume dispatch after verifying that revision. Oversized legacy workspaces are retained
+with explicit reasons under the bounded archive policy; they do not excuse missing conversation
+coverage. No bucket lifecycle policy or source deletion is part of the mode switch.
