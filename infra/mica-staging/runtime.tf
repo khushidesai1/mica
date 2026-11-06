@@ -14,10 +14,11 @@ locals {
     MICA_TOOL_IMAGE_REPOSITORY       = "${var.region}-docker.pkg.dev/${var.project_id}/${var.name}/tools"
     AGENT_DATA_BUCKETS = join(",", [for bucket in split(",", lookup(var.runtime_environment, "AGENT_DATA_BUCKETS", "")) :
     bucket == var.source_artifact_bucket ? var.artifact_bucket : bucket])
-    AGENT_WRITE_SERVICE_ACCOUNT = google_service_account.runtime["writer"].email
-    AGENT_MEMORY_TOKEN_SECRET   = "projects/${var.project_id}/secrets/${var.name}-memory-token/versions/1"
-    MICA_MIGRATION_SERVICE      = var.name
-    MICA_MIGRATION_DEFAULT_MODE = "frozen"
+    AGENT_WRITE_SERVICE_ACCOUNT  = google_service_account.runtime["writer"].email
+    AGENT_ACCESS_SERVICE_ACCOUNT = google_service_account.runtime["access"].email
+    AGENT_MEMORY_TOKEN_SECRET    = "projects/${var.project_id}/secrets/${var.name}-memory-token/versions/1"
+    MICA_MIGRATION_SERVICE       = var.name
+    MICA_MIGRATION_DEFAULT_MODE  = "frozen"
   })
   schedules = {
     compact-idle    = { schedule = "17 3 * * *", path = "/api/v1/internal/maintenance/compact-idle" }
@@ -102,7 +103,10 @@ resource "google_cloud_run_v2_service" "api" {
       error_message = "An enabled GPU tier requires its separately verified immutable worker image."
     }
   }
-  depends_on = [google_project_iam_member.runtime, google_secret_manager_secret.runtime]
+  depends_on = [
+    google_project_iam_member.runtime, google_secret_manager_secret.runtime,
+    google_project_iam_member.access_granter, google_service_account_iam_member.access_controller,
+  ]
 }
 
 # Match the existing signed public ingress, while application admission is frozen.

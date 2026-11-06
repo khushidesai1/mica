@@ -29,6 +29,7 @@ from . import (
     tiers,
     write_access,
 )
+from .cloud_access_config import CloudAccessProposal
 from .data_links import message_text
 from .help_text import PROJECT_HELP
 from .identity import post
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 
 
 class DecisionFields(BaseModel):
+    cloud_access_request: CloudAccessProposal | None = None
     transfer_request: TransferRequest | None = None
     view_ids: list[str] = Field(default_factory=list, max_length=4)
     reference_repos: list[Annotated[str, Field(max_length=150)]] = Field(
@@ -440,6 +442,16 @@ async def handle(
 
     event = record["payload"]["event"]
     text = message_text(event.get("text", ""))
+    if bridge.settings.cloud_access and surface.is_email(record):
+        from . import cloud_access, command_intent
+
+        reply = await cloud_access.email_decision(bridge, storage, record)
+        if reply is not None:
+            grant = await asyncio.to_thread(
+                access.resolve, bridge.app, bridge.settings, storage, record
+            )
+            command_intent.private_reply(record, grant)
+            return await finish(bridge, event_id, record, reply)
     grant = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
     if observability.capture_project(record, grant):
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
@@ -485,6 +497,15 @@ async def handle(
             return await finish(
                 bridge, event_id, record, await access_requests.propose(bridge, record, grant)
             )
+        if saved.get("route") == "cloud_access":
+            from . import cloud_access, command_intent
+
+            command_intent.private_reply(record, grant)
+            reply = await cloud_access.propose(
+                bridge, storage, record, event_id,
+                CloudAccessProposal.model_validate(saved["cloud_access_request"]),
+            )
+            return await finish(bridge, event_id, record, reply)
         if saved.get("route") == "command":
             from . import command_intent
 
@@ -822,7 +843,7 @@ async def handle(
         record["decision_access"] = grant.signature
         record["memory_project_id"] = grant.project_id
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
-    if decision.route == "command":
+    if decision.route in {"command", "cloud_access"}:
         # Re-enter the exact/validated command path using the durable terminal proposal.
         # No further model call is made, and init retains its existing admission sequence.
         return await handle(bridge, event_id, record, storage)

@@ -707,3 +707,16 @@ per-turn budget, reduce `AGENT_SESSION_IMPORT_SLICE_CHARS`. Verify a two-pass im
 follow-on question and a new-thread reference lookup before enabling a collaborator's project.
 See [project memory](project-memory.md#detailed-results-and-session-imports) for storage,
 continuation, retention and partial-save behavior.
+
+## VM and other cloud-access requests
+
+With `AGENT_CLOUD_ACCESS` configured, invite Mica to the bundle's request channel (initially
+#vm-access). Do not enable it as an analysis channel. A top-level message gets a request button,
+with the requester's email prefilled and a required note. Targets may be other people. Lab
+members are preapproved only when the bundle enables that policy; other targets require the
+configured approver's card in the thread. Existing access sends no welcome email.
+
+Email supports the same configured bundles and a narrowly scoped approval reply; other
+administrative and project-write operations still require Slack. See
+[cloud-access requests and activation](cloud-access.md) for the settings, role boundary,
+welcome delivery and guided live checks.

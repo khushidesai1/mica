@@ -490,7 +490,7 @@ async def slack_actions(request: Request, background_tasks: BackgroundTasks) -> 
             )
         except (ValueError, PermissionError) as exc:
             if payload.get("type") == "view_submission":
-                return {"response_action": "errors", "errors": {"project": str(exc)}}
+                return approvals.modal_error(payload, exc)
             await AsyncWebClient(
                 token=services.settings.slack_bot_token, timeout=5
             ).chat_postEphemeral(

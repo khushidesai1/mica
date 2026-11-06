@@ -1,22 +1,31 @@
 steps:
   - id: build-slack-api
     name: gcr.io/cloud-builders/docker
-    args: [build, --build-arg, 'PYTHON_IMAGE=${_PYTHON_IMAGE}', -f, docker/Dockerfile.api, -t, '${_API_IMAGE}', .]
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        [[ '${_API_BASE}' =~ @sha256:[a-f0-9]{64}$ ]]
+        docker build --build-arg 'BASE_IMAGE=${_API_BASE}' --build-arg 'SOURCE_COMMIT=${_SOURCE_COMMIT}' -f docker/Dockerfile.slack-release -t '${_API_IMAGE}' .
   - id: verify-headless-api
     name: gcr.io/cloud-builders/docker
-    args: [run, --rm, -e, MICA_ARTIFACT_ROOT=/tmp/mica-smoke, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_headless_api.py]
+    args: [run, --rm, --network=none, -e, MICA_ARTIFACT_ROOT=/tmp/mica-smoke, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_headless_api.py]
+  - id: verify-api-source-and-attachments
+    name: gcr.io/cloud-builders/docker
+    args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_slack_release.py, api]
+  - id: verify-atomx-api
+    name: gcr.io/cloud-builders/docker
+    args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_atomx_release.py, api]
   - id: export-api-contract
     name: gcr.io/cloud-builders/docker
     entrypoint: bash
     args:
       - -ceu
-      - docker run --rm -v /workspace:/workspace:ro --entrypoint python '${_API_IMAGE}' /workspace/scripts/check_worker_compatibility.py export - > /workspace/api-execution-contract.json
+      - docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_API_IMAGE}' /workspace/scripts/check_worker_compatibility.py export - > /workspace/api-execution-contract.json
   - id: check-worker-contract
     name: gcr.io/cloud-builders/docker
-    args: [run, --rm, -v, /workspace:/workspace:ro, --entrypoint, python, '${_WORKER_IMAGE}', /workspace/scripts/check_worker_compatibility.py, check, /workspace/api-execution-contract.json]
+    args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_WORKER_IMAGE}', /workspace/scripts/check_worker_compatibility.py, check, /workspace/api-execution-contract.json]
 images: ['${_API_IMAGE}']
 options:
   logging: CLOUD_LOGGING_ONLY
 timeout: 1800s
-substitutions:
-  _PYTHON_IMAGE: python:3.12.12-slim@sha256:f3fa41d74a768c2fce8016b98c191ae8c1bacd8f1152870a3f9f87d350920b7c

@@ -39,6 +39,7 @@ class Kind:
     decide: Handler
     expire: Expiry
     callback: str = ""
+    error_block: str = "project"
 
     def matches(self, payload: dict[str, Any]) -> bool:
         if payload.get("type") == "view_submission":
@@ -64,6 +65,7 @@ def kinds() -> tuple[Kind, ...]:
     from . import (
         access_requests,
         amendments,
+        cloud_access,
         command_approval,
         compute_approval,
         session_import,
@@ -71,8 +73,8 @@ def kinds() -> tuple[Kind, ...]:
     )
 
     return tuple(module.KIND for module in (
-        compute_approval, command_approval, write_approval, access_requests, amendments,
-        session_import
+        compute_approval, command_approval, write_approval,
+        access_requests, amendments, cloud_access, session_import,
     ))
 
 
@@ -86,6 +88,13 @@ def _unknown() -> Kind:
 
 def is_action(payload: dict[str, Any]) -> bool:
     return any(kind.matches(payload) for kind in kinds())
+
+
+def modal_error(payload: dict[str, Any], error: Exception) -> dict[str, Any]:
+    kind = next(kind for kind in kinds() if kind.matches(payload))
+    return {"response_action": "errors", "errors": {
+        getattr(error, "block_id", kind.error_block): str(error)
+    }}
 
 
 async def handle(
