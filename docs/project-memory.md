@@ -115,7 +115,12 @@ results are not promoted as verified findings.
 
 The router reads project context before thread context and recent exchanges. `read_sources`
 accepts `memory_paths` for project files and cross-thread lookup under its existing 384 KiB
-content budget. Workers receive bounded text snapshots, including log pages, and the current
+content budget. `history_query` and `history_event_id` search the current thread's GitHub log
+pages in `github` and `github_only` modes, with bounded pages and exact-event reads. The latter
+mode never falls back to retired GCS transcripts. Recent and recalled original event receipts
+can supply prior tool parameters for the same requester, project and thread; remembered values
+do not carry forward access grants or action approvals. Workers receive bounded text snapshots,
+including log pages, and the current
 thread's scripts. GitHub requests fetch tree metadata first and selected text in batches;
 other threads' scripts and all output blobs are excluded. Explicit artifact reads verify blob
 identity and byte counts. Workers receive no GitHub credential. The working archive supplies

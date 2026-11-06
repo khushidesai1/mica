@@ -18,9 +18,9 @@ a sized Batch worker. Information questions stay in the control service: listing
 inspecting authorized repository source, reading registered text attachments, and recalling earlier
 thread records. CSV/TSV/JSON text can be inspected directly; computing new counts still needs a worker.
 Incomplete listings report their coverage or ask for a narrower folder instead of starting a worker.
-Conversation routing is always enabled. Ordinary questions, planning, brief edits,
+Conversation routing is always enabled. Ordinary questions, planning, brief reads,
 `help`, `brief`, `cancel`, and bounded initial setup run in the control service.
-The direct Claude call has no shell, filesystem, or network tools. It can answer, update the shared guide,
+The direct Claude call has no shell, filesystem, or network tools. It can answer, draft an initial guide,
 request a project-scoped metadata listing, request bounded information reads, or request isolated
 computation. Source inspection/README requests use the existing GitHub App to read commit-pinned
 source snapshots, with exact-path follow-ups for larger repositories. The reply cites source paths
@@ -38,6 +38,12 @@ this thread's history. Access is checked before each tool and again before deliv
 input is returned to Claude for correction. Timeouts, refusals and truncated responses use the
 existing three-attempt queue recovery; failed routing never invents computation or bypasses
 approval. Terminal actions persist before dispatch and retry without another model call.
+Tool inputs can reuse the requester's earlier messages in the same project and thread. The
+controller checks original event receipts rather than treating assistant replies or memory
+paraphrases as user-supplied values. Destination validation runs inside the conversation loop
+so a proposal can recover missing context and correct itself before dispatch. Access checks and
+private transfer confirmation still apply. `brief` and `memory` display saved content; explicit
+guide or memory edits use a worker and must verify the save before claiming completion.
 Unselected principals retain the legacy fixed-stage router during this rollout. Cancellation
 bypasses queued work and stops the active job without starting another. Only active predecessors
 need a pre-queue natural-language control check.
