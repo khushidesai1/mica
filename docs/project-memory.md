@@ -177,6 +177,11 @@ copy exists. Deletion rechecks the GitHub content and exact GCS generation. A th
 lease and terminal-state check protect cleanup from new, active and recovering work.
 Each maintenance pass rotates through at most five threads and four workspace archives per
 thread. Archive verification uses the same scan limits as import; uncovered threads are skipped.
+Artifact maintenance has a 90-second budget including coverage checks, with at most 30 seconds
+per thread. An exhausted budget retains sources, releases the intake lease, and advances past
+visited threads for the next pass. Durable receipts preserve completed copies; the response
+sets `memory_sweep_deferred=1` when work remains because of a timeout. Slow coverage defers the
+entire sweep without authorizing any deletion. These budgets fit the existing daily scheduler.
 
 A workspace archive gets an expiry receipt only when every retained script and output has a
 matching GitHub copy. Unmatched/oversized members and legacy SDK transcripts keep the source
