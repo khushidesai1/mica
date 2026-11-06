@@ -9,8 +9,9 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
+from . import lab
 from .data_links import data_uri
 from .identity import normalize
 from .storage import Storage, update_model
@@ -66,10 +67,19 @@ class RegistryDoc(BaseModel):
     defaults: dict[str, str] = Field(default_factory=dict)
     # Durable operation receipts: replaying an old share must never undo a later unshare.
     applied_events: dict[str, Operation] = Field(default_factory=dict)
+    # Attached from the live lab document, never persisted in registry.json.
+    _all_projects: set[str] = PrivateAttr(default_factory=set)
 
     def can_use(self, project_id: str, email: str) -> bool:
         entry = self.projects.get(project_id)
-        return bool(entry and (self.owns(project_id, email) or email in entry.members))
+        return bool(
+            entry
+            and (
+                self.owns(project_id, email)
+                or email in entry.members
+                or normalize(email) in self._all_projects
+            )
+        )
 
     def owns(self, project_id: str, email: str) -> bool:
         entry = self.projects.get(project_id)
@@ -318,9 +328,11 @@ class Registry:
 
     def load(self) -> RegistryDoc:
         try:
-            return RegistryDoc.model_validate_json(self.storage.get(REGISTRY_KEY)[0])
+            doc = RegistryDoc.model_validate_json(self.storage.get(REGISTRY_KEY)[0])
         except FileNotFoundError:
-            return RegistryDoc()
+            doc = RegistryDoc()
+        doc._all_projects = lab.load(self.storage).all_projects
+        return doc
 
     def update(
         self, event_id: str, email: str, operation: str, change: Callable[[RegistryDoc], str]
@@ -328,6 +340,7 @@ class Registry:
         fingerprint = hashlib.sha256((email + "\0" + operation).encode()).hexdigest()
 
         def apply(doc: RegistryDoc) -> None:
+            doc._all_projects = lab.load(self.storage).all_projects
             prior = doc.applied_events.get(event_id)
             if prior:
                 if prior.fingerprint != fingerprint:

@@ -384,7 +384,8 @@ explicit project sharing to invoke it; channel viewers can read replies posted t
 
 The optional default `AGENT_ACCESS_MODE=channel` admits members of **any enabled access channel** in the
 bot's workspace, including when they use the bot in DMs. Enabled channels are stored atomically
-in `projects/_access/channels.json`. With no enabled channels, ordinary agent access is denied.
+in `projects/_access/channels.json`. The lab list below also admits its members in channel mode;
+with no enabled channels or matching lab member, agent access is denied.
 Membership does not automatically share projects or publish their contents into a channel.
 
 The bot obtains each human member's normalized email from Slack. That retains the existing
@@ -404,6 +405,44 @@ access, but a separately verified enabled channel can still establish eligibilit
 access channel bypasses the membership cache because the approval registry is read each time.
 Removing access does not delete personal memory or shared-project grants; returning eligible users
 retain their own data and still face the independent project ACL checks.
+
+### Lab members and all-projects access
+
+`projects/_access/lab.json` in the artifacts bucket is the shared lab pre-approval list.
+`members` grants Slack admission in channel mode through a verified, workspace-scoped human
+profile, without adding anyone to projects. `all_projects` must be a subset of `members` and
+grants use of all current and future projects. It does not confer ownership, sharing, renaming,
+publication or approval rights, and channel work still requires project publication.
+Workspace mode already admits active humans; mapped mode and the task API allowlist are unchanged.
+Both the API and workers read the lab document on every relevant check. Removing a lab grant
+takes effect on the next check, including when the Slack profile is cached. A user may still
+qualify through an enabled channel, workspace admission or explicit project membership.
+A missing document is an empty list. Slack lookup failures retain the existing transient-error
+behavior; the list never substitutes for verification of an active human profile.
+
+The initial list contains `sk4698@columbia.edu`, `az831@nyu.edu`,
+`alvand.vahedi.2706@gmail.com`, `aat2221@columbia.edu`, `elham@azizilab.com`,
+`il2332@columbia.edu`, `jm5707@columbia.edu`, `kevin.hoffer-hawlik@columbia.edu`,
+`ls3456@columbia.edu`, `mz2934@cumc.columbia.edu`, `nk3047@cumc.columbia.edu`, and
+`mv3112@columbia.edu`. Only `elham@azizilab.com` initially has all-projects access.
+The live document is authoritative; addresses must match Slack profile emails for Slack admission.
+
+Inspect and edit it with the operator script, using existing GCS credentials:
+
+```bash
+PYTHONPATH=src .venv/bin/python scripts/lab_members.py \
+  --bucket mica-staging-artifacts-azizilab-aml show > /tmp/mica-lab.json
+# Edit /tmp/mica-lab.json; show prints the current generation to stderr.
+PYTHONPATH=src .venv/bin/python scripts/lab_members.py \
+  --bucket mica-staging-artifacts-azizilab-aml set /tmp/mica-lab.json \
+  --generation GENERATION_FROM_SHOW
+```
+
+The JSON shape is `{"version":1,"members":["person@example.com"],"all_projects":[]}`.
+The script normalizes emails, collapses duplicates, validates the subset, prints the diff and
+performs one compare-and-swap write. A concurrent change fails without retrying or overwriting
+it; inspect the current list before trying again. Use `--generation 0` for create-only seeding
+after a coordinated API and worker release. `--root PATH` supports offline inspection and edits.
 
 ### Optional channel-based admission
 
