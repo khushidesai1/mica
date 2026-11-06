@@ -47,16 +47,26 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
         self.indexes: dict[str, list[dict[str, Any]]] = {}
         self.simple: dict[str, bytes] = {}
         self.index_locks: dict[str, threading.Lock] = {}
+        self.file_locks: dict[str, threading.Lock] = {}
         self.policy_errors: list[str] = []
         self.urls: dict[str, str] = {}
         self.local_wheels: dict[str, Path] = {}
         self.lock = threading.Lock()
         self.used = 0
+        self.stopping = threading.Event()
         mirror = self
 
         class Handler(BaseHTTPRequestHandler):
+            def setup(self) -> None:
+                super().setup()
+                self.connection.settimeout(30)
+
             def log_message(self, fmt: str, *args: object) -> None:
                 pass
+
+            def error(self, status: int, message: str) -> None:
+                with suppress(BrokenPipeError, ConnectionResetError):
+                    self.send_error(status, message)
 
             def do_CONNECT(self) -> None:
                 self.send_error(403, "External URLs are not permitted")
@@ -78,19 +88,24 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
                                 shutil.copyfileobj(stream, self.wfile, 1024 * 1024)
                         else:
                             self.wfile.write(content)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # The installer disconnected; do not turn this into a policy refusal.
                 except RuntimePolicyError as exc:
                     mirror.policy_errors.append(str(exc))
-                    self.send_error(403, "Package source refused by runtime policy")
+                    self.error(403, "Package source refused by runtime policy")
                 except httpx.HTTPError:
-                    self.send_error(502, "Package registry request failed")
-                except (ValueError, OSError):
-                    self.send_error(403, "Package source refused by runtime policy")
+                    self.error(502, "Package registry request failed")
+                except ValueError:
+                    self.error(403, "Package source refused by runtime policy")
+                except OSError:
+                    self.error(503, "Package storage temporarily unavailable")
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler, False)
         self.server.request_queue_size = 64
         self.server.server_bind()
         self.server.server_activate()
-        self.server.daemon_threads = True
+        # Join request handlers before the enclosing temporary directory is removed.
+        self.server.daemon_threads = False
         self.url = f"http://127.0.0.1:{self.server.server_port}"
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
 
@@ -105,11 +120,14 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
         value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        self.stopping.set()
         self.server.shutdown()
         self.server.server_close()
         self.thread.join(timeout=5)
 
     def fetch(self, url: str, *, metadata: bool = False, destination: Path | None = None) -> bytes:
+        if self.stopping.is_set():
+            raise httpx.ReadError("Package setup stopped")
         parsed = urlsplit(url)
         if (
             parsed.scheme != "https"
@@ -134,6 +152,8 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
             body = bytearray()
             with destination.open("wb") if destination else nullcontext(None) as target:
                 for chunk in response.iter_bytes():
+                    if self.stopping.is_set():
+                        raise httpx.ReadError("Package setup stopped")
                     with self.lock:
                         self.used += len(chunk)
                         if self.used > self.max_bytes:
@@ -324,14 +344,23 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
         if path.startswith("/files/") and path[7:] in self.urls:
             key = path[7:]
             cache = self.root / hashlib.sha256(key.encode()).hexdigest()
-            if not cache.exists():
-                # Publish only a completely fetched, checked artifact to concurrent readers.
-                temporary = cache.with_suffix(f".{threading.get_ident()}.tmp")
-                self.fetch(self.urls[key], destination=temporary)
-                if key.endswith(".metadata"):
-                    check_metadata(temporary.read_bytes(), self.denied)
-                else:
-                    check_wheel(temporary, self.denied, self.max_bytes)
-                temporary.replace(cache)
+            with self.lock:
+                file_lock = self.file_locks.setdefault(key, threading.Lock())
+            with file_lock:
+                if self.stopping.is_set():
+                    raise httpx.ReadError("Package setup stopped")
+                if not cache.exists():
+                    # Retried/concurrent clients share one verified download, even when the
+                    # original client times out before a large CUDA wheel is ready.
+                    temporary = cache.with_suffix(".tmp")
+                    try:
+                        self.fetch(self.urls[key], destination=temporary)
+                        if key.endswith(".metadata"):
+                            check_metadata(temporary.read_bytes(), self.denied)
+                        else:
+                            check_wheel(temporary, self.denied, self.max_bytes)
+                        temporary.replace(cache)
+                    finally:
+                        temporary.unlink(missing_ok=True)
             return cache, "application/octet-stream"
         raise ValueError("Unrecognized package URL")

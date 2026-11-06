@@ -699,6 +699,11 @@ def test_package_runtime_policy_is_carried_to_cpu_and_gpu_workers(bridge, tier):
     assert env["AGENT_RUNTIME_DENYLIST"] == "boto3,google-cloud-storage"
     assert env["AGENT_RUNTIME_MAX_SOURCE_BUILDS"] == "3"
     assert float(env["AGENT_RUNTIME_FAILURE_TTL_HOURS"]) == 12
+    for name in (
+        "runtime_max_gb", "runtime_max_scratch_gb", "runtime_max_download_gb",
+        "runtime_min_free_disk_gb", "runtime_max_local_gb", "runtime_timeout_seconds",
+    ):
+        assert float(env["AGENT_" + name.upper()]) == getattr(bridge.settings, name)
     bridge.settings.runtimes_enabled = False
     job = job_spec(bridge.app, bridge.settings, "a" * 32, tier=tier, gpu_type="t4")
     worker = next(run for run in job.task_groups[0].task_spec.runnables if run.container.image_uri)

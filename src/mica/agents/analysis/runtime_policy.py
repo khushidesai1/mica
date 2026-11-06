@@ -14,6 +14,7 @@ from packaging.utils import canonicalize_name
 from .toolkit_catalog import Source, ToolkitEntry, lookup
 
 POLICY_VERSION = 2
+MAX_REQUEST_PACKAGES = 100
 RuntimeKind = Literal["overlay", "isolated", "image"]
 
 
@@ -49,8 +50,8 @@ def normalized_requirement(value: str) -> str:
 
 
 def normalize(packages: list[str], *, denylist: set[str] | None = None) -> PackageRequest:
-    if not isinstance(packages, list) or not 1 <= len(packages) <= 10:
-        raise ValueError("Request between 1 and 10 packages.")
+    if not isinstance(packages, list) or not 1 <= len(packages) <= MAX_REQUEST_PACKAGES:
+        raise ValueError(f"Request between 1 and {MAX_REQUEST_PACKAGES} packages.")
     denied = {canonicalize_name(n) for n in denylist or ()}
     specs, entries, sources = set(), [], []
     for value in packages:

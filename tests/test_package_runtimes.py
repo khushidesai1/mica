@@ -4,11 +4,13 @@ import hashlib
 import io
 import json
 import tarfile
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 from zipfile import ZipFile
 
@@ -618,3 +620,126 @@ def test_source_retry_does_not_misread_old_wheel_availability_as_a_requirement(m
         "docrep>=0.3.2, so requirements are unsatisfiable."
     )
     assert mirror.source_candidates(error, ["scvi-tools"], "3.12.12")[0].version == "0.3.2"
+
+
+def test_complete_dependency_set_remains_bounded():
+    packages = [f"package-{i}==1.0" for i in range(100)]
+    assert len(normalize(packages).specs) == 100
+    with pytest.raises(ValueError, match="100 packages"):
+        normalize(packages + ["overflow"])
+    with pytest.raises(ValueError, match="URLs"):
+        normalize(packages[:-1] + ["unsafe @ https://example.com/package.whl"])
+
+
+def test_setup_storage_has_separate_limits_and_reserves_analysis_space(settings, monkeypatch):
+    settings.runtime_max_gb = 10 / 1024**3
+    settings.runtime_max_scratch_gb = 30 / 1024**3
+    settings.runtime_max_local_gb = 100 / 1024**3
+    installer = Installer(settings)
+    installer.scratch = settings.runtime_root / ".setup-test"
+    installer.scratch.mkdir(parents=True)
+    runtime = settings.runtime_root / "r_test"
+    runtime.mkdir()
+    (installer.scratch / "downloads").write_bytes(b"x" * 20)
+    (runtime / "package").write_bytes(b"x" * 5)
+    disk = SimpleNamespace(free=100 * 1024**3)
+    monkeypatch.setattr(runtime_install.shutil, "disk_usage", lambda _: disk)
+    installer.check_size()  # Setup can exceed the installed-environment budget.
+    (installer.scratch / "downloads").write_bytes(b"x" * 31)
+    with pytest.raises(RuntimeFailure, match="setup storage limit"):
+        installer.check_size()
+    (installer.scratch / "downloads").write_bytes(b"x" * 20)
+    (runtime / "package").write_bytes(b"x" * 11)
+    with pytest.raises(RuntimeFailure, match="Runtime exceeds"):
+        installer.check_size()
+    (runtime / "package").write_bytes(b"x" * 5)
+    disk.free = 19 * 1024**3
+    with pytest.raises(RuntimeFailure, match="disk reserve"):
+        installer.check_size()
+
+
+@pytest.mark.parametrize("stored", [False, True])
+def test_transient_retries_preserve_versions_and_distinct_runtime_budget(
+    settings, tmp_path, stored
+):
+    settings.runtime_max_new_per_turn = 1
+    installer = Mock()
+    installer.identity.return_value = ("3.12.12", "base", {})
+    installer.create.side_effect = RuntimeFailure("Failed to download cuDNN: operation timed out")
+    storage = LocalStorage(tmp_path / "store") if stored else None
+    manager = RuntimeManager(settings, installer=installer, storage=storage)
+    for _ in range(3):
+        with pytest.raises(RuntimeFailure, match="operation timed out"):
+            manager.ensure(["torch==2.4.1"], "Use requested CUDA runtime", isolated=True)
+    assert manager.new_count == 1 and installer.create.call_count == 3
+    with pytest.raises(RuntimeFailure, match="three attempts"):
+        manager.ensure(["torch==2.4.1"], "Same requirements", isolated=True)
+    assert not manager.failures
+    assert storage is None or not storage.keys(f"{PREFIX}/failures/")
+    with pytest.raises(RuntimeFailure, match="new-runtime limit"):
+        manager.ensure(["torch==2.7.1"], "Different dependency set", isolated=True)
+
+
+def test_old_transient_cache_is_ignored_but_resolution_failure_still_cached(settings, tmp_path):
+    store = RuntimeStore(LocalStorage(tmp_path / "store"), settings)
+    key = store.failure_key(normalize(["torch"]), ("3.12.12", "base", {}), True)
+    store.storage.put(f"{PREFIX}/failures/{key}.json", json.dumps({
+        "created_at": datetime.now(UTC).isoformat(), "policy_version": POLICY_VERSION,
+        "error": "Failed to download nvidia-cudnn-cu12: operation timed out",
+    }).encode())
+    assert store.failure(key) is None
+    store.save_failure(key, "No solution found: conflicting package versions")
+    assert "conflicting" in store.failure(key)
+    settings.runtime_max_scratch_gb += 1
+    assert store.failure_key(normalize(["torch"]), ("3.12.12", "base", {}), True) != key
+
+
+def test_retried_wheel_clients_share_one_verified_download(tmp_path, monkeypatch):
+    artifact = wheel(tmp_path / "wheel").read_bytes()
+    calls = []
+    started, finish = threading.Event(), threading.Event()
+    with WheelMirror(tmp_path / "mirror", set(), 1024**2) as mirror:
+        mirror.urls["fixture/docrep.whl"] = "https://files.pythonhosted.org/docrep.whl"
+
+        def fetch(url, *, destination):
+            calls.append(url)
+            started.set()
+            assert finish.wait(3)
+            destination.write_bytes(artifact)
+
+        monkeypatch.setattr(mirror, "fetch", fetch)
+        with httpx.Client(trust_env=False, timeout=3) as client:
+            url = mirror.url + "/files/fixture/docrep.whl"
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                abandoned = pool.submit(client.get, url, timeout=0.05)
+                assert started.wait(2)
+                with pytest.raises(httpx.ReadTimeout):
+                    abandoned.result()
+                readers = [pool.submit(client.get, url) for _ in range(6)]
+                finish.set()
+                responses = [reader.result() for reader in readers]
+            assert all(r.status_code == 200 and r.content == artifact for r in responses)
+        assert len(calls) == 1 and not mirror.policy_errors
+        assert not list(mirror.root.glob("*.tmp"))
+
+
+def test_mirror_shutdown_joins_downloads_before_scratch_cleanup(tmp_path, monkeypatch):
+    started, stopped = threading.Event(), threading.Event()
+    mirror = WheelMirror(tmp_path / "mirror", set(), 1024**2)
+    mirror.urls["fixture/wheel"] = "https://files.pythonhosted.org/wheel"
+
+    def fetch(url, *, destination):
+        destination.write_bytes(b"partial")
+        started.set()
+        assert mirror.stopping.wait(3)
+        stopped.set()
+        raise httpx.ReadError("Package setup stopped")
+
+    monkeypatch.setattr(mirror, "fetch", fetch)
+    with ThreadPoolExecutor() as pool:
+        with mirror:
+            request = pool.submit(httpx.get, mirror.url + "/files/fixture/wheel", timeout=3)
+            assert started.wait(2)
+        assert stopped.is_set()
+        assert not list(mirror.root.glob("*.tmp"))
+        assert request.result().status_code == 502

@@ -17,8 +17,8 @@ from claude_agent_sdk import SdkMcpTool, create_sdk_mcp_server, tool
 from claude_agent_sdk.types import McpSdkServerConfig
 
 from .config import CHECKPOINT_PREFIX, Settings
-from .runtime_install import Installer, RuntimeFailure, RuntimeRecord
-from .runtime_policy import RuntimePolicyError, normalize
+from .runtime_install import Installer, RuntimeFailure, RuntimeRecord, transient_failure
+from .runtime_policy import MAX_REQUEST_PACKAGES, RuntimePolicyError, normalize
 from .runtime_store import RuntimeStore, encode
 from .storage import Conflict, Storage
 from .toolkit_catalog import CATALOG, environment_view
@@ -78,12 +78,14 @@ class RuntimeManager:
         self.failures: dict[tuple[tuple[str, ...], bool], tuple[float, str]] = {}
         self.restore_errors: list[str] = []
         self.new_count = 0
+        self.request_attempts: dict[tuple[tuple[str, ...], bool], int] = {}
         self.lock = threading.Lock()
 
     def begin_turn(self) -> None:
         self.events = self.pending_restores
         self.pending_restores = []
         self.new_count = sum(not event.reused for event in self.events)
+        self.request_attempts.clear()
 
     def record(
         self, record: RuntimeRecord, reason: str, *, reused: bool, saved: bool
@@ -145,9 +147,13 @@ class RuntimeManager:
                 and (time.time() - previous[0] < self.settings.runtime_failure_ttl_hours * 3600)
             ):
                 raise RuntimeFailure(previous[1])
-            if self.new_count >= self.settings.runtime_max_new_per_turn:
-                raise RuntimeFailure("This turn's new-runtime limit has been reached.")
-            self.new_count += 1
+            if local_key not in self.request_attempts:
+                if self.new_count >= self.settings.runtime_max_new_per_turn:
+                    raise RuntimeFailure("This turn's new-runtime limit has been reached.")
+                self.new_count += 1
+            if self.request_attempts.get(local_key, 0) >= 3:
+                raise RuntimeFailure("Package setup reached three attempts for these requirements.")
+            self.request_attempts[local_key] = self.request_attempts.get(local_key, 0) + 1
             try:
                 record = self.installer.create(
                     request, reason=reason, isolated=isolated, principal=self.principal
@@ -155,9 +161,10 @@ class RuntimeManager:
             except RuntimePolicyError:
                 raise
             except (ValueError, OSError) as exc:
-                self.failures[local_key] = (time.time(), str(exc)[-3000:])
-                if self.store:
-                    self.store.save_failure(failure_key, str(exc))
+                if not transient_failure(str(exc)):
+                    self.failures[local_key] = (time.time(), str(exc)[-3000:])
+                    if self.store:
+                        self.store.save_failure(failure_key, str(exc))
                 raise RuntimeFailure(str(exc)[-3000:]) from exc
             reused = False
             if self.store:
@@ -289,7 +296,9 @@ def ensure_tool(manager: RuntimeManager) -> SdkMcpTool[Any]:
     @tool(
         "ensure_packages",
         "Set up public Python packages in a separate offline analysis runtime. "
-        "Dependencies without wheels are built from source only if they are pure Python.",
+        "Pass the complete dependency set (up to 100 package/version requirements) together. "
+        "Dependencies without wheels are built from source only if they are pure Python. "
+        "Transient download failures can be retried with the same versions.",
         {
             "type": "object",
             "properties": {
@@ -297,7 +306,7 @@ def ensure_tool(manager: RuntimeManager) -> SdkMcpTool[Any]:
                     "type": "array",
                     "items": {"type": "string"},
                     "minItems": 1,
-                    "maxItems": 10,
+                    "maxItems": MAX_REQUEST_PACKAGES,
                 },
                 "reason": {"type": "string", "minLength": 1, "maxLength": 200},
                 "isolated": {"type": "boolean", "default": False},

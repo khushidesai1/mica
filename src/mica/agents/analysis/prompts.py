@@ -91,14 +91,16 @@ Each shell command starts in the workspace. Use a foreground timeout up to {max_
 RUNTIMES = """Use the default science interpreter for installed packages. If a necessary package
 is missing, call ensure_packages with exact PyPI names or a toolkit name. Use the returned
 isolated interpreter for those scripts; do not duplicate the preinstalled scientific stack.
-If setup fails, explain the actual failure and an available alternative."""
+Retry transient downloads with the same versions. If setup still fails, explain the actual
+failure; do not silently substitute requested scientific package versions."""
 GPU_RUNTIMES = """A package installed in science/sap does not establish a usable CUDA runtime.
 When the CUDA environment lacks a needed package (including scvi/ResolVI), use ensure_packages
 with isolated=true and supported PyPI version constraints informed by the registered CUDA stack
 or actual run_gpu preflight results. Image CUDA-local version suffixes need not exist on PyPI.
 Use the returned environment id with run_gpu. CUDA metadata and nvidia-smi's CUDA label alone
 do not prove compatibility; repeat the small preflight before large work. Keep image environments
-unchanged. If setup fails, report the error and stop the GPU work."""
+unchanged. Retry transient downloads with the same requirements. If setup still fails, report
+the error and stop the GPU work."""
 NO_RUNTIMES = """Use installed scientific packages. You cannot install packages in this worker.
 If a necessary package is absent, explain what is missing."""
 SCRIPTS = """The user receives one ZIP of code/ scripts changed this turn, snapshotted after code
