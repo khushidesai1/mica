@@ -21,8 +21,16 @@ No password is accepted in that request, a command argument, or an environment v
 
 The layout matches the original scripts: morphology images, the channel dictionary, and flat
 files go to `raw_outputs/raw/<sample>/`; the remaining decoded run files go to
-`raw_outputs/additional_files/<sample>/`. The latest timestamped run is selected. Aliases change
-only the destination sample name. Arbitrary layout mappings are not supported in this release.
+`raw_outputs/additional_files/<sample>/`. The latest timestamped run is selected, directly under
+the slide folder or one level below it. Aliases change only the destination sample name. Arbitrary
+layout mappings are not supported in this release.
+
+Inventory without `--export-root` searches up to three levels below `/` for folders containing
+`DecodedFiles` (at most 400 listings). A requested sample matches slide folders by
+spelling-insensitive name (case, separators, leading zeros, bare numbers, appended AtoMx
+timestamps), or a lone slide folder inside an export named for the sample. Results include a
+`searched` summary of the export and slide folders seen, and matching folders that cannot be
+planned are reported as `incomplete` with a fixed `problem` string.
 Symlinks and special files are rejected. SSH host keys must be pinned before use.
 
 Transfers use generation-zero uploads and compare all files by size and crc32c. Identical files

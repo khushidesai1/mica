@@ -55,8 +55,14 @@ def check_layout_free_job():
         read=lambda name: (deepcopy(values[name]), "1") if name in values else None, write=write
     )
     data = SimpleNamespace(read=lambda _: None, list=lambda _: [])
+    folders = {
+        "/Export": ["DecodedFiles", "flatFiles"],
+        "/Export/DecodedFiles": ["sample"],
+        "/Export/DecodedFiles/sample": ["batch"],
+        "/Export/DecodedFiles/sample/batch": ["20260101_120000_S1"],
+    }
     remote = SimpleNamespace(
-        dirs=lambda path: ["SAMPLE"] if path.endswith("DecodedFiles") else ["20260101_120000_S1"],
+        dirs=lambda path: folders[path],
         files=lambda path: iter([("cells.csv", 5)]) if "/flatFiles/" in path else iter([]),
         close=lambda: None,
     )
@@ -71,7 +77,10 @@ def check_layout_free_job():
         uri = f"gs://fixture-artifacts/tasks/transfers/{run}/inventory-request.json"
         assert cli.run_job(uri) == 0
         result = values[f"tasks/transfers/{run}/inventory-result.json"]
-        assert result["inventory"]["samples"][0]["n_files"] == 1
+        item = result["inventory"]["samples"][0]
+        assert item["n_files"] == 1
+        assert (item["sample"], item["as_sample"]) == ("sample", "SAMPLE")
+        assert item["run_folder"] == "batch/20260101_120000_S1"
         assert worker.MappedGCS(destinations).map("transfer_status/SAMPLE.done.json") == (
             "project/raw/.mica-transfers/SAMPLE.done.json"
         )
