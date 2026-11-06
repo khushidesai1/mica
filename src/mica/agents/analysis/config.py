@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -7,6 +8,7 @@ from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .ambient_config import AmbientTask
+from .cloud_access_config import CloudAccessBundle
 from .transfer_config import TransferProject
 
 CHECKPOINT_PREFIX = "tasks/slack-analysis"
@@ -136,6 +138,10 @@ class Settings(BaseSettings):
     access_mode: Literal["channel", "mapped", "workspace"] = "channel"
     access_admin_ids: str = ""  # Explicit team:user IDs; onboarding authority only.
     access_request_owner_id: str = Field(default="", pattern=r"^(?:T[A-Z0-9]+:[UW][A-Z0-9]+)?$")
+    cloud_access: dict[str, CloudAccessBundle] = Field(default_factory=dict, max_length=10)
+    access_service_account: str = Field(
+        default="", pattern=r"^(?:[a-z0-9-]+@[a-z0-9-]+\.iam\.gserviceaccount\.com)?$"
+    )  # Control plane only; never passed to a worker.
     write_admin_ids: str = ""  # Separate team:user IDs authorized to manage output grants.
     write_allowed_prefixes: str = ""  # Comma-separated gs://bucket/folder/ ceilings.
     write_service_account: str = ""  # Dedicated output writer identity; control plane only.
@@ -156,6 +162,21 @@ class Settings(BaseSettings):
     transfer_service_account: str = ""
     transfer_projects: dict[str, TransferProject] = Field(default_factory=dict)
     ambient_tasks: list[AmbientTask] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def access_bundles(self) -> Settings:
+        channels: set[str] = set()
+        for name, bundle in self.cloud_access.items():
+            if not re.fullmatch(r"[a-z][a-z0-9_-]{0,39}", name):
+                raise ValueError("Use short lowercase cloud-access bundle IDs.")
+            approver = bundle.approver or self.access_request_owner_id
+            if not approver or approver.split(":")[0] != bundle.channel.split(":")[0]:
+                raise ValueError("Each bundle needs an approver in its Slack workspace.")
+            if bundle.channel in channels:
+                raise ValueError("Cloud-access bundles must use distinct request channels.")
+            channels.add(bundle.channel)
+            self.cloud_access[name] = bundle.model_copy(update={"approver": approver})
+        return self
 
     @model_validator(mode="after")
     def unique_ambient_tasks(self) -> Settings:

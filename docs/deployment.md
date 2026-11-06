@@ -517,3 +517,19 @@ exact `checked_at` timestamp in the same revision that enables `github_only`; pr
 pins. Resume dispatch after verifying that revision. Oversized legacy workspaces are retained
 with explicit reasons under the bounded archive policy; they do not excuse missing conversation
 coverage. No bucket lifecycle policy or source deletion is part of the mode switch.
+
+### Optional cloud-access grants
+
+Cloud access ships disabled (`AGENT_CLOUD_ACCESS` empty) through the API-only pipeline. Preserve
+worker pins and existing settings. Activating it requires a separate operator-reviewed
+`infra/mica-staging` apply for the access service account, role-limited IAM binding, control
+impersonation and bundle configuration. Routine application releases never apply this IAM.
+See [cloud-access activation and live checks](cloud-access.md#operator-activation), including
+how to deny a Slack test, approve an email test, and remove the temporary test roles.
+
+The API-only pipeline takes `_API_BASE` (a verified API runtime digest), `_SOURCE_COMMIT`,
+`_API_IMAGE`, and `_WORKER_IMAGE` (the unchanged shared worker digest). It uses the same
+application overlay as coordinated releases so attachment, conversation and transfer support
+remain installed. Reuse the verified runtime base from the release inputs rather than adding
+unbounded layers to successive application images. Headless API, source/attachment, transfer
+and API/worker contract checks must all pass before promotion.

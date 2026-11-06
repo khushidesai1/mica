@@ -29,6 +29,7 @@ from . import (
     tiers,
     write_access,
 )
+from .cloud_access_config import CloudAccessProposal
 from .data_links import message_text
 from .help_text import PROJECT_HELP
 from .identity import post
@@ -43,6 +44,7 @@ if TYPE_CHECKING:
 
 
 class DecisionFields(BaseModel):
+    cloud_access_request: CloudAccessProposal | None = None
     transfer_request: TransferRequest | None = None
     view_ids: list[str] = Field(default_factory=list, max_length=4)
     reference_repos: list[Annotated[str, Field(max_length=150)]] = Field(
@@ -427,14 +429,42 @@ async def read_information(
     return result
 
 
+async def cloud_request(
+    bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage,
+    saved: dict[str, Any],
+) -> bool:
+    from . import cloud_access
+
+    cloud_access.scope_reply(record)
+    await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+    await cloud_access.detach_thread(storage, record, event_id)
+    reply = await cloud_access.propose(
+        bridge, storage, record, event_id,
+        CloudAccessProposal.model_validate(saved["cloud_access_request"]),
+    )
+    return await finish(bridge, event_id, record, reply)
+
+
 async def handle(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage
 ) -> bool:
     """Return False only for an authorized computation with a durable thread context."""
+    from . import conversation
     from .transfers import Transfers
 
     event = record["payload"]["event"]
     text = message_text(event.get("text", ""))
+    if bridge.settings.cloud_access and surface.is_email(record):
+        from . import cloud_access
+
+        reply = await cloud_access.email_decision(bridge, storage, record)
+        if reply is not None:
+            cloud_access.scope_reply(record)
+            return await finish(bridge, event_id, record, reply)
+    conversation.start(record)
+    saved = conversation.saved_decision(record)
+    if saved.get("route") == "cloud_access":
+        return await cloud_request(bridge, event_id, record, storage, saved)
     grant = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
     if observability.capture_project(record, grant):
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
@@ -459,10 +489,6 @@ async def handle(
     if files and cmd and cmd.name == "init":
         raise ValueError("Send files in their own message, not with init.")
     registry = Registry(storage)
-    from . import conversation
-
-    conversation.start(record)
-    saved = conversation.saved_decision(record)
     if cmd is None:
         if saved:
             if record.get("decision_access") != grant.signature:
@@ -480,6 +506,8 @@ async def handle(
             return await finish(
                 bridge, event_id, record, await access_requests.propose(bridge, record, grant)
             )
+        if saved.get("route") == "cloud_access":
+            return await cloud_request(bridge, event_id, record, storage, saved)
         if saved.get("route") == "command":
             from . import command_intent
 
@@ -805,10 +833,15 @@ async def handle(
             raise ValueError("Could not draft the initial brief. Please retry init in this thread.")
         record["direct_decision"] = decision.model_dump()
         record["direct_decision_pending"] = False
-        record["decision_access"] = grant.signature
-        record["memory_project_id"] = grant.project_id
+        if decision.route == "cloud_access":
+            from .cloud_access import scope_reply
+
+            scope_reply(record)
+        else:
+            record["decision_access"] = grant.signature
+            record["memory_project_id"] = grant.project_id
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
-    if decision.route == "command":
+    if decision.route in {"command", "cloud_access"}:
         # Re-enter the exact/validated command path using the durable terminal proposal.
         # No further model call is made, and init retains its existing admission sequence.
         return await handle(bridge, event_id, record, storage)
