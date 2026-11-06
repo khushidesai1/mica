@@ -343,11 +343,14 @@ async def open_import(importer):
     return await importer.repository.get_connector_state(session_import.key(identifier))
 
 
-def test_upload_modal_respects_slack_text_input_limits():
+def test_upload_modal_respects_slack_input_constraints():
     view = session_import.modal({"id": "a" * 32})
     # Slack rejects the entire views.open request above this API limit, before upload.
     inputs = [b["element"] for b in view["blocks"] if b["type"] == "input"]
-    assert any(element["type"] == "file_input" for element in inputs)
+    file_input = next(element for element in inputs if element["type"] == "file_input")
+    # JSONL isn't a Slack filetype enum; filtering would reject the whole modal.
+    assert "filetypes" not in file_input
+    assert file_input["max_files"] == 1
     for element in inputs:
         if element["type"] == "plain_text_input":
             assert 1 <= element["max_length"] <= 3000
@@ -601,6 +604,21 @@ async def test_attachment_intake_rechecks_access_and_bounds_size(importer, tmp_p
     other = {**state, "id": "b" * 32, "status": "received"}
     await session_import.intake(importer, other)
     assert other["status"] == "duplicate" and other["duplicate"] == identifier
+
+
+async def test_unfiltered_picker_still_rejects_wrong_filename_before_download(
+    importer, monkeypatch
+):
+    from mica.agents.analysis import attachments
+
+    state = await open_import(importer)
+    state.update(status="received", file={"id": "F1"})
+    importer.test_slack.files_info.return_value = {"file": {"id": "F1", "name": "session.txt"}}
+    ingest = Mock(side_effect=AssertionError("Invalid files must not be downloaded"))
+    monkeypatch.setattr(attachments, "ingest", ingest)
+    with pytest.raises(ValueError, match="Choose a .jsonl"):
+        await session_import.intake(importer, state)
+    ingest.assert_not_called()
 
 
 async def test_pass_cap_never_starts_an_extra_worker(importer):
