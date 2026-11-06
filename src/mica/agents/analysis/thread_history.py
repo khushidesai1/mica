@@ -13,10 +13,53 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from claude_agent_sdk import SdkMcpTool
 
+    from mica.storage.base import Repository
+
+    from .access import Grant
+
 from .storage import Conflict, Storage
 
 SUMMARY_CHARS = 8000
 CONTEXT_CHARS = 20000
+
+
+async def supplied_inputs(
+    repository: Repository, grant: Grant, record: dict[str, Any]
+) -> str:
+    """Recover parameter values from this requester's original, scoped messages.
+
+    Assistant replies and memory paraphrases never prove that a user supplied a value.
+    This is input evidence only: current access and action approvals remain separate.
+    Keep only receipt IDs on the current event, not another copy of old transcripts.
+    """
+    if not grant.allowed:
+        return ""
+    ids = [m.get("id", "") for m in grant.state.get("messages", [])]
+    recalled = record.get("input_history", {})
+    if recalled.get("access") == grant.signature:
+        ids = [*recalled.get("ids", []), *ids]
+    ids = list(dict.fromkeys(
+        i for i in ids if isinstance(i, str) and re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", i)
+    ))
+    previous = await asyncio.gather(
+        *(repository.get_connector_state(f"claude-event:{i}") for i in ids[-12:])
+    )
+    texts = []
+    remaining = CONTEXT_CHARS
+    for value in reversed(previous):
+        if (
+            not value
+            or value.get("event_id") == record.get("event_id")
+            or value.get("thread_key") != record.get("thread_key")
+            or value.get("principal") != grant.email
+            or value.get("project_id") != grant.project_id
+        ):
+            continue
+        text = str(value.get("payload", {}).get("event", {}).get("text", ""))
+        if len(text) <= remaining:
+            texts.append(text)
+            remaining -= len(text)
+    return "\n".join(reversed(texts))
 
 
 def identifier(value: str) -> str:

@@ -331,6 +331,7 @@ async def test_128_gib_gpu_request_explains_limit_without_downgrade_or_allocatio
 
 
 async def test_transfer_is_terminal_and_durable(turn):
+    turn[2]["payload"]["event"]["text"] = "Transfer sample-7 to gs://lab-data/raw/"
     client = Client(tool("propose_transfer", sample="sample-7"))
     result = await run(turn, client)
     assert result.route == "transfer" and result.transfer_request.sample == "sample-7"
