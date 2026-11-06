@@ -162,11 +162,12 @@ def modal(state: dict[str, Any]) -> dict[str, Any]:
             {
                 "type": "input",
                 "block_id": "file",
-                "label": {"type": "plain_text", "text": "Claude Code session"},
+                "label": {"type": "plain_text", "text": "Claude Code session (.jsonl)"},
                 "element": {
                     "type": "file_input",
                     "action_id": "value",
-                    "filetypes": ["jsonl"],
+                    # Slack's extension enum excludes JSONL. Intake validates both
+                    # the filename and the session content after this picker.
                     "max_files": 1,
                 },
             },
