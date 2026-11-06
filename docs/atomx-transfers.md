@@ -34,6 +34,9 @@ Existing different objects are never overwritten. `done.txt` in both sample fold
 to the detailed completion record. Ask for transfer status or cancellation in either interface.
 Connection links and transfer notices go only to the requesting user, including email threads
 with multiple recipients. Separate durable outbox stages leave the normal email reply intact.
+In an existing Slack DM, connection links, previews, progress and final notices reply in the
+request's thread. A new top-level request starts a thread under that message. Requests from a
+shared channel still receive private links and notices in a separate one-to-one DM.
 
 ## Runtime and operator setup
 

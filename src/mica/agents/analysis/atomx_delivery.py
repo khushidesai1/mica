@@ -48,11 +48,12 @@ async def deliver(
             client = AsyncWebClient(token=bridge.app.slack_bot_token, timeout=10)
             event = record["payload"]["event"]
             channel = str(event.get("channel", ""))
-            if not (
+            in_request_dm = (
                 grant.private
                 and event.get("channel_type") == "im"
                 and re.fullmatch(r"D[A-Z0-9]+", channel)
-            ):
+            )
+            if not in_request_dm:
                 # Shared channels must never receive credentials or approval links.
                 opened = await client.conversations_open(users=event["user"])
                 channel = str(opened["channel"]["id"])
@@ -60,6 +61,7 @@ async def deliver(
                     raise PermissionError("A one-to-one private conversation is required.")
             await client.chat_postMessage(
                 channel=channel,
+                thread_ts=(event.get("thread_ts") or event["ts"]) if in_request_dm else None,
                 text=text,
                 client_msg_id=hashlib.md5(receipt.encode()).hexdigest(),
                 unfurl_links=False,

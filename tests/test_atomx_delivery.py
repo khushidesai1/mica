@@ -9,7 +9,7 @@ from slack_sdk.web.async_slack_response import AsyncSlackResponse
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_atomx_connections import KEY, A, connections  # noqa: F401
 
-from mica.agents.analysis import access, atomx_connections, atomx_delivery
+from mica.agents.analysis import access, atomx_connections, atomx_delivery, transfers
 
 
 def refusal(error="missing_scope"):
@@ -38,7 +38,9 @@ def private_record(bridge, monkeypatch):
     return {
         "surface": "slack",
         "intake_principal": A,
-        "payload": {"event": {"user": "U1", "channel": "D1", "channel_type": "im"}},
+        "payload": {
+            "event": {"user": "U1", "channel": "D1", "channel_type": "im", "ts": "2.0"}
+        },
     }
 
 
@@ -51,12 +53,45 @@ async def test_existing_dm_does_not_need_im_write(bridge, private_record):
     bridge.test_slack.chat_postMessage.assert_awaited_once()
 
 
+@pytest.mark.parametrize("thread", [None, "1.0"])
+@pytest.mark.parametrize(
+    ("state", "text", "buttons"),
+    [
+        ("inventory", "Checking AtoMx…", ("cancel",)),
+        ("preview", "Transfer this sample?", ("confirm", "cancel")),
+        ("running", "AtoMx transfer started.", ("cancel",)),
+        ("done", "Transfer complete.", ()),
+        ("failed", "AtoMx job failed.", ()),
+    ],
+)
+async def test_transfer_notices_stay_in_request_dm_thread(
+    bridge, private_record, thread, state, text, buttons
+):
+    bridge.app.signed_link_secret = KEY
+    if thread:
+        private_record["payload"]["event"]["thread_ts"] = thread
+    await bridge.repository.set_connector_state("claude-event:event", private_record)
+    pending = {"id": "event", "state": state, "requested_by": A, "attempt": 0}
+    sender = transfers.Transfers(bridge, bridge.store)
+    await sender.notify(pending, text, buttons)
+    await sender.notify(pending, text, buttons)
+    bridge.test_slack.chat_postMessage.assert_awaited_once()
+    message = bridge.test_slack.chat_postMessage.call_args.kwargs
+    assert message["channel"] == "D1"
+    assert message["thread_ts"] == (thread or "2.0")
+    assert not message.get("reply_broadcast")
+    bridge.test_slack.conversations_open.assert_not_awaited()
+
+
 async def test_shared_conversation_uses_separate_dm(bridge, private_record, monkeypatch):
     monkeypatch.setattr(access, "resolve", lambda *args: SimpleNamespace(email=A, private=False))
-    private_record["payload"]["event"].update(channel="CPROJECT", channel_type="channel")
+    private_record["payload"]["event"].update(
+        channel="CPROJECT", channel_type="channel", thread_ts="1.0"
+    )
     bridge.test_slack.conversations_open.return_value = {"channel": {"id": "DPRIVATE"}}
     await atomx_delivery.deliver(bridge, A, private_record, "event", "private-link", "connection")
     assert bridge.test_slack.chat_postMessage.call_args.kwargs["channel"] == "DPRIVATE"
+    assert bridge.test_slack.chat_postMessage.call_args.kwargs["thread_ts"] is None
 
 
 async def test_missing_open_scope_is_terminal_and_never_leaks_link_to_channel(
@@ -131,6 +166,7 @@ async def test_account_connection_completes_instead_of_leaving_on_it(bridge):
         if "/integrations/atomx#" in c.kwargs.get("text", "")
     ]
     assert len(links) == 1 and links[0]["channel"] == "D1"
+    assert links[0]["thread_ts"] == "1.0"
     assert old not in links[0]["text"]
     with pytest.raises(ValueError, match="expired"):
         await connection.exchange(old.split("#")[1])
