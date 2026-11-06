@@ -31,6 +31,8 @@ from . import (
     attachments,
     memory_workspace,
     project_memory,
+    session_review,
+    session_sources,
     surface,
     thread_history,
     thread_memory,
@@ -52,7 +54,7 @@ from .sessions import Sessions
 from .slack_app import SlackAgent
 from .slack_format import status_blocks
 from .storage import GCSStorage
-from .transport import SlackTransport
+from .transport import EmailWorkerTransport, SlackTransport
 
 
 def arm_stop_deadline() -> None:
@@ -136,7 +138,9 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         raise ValueError("Slack credential has not been configured")
     check(settings)
     slack = AsyncWebClient(token=settings.slack_bot_token.get_secret_value())
-    progress_transport = SlackTransport(slack)
+    progress_transport = (
+        EmailWorkerTransport() if session_review.origin(request) else SlackTransport(slack)
+    )
     monitor = AccessMonitor(
         lambda: worker_permitted(storage, request, saved, settings=settings),
         settings.access_unavailable_grace_seconds,
@@ -218,6 +222,14 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         files = await asyncio.to_thread(
             attachments.materialize, storage, data["workdir"], saved.get("thread_files", [])
         )
+    await asyncio.to_thread(
+        session_sources.materialize, storage, Path(saved["context"]["workdir"]),
+        request["project_id"], request.get("project_sessions", []),
+    )
+    import_origin = session_review.origin(request)
+    if import_origin:
+        # A prior pass's review must never count as this pass's output.
+        (Path(saved["context"]["workdir"]) / "notes/import-review.json").unlink(missing_ok=True)
     from . import reference_repos
 
     await asyncio.to_thread(
@@ -462,6 +474,13 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                 return str(delivered["text"]), list(delivered["artifacts"])
         raise RuntimeError("Email delivery controller remained busy")
 
+    async def retain_import_reply(
+        text: str, uploads: list[dict[str, str]], error: str | None,
+    ) -> tuple[str, list[str]]:
+        await asyncio.to_thread(storage.put, f"{prefix}/import-outcome.json",
+                               json.dumps({"error": error}).encode())
+        return text, []
+
     agent = SlackAgent(
         settings,
         storage,
@@ -473,6 +492,8 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             if thread_memory.legacy(settings)
             else None,
             thread_key=thread_key,
+            memory_base=memory_base,
+            import_highlights=import_origin.get("highlights", []) if import_origin else None,
             thread_context=json.dumps(
                 thread_memory.writer_view(
                     {p: f.text for p, f in memory_base.files.items()}, thread_key
@@ -501,7 +522,8 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         ),
         authorized=lambda: worker_permitted(storage, request, saved, settings=settings),
         publish_gcs=None if surface.is_email(request) else publisher.publish,
-        terminal_delivery=deliver_email if surface.is_email(request) else None,
+        terminal_delivery=(retain_import_reply if import_origin else
+                           deliver_email if surface.is_email(request) else None),
         write_grant=current_write_grant,
         overwrite_paths=request.get("overwrite_paths", []),
         before_delivery=before_delivery if compute else None,
@@ -594,6 +616,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                 f"worker {event_id}; speaker {request['principal']}; "
                 f"thread {thread_key}; {datetime.now(UTC).date()}",
                 thread=thread_key,
+                import_pass=bool(import_origin),
             )
             pending_key = f"{prefix}/memory-a{attempt}-{checkpoint_id}.json"
             await asyncio.to_thread(storage.put_if, pending_key, pending, None)
@@ -755,6 +778,23 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                 await stop_task
     if compute and compute.stop.is_set() and not compute.pending:
         return
+    if import_origin and agent.last_error:
+        # An SDK result can finish transport successfully while the model exhausted
+        # its budget. Do not publish this pass's unfinished memory proposal.
+        await asyncio.to_thread(
+            storage.put, f"{prefix}/import-outcome.json",
+            json.dumps({"error": agent.last_error}).encode(),
+        )
+        await asyncio.to_thread(
+            storage.put, f"{prefix}/attempt-a{attempt}.json",
+            json.dumps({
+                "event_id": event_id, "attempt": attempt, "outcome": "stopped",
+                "stop_reason": "model_budget" if agent.last_error == "error_max_budget_usd"
+                else "import_pass_failed",
+                "model_cost": compute.model_cost if compute else None,
+            }).encode(),
+        )
+        return
     if (
         not memory_workspace.cancelled(storage, event_id)
         and state
@@ -769,6 +809,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             f"worker {event_id}; speaker {request['principal']}; "
             f"thread {thread_key}; {datetime.now(UTC).date()}",
             thread=thread_key,
+            import_pass=bool(import_origin),
         )
         parsed_proposal = memory_workspace.decode_pending(proposal, settings)
         parsed_proposal.outputs = agent.memory_outputs[:100]

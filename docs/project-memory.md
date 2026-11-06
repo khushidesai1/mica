@@ -254,3 +254,63 @@ reach the model.
 
 See [staging verification](project-memory-staging.md) for deployed commit IDs,
 live save/recall and compaction evidence, and known verification limits.
+
+## Detailed results and session imports
+
+Memory preserves the definitions needed to reproduce, cite or extend a result: the grouping
+rule and threshold, unit of analysis and n, test/model, covariates and correction, input file,
+script version, date and attribution. Unknown qualifiers stay explicitly unknown. Concise
+entries remove repetition, not evidence. Split entries by topic when they reach the file limit.
+Chat edits receive complete files within a bounded working set and cannot replace unseen
+existing files. New topic files and corrections in `results/` are supported. Workers receive
+up to two reminders to add a Definitions section to changed result entries; ordinary content,
+path, size and thread-persistence validation remains authoritative.
+
+In an enabled project's Slack DM, send `import session`, then use the upload card to select a
+Claude Code `.jsonl` file. Optional highlights are one per line (ten maximum, 300 characters
+each); the optional follow-on request runs after the import review is posted. An import request
+with one attached `.jsonl` starts intake directly. Email and channel imports are unavailable.
+Everyone with project access can use the original session, so remove secrets and patient
+identifiers before uploading. There is no user-facing deletion command in this release.
+
+`AGENT_SESSION_IMPORT_PROJECTS` is a comma-separated, operator-controlled project allowlist;
+empty disables new imports. Existing imports can finish if the allowlist changes, but every
+pass and delivery rechecks the uploader's current project access. Import passes require project
+membership and do not receive a data-output write grant. They preserve ambient jobs' separate
+owner and event-grant requirements.
+
+The intake task validates UTF-8 session records and enforces the smaller of the attachment cap,
+100 MB, and `AGENT_SESSION_PROJECT_MB`. It stages the upload using ordinary attachment intake,
+then copies it to `projects/<project-id>/sessions/<import-id>/session.jsonl`, verifies its hash
+and size, and publishes `meta.json` last. This project source is outside the temporary uploads
+and thread-expiry prefixes. Same-project duplicate hashes reuse the earlier import thread.
+Operators can remove an exact source prefix on request; retained memory claims and already
+running workers require a separate, explicit cleanup decision.
+
+The bundled renderer never runs imported commands. It retains stable record/block anchors,
+text, tool calls, short results and relevant long-result context, and records captured script
+versions. Literal writes and supported heredocs can be reconstructed; other edits remain
+explicit diffs or commands, with unavailable versions labeled as such. Individual JSONL
+records above 8 MB are rejected rather than silently skipped. `--stats` reports malformed
+records and rendered size; `--from` and `--max-chars` select a reproducible slice.
+
+Each pass uses the ordinary CPU worker gates and per-turn model budget. Defaults are 200,000
+rendered characters (`AGENT_SESSION_IMPORT_SLICE_CHARS`) and ten attempts per run
+(`AGENT_SESSION_IMPORT_MAX_PASSES`). A model-budget stop retries its slice once at half size,
+counting against that limit. Other failures or exhausted attempts leave the import incomplete;
+Continue authorizes another bounded run from the last verified boundary. Earlier committed
+passes survive both failed later passes and failed follow-on requests.
+
+Reviews travel with the durable memory proposal. The controller verifies paths at the saved
+commit, distinguishes saved, already present, conflict copies and rejected entries, and binds
+highlight coverage to the application-issued IDs. A missing review does not discard valid
+memory changes, but stops continuation and marks highlights unchecked. Import partial saves
+finish with a reported partial outcome instead of repeatedly retrying accepted changes.
+Per-pass review receipts are retained alongside the source. The card update and reconciled
+Slack outbox precede the next pass or follow-on request.
+
+Later workers receive newest project sessions first, within `AGENT_SESSION_PROJECT_MB`
+(default 200 MB); an active import's source takes priority. Each source is rechecked against
+its project, size and hash, and stale session folders are cleared before materialization.
+The router lists available sources so it can request a worker to inspect session anchors.
+The original source remains available when a detail was missed by the memory import.

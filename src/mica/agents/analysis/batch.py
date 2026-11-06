@@ -298,6 +298,13 @@ class BatchBridge:
                 cause = "compute_failed"
             if cause in observability.CATALOG:
                 await observability.report(self, cause, event_id, record)
+        from .session_review import origin
+
+        if origin(record):
+            record.update(notice_phase=phase, notice_text=text)
+            if phase in {"complete", "failed", "denied", "cancelled"}:
+                record["terminal_reply"] = text
+            return
         if surface.is_email(record):
             terminal = phase in {"complete", "failed", "denied", "cancelled"}
             if terminal:
@@ -492,7 +499,11 @@ class BatchBridge:
                 if ambient is not None:
                     if surface_name != "slack" or not principal:
                         raise ValueError("Background intake requires a trusted Slack principal")
+                    if ambient.get("kind", "ambient") not in {"ambient", "session_import"}:
+                        raise ValueError("Unknown background origin kind")
                     receipt["ambient"] = ambient
+                    if ambient.get("kind") == "session_import":
+                        receipt["write_grant"] = None
                     receipt["deadline_at"] = float(ambient["deadline_at"])
                     receipt["write_control"] = False
                 if self.settings.amendments and receipt.get("previous"):
@@ -715,9 +726,15 @@ class BatchBridge:
         from .direct import record_exchange
 
         if record.get("ambient") and record["status"] in {"complete", "failed"}:
-            from .ambient_delivery import terminal
+            from . import ambient_delivery, session_import
 
-            await terminal(self, event_id, record)
+            kind = record["ambient"].get("kind", "ambient")
+            if kind == "session_import":
+                await session_import.terminal(self, event_id, record)
+            elif kind == "ambient":
+                await ambient_delivery.terminal(self, event_id, record)
+            else:
+                raise ValueError("Unknown background origin kind")
 
         if (
             record["status"] not in {"complete", "failed"}
@@ -1130,6 +1147,16 @@ class BatchBridge:
                 if record["private"]
                 else "",
             }
+            from . import session_review, session_sources
+
+            sources = await asyncio.to_thread(
+                session_sources.catalog, storage, record["project_id"]
+            )
+            selected_sessions = session_sources.select(
+                sources, self.settings, session_review.origin(record).get("id", "")
+            )
+            if selected_sessions:
+                manifest["project_sessions"] = [source.model_dump() for source in selected_sessions]
             if record.get("amendments_enabled"):
                 manifest["amendments_enabled"] = True
             if record.get("ambient"):

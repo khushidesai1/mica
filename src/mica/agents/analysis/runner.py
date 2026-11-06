@@ -36,7 +36,7 @@ from claude_agent_sdk.types import (
     StreamEvent,
 )
 
-from . import prompts, script_capture, toolkit_catalog, write_worker
+from . import memory_checks, project_memory, prompts, script_capture, toolkit_catalog, write_worker
 from .attachments import classify
 from .config import Settings
 from .deliverables import send_tool
@@ -120,9 +120,12 @@ def build_options(
     history: History | None = None,
     thread_key: str = "",
     thread_context: str = "",
+    memory_base: project_memory.Snapshot | None = None,
+    import_highlights: list[str] | None = None,
     delivery_packages: dict[Path, dict[Path, str]] | None = None,
     attachment_limit: int = MAX_ATTACHMENT_BYTES,
     named_outputs: set[Path] | None = None,
+    checks: memory_checks.Checks | None = None,
 ) -> ClaudeAgentOptions:
     if not sandbox and platform.system() != "Darwin":
         raise ValueError("--no-sandbox is available only for local macOS development")
@@ -367,33 +370,19 @@ def build_options(
             }
         }
 
+    checks = checks or memory_checks.Checks(
+        ctx.workdir, settings, thread_key, memory_base, import_highlights
+    )
+
     async def memory_ready(
         event: HookInput, _tool_id: str | None, _context: HookContext
     ) -> HookJSONOutput:
-        from . import thread_memory
-
-        if (
-            event["hook_event_name"] != "Stop"
-            or not thread_key
-            or not thread_memory.enabled(settings)
-            or ctx.survey_only
-            or (compute and (compute.pending or compute.stop.is_set()))
-        ):
+        if (event["hook_event_name"] != "Stop" or ctx.survey_only
+                or (compute and (compute.pending or compute.stop.is_set()))):
             return {}
-        path = Path("knowledge") / thread_memory.prefix(thread_key) / "turn.json"
-        try:
-            raw = await asyncio.to_thread(script_capture.read_regular, ctx.workdir, path)
-            thread_memory.Prose.model_validate_json(raw)
-        except (OSError, ValueError):
-            # Let the same bounded turn repair its own prose before final delivery. The
-            # strict validator and application-owned identity/coverage remain unchanged.
-            return {
-                "decision": "block",
-                "reason": f"Write valid {path.as_posix()} before finishing. Use this exact "
-                "JSON schema (no entries or covered wrapper): "
-                + json.dumps(thread_memory.Prose.model_json_schema()),
-            }
-        return {}
+        assert checks is not None
+        reason = await asyncio.to_thread(checks.check)
+        return {"decision": "block", "reason": reason} if reason else {}
 
     return ClaudeAgentOptions(
         model=settings.model,
@@ -467,7 +456,8 @@ def build_options(
             "PreToolUse": [HookMatcher(hooks=[guard])],
             "UserPromptSubmit": [HookMatcher(hooks=[turn_context])],
             **({"Stop": [HookMatcher(hooks=[memory_ready])]}
-               if thread_key and thread_memory.enabled(settings) and not ctx.survey_only else {}),
+               if not ctx.survey_only and (memory_base is not None or import_highlights is not None
+                   or (thread_key and thread_memory.enabled(settings))) else {}),
             **(
                 {
                     "PostToolUse": [
@@ -614,6 +604,8 @@ class Runner:
         history: History | None = None,
         thread_key: str = "",
         thread_context: str = "",
+        memory_base: project_memory.Snapshot | None = None,
+        import_highlights: list[str] | None = None,
         attachment_limit: int = MAX_ATTACHMENT_BYTES,
     ) -> None:
         self.settings, self.sandbox = settings, sandbox
@@ -630,6 +622,7 @@ class Runner:
         self.history = history
         self.thread_key = thread_key
         self.thread_context = thread_context
+        self.memory_base, self.import_highlights = memory_base, import_highlights
         self.last_result: TurnResult | None = None
         self.runtime_manager = runtime_manager or (
             RuntimeManager(
@@ -710,6 +703,9 @@ class Runner:
         previews = ctx.workdir / ".previews"
         clear_previews(previews)
         previews.mkdir()
+        checks = memory_checks.Checks(
+            ctx.workdir, self.settings, self.thread_key, self.memory_base, self.import_highlights
+        )
         try:
             for attempt in range(2):
                 details, got_result = "", False
@@ -731,9 +727,12 @@ class Runner:
                         history=self.history,
                         thread_key=self.thread_key,
                         thread_context=self.thread_context,
+                        memory_base=self.memory_base,
+                        import_highlights=self.import_highlights,
                         delivery_packages=delivery_packages,
                         attachment_limit=self.attachment_limit,
                         named_outputs=named_outputs,
+                        checks=checks,
                     )
                     options.max_budget_usd = self.settings.max_budget_usd_per_turn - summary_budget
                     baseline = restored_cost(ctx.session_id) if self.compute else 0.0

@@ -201,6 +201,28 @@ async def process_memory(event_id: str, request: Request) -> dict[str, str]:
     return {"status": "complete"}
 
 
+@router.post("/session-import/{identifier}", include_in_schema=False)
+async def process_session_import(identifier: str, request: Request) -> dict[str, str]:
+    from mica.agents.analysis import session_import
+
+    services: Services = request.app.state.services
+    if services.settings.slack_agent_backend != "claude_batch":
+        raise HTTPException(503, "Claude Slack rollout is disabled")
+    principal = await get_principal(request)
+    if principal.id != services.settings.cloud_tasks_service_account.lower():
+        raise HTTPException(403, "Untrusted task dispatcher")
+    await admit(request, draining=True)
+    if not re.fullmatch(r"[a-f0-9]{32}", identifier):
+        raise HTTPException(400, "Invalid import")
+    try:
+        await session_import.process(
+            BatchBridge(services.settings, services.repository), identifier
+        )
+    except Exception:
+        raise HTTPException(503, "Session import is pending; retry") from None
+    return {"status": "checked"}
+
+
 @router.post("/memory-compact/{project_id}", include_in_schema=False)
 async def compact_memory(project_id: str, head_oid: str, request: Request) -> dict[str, str]:
     from mica.agents.analysis import memory_compaction

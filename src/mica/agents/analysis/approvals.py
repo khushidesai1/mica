@@ -61,10 +61,18 @@ class Kind:
 
 def kinds() -> tuple[Kind, ...]:
     # Lazy imports preserve the existing public modules and avoid registration-order coupling.
-    from . import access_requests, amendments, command_approval, compute_approval, write_approval
+    from . import (
+        access_requests,
+        amendments,
+        command_approval,
+        compute_approval,
+        session_import,
+        write_approval,
+    )
 
     return tuple(module.KIND for module in (
-        compute_approval, command_approval, write_approval, access_requests, amendments
+        compute_approval, command_approval, write_approval, access_requests, amendments,
+        session_import
     ))
 
 
