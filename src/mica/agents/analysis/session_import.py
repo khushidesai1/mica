@@ -170,7 +170,7 @@ def modal(state: dict[str, Any]) -> dict[str, Any]:
                     "max_files": 1,
                 },
             },
-            text_input("highlights", "Anything specific to keep track of? (one per line)", 3009),
+            text_input("highlights", "Anything specific to keep track of? (one per line)", 3000),
             text_input("request", "What should Mica do afterwards?", 3000),
         ],
     }
