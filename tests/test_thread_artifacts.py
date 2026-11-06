@@ -425,3 +425,97 @@ async def test_unanswered_legacy_message_without_id_is_imported_as_pending(store
     )
     assert len(rows) == 1 and not rows[0].success
     assert (await artifacts.coverage(storage, backend, strict_checkpoint=True))["complete"]
+
+
+@pytest.fixture
+def sweep_context(stores, monkeypatch):
+    from types import SimpleNamespace
+
+    from mica.storage.memory import InMemoryRepository
+
+    storage, backend, _ = stores
+    repo = InMemoryRepository()
+    bridge = SimpleNamespace(
+        storage=storage, repository=repo,
+        settings=Settings(memory_repo="owner/memory", thread_memory="github_only", _env_file=None),
+    )
+    for thread in ("t_one", "t_two", "t_three"):
+        storage.put(
+            f"projects/_threads/{thread}/checkpoint.json",
+            json.dumps({"context": {"project_slug": "p_test"}}).encode(),
+        )
+        storage.put(
+            artifacts.receipt_key(thread, "p_test"),
+            json.dumps({"conversation_verified": True, "run_roots": [f"runs/{thread}"]}).encode(),
+        )
+    storage.put("runs/t_one/turn-1/outputs/plot.png", b"retained original")
+    monkeypatch.setattr(artifacts.project_memory, "GitHubMemory", lambda settings: backend)
+    monkeypatch.setattr(artifacts, "coverage", AsyncMock(return_value={
+        "verified": [f"p_test/{t}" for t in ("t_one", "t_two", "t_three")],
+    }))
+    return bridge
+
+
+async def test_sweep_times_out_slow_copy_without_losing_source_or_intake_lease(
+    sweep_context, monkeypatch
+):
+    import asyncio
+
+    bridge = sweep_context
+    async def stalled_copy(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(artifacts, "move_output", stalled_copy)
+    monkeypatch.setattr(artifacts, "THREAD_SWEEP_SECONDS", 0.02)
+    monkeypatch.setattr(artifacts, "SWEEP_SECONDS", 2)
+    result = await artifacts.sweep(bridge)
+    assert result["memory_sweep_deferred"] == 1
+    assert result["memory_sources_deleted"] == result["memory_outputs_moved"] == 0
+    assert bridge.storage.get("runs/t_one/turn-1/outputs/plot.png")[0] == b"retained original"
+    # Other threads still completed, and the timed-out thread no longer blocks intake.
+    assert bridge.storage.get("projects/_threads/t_two/archive-receipts/p_test.json")
+    lease = await bridge.repository.begin_event("claude-intake:t_one", lease_seconds=10)
+    assert lease.status == "claimed"
+
+
+async def test_sweep_total_budget_advances_only_visited_threads(sweep_context, monkeypatch):
+    import asyncio
+
+    bridge = sweep_context
+    async def stalled_copy(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(artifacts, "move_output", stalled_copy)
+    monkeypatch.setattr(artifacts, "SWEEP_SECONDS", 0.02)
+    result = await artifacts.sweep(bridge)
+    assert result["memory_sweep_deferred"] == 1
+    assert await bridge.repository.get_connector_state("memory-artifact-cursor") == {"cursor": 1}
+    # Next pass starts with the next thread, even though the first thread still needs work.
+    visited = []
+    begin = bridge.repository.begin_event
+    async def record_visit(key, **kwargs):
+        visited.append(key)
+        return await begin(key, **kwargs)
+
+    monkeypatch.setattr(bridge.repository, "begin_event", record_visit)
+    monkeypatch.setattr(artifacts, "SWEEP_SECONDS", 2)
+    monkeypatch.setattr(artifacts, "THREAD_SWEEP_SECONDS", 0.02)
+    await artifacts.sweep(bridge)
+    assert visited[0] == "claude-intake:t_three"
+
+
+async def test_sweep_defers_all_mutation_when_coverage_times_out(sweep_context, monkeypatch):
+    import asyncio
+
+    bridge = sweep_context
+    async def stalled_coverage(*args, **kwargs):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(artifacts, "coverage", stalled_coverage)
+    monkeypatch.setattr(artifacts, "SWEEP_SECONDS", 0.02)
+    before = {key: bridge.storage.get(key)[0] for key in bridge.storage.keys("")}
+    result = await artifacts.sweep(bridge)
+    assert result["memory_sweep_deferred"] == 1
+    assert result["memory_sources_deleted"] == 0
+    assert {key: bridge.storage.get(key)[0] for key in bridge.storage.keys("")} == before
+    assert await bridge.repository.get_connector_state("memory-artifact-cursor") is None
