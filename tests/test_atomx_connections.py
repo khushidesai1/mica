@@ -359,3 +359,108 @@ def test_script_staging_uses_private_fd_pinned_host_and_download_only(tmp_path, 
         assert stream.read() == b"abc"
     assert len(calls) == 1
     remote.temporary.cleanup()
+
+
+async def test_loose_match_previews_and_pulls_the_atomx_folder_into_the_requested_name(
+    connections, tmp_path, monkeypatch
+):
+    from test_atomx_engine import MemoryBucket, export_tree
+
+    from mica.agents.analysis import project_memory, transfers
+    from mica.agents.analysis.access import Grant
+    from mica.agents.analysis.registry import Registry
+    from mica.agents.analysis.storage import LocalStorage
+    from tools.atomx_transfer import core
+
+    store = LocalStorage(tmp_path)
+    registry = Registry(store)
+    pid = registry.update(
+        "create", A, "create", lambda d: d.create(A, "test", "gs://lab-data/processed")
+    )
+    grant = Grant(A, True, {}, registry.load(), pid, True, "EMAIL:thread")
+    connections.app.slack_agent_image = "worker@sha256:" + "a" * 64
+    connections.app.batch_service_account = "worker@example.com"
+    settings = Settings(
+        _env_file=None,
+        transfers_enabled=True,
+        transfer_host_key="ssh-rsa fake",
+        write_service_account="writer@example.com",
+        write_allowed_prefixes="gs://lab-data/",
+    )
+    bridge = SimpleNamespace(app=connections.app, settings=settings, repository=connections.repo)
+    service = transfers.Transfers(bridge, store)
+    service.schedule = AsyncMock()
+    service.notify = AsyncMock()
+    monkeypatch.setattr(transfers, "GCSStorage", lambda bucket: store)
+    monkeypatch.setattr(project_memory.GitHubMemory, "read", AsyncMock(return_value=None))
+    client = SimpleNamespace(create_job=lambda **_: None)
+    monkeypatch.setattr(transfers.batch_v1, "BatchServiceClient", lambda: client)
+    await service.connections.save(A, "", "private-login", "private-password")
+    record = {
+        "payload": {
+            "team_id": "EMAIL",
+            "event": {"user": "u", "channel": "D1", "ts": "1", "text": "to gs://lab-data/import/raw"},
+        }
+    }
+    eid = "2" * 32
+    await service.request(grant, record, eid, TransferRequest(sample="TMA37"))
+    await service.advance(await service.pending(eid))
+
+    def inventory(remote):
+        request = {"sample": "TMA37", "requested_by": A, "login_saved_by": A}
+        return core.inventory(remote, MemoryBucket(), request)
+
+    # A miss names the exports and slide folders that do exist, instead of a bare "not found".
+    run = "20261019_103117_S1"
+    with pytest.raises(ValueError) as miss:
+        await service.preview(await service.pending(eid), inventory(export_tree({"TMA38": run})))
+    assert "/MyExport`: TMA38" in str(miss.value)
+    assert "transfer <slide folder> from" in str(miss.value)
+    two = export_tree({"tma37": run, "tma_37": run})
+    with pytest.raises(ValueError, match="matches several AtoMx folders"):
+        await service.preview(await service.pending(eid), inventory(two))
+
+    root = "/TMA37_05_11_2026_22_59_07_541"
+    await service.preview(
+        await service.pending(eid), inventory(export_tree({"Slide 1": run}, root))
+    )
+    pending = await service.pending(eid)
+    assert "Transfer AtoMx folder *Slide 1* as *TMA37*" in pending["preview_text"]
+    assert "gs://lab-data/import/raw/TMA37/" in pending["preview_text"]
+    await service.confirm(eid, A)
+    await service.submit(await service.pending(eid), "pull")
+    pending = await service.pending(eid)
+    request = json.loads(store.get(f"tasks/transfers/{pending['job_run']}/pull-request.json")[0])
+    assert (request["sample"], request["as_sample"], request["export_root"]) == (
+        "Slide 1",
+        "TMA37",
+        root,
+    )
+    monkeypatch.setattr(atomx, "worker", AsyncMock(return_value=(service, pending)))
+    monkeypatch.setattr(service.connections, "decrypt", AsyncMock(return_value={}))
+    bootstrap = json.loads((await atomx.bootstrap(None, pending["job_run"])).body)
+    assert (bootstrap["sample"], bootstrap["as_sample"], bootstrap["export_root"]) == (
+        "Slide 1",
+        "TMA37",
+        root,
+    )
+
+
+@pytest.mark.parametrize(
+    ("given", "normalized"),
+    [
+        ("TMA37_05_11_2026_22_59_07_541", "/TMA37_05_11_2026_22_59_07_541"),
+        ("/a/b/", "/a/b"),
+        ("/", ""),
+    ],
+)
+def test_export_folder_slashes_are_optional(given, normalized):
+    assert TransferRequest(sample="TMA37", export_root=given).export_root == normalized
+
+
+def test_hand_named_atomx_folder_needs_a_safe_bucket_name():
+    assert TransferRequest(sample="Slide 1", as_sample="TMA37").sample == "Slide 1"
+    with pytest.raises(ValueError, match="Name the bucket folder"):
+        TransferRequest(sample="Slide 1")
+    with pytest.raises(ValueError, match="single AtoMx folder"):
+        TransferRequest(sample="a/b", as_sample="TMA37")
