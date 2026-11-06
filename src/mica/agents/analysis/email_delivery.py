@@ -20,7 +20,8 @@ from mica.connectors import gmail_client
 
 from . import access, command_intent, transfer_state
 from .config import CHECKPOINT_PREFIX
-from .storage import Conflict
+from .identity import recipient_email
+from .storage import Conflict, Storage
 from .surface import EMAIL_STATE_PREFIX
 
 if TYPE_CHECKING:
@@ -70,7 +71,7 @@ def content_fingerprint(message: EmailMessage) -> str:
 
 def sent_match(api: Any, saved: dict[str, Any], thread_id: str) -> str | None:
     """Find a send receipt even when Gmail replaced our RFC822 Message-ID."""
-    if saved.get("delivery_id"):
+    if saved.get("delivery_id") and thread_id:
         thread = (
             api.users()
             .threads()
@@ -119,7 +120,127 @@ def sent_match(api: Any, saved: dict[str, Any], thread_id: str) -> str | None:
             .execute()
         )
         matches = [message["id"] for message in response.get("messages", [])]
+        if saved.get("delivery_id") and len(matches) == 1:
+            candidate = (
+                api.users().messages().get(userId="me", id=matches[0], format="raw").execute()
+            )
+            encoded = candidate.get("raw", "")
+            if "SENT" not in candidate.get("labelIds", []) or len(encoded) > MAX_MIME_BYTES * 2:
+                return None
+            parsed = BytesParser(policy=SMTP).parsebytes(base64.urlsafe_b64decode(encoded + "==="))
+            if not isinstance(parsed, EmailMessage) or content_fingerprint(parsed) != saved.get(
+                "content_sha256"
+            ):
+                return None
     return str(matches[0]) if len(matches) == 1 else None
+
+
+async def commit_send(
+    storage: Storage,
+    api: Any,
+    key: str,
+    saved: dict[str, Any],
+    serialized: bytes,
+    thread_id: str,
+) -> dict[str, Any]:
+    """One durable intent for both conversation replies and control-plane notices."""
+    from googleapiclient.errors import HttpError
+
+    try:
+        generation = await asyncio.to_thread(storage.put_if, key, json.dumps(saved).encode(), None)
+    except Conflict:
+        raise RuntimeError("Another delivery owns this outbox operation; retry") from None
+    body = {"raw": base64.urlsafe_b64encode(serialized).decode()}
+    if thread_id:
+        body["threadId"] = thread_id
+    try:
+        response = await asyncio.to_thread(
+            api.users().messages().send(userId="me", body=body).execute
+        )
+    except HttpError as exc:
+        if exc.resp.status in {400, 401, 403, 404, 413, 429}:
+            await asyncio.to_thread(storage.delete_if, key, generation)
+        raise
+    saved.update(
+        status="sent", gmail_id=response["id"], gmail_thread=response.get("threadId", thread_id)
+    )
+    await asyncio.to_thread(storage.put_if, key, json.dumps(saved).encode(), generation)
+    return saved
+
+
+async def notice(
+    bridge: BatchBridge,
+    operation: str,
+    recipient: str,
+    subject: str,
+    text: str,
+    *,
+    thread_id: str = "",
+    in_reply_to: str = "",
+) -> dict[str, str]:
+    """Send to one code-authorized recipient; never infer an audience from model output."""
+    recipient = recipient_email(recipient)
+    if not subject or len(subject) > 200 or any(c in subject for c in "\r\n") or len(text) > 20000:
+        raise ValueError("Invalid control-plane notice.")
+    identifier = hashlib.sha256(operation.encode()).hexdigest()
+    key = f"{EMAIL_STATE_PREFIX}/outbox/notices/{identifier}.json"
+    intent = hashlib.sha256(
+        json.dumps([recipient, subject, text, thread_id, in_reply_to]).encode()
+    ).hexdigest()
+    api = await asyncio.to_thread(gmail_client.service, bridge.app)
+    try:
+        raw, generation = await asyncio.to_thread(bridge.storage.get, key)
+    except FileNotFoundError:
+        saved = {}
+    else:
+        saved = json.loads(raw)
+        if saved.get("intent") != intent:
+            raise ValueError("Notice identity was reused for different content.")
+        if saved.get("status") != "sent":
+            matched = await asyncio.to_thread(
+                sent_match, api, saved, saved.get("gmail_thread", thread_id)
+            )
+            if not matched:
+                raise UnconfirmedDelivery("Notice send is unconfirmed; held for operator review.")
+            receipt = await asyncio.to_thread(
+                api.users()
+                .messages()
+                .get(userId="me", id=matched, format="metadata", fields="id,threadId")
+                .execute
+            )
+            saved.update(status="sent", gmail_id=matched, gmail_thread=receipt["threadId"])
+            await asyncio.to_thread(
+                bridge.storage.put_if, key, json.dumps(saved).encode(), generation
+            )
+    if not saved:
+        message = EmailMessage(policy=SMTP)
+        message["From"] = bridge.app.gmail_account
+        message["To"] = recipient
+        message["Subject"] = subject
+        message["Message-ID"] = (
+            f"<mica.notice.{identifier}@{gmail_client.mailbox(bridge.app).split('@')[1]}>"
+        )
+        message["X-Mica-Delivery-ID"] = uuid.uuid4().hex
+        if in_reply_to:
+            message["In-Reply-To"] = in_reply_to
+            message["References"] = in_reply_to
+        message.set_content(text)
+        saved = await commit_send(
+            bridge.storage,
+            api,
+            key,
+            {
+                "status": "sending",
+                "intent": intent,
+                "message_id": str(message["Message-ID"]),
+                "delivery_id": str(message["X-Mica-Delivery-ID"]),
+                "content_sha256": content_fingerprint(message),
+                "gmail_thread": thread_id,
+            },
+            message.as_bytes(),
+            thread_id,
+        )
+    return {"id": str(saved["gmail_id"]), "thread_id": str(saved.get("gmail_thread", ""))}
 
 
 async def _deliver(
@@ -131,8 +252,6 @@ async def _deliver(
     kind: str,
     result: TerminalResult | None = None,
 ) -> str:
-    from googleapiclient.errors import HttpError
-
     stages = (kind,) if kind in {"ack", "final"} else transfer_state.mail_stages(kind)
     if not stages:
         raise ValueError("Invalid email delivery stage")
@@ -295,31 +414,8 @@ async def _deliver(
         "sha256": hashlib.sha256(serialized).hexdigest(),
         "content_sha256": content_fingerprint(message),
     }
-    try:
-        generation = await asyncio.to_thread(storage.put_if, key, json.dumps(saved).encode(), None)
-    except Conflict:
-        raise RuntimeError("Another delivery owns this outbox operation; retry") from None
-    try:
-        response = await asyncio.to_thread(
-            api.users()
-            .messages()
-            .send(
-                userId="me",
-                body={
-                    "raw": base64.urlsafe_b64encode(serialized).decode(),
-                    "threadId": meta["thread_id"],
-                },
-            )
-            .execute
-        )
-    except HttpError as exc:
-        # These explicit rejections confirm that Gmail did not accept the send.
-        if exc.resp.status in {400, 401, 403, 404, 413, 429}:
-            await asyncio.to_thread(storage.delete_if, key, generation)
-        raise
-    saved.update(status="sent", gmail_id=response["id"])
-    await asyncio.to_thread(storage.put_if, key, json.dumps(saved).encode(), generation)
-    return str(response["id"])
+    sent = await commit_send(storage, api, key, saved, serialized, meta["thread_id"])
+    return str(sent["gmail_id"])
 
 
 class UnconfirmedDelivery(RuntimeError):

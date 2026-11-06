@@ -20,6 +20,7 @@ from requests.exceptions import Timeout
 from mica.agents.analysis import (
     access,
     channel_access,
+    cloud_access,
     identity,
     surface,
     write_access,
@@ -53,6 +54,9 @@ async def receive(services: Services, payload: dict[str, Any]) -> dict[str, obje
         or not re.fullmatch(r"\d+\.\d+", timestamp)
     ):
         return {"ok": True}
+    bridge = BatchBridge(services.settings, services.repository)
+    if bridge.settings.cloud_access and await cloud_access.receive(bridge, payload):
+        return {"ok": True}
     if event.get("channel_type") != "im" and event["type"] == "message":
         bot = next(
             (x.get("user_id") for x in payload.get("authorizations", []) if x.get("is_bot")), ""
@@ -63,7 +67,6 @@ async def receive(services: Services, payload: dict[str, Any]) -> dict[str, obje
         key = digest(f"{team}:{channel}:{thread}")
         if not thread or not await services.repository.get_connector_state(f"claude-thread:{key}"):
             return {"ok": True}
-    bridge = BatchBridge(services.settings, services.repository)
     storage = (
         GCSStorage(services.settings.gcs_bucket)
         if bridge.settings.access_mode == "channel"

@@ -22,6 +22,8 @@ from . import (
     tiers,
     toolkit_catalog,
 )
+from .cloud_access_config import CloudAccessProposal
+from .config import Settings
 from .direct import (
     ROUTING_SECONDS,
     DecisionFields,
@@ -90,7 +92,7 @@ def saved_decision(record: dict[str, Any]) -> dict[str, Any]:
 
 
 class Decision(DecisionFields):
-    route: Literal["reply", "compute", "transfer", "command", "access"]
+    route: Literal["reply", "compute", "transfer", "command", "access", "cloud_access"]
     command_proposal: dict[str, Any] | None = None
 
 
@@ -167,6 +169,10 @@ class RequestAccess(Input):
 
 
 # These descriptions are the tool-specific policy, shared by every loop iteration.
+CLOUD_ACCESS_DESCRIPTION = (
+    "Request configured cloud access for an email in the message, with a reason. "
+    "Email uses enforced approval; Slack directs the requester to the channel form."
+)
 DESCRIPTIONS = {
     "request_access": (
         "Request an owner approval card when project work is requested but "
@@ -245,6 +251,7 @@ DESCRIPTIONS = {
     ),
 }
 MODELS: dict[str, type[BaseModel]] = {
+    "request_cloud_access": CloudAccessProposal,
     "request_access": RequestAccess,
     "list_folders": Folders,
     "view_files": Views,
@@ -294,8 +301,8 @@ def strict_schema(model: type[BaseModel]) -> dict[str, Any]:
     return dict(clean(schema))
 
 
-def tools_for(allowed: bool) -> list[dict[str, Any]]:
-    return [
+def tools_for(allowed: bool, settings: Settings | None = None) -> list[dict[str, Any]]:
+    result = [
         {
             "name": name,
             "description": DESCRIPTIONS[name],
@@ -306,9 +313,18 @@ def tools_for(allowed: bool) -> list[dict[str, Any]]:
             "strict": name != "start_worker",
         }
         for name, model in MODELS.items()
-        if (allowed and name != "request_access")
+        if (allowed and name not in {"request_access", "request_cloud_access"})
         or (not allowed and name in {"propose_command", "request_access"})
     ]
+    if settings and settings.cloud_access:
+        result.append({
+            "name": "request_cloud_access", "strict": True,
+            "description": CLOUD_ACCESS_DESCRIPTION + " Bundles: " + "; ".join(
+                f"{key}: {bundle.title}" for key, bundle in settings.cloud_access.items()
+            ),
+            "input_schema": strict_schema(CloudAccessProposal),
+        })
+    return result
 
 
 async def pending_context(
@@ -440,7 +456,7 @@ async def run(
             "content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False)}, *media],
         }
     ]
-    tool_specs = tools_for(grant.allowed)
+    tool_specs = tools_for(grant.allowed, bridge.settings)
     if bridge.settings.thread_memory == "github_only":
         for tool_spec in tool_specs:
             if tool_spec["name"] == "read_sources":
@@ -594,6 +610,7 @@ async def run(
                     "replying",
                     note or {
                         "request_access": "Requesting owner approval…",
+                        "request_cloud_access": "Preparing the access request…",
                         "list_folders": "Checking the requested folders…",
                         "view_files": "Looking at the attached files…",
                         "read_sources": "Reading the requested sources…",
@@ -607,6 +624,11 @@ async def run(
                 async with asyncio.timeout_at(deadline):
                     if isinstance(value, RequestAccess):
                         terminal = Decision(route="access", reply="Owner review requested")
+                    elif isinstance(value, CloudAccessProposal):
+                        terminal = Decision(
+                            route="cloud_access", reply="Access request prepared",
+                            cloud_access_request=value,
+                        )
                     elif isinstance(value, Folders):
                         from .survey import inventory_uri
 
