@@ -100,3 +100,7 @@ Enter credentials only through the login button's form, never in chat.
 *Help*
 • `help` — Show this command list.
 • `help write` — Show write-access examples and saving instructions."""
+
+COMMAND_HELP += (
+    "\n• `import session` — upload a Claude Code session in an enabled project’s Slack DM."
+)

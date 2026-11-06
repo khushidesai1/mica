@@ -12,13 +12,14 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from . import memory_archive, thread_memory
+from . import memory_archive, session_review, thread_memory
 from .config import CHECKPOINT_PREFIX, Settings
 from .project_memory import Snapshot, file_limit, normalize, valid_path, validate
 from .storage import Storage
 
 
 class Proposal(BaseModel):
+    review: session_review.Review | None = None
     thread: thread_memory.Prose | None = None
     scripts: dict[str, str] = Field(default_factory=dict)
     outputs: list[str] = Field(default_factory=list, max_length=100)
@@ -126,9 +127,13 @@ def proposal(work: Path, base: Snapshot, settings: Settings, attribution: str = 
 
 
 def pending(
-    work: Path, base: Snapshot, settings: Settings, attribution: str = "", thread: str = ""
+    work: Path, base: Snapshot, settings: Settings, attribution: str = "", thread: str = "",
+    import_pass: bool = False,
 ) -> bytes:
     result = proposal(work, base, settings, attribution)
+    if import_pass:
+        with suppress(OSError, ValueError):
+            result.review = session_review.read(work)
     if thread and thread_memory.enabled(settings):
         from .script_capture import read_regular
 

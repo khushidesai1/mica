@@ -136,6 +136,7 @@ async def test_stable_system_per_turn_hook_and_trusted_skills(tmp_path):
         "mica:cellpose",
         "mica:project-knowledge",
         "mica:segmentation-report",
+        "mica:session-import",
     ]
     guard = second.hooks["PreToolUse"][0].hooks[0]
     assert not await guard(

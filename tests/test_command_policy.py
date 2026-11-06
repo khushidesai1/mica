@@ -8,6 +8,7 @@ from mica.agents.analysis import command_intent, commands
 
 BASELINE = {
     "bare": [
+        "import session",
         "atomx login status",
         "brief",
         "cancel",
@@ -100,6 +101,7 @@ BASELINE = {
         "transfers",
     ],
     "dm_only": [
+        "import session",
         "add-owner",
         "atomx login status",
         "connect atomx",
@@ -136,6 +138,7 @@ BASELINE = {
     ],
     "exact_approval": ["add-owner", "data-root", "remove-owner", "repos add", "repos remove"],
     "natural": [
+        "import session",
         "add-owner",
         "atomx login status",
         "brief",

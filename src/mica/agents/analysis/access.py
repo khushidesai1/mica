@@ -230,7 +230,10 @@ def worker_permitted(
     doc = Registry(storage).load()
     if not doc.can_use(pid, email) or request.get("private") != is_private(event):
         return False
-    if request.get("ambient") and not doc.owns(pid, email):
+    origin = request.get("ambient") or {}
+    if origin and origin.get("kind", "ambient") == "ambient" and not doc.owns(pid, email):
+        return False
+    if origin.get("kind") == "session_import" and request.get("write_grant"):
         return False
     channel_key = f"{request['payload'].get('team_id', '')}:{event.get('channel', '')}"
     if not is_private(event) and channel_key not in doc.projects[pid].published_channels:

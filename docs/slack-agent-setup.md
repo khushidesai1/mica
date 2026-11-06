@@ -690,6 +690,24 @@ Email supports reading data and returning analysis artifacts. Project-data write
 access-management commands and interactive approval controls require Slack. Internal conversation
 checkpoints and project knowledge continue to work normally.
 
+### Session upload cards
+
+`import session` opens a project-scoped workflow in a Slack DM. Natural-language import
+requests use the same command. The modal accepts one Claude Code JSONL file, optional
+highlights, and an optional request to perform after the verified import review.
+Slack's [file input element](https://docs.slack.dev/reference/block-kit/block-elements/file-input-element/)
+requires `files:read` and has a 100 MB limit; the reference manifest already includes that
+scope. Server-side type and byte limits apply independently of the file picker. Modal
+submission stores a durable receipt and acknowledges without downloading the file.
+
+Deploy the API and CPU/GPU workers together. Leave `AGENT_SESSION_IMPORT_PROJECTS` empty during
+the release, verify the installed app's scope and modal with a synthetic test project, then
+add approved project IDs. Measure a full-size slice; if it spends over 60% of the existing
+per-turn budget, reduce `AGENT_SESSION_IMPORT_SLICE_CHARS`. Verify a two-pass import, a separate
+follow-on question and a new-thread reference lookup before enabling a collaborator's project.
+See [project memory](project-memory.md#detailed-results-and-session-imports) for storage,
+continuation, retention and partial-save behavior.
+
 ## VM and other cloud-access requests
 
 With `AGENT_CLOUD_ACCESS` configured, invite Mica to the bundle's request channel (initially

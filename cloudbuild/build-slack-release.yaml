@@ -32,6 +32,14 @@ steps:
     name: gcr.io/cloud-builders/docker
     waitFor: [build-slack-worker]
     args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_SLACK_IMAGE}', /workspace/scripts/check_slack_release.py, worker]
+  - id: verify-session-import-api
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-api]
+    args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_session_import_release.py]
+  - id: verify-session-import-worker
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-slack-worker]
+    args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_SLACK_IMAGE}', /workspace/scripts/check_session_import_release.py]
   - id: verify-atomx-api
     name: gcr.io/cloud-builders/docker
     waitFor: [build-api]
