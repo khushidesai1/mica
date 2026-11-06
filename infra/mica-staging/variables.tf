@@ -61,11 +61,29 @@ variable "project_roles" {
   description = "Audited existing effective project roles, per identity. No owner/editor roles."
   type        = map(set(string))
   validation {
+    condition     = !contains(keys(var.project_roles), "access")
+    error_message = "The access identity must use the conditional access_grant_roles ceiling only."
+  }
+  validation {
     condition = alltrue(flatten([
       for roles in values(var.project_roles) : [for role in roles :
       !contains(["roles/owner", "roles/editor", "roles/viewer"], role)]
     ]))
     error_message = "Do not grant primitive project roles."
+  }
+}
+variable "access_grant_roles" {
+  description = "Explicit operator-approved role ceiling for the dedicated cloud access granter."
+  type        = set(string)
+  default     = []
+  validation {
+    condition = length(var.access_grant_roles) <= 10 && alltrue([
+      for role in var.access_grant_roles :
+      can(regex("^roles/[A-Za-z][A-Za-z0-9_.]{0,100}$", role)) &&
+      role != "roles/owner" && !startswith(role, "roles/iam.") &&
+      !startswith(role, "roles/resourcemanager.")
+    ])
+    error_message = "Choose at most ten predefined roles, excluding owner and IAM administration."
   }
 }
 variable "write_prefixes" {

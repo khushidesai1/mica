@@ -230,3 +230,19 @@ Provider commands, connection receipts and failure codes keep their existing ide
 Core modules obtain trusted skill IDs from the toolkit registry rather than naming individual
 methods. A source-boundary test keeps provider and incident-specific method names out of the
 conversation, compute, delivery and failure-assessment mechanisms.
+
+### Configured cloud-access approvals
+
+The `cloud_access` approval kind handles a separate, optional role-grant workflow. Configured
+channels bypass analysis admission and use a bound request form; email can propose a configured
+bundle for a verified sender or an explicitly mentioned target. A live lab-member check can
+preapprove a target. Other requests require the configured Slack approver or an exact verified
+`approve`/`deny` reply in the dedicated approval email thread. This IAM-only exception leaves
+project write and administrative email restrictions intact.
+
+The control plane impersonates a dedicated access identity with a Terraform role ceiling.
+An add-only IAM client preserves version-3 policy conditions and uses etag retries. Durable
+request leases, target reservations, expiry/resumption timers and the existing Gmail outbox
+separate approval, granting and notification. Bundles are snapshotted; settings changes cannot
+broaden a pending request. Ambiguous emails are held, not resent. See
+[cloud access](cloud-access.md) for the permission boundary and operator rollout.

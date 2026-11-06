@@ -117,6 +117,8 @@ async def edit(key: str, model: str, context: dict[str, Any]) -> dict[str, str]:
 
 
 def conversation_turn(record: dict[str, Any]) -> bool:
+    if record.get("reply_scope") == "cloud_access":
+        return False
     if record.get("cancel_requested") or record.get("cancelled_by"):
         return False
     try:

@@ -17,7 +17,7 @@ locals {
 }
 
 resource "google_service_account" "runtime" {
-  for_each     = toset(["control", "worker", "writer"])
+  for_each     = toset(["control", "worker", "writer", "access"])
   account_id   = "${var.name}-${each.key}"
   display_name = "Mica ${each.key}"
   lifecycle { prevent_destroy = true }
@@ -98,6 +98,24 @@ resource "google_service_account_iam_member" "writer_controller" {
   service_account_id = google_service_account.runtime["writer"].name
   role               = "roles/iam.serviceAccountTokenCreator"
   member             = "serviceAccount:${google_service_account.runtime["control"].email}"
+}
+
+resource "google_service_account_iam_member" "access_controller" {
+  service_account_id = google_service_account.runtime["access"].name
+  role               = "roles/iam.serviceAccountTokenCreator"
+  member             = "serviceAccount:${google_service_account.runtime["control"].email}"
+}
+
+resource "google_project_iam_member" "access_granter" {
+  count   = length(var.access_grant_roles) > 0 ? 1 : 0
+  project = var.project_id
+  role    = "roles/resourcemanager.projectIamAdmin"
+  member  = "serviceAccount:${google_service_account.runtime["access"].email}"
+  condition {
+    title       = "Mica configured access roles only"
+    description = "Limits modified roles, not recipients; controller grants users only."
+    expression  = "api.getAttribute('iam.googleapis.com/modifiedGrantsByRole', []).hasOnly(${jsonencode(sort(tolist(var.access_grant_roles)))})"
+  }
 }
 
 resource "google_pubsub_topic_iam_member" "gmail_publisher" {
