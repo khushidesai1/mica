@@ -289,7 +289,9 @@ def select_crops(rows, seed=17):
     tissue = [r for r in rows if not r["zero_image"]]
     if not tissue:
         tissue = rows
-    ordered = sorted(tissue, key=lambda r: (r["score"], r["id"]))
+    ordered = sorted(
+        [r for r in tissue if r["score"] is not None], key=lambda r: (r["score"], r["id"])
+    )
     picks, used = [], set()
     for reason, choices in [("Best QC", ordered[::-1]), ("Worst QC", ordered)]:
         for row in [r for r in choices if r["id"] not in used][:2]:
@@ -298,7 +300,13 @@ def select_crops(rows, seed=17):
     remaining = [r for r in tissue if r["id"] not in used]
     rng = np.random.default_rng(seed)
     for i in rng.permutation(len(remaining))[:2]:
-        picks.append((remaining[int(i)], "Seeded random tissue"))
+        row = remaining[int(i)]
+        picks.append((row, "Seeded random tissue"))
+        used.add(row["id"])
+    for row in tissue:
+        if len(picks) < 6 and row["id"] not in used:
+            picks.append((row, "Additional tissue: insufficient ranked FOVs"))
+            used.add(row["id"])
     # Tiny fixtures may have fewer than six distinct FOVs; label repeats honestly.
     while len(picks) < 6:
         picks.append((tissue[len(picks) % len(tissue)], "Repeat: fewer than six tissue FOVs"))
@@ -381,7 +389,9 @@ def make_report(request):
                     "cells": count,
                     "assigned_pct": assigned,
                     "zero_image": zero,
-                    "score": assigned / 100 if assigned is not None else density,
+                    "score": (assigned / 100 if assigned is not None else None)
+                    if tx is not None
+                    else density,
                 }
             )
         picks = select_crops(rows)
@@ -400,6 +410,7 @@ def make_report(request):
             "transcripts_observed": total_tx,
             "transcripts_sampled": 0 if tx is None else len(tx),
             "fovs": rows,
+            "fov_score_metric": "assigned_fraction" if tx is not None else "cells_per_pixel2",
             "crops": [{"fov": r["id"], "reason": why} for r, why in picks],
         }
         cohort = []
@@ -669,16 +680,24 @@ def render(
             for r in summary["fovs"]
         ]
         collection = PatchCollection(patches, cmap="viridis", edgecolor="white", linewidth=0.2)
-        collection.set_array(np.array([r["score"] for r in summary["fovs"]]))
+        collection.set_array(
+            np.ma.masked_invalid(
+                np.array([r["score"] for r in summary["fovs"]], dtype=float)
+            )
+        )
+        collection.cmap.set_bad("#d5d5d5")
         ax.add_collection(collection)
         ax.set_xlim(0, image.width)
         ax.set_ylim(image.height, 0)
         ax.set_aspect("equal")
         ax.set_xlabel("x (pixels)")
         ax.set_ylabel("y (pixels)")
-        fig.colorbar(
-            collection, ax=ax, label="Assigned fraction; cell density when assignment unavailable"
-        )
+        fig.colorbar(collection, ax=ax, label=summary["fov_score_metric"].replace("_", " "))
+        if summary["fov_score_metric"] == "assigned_fraction":
+            fig.text(
+                0.1, 0.07, "Gray FOVs have no sampled transcripts; they are not QC-ranked.",
+                fontsize=9,
+            )
         save(fig, "05-fov-qc")
         fig = page("Flags and visual review", 6)
         lines = [f"{len(flags)} automatic flags. Thresholds and all details are in flags.json.", ""]

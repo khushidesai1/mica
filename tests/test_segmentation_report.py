@@ -95,6 +95,8 @@ def test_report_outputs_flags_and_pdf_pages(tmp_path, monkeypatch, kind):
     assert summary["area_um2"]["median"] == pytest.approx(4)
     assert summary["assigned_pct"] == 50
     assert summary["transcripts_sampled"] == 6
+    assert summary["fov_score_metric"] == "assigned_fraction"
+    assert all(r["score"] is None for r in summary["fovs"] if r["assigned_pct"] is None)
     flags = json.loads(Path("outputs/qc/flags.json").read_text())
     assert {f["code"] for f in flags} >= {"low_assignment", "small_cells", "zero_image"}
     assert len(summary["crops"]) == 6
