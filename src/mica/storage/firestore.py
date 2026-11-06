@@ -303,6 +303,15 @@ class FirestoreRepository:
     async def set_connector_state(self, key: str, value: dict[str, Any]) -> None:
         await self.client.collection("connector_state").document(key).set(value)
 
+    async def create_connector_state(self, key: str, value: dict[str, Any]) -> bool:
+        from google.api_core.exceptions import AlreadyExists
+
+        try:
+            await self.client.collection("connector_state").document(key).create(value)
+        except AlreadyExists:
+            return False
+        return True
+
     async def get_connector_state(self, key: str) -> dict[str, Any] | None:
         snapshot = await self.client.collection("connector_state").document(key).get()
         return snapshot.to_dict() if snapshot.exists else None

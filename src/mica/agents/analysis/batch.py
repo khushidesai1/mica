@@ -427,6 +427,7 @@ class BatchBridge:
         *,
         principal: str | None = None,
         surface_name: str = "slack",
+        ambient: dict[str, Any] | None = None,
     ) -> str:
         from .transfers import scrub_password_paste
 
@@ -485,6 +486,12 @@ class BatchBridge:
                     "write_control": surface_name == "slack"
                     and write_access.is_command(event.get("text", "")),
                 }
+                if ambient is not None:
+                    if surface_name != "slack" or not principal:
+                        raise ValueError("Background intake requires a trusted Slack principal")
+                    receipt["ambient"] = ambient
+                    receipt["deadline_at"] = float(ambient["deadline_at"])
+                    receipt["write_control"] = False
                 if self.settings.amendments and receipt.get("previous"):
                     previous = await self.repository.get_connector_state(
                         f"claude-event:{receipt['previous']}"
@@ -703,6 +710,11 @@ class BatchBridge:
         """Fill missing history before a terminal event releases the next turn."""
         from . import recovery
         from .direct import record_exchange
+
+        if record.get("ambient") and record["status"] in {"complete", "failed"}:
+            from .ambient_delivery import terminal
+
+            await terminal(self, event_id, record)
 
         if (
             record["status"] not in {"complete", "failed"}
@@ -926,7 +938,7 @@ class BatchBridge:
                 return
             if "write_grant" not in record:
                 writable = await asyncio.to_thread(
-                    write_access.active, self.storage, record["project_id"], self.settings
+                    write_access.active, self.storage, record["project_id"], self.settings, event_id
                 )
                 record["write_grant"] = writable.model_dump(mode="json") if writable else None
             try:
@@ -1022,7 +1034,7 @@ class BatchBridge:
             storage = GCSStorage(self.app.gcs_bucket)
             if "write_grant" not in record:
                 writable = await asyncio.to_thread(
-                    write_access.active, storage, record["project_id"], self.settings
+                    write_access.active, storage, record["project_id"], self.settings, event_id
                 )
                 record["write_grant"] = writable.model_dump(mode="json") if writable else None
                 await self.repository.set_connector_state(f"claude-event:{event_id}", record)
@@ -1117,6 +1129,9 @@ class BatchBridge:
             }
             if record.get("amendments_enabled"):
                 manifest["amendments_enabled"] = True
+            if record.get("ambient"):
+                manifest["ambient"] = record["ambient"]
+                manifest["deadline_at"] = record["deadline_at"]
             if references["snapshots"] or references["unavailable"]:
                 manifest["reference_repos"] = references["snapshots"]
                 manifest["reference_repos_unavailable"] = references["unavailable"]

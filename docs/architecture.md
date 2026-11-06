@@ -1,5 +1,11 @@
 # Architecture
 
+Operator-configured [ambient tasks](ambient-tasks.md) use the existing reconciliation schedule
+to discover newly completed samples and submit trusted presets into ordinary private worker
+threads. Create-only discovery receipts, event-bound output grants and fixed run deadlines keep
+starts idempotent and publishing scoped. Tasks default off; project recipes determine the
+scientific method and the bundled segmentation-report skill provides reusable QC outputs.
+
 Cloud Run is the authenticated control plane and scales to zero. Firestore holds projects, tasks,
 session items, memories, deduplication records, channel bindings, and the immutable tool registry.
 Cloud Tasks makes task intake asynchronous and limits dispatch concurrency to three. Google Cloud

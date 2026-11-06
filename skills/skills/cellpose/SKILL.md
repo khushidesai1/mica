@@ -46,3 +46,7 @@ version and parameters before reuse. Scratch and running processes do not surviv
 Estimates are advisory. Long healthy processes can continue within the approved allowance;
 check `compute_allowance` during long work. Save progress and request additional allowance if
 needed. Never lower resolution, omit tiles, or change models to fit a timer.
+
+After whole-sample or multi-FOV segmentation, use `mica:segmentation-report` to produce the
+standard PDF and summary. Inspect the crop overlays, add visual review notes, and publish the
+summary alongside the result. Keep the exact model/version and measured pixel scale in the report.

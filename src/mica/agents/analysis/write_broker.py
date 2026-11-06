@@ -275,9 +275,11 @@ def upload(
 
     def check() -> write_access.WriteGrant:
         authorized()
-        return write_access.require_active(storage, project_id, grant_id, settings)
+        return write_access.require_active(storage, project_id, grant_id, settings, event_id)
 
     grant = check()
+    if isinstance(grant, write_access.EventWriteGrant):
+        approval = None
     uri = grant.uri + relative
     if len(urlsplit(uri).path.lstrip("/").encode()) > 1024:
         raise ValueError("The destination object name is too long.")

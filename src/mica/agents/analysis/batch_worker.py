@@ -868,6 +868,12 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         checkpoint["private_owner"] = request["principal"]
     checkpoint["messages"] = saved.get("messages", [])
     checkpoint["thread_files"] = attachments.merge(saved.get("thread_files", []), agent.delivered)
+    if request.get("ambient"):
+        storage.put(
+            f"{prefix}/ambient-result.json",
+            json.dumps({"text": agent.last_reply, "files": agent.delivered}).encode(),
+        )
+        checkpoint["ambient_origin"] = request["ambient"]
     record_exchange(
         checkpoint,
         event_id,

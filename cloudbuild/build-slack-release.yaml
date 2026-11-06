@@ -58,6 +58,10 @@ steps:
     args:
       - -ceu
       - if [ '${_VERIFY_SPATIAL}' = '1' ]; then docker run --rm --network=none -e OMP_NUM_THREADS=1 -v /workspace:/workspace:ro --entrypoint /opt/sap/bin/python '${_SLACK_IMAGE}' /workspace/scripts/check_spatial_release.py; fi
+  - id: verify-segmentation-report
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-slack-worker]
+    args: [run, --rm, --network=none, -e, MPLCONFIGDIR=/tmp/matplotlib, -v, /workspace:/workspace:ro, --entrypoint, /opt/sap/bin/python, '${_SLACK_IMAGE}', /workspace/scripts/check_segmentation_release.py]
   - id: verify-cellpose-cpu
     name: gcr.io/cloud-builders/docker
     waitFor: [build-slack-worker]

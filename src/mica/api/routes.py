@@ -443,12 +443,16 @@ async def ingest_failure_log(
 @router.post("/internal/maintenance/reconcile-batch", include_in_schema=False)
 async def reconcile_batch_jobs(principal: PrincipalDep, services: ServicesDep) -> dict[str, int]:
     _require_internal_principal(principal, services)
-    from mica.agents.analysis import observability
+    from mica.agents.analysis import ambient, observability
+    from mica.agents.analysis.batch import BatchBridge
 
     # The shared Batch reconciler may be disabled or fail; incident delivery still runs.
     failures = await observability.maintenance(services.repository, services.settings)
-    result = await services.tasks.reconcile_batch_jobs()
-    return {**result, **failures}
+    try:
+        result = await services.tasks.reconcile_batch_jobs()
+    finally:
+        background = await ambient.scan(BatchBridge(services.settings, services.repository))
+    return {**result, **failures, **background}
 
 
 @router.post("/internal/batch/completion", include_in_schema=False)

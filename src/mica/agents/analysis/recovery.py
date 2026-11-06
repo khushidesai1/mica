@@ -72,6 +72,8 @@ def initialize(record: dict[str, Any], settings: Settings, *, now: float) -> Non
         model_spent=0.0,
         attempt_ledger=[],
     )
+    if "deadline_at" in record:
+        record["request_deadline"] = min(record["request_deadline"], record["deadline_at"])
 
 
 def remaining_recoveries(record: dict[str, Any], settings: Settings) -> int:

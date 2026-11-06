@@ -12,7 +12,9 @@ if TYPE_CHECKING:
     from .runtime_install import RuntimeRecord
     from .storage import Storage
 
-BUNDLED_SKILLS = ("mica:spatial-analysis", "mica:cellpose", "mica:project-knowledge")
+BUNDLED_SKILLS = (
+    "mica:spatial-analysis", "mica:cellpose", "mica:project-knowledge", "mica:segmentation-report"
+)
 
 
 @dataclass(frozen=True)

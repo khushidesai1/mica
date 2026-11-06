@@ -109,6 +109,8 @@ def allowed_replacement(approval: Approval | None, uri: str, blob: Any) -> int:
 def validate(
     bridge: BatchBridge, storage: Storage, record: dict[str, Any], approval: Approval
 ) -> None:
+    if record.get("ambient"):
+        raise ValueError("Background runs publish new objects only")
     current = access.resolve(bridge.app, bridge.settings, storage, record)
     if (
         not current.allowed
@@ -118,7 +120,11 @@ def validate(
         or record.get("write_grant", {}).get("id") != approval.grant_id
     ):
         raise ValueError("Project access changed. Send a new request.")
-    write_access.require_active(storage, approval.project_id, approval.grant_id, bridge.settings)
+    grant = write_access.require_active(
+        storage, approval.project_id, approval.grant_id, bridge.settings, approval.event_id
+    )
+    if isinstance(grant, write_access.EventWriteGrant):
+        raise ValueError("Background runs publish new objects only")
 
 
 def blocks(approval: Approval, grant_uri: str) -> tuple[str, list[dict[str, Any]]]:
@@ -153,6 +159,16 @@ def blocks(approval: Approval, grant_uri: str) -> tuple[str, list[dict[str, Any]
 async def ready(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage
 ) -> bool:
+    if record.get("ambient"):
+        frozen = record.get("write_grant") or {}
+        grant = await asyncio.to_thread(
+            write_access.require_active, storage, record["project_id"],
+            frozen.get("id", ""), bridge.settings, event_id,
+        )
+        if not isinstance(grant, write_access.EventWriteGrant):
+            raise PermissionError("Background publishing requires its event grant")
+        record.update(overwrite_checked=True, overwrite_paths=[])
+        return True
     if record.get("overwrite_checked"):
         if record.get("overwrite_paths"):
             saved = await asyncio.to_thread(load, storage, event_id)
