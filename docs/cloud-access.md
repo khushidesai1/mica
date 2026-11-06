@@ -4,6 +4,12 @@ Mica can request operator-configured Google Cloud roles for a named email addres
 separate from project membership and analysis admission. It does not enable analysis in the
 request channel or grant access to Mica projects.
 
+Cloud requests and approval replies do not inherit the sender's default Mica project or enter
+its conversation history or memory. Email approval notes use the requester's message, and replies
+go only to the verified sender. An access bundle can target a Google Cloud project with no
+corresponding Mica project; the operator must explicitly configure that bundle and its IAM
+permissions. The initial VM bundle targets `azizilab-aml`.
+
 `AGENT_CLOUD_ACCESS` is a JSON object keyed by bundle name. An empty object (the default)
 disables intake and hides the conversation tool. Each bundle provides `title`, `gcp_project`,
 `roles`, `channel` (`T…:C…`), `approver` (`T…:U…`, defaults to
@@ -91,8 +97,12 @@ Back up the existing state and apply that exact reviewed saved plan, without `-a
 Do not run a fresh empty-root apply or use the old `infra` root for this change. The private
 rollout handoff contains the concrete local plan path and command.
 
-Before testing, make the setup guide readable by anyone with its link, since outside Google
-accounts need it. Mica is already a member of #vm-access in the initial AziziLab configuration.
+If Cloud Run traffic is pinned, applying configuration may create a ready revision without
+serving it. Verify that revision's settings, preview its health/auth behavior, then explicitly
+move traffic to it using the normal release process before testing.
+
+Recipients are assumed to have access to the setup guide; this flow does not change its
+sharing. Mica is already a member of #vm-access in the initial AziziLab configuration.
 
 ## Guided live acceptance
 

@@ -170,8 +170,8 @@ class RequestAccess(Input):
 
 # These descriptions are the tool-specific policy, shared by every loop iteration.
 CLOUD_ACCESS_DESCRIPTION = (
-    "Request configured cloud access for an email in the message, with a reason. "
-    "Email uses enforced approval; Slack directs the requester to the channel form."
+    "Request a configured cloud bundle for an email in the message, using the user's reason. "
+    "Never infer a Mica project. Email requires approval; Slack links the form."
 )
 DESCRIPTIONS = {
     "request_access": (
@@ -398,6 +398,10 @@ async def persist(
         direct_decision_pending=False,
         decision_access=grant.signature,
     )
+    if decision.route == "cloud_access":
+        from .cloud_access import scope_reply
+
+        scope_reply(record)
     await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
     return decision
 

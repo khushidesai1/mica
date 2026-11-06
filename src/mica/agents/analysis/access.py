@@ -118,6 +118,8 @@ def resolve(app: Any, settings: Settings, storage: Storage, record: dict[str, An
     channel_key = f"{team}:{event['channel']}"
     if not email:
         return Grant("", private, {}, RegistryDoc(), "", False, channel_key)
+    if record.get("reply_scope") == "cloud_access":
+        return Grant(email, private, {}, RegistryDoc(), "", False, channel_key)
     doc = Registry(storage).load()
     try:
         # Only the trusted resolver sees routing metadata until membership is established.

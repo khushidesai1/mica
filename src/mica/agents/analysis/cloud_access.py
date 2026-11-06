@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import re
 import secrets
 import time
@@ -28,6 +29,41 @@ if TYPE_CHECKING:
 
 PREFIX = "mica_cloud_access_"
 CALLBACK = PREFIX + "submit"
+
+
+def scope_reply(record: dict[str, Any]) -> None:
+    """Cloud IAM has its own policy; a Mica project is never its authority or audience."""
+    record.update(reply_scope="cloud_access", reply_audience="sender_only")
+    for field in (
+        "project_id", "project_name", "memory_project_id", "memory_reply", "memory_pending",
+        "memory_due", "failure_project_id", "failure_project_name", "failure_project_target",
+        "decision_access", "account_visibility",
+    ):
+        record.pop(field, None)
+
+
+async def detach_thread(storage: Storage, record: dict[str, Any], event_id: str) -> None:
+    """Unbind only a new, unused context created while routing this access request."""
+    from .access import checkpoint_key
+
+    path = checkpoint_key(record["thread_key"])
+    try:
+        raw, generation = await asyncio.to_thread(storage.get, path)
+    except FileNotFoundError:
+        return
+    state = json.loads(raw)
+    if (
+        state.get("conversation_origin_event") != event_id
+        or state.get("messages")
+        or state.get("turn")
+    ):
+        return  # Preserve an existing analysis conversation, including its binding.
+    for field in (
+        "context", "conversation_origin_event", "thread_memory_origin", "thread_memory_exempt",
+        "is_init", "turn", "messages",
+    ):
+        state.pop(field, None)
+    await asyncio.to_thread(storage.put_if, path, json.dumps(state).encode(), generation)
 
 
 class FormError(ValueError):
@@ -692,7 +728,8 @@ async def propose(
         return "Which email should receive access? Include the full address in your message."
     row = await request(
         bridge,
-        proposal,
+        # Preserve the user's actual reason, not a model inference from a default project.
+        proposal.model_copy(update={"note": text.strip()[:500] or "Cloud access requested"}),
         "email:" + event_id,
         requester=sender,
         origin="email",
@@ -730,6 +767,7 @@ async def email_decision(
             return None
         if row.approval_mail.get(sender, {}).get("thread_id") != thread:
             return None
+        scope_reply(record)
         await decide(bridge, storage, row, sender, first == "approve")
     return outcome(await resume(bridge, storage, row.id))
 
