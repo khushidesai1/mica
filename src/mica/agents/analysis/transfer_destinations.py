@@ -37,18 +37,20 @@ def guide_paths(guide: str, data_uri: str) -> set[str]:
 
 
 def resolve(
-    request: TransferRequest, guide: str, text: str, doc: RegistryDoc, project: str, owner: str
+    request: TransferRequest, guide: str, text: str, doc: RegistryDoc, project: str, owner: str,
+    *, history_text: str = "",
 ) -> TransferProject:
     if not doc.can_use(project, owner):
         raise ValueError("Project membership is required.")
     linked = doc.projects[project].data_uri
     bucket = urlsplit(linked).netloc
     requested = {scope(p.rstrip(".,;")) for p in URI.findall(message_text(text))}
+    previous = {scope(p.rstrip(".,;")) for p in URI.findall(message_text(history_text))}
     documented = guide_paths(guide, linked)
     raw = {p for p in documented if urlsplit(p).path.rstrip("/").split("/")[-1] == "raw"}
     chosen = scope(request.destination) if request.destination else ""
     if chosen:
-        if chosen not in requested | documented:
+        if chosen not in requested | previous | documented:
             raise ValueError(
                 "What exact raw import folder should I use? Include its gs:// "
                 "path, or add it to the project guide."
@@ -67,7 +69,7 @@ def resolve(
     additional = {
         p for p in documented if urlsplit(p).path.rstrip("/").split("/")[-1] == "additional_files"
     }
-    if extra and extra not in requested | documented:
+    if extra and extra not in requested | previous | documented:
         raise ValueError(
             "Please specify the additional-files destination explicitly or "
             "document it in the project guide."
@@ -104,5 +106,5 @@ def resolve(
         raw_prefix=urlsplit(chosen).path.lstrip("/"),
         additional_prefix=urlsplit(extra).path.lstrip("/"),
         status_prefix=urlsplit(chosen).path.lstrip("/") + ".mica-transfers/",
-        layout_source="request" if chosen in requested else "project_guide",
+        layout_source="request" if chosen in requested | previous else "project_guide",
     )

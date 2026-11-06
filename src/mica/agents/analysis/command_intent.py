@@ -137,8 +137,19 @@ async def remember_projects(
     await remember(bridge, record, grant, {"choices": choices, "operation": "use"})
 
 
-def command(proposal: Proposal, grant: access.Grant, *, source_text: str = "") -> commands.Command:
+def command(
+    proposal: Proposal, grant: access.Grant, *, source_text: str = "", input_text: str = ""
+) -> commands.Command:
     op = proposal.operation
+    supplied_text = source_text + "\n" + input_text
+    if (op in {"brief", "memory"} and (proposal.target or proposal.scope)) or (
+        op == "brief" and proposal.path
+    ):
+        raise ValueError(
+            f"{op} only displays saved content; it cannot save those edits. "
+            "Use start_worker to update PROJECT.md, preserve its other contents, "
+            "and verify the saved change before reporting success."
+        )
     if op in {"share", "unshare"} and (
         proposal.scope.strip().lower() not in {"", "member", "collaborator"}
         or re.search(r"\b(?:co[- ]?owners?|owners?|ownership)\b", source_text, re.I)
@@ -154,7 +165,7 @@ def command(proposal: Proposal, grant: access.Grant, *, source_text: str = "") -
             )
         from .data_links import message_text
 
-        supplied = re.findall(r"gs://[^\s<>`\"']+", message_text(source_text))
+        supplied = re.findall(r"gs://[^\s<>`\"']+", message_text(supplied_text))
         exact_uris = {value for token in supplied for value in (token, token.rstrip(".,;)]"))}
         if not proposal.scope.startswith("gs://") or proposal.scope not in exact_uris:
             raise ValueError("Please supply the exact gs:// data location for the new project.")
@@ -188,7 +199,7 @@ def command(proposal: Proposal, grant: access.Grant, *, source_text: str = "") -
         repo = valid_repo(proposal.target.strip())
         if not re.search(
             r"(?<![A-Za-z0-9_.-])" + re.escape(repo) + r"(?:\.git)?(?=$|[\s<>`\"'.,;)])",
-            source_text,
+            supplied_text,
             re.I,
         ):
             raise ValueError("Please supply the exact azizilab/repository to add or remove.")
@@ -196,7 +207,7 @@ def command(proposal: Proposal, grant: access.Grant, *, source_text: str = "") -
     if op == "data-root":
         from .data_links import data_uri, message_text
 
-        supplied = re.findall(r"gs://[^\s<>`\"']+", message_text(source_text))
+        supplied = re.findall(r"gs://[^\s<>`\"']+", message_text(supplied_text))
         exact_uris = {value for token in supplied for value in (token, token.rstrip(".,;)]"))}
         if not proposal.scope.startswith("gs://") or proposal.scope not in exact_uris:
             raise ValueError("What exact gs:// data location should this project use by default?")

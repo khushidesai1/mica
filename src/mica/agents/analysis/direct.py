@@ -411,21 +411,44 @@ async def read_information(
                 remaining -= len(data)
             except (ValueError, FileNotFoundError, UnicodeError):
                 result["memory"].append({"path": path, "unavailable": True})
-    if thread_memory.legacy(bridge.settings) and (
-        decision.history_query is not None or decision.history_event_id
-    ):
-        history = thread_history.History(storage, record["thread_key"], grant.project_id)
+    if decision.history_query is not None or decision.history_event_id:
         try:
-            result["history"] = await asyncio.to_thread(
-                history.recall,
-                decision.history_query or "",
-                decision.history_event_id,
-                decision.history_offset,
-            )
+            if thread_memory.github_reads(bridge.settings) or (
+                bridge.settings.thread_memory == "github_only"
+            ):
+                backend = project_memory.GitHubMemory(bridge.settings)
+                snapshot = await backend.read(grant.project_id)
+                if snapshot is None:
+                    raise FileNotFoundError("Project history is unavailable.")
+                result["history"] = thread_memory.recall(
+                    {p: f.text for p, f in snapshot.files.items()}, record["thread_key"],
+                    decision.history_query or "", decision.history_event_id,
+                    decision.history_offset,
+                )
+            else:
+                history = thread_history.History(storage, record["thread_key"], grant.project_id)
+                result["history"] = await asyncio.to_thread(
+                    history.recall, decision.history_query or "",
+                    decision.history_event_id, decision.history_offset,
+                )
         except (ValueError, FileNotFoundError):
             result["history"] = {"unavailable": True}
         if len(json.dumps(result["history"], ensure_ascii=False).encode()) > remaining:
             result["history"] = {"context_limit": True, "note": "Request history separately."}
+        else:
+            ids = [
+                row.get("event_id") or row.get("id")
+                for row in result["history"].get("matches", [])
+            ]
+            if result["history"].get("event_id"):
+                ids.append(result["history"]["event_id"])
+            previous = record.get("input_history", {})
+            if previous.get("access") == grant.signature:
+                ids = [*previous.get("ids", []), *ids]
+            record["input_history"] = {
+                "access": grant.signature,
+                "ids": list(dict.fromkeys(i for i in ids if isinstance(i, str)))[-12:],
+            }
     return result
 
 
@@ -543,6 +566,9 @@ async def handle(
                     source_text=event.get("text", "")
                     + "\n"
                     + record.get("intent_prior_request", ""),
+                    input_text=await thread_history.supplied_inputs(
+                        bridge.repository, grant, record
+                    ),
                 )
             except ValueError as exc:
                 command_intent.private_reply(record, grant)

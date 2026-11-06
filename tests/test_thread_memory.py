@@ -31,6 +31,21 @@ def texts(snapshot):
     return {p: f.text for p, f in snapshot.files.items()}
 
 
+def test_native_history_search_paging_and_event_lookup_stay_in_the_thread():
+    settings = Settings(_env_file=None)
+    rows = [update(seq).entry for seq in range(1, 7)]
+    files = tm.pages(rows, "t_one", settings)
+    files.update(tm.pages([update(7, thread="t_other").entry], "t_other", settings))
+    page = tm.recall(files, "t_one", "analysis")
+    assert [r["seq"] for r in page["matches"]] == [6, 5, 4, 3]
+    assert page["next_offset"] == 4
+    assert [r["seq"] for r in tm.recall(files, "t_one", offset=4)["matches"]] == [2, 1]
+    assert tm.recall(files, "t_one", "absent")["matches"] == []
+    assert '"event_id": "event_1"' in tm.recall(files, "t_one", event_id="event_1")["text"]
+    with pytest.raises(FileNotFoundError):
+        tm.recall(files, "t_one", event_id="event_7")
+
+
 @pytest.fixture
 def store():
     github = FakeGitHub()
