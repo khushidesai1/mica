@@ -62,6 +62,15 @@ crops are explicitly labelled. All-zero flags come from the overview and need vi
 Keep automatic flags visible even when an unusual biological result explains them.
 
 Publish the final summary next to the segmentation results (e.g. the authorized output's `qc/`
-folder), so later runs can use it as a cohort input. Deliver the final PDF and concise findings;
+folder), including the full figures, flags and provenance, so later runs can use it as a cohort
+input. After viewing the crops and confirming publication, copy only the final `report.pdf`
+and `segmentation_summary.json` to `outputs/report-delivery/`. Move the complete QC folders
+(including draft reports and figure PNGs) into `checkpoints/` before finishing the turn. Mica
+attaches every remaining file under `outputs/`; the PDF already contains the review figures,
+so do not send dozens of intermediate PNGs as separate Slack attachments. Preserve the full
+published QC folder and do not remove an unpublished result. If using `send_outputs`, register
+only `outputs/report-delivery/` after organizing these files, never a draft or full QC folder.
+
+Deliver the final PDF and concise findings;
 include missing inputs, flagged FOVs and any open scientific choices. Do not claim success when
 the report, required checks, publication, or delivery failed.

@@ -103,6 +103,10 @@ schema-v1 summary for polygon or label segmentations. It requires verified scale
 coordinate alignment. Image reads use a low-resolution overview and full-resolution crop
 windows; labels and transcript sampling are streamed. The worker views crops, adds visual-review
 notes, and publishes the summary next to the result for subsequent cohort comparisons.
+After publication, it retains the complete QC bundle in the bucket and keeps only the final
+PDF and summary in its attachment folder. Intermediate page/crop PNGs are for review, not a
+bulk Slack upload. Before final delivery, the worker validates its thread-memory JSON and lets
+the same bounded model turn correct malformed prose; identity and coverage remain application-owned.
 
 ## Release and smoke checks
 

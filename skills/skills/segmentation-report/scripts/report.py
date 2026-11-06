@@ -647,7 +647,7 @@ def render(
         save(fig, "03-crops")
         fig = page("Cohort comparison", 4)
         axes = fig.subplots(2, 2)
-        fig.subplots_adjust(top=0.86, bottom=0.13, hspace=0.55, wspace=0.25)
+        fig.subplots_adjust(top=0.86, bottom=0.22, hspace=0.95, wspace=0.25)
         entries = cohort + [summary]
         metrics = [
             ("Cell count", "cell_count"),
@@ -668,7 +668,9 @@ def render(
             ax.set_title(label)
             ax.set_xticks(range(len(entries)))
             ax.set_xticklabels(
-                [e["sample"] for e in entries], rotation=70, fontsize=max(4, 8 - len(entries) // 20)
+                [str(e["sample"]) if len(str(e["sample"])) <= 22 else str(e["sample"])[:21] + "…"
+                 for e in entries],
+                rotation=70, fontsize=max(4, 8 - len(entries) // 20)
             )
         save(fig, "04-cohort")
         fig = page("Per-FOV QC map", 5)
