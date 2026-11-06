@@ -514,6 +514,7 @@ def export_roots(remote: Remote, start: str) -> tuple[list[str], int, bool]:
     roots: list[str] = []
     frontier = [(start, 0)]
     listings = 0
+    truncated = False
     while frontier:
         if listings >= SEARCH_LISTINGS:
             return roots, listings, True
@@ -527,7 +528,9 @@ def export_roots(remote: Remote, start: str) -> tuple[list[str], int, bool]:
             roots.append(path)  # An export's own subfolders are never searched as exports.
         elif depth < SEARCH_DEPTH:
             frontier += [(posixpath.join(path, child), depth + 1) for child in sorted(children)]
-    return roots, listings, False
+        elif children:
+            truncated = True
+    return roots, listings, truncated
 
 
 def matching_slides(root: str, slides: list[str], wanted: str) -> list[str]:

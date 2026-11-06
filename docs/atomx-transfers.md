@@ -21,7 +21,7 @@ them it matches slide folders without regard to case, separators, leading zeros,
 An export named for the sample (for example `TMA37_05_11_2026_22_59_07_541`) that holds a single
 slide folder also matches, whatever that slide folder is called. The latest timestamped run is
 used, directly under the slide folder or one level below it. The bucket folder stays the
-requested name (or `as` name). With an export folder, only that folder is searched; a leading
+requested name (or `as` name). With an export folder, the search stays under that folder; a leading
 slash is optional. If nothing matches, the private notice lists the export and slide folders the
 search saw. If several match, it lists them and asks you to name one, for example
 `transfer "Slide 1" from /TMA37_05_11_2026_22_59_07_541 as TMA37`.

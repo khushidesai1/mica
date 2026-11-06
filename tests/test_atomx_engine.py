@@ -595,7 +595,9 @@ def test_export_search_is_bounded(monkeypatch):
     monkeypatch.setattr(core, "SEARCH_LISTINGS", 400)
     remote.data = {f"/a/b/c/d/TMA37_05_11_2026_22_59_07_541/DecodedFiles/TMA37/{RUN}/x": b"x"}
     # Deeper than the search depth: never crawled, so a miss stays cheap.
-    assert search(remote)["searched"]["exports"] == []
+    searched = search(remote)["searched"]
+    assert searched["exports"] == []
+    assert searched["truncated"] is True
 
 
 def test_explicit_export_folder_limits_the_search():
