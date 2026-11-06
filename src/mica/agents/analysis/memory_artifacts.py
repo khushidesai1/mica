@@ -6,15 +6,20 @@ No lifecycle or IAM changes. Sources without complete receipts are retained inde
 from __future__ import annotations
 
 import asyncio
+import gzip
 import hashlib
+import io
 import json
 import re
+import tarfile
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 from . import access, project_memory, thread_memory
+from .config import Settings
 from .storage import Conflict, GCSStorage, LocalStorage, Storage
 
 if TYPE_CHECKING:
@@ -27,6 +32,62 @@ class ObjectInfo:
     generation: str
     size: int
     updated: float
+
+
+class ArchiveLimit(ValueError):
+    """Retain a source that cannot be inspected within the migration budget."""
+
+
+class Readable(Protocol):
+    def read(self, size: int = -1) -> bytes: ...
+
+
+class LimitedReader(io.RawIOBase):
+    def __init__(self, stream: Readable, limit: int, deadline: float):
+        self.stream, self.remaining, self.deadline = stream, limit, deadline
+
+    def read(self, size: int = -1) -> bytes:
+        if time.monotonic() >= self.deadline:
+            raise ArchiveLimit("Archive scan time limit")
+        size = self.remaining + 1 if size < 0 else min(size, self.remaining + 1)
+        data = self.stream.read(size)
+        self.remaining -= len(data)
+        if self.remaining < 0:
+            raise ArchiveLimit("Archive scan byte limit")
+        return data
+
+
+def archive_members(
+    storage: Storage, info: ObjectInfo, settings: Settings
+) -> Iterator[tuple[tarfile.TarFile, tarfile.TarInfo]]:
+    """Bound compressed bytes, expansion, members, and time; never extract onto disk."""
+    if info.size > settings.thread_archive_scan_mb * 1024**2:
+        raise ArchiveLimit("Archive exceeds bounded scan size")
+    deadline = time.monotonic() + settings.thread_archive_scan_seconds
+    expanded = settings.thread_archive_expanded_mb * 1024**2
+    seen: set[str] = set()
+    with storage.open_read(info.key) as stream:
+        compressed = LimitedReader(stream, settings.thread_archive_scan_mb * 1024**2, deadline)
+        with gzip.GzipFile(fileobj=compressed) as unpacked:
+            bounded = LimitedReader(unpacked, expanded, deadline)
+            with tarfile.open(fileobj=bounded, mode="r|") as archive:
+                for member in archive:
+                    if (
+                        len(seen) >= 10000
+                        or member.offset_data + member.size > expanded
+                        or time.monotonic() >= deadline
+                    ):
+                        raise ArchiveLimit("Archive member, expansion or time limit")
+                    parts = Path(member.name).parts
+                    if (
+                        member.name in seen
+                        or ".." in parts
+                        or member.name.startswith("/")
+                        or not (member.isfile() or member.isdir())
+                    ):
+                        raise ArchiveLimit("Unsafe or duplicate archive member")
+                    seen.add(member.name)
+                    yield archive, member
 
 
 def stat(storage: Storage, key: str) -> ObjectInfo:
@@ -69,12 +130,16 @@ def checkpoint_state(storage: Storage, key: str) -> tuple[bytes, str]:
         return b"{}", ""
 
 
-async def coverage(storage: Storage, backend: project_memory.GitHubMemory) -> dict[str, Any]:
+async def coverage(
+    storage: Storage, backend: project_memory.GitHubMemory, *, strict_checkpoint: bool = False
+) -> dict[str, Any]:
     """Missing conversation import is never excused by an artifact retention marker."""
     missing: list[str] = []
     verified: list[str] = []
+    snapshots: dict[str, project_memory.Snapshot] = {}
     for key in await asyncio.to_thread(checkpoints, storage):
-        state = json.loads((await asyncio.to_thread(checkpoint_state, storage, key))[0])
+        state_raw, state_generation = await asyncio.to_thread(checkpoint_state, storage, key)
+        state = json.loads(state_raw)
         thread = key.split("/")[2]
         projects = {state.get("context", {}).get("project_slug", "")}
         histories = await asyncio.to_thread(storage.keys, f"projects/_threads/{thread}/history/")
@@ -85,14 +150,29 @@ async def coverage(storage: Storage, backend: project_memory.GitHubMemory) -> di
             missing.append(f"unattributed/{thread}")
         for pid in sorted(projects - {""}):
             try:
-                receipt = json.loads(
-                    (await asyncio.to_thread(storage.get, receipt_key(thread, pid)))[0]
-                )
+                native = False
+                try:
+                    receipt = json.loads(
+                        (await asyncio.to_thread(storage.get, receipt_key(thread, pid)))[0]
+                    )
+                except FileNotFoundError:
+                    if state.get("thread_memory_origin") != "github_only":
+                        raise
+                    native = True
+                    receipt = {"conversation_verified": True, "events": {}, "sources": {}}
                 if not receipt.get("conversation_verified"):
                     raise ValueError("Unverified conversation")
-                snapshot = await backend.read(pid)
+                if (
+                    strict_checkpoint
+                    and not native
+                    and state.get("context", {}).get("project_slug") == pid
+                    and receipt.get("checkpoint_generation") != state_generation
+                ):
+                    raise ValueError("Checkpoint changed since import")
+                snapshot = snapshots.get(pid) or await backend.read(pid)
                 if snapshot is None:
                     raise ValueError("Unavailable memory")
+                snapshots[pid] = snapshot
                 rows = {
                     e.event_id: e.digest()
                     for e in thread_memory.log_entries(
@@ -102,6 +182,18 @@ async def coverage(storage: Storage, backend: project_memory.GitHubMemory) -> di
                 for event, digest in receipt["events"].items():
                     if rows.get(event) != digest:
                         raise ValueError("Changed imported event")
+                if native:
+                    for event, digest in rows.items():
+                        saved = json.loads(
+                            (
+                                await asyncio.to_thread(
+                                    storage.get,
+                                    f"projects/_threads/{thread}/pending/{event}/receipt.json",
+                                )
+                            )[0]
+                        )
+                        if saved.get("project_id") != pid or saved.get("entry_sha256") != digest:
+                            raise ValueError("Unverified native event")
                 for source in histories:
                     if f"/history/{pid}/" not in source and not (
                         len(source.split("/")) == 5
@@ -116,7 +208,9 @@ async def coverage(storage: Storage, backend: project_memory.GitHubMemory) -> di
                         raise ValueError("New or changed history requires import verification")
                 if state.get("context", {}).get("project_slug") == pid:
                     for message in state.get("messages", []):
-                        if message.get("id") not in rows:
+                        if native and message.get("id") in state.get("thread_memory_exempt", []):
+                            continue
+                        if thread_memory.legacy_event_id(message) not in rows:
                             raise ValueError("Checkpoint exchange is not yet saved")
                 verified.append(f"{pid}/{thread}")
             except (FileNotFoundError, ValueError, KeyError):
@@ -133,6 +227,41 @@ async def require_coverage(storage: Storage, backend: project_memory.GitHubMemor
     report = await coverage(storage, backend)
     if not report["complete"]:
         raise ValueError("github_only requires verified conversation import for every thread")
+
+
+async def cutover_report(bridge: BatchBridge) -> dict[str, Any]:
+    """Operator gate: re-read coverage and active/retry state immediately before cutover."""
+    report = await coverage(
+        bridge.storage, project_memory.GitHubMemory(bridge.settings), strict_checkpoint=True
+    )
+    active = []
+    for key in await asyncio.to_thread(checkpoints, bridge.storage):
+        thread = key.split("/")[2]
+        tail = await bridge.repository.get_connector_state(f"claude-thread:{thread}") or {}
+        event = (
+            await bridge.repository.get_connector_state(f"claude-event:{tail.get('tail', '')}")
+            or {}
+        )
+        if not await inactive(bridge, event):
+            active.append(thread)
+    pending = await bridge.repository.due_connector_states(
+        "memory_due", time.time() + 365 * 86400, limit=1
+    )
+    report.update(active=active, pending=bool(pending), checked_at=time.time())
+    report["complete"] = report["complete"] and not active and not pending
+    return report
+
+
+def validate_cutover(settings: Settings, report: dict[str, Any]) -> None:
+    if (
+        not thread_memory.enabled(settings)
+        or settings.thread_memory_cutover_at <= 0
+        or not report.get("complete")
+        or report.get("active")
+        or report.get("pending")
+        or report.get("checked_at") != settings.thread_memory_cutover_at
+    ):
+        raise ValueError("github_only requires a fresh verified operator cutover receipt")
 
 
 async def move_output(
@@ -233,9 +362,14 @@ async def sweep(
     if test_age is not None and not project.startswith("_smoke"):
         raise ValueError("Age overrides require an isolated smoke project")
     backend = project_memory.GitHubMemory(settings)
-    await require_coverage(storage, backend)
+    report = await coverage(storage, backend)
+    covered = set(report["verified"])
     now = time.time() if now is None else now
-    for key in await asyncio.to_thread(checkpoints, storage):
+    keys = await asyncio.to_thread(checkpoints, storage)
+    progress = await bridge.repository.get_connector_state("memory-artifact-cursor") or {}
+    cursor = int(progress.get("cursor", 0)) % max(1, len(keys))
+    selected = keys if project else (keys[cursor:] + keys[:cursor])[:5]
+    for key in selected:
         thread = key.split("/")[2]
         # Admission uses the same lease. No new turn can enter between the active check
         # and a fenced deletion; existing queued events keep the tail nonterminal.
@@ -257,15 +391,22 @@ async def sweep(
                 pid = state.get("context", {}).get("project_slug", "")
                 if not pid or (project and pid != project):
                     continue
+                if f"{pid}/{thread}" not in covered:
+                    continue
                 try:
                     imported = json.loads(
                         (await asyncio.to_thread(storage.get, receipt_key(thread, pid)))[0]
                     )
                 except FileNotFoundError:
-                    continue
+                    if state.get("thread_memory_origin") != "github_only":
+                        continue
+                    imported = {"conversation_verified": True}
                 if not imported.get("conversation_verified"):
                     continue
                 roots = set(imported.get("run_roots", []))
+                saved_receipt = event.get("memory_receipt", {})
+                if saved_receipt.get("project_id") == pid and saved_receipt.get("run_root"):
+                    roots.add(saved_receipt["run_root"])
                 if event.get("project_id") == pid:
                     ctx = state.get("context", {})
                     roots.add(
@@ -351,7 +492,12 @@ async def sweep(
                 archive_sources = await asyncio.to_thread(
                     storage.keys, f"projects/_threads/{thread}/archives/"
                 )
-                for source in archive_sources:
+                archive_sources.sort()
+                archive_cursor = int(archives.get("_cursor", 0)) % max(1, len(archive_sources))
+                selected_archives = (
+                    archive_sources[archive_cursor:] + archive_sources[:archive_cursor]
+                )[:4]
+                for source in selected_archives:
                     # An archive belongs to the project that produced that exact event.
                     # Never infer ownership from the thread's current project binding.
                     producing_event = (
@@ -400,6 +546,12 @@ async def sweep(
                         result["memory_sources_deleted"] += 1
                     except (FileNotFoundError, Conflict):
                         pass
+                archives["_cursor"] = (archive_cursor + len(selected_archives)) % max(
+                    1, len(archive_sources)
+                )
+                await asyncio.to_thread(
+                    storage.put, archive_ledger_key, json.dumps(archives).encode()
+                )
                 # History import receipts bind exact source generations and compact event digests.
                 snapshot = await backend.read(pid)
                 rows = (
@@ -448,6 +600,10 @@ async def sweep(
                             pass
         finally:
             await bridge.repository.release_event(f"claude-intake:{thread}", lease.token)
+    if not project:
+        await bridge.repository.set_connector_state(
+            "memory-artifact-cursor", {"cursor": (cursor + len(selected)) % max(1, len(keys))}
+        )
     return result
 
 
@@ -479,12 +635,20 @@ async def verify_archive(
     now: float,
 ) -> dict[str, Any]:
     """An archive expires only when every retained script/output has a verified GitHub copy."""
-    import tarfile
-
     expected = f"projects/_threads/{thread}/archives/"
     if not source.startswith(expected) or "/" in source.removeprefix(expected):
         raise ValueError("Only completed thread archives can expire")
     info = await asyncio.to_thread(stat, storage, source)
+    if info.size > backend.settings.thread_archive_scan_mb * 1024**2:
+        return {
+            "source": source,
+            "generation": info.generation,
+            "head": "",
+            "copies": {},
+            "rejected": {"archive": "Archive exceeds bounded scan size; source retained."},
+            "verified_at": now,
+            "status": "retained",
+        }
     snapshot = await backend.read(pid)
     if snapshot is None:
         raise RuntimeError("Cannot verify workspace archive")
@@ -501,8 +665,8 @@ async def verify_archive(
 
     def inspect() -> dict[str, str]:
         retained = {}
-        with storage.open_read(source) as stream, tarfile.open(fileobj=stream, mode="r|gz") as tar:
-            for member in tar:
+        try:
+            for tar, member in archive_members(storage, info, backend.settings):
                 parts = Path(member.name).parts
                 if member.isdir():
                     continue
@@ -527,6 +691,10 @@ async def verify_archive(
                             retained[member.name] = "script has no matching GitHub copy"
                     elif sha not in output_hashes:
                         retained[member.name] = "output has no matching GitHub copy"
+        except (ValueError, OSError, EOFError, tarfile.TarError) as exc:
+            retained["archive"] = (
+                str(exc) if isinstance(exc, ArchiveLimit) else "Unreadable archive"
+            ) + "; source retained."
         return retained
 
     rejected = await asyncio.to_thread(inspect)

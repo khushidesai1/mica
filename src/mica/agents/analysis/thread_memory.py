@@ -122,6 +122,14 @@ def prefix(thread: str) -> str:
     return f"threads/{thread}/"
 
 
+def legacy_event_id(message: Mapping[str, object]) -> str:
+    value = str(message.get("id") or "")
+    if re.fullmatch(IDENTIFIER, value):
+        return value
+    raw = json.dumps(message.get("id") or dict(message), sort_keys=True).encode()
+    return "legacy-" + hashlib.sha256(raw).hexdigest()
+
+
 def asset(path: str) -> bool:
     return (
         path.startswith("threads/")

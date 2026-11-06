@@ -135,7 +135,7 @@ capacity decision; compaction does not silently purge history.
 `AGENT_THREAD_MEMORY=dual` is the coordinated-release default: write GitHub and legacy GCS
 history, read legacy thread context. `github` reads GitHub while continuing both writes, so
 rollback to `dual` preserves the history written during that phase. `github_only` stops GCS
-history reads/writes and enables verified expiry. It requires a complete migration report;
+history reads/writes and enables verified expiry. It requires a fresh operator cutover receipt;
 retention markers for rejected artifacts cannot excuse missing conversation history. Do not
 roll back from `github_only` expecting new turns to exist in GCS history.
 
@@ -147,16 +147,36 @@ Preview every existing project thread, including inactive threads, before import
 ```
 
 Use `--project PROJECT_ID --thread THREAD_KEY` to scope a rehearsal. The preview reports
-input-token estimates and maximum model calls; model pricing determines actual cost. Apply
+history and checkpoint-only counts, raw-input and cumulative-context token estimates, and
+maximum model calls; model pricing determines actual cost. Apply
 uses the configured memory model and credential. It caches paraphrases, records source
 versions/hashes, verifies imported events and scripts, and is safe to repeat. A changed source
 or resumed thread requires rechecking coverage. Unknown legacy speakers stay explicitly unknown.
+
+Script migration reads archive members without extracting a workspace. Defaults bound a scan
+to 64 MiB compressed (`AGENT_THREAD_ARCHIVE_SCAN_MB`), 128 MiB expanded
+(`AGENT_THREAD_ARCHIVE_EXPANDED_MB`), 10,000 members, and 30 seconds
+(`AGENT_THREAD_ARCHIVE_SCAN_SECONDS`). Oversized archives are not downloaded. Valid scripts
+found before a limit can be saved, but the archive remains with a retention reason. A rejected
+archive never blocks verified conversation import and never receives deletion authorization.
+New GitHub-only threads establish coverage from verified native event receipts; raw legacy
+history still requires its own import receipt.
+
+After the read-mode soak, use `tools/memory_import.py --bucket ARTIFACT_BUCKET --verify-cutover`
+to recheck exact checkpoint generations, imported content, active/recovering work, and pending
+saves. At the quiet cutover boundary, add `--apply` to persist a complete report at
+`projects/_registry/thread-memory-cutover.json`. Set `AGENT_THREAD_MEMORY_CUTOVER_AT` to that
+report's exact `checked_at` value when enabling `github_only`. A stale migration report or a
+missing/mismatched cutover receipt cannot enable this mode. The operator step does not modify
+the service itself.
 
 The existing authenticated daily maintenance route moves Mica-created run outputs after
 `AGENT_THREAD_OUTPUT_AGE_DAYS=10`, subject to the per-file and per-thread caps. It never moves
 `outputs/gcs/` or user destinations. `AGENT_THREAD_EXPIRY_DAYS=30` begins only after a verified
 copy exists. Deletion rechecks the GitHub content and exact GCS generation. A thread intake
 lease and terminal-state check protect cleanup from new, active and recovering work.
+Each maintenance pass rotates through at most five threads and four workspace archives per
+thread. Archive verification uses the same scan limits as import; uncovered threads are skipped.
 
 A workspace archive gets an expiry receipt only when every retained script and output has a
 matching GitHub copy. Unmatched/oversized members and legacy SDK transcripts keep the source

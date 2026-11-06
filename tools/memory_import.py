@@ -106,6 +106,7 @@ if __name__ == "__main__":
     parser.add_argument("--bucket", required=True, help="Existing Mica artifact bucket")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--threads", action="store_true")
+    parser.add_argument("--verify-cutover", action="store_true")
     parser.add_argument("--project", default="", help="Limit thread import to one project")
     parser.add_argument("--thread", default="", help="Limit import to one thread")
     parser.add_argument("--layout-from-memory", metavar="PROJECT_ID")
@@ -121,9 +122,29 @@ if __name__ == "__main__":
     if args.layout_fact and not args.layout_from_memory:
         parser.error("--layout-fact requires --layout-from-memory")
     store, memory = GCSStorage(args.bucket), GitHubMemory(Settings())
-    if args.threads:
-        from mica.agents.analysis.thread_import import import_threads
+    if args.verify_cutover:
         import json
+
+        from mica.agents.analysis.batch import BatchBridge
+        from mica.agents.analysis.memory_artifacts import cutover_report
+        from mica.config import Settings as AppSettings
+        from mica.storage.firestore import FirestoreRepository
+
+        if args.threads or args.project or args.thread or args.layout_from_memory:
+            parser.error("Cutover verification must cover the whole registry")
+        bridge = BatchBridge(AppSettings(gcs_bucket=args.bucket), FirestoreRepository())
+        bridge.settings = memory.settings
+        report = asyncio.run(cutover_report(bridge))
+        if args.apply:
+            if not report["complete"]:
+                raise ValueError("Cutover is not ready; no receipt written")
+            store.put("projects/_registry/thread-memory-cutover.json", json.dumps(report).encode())
+        print(json.dumps(report))
+        raise SystemExit(0)
+    if args.threads:
+        import json
+
+        from mica.agents.analysis.thread_import import import_threads
 
         for item in asyncio.run(
             import_threads(

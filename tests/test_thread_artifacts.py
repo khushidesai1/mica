@@ -227,3 +227,201 @@ async def test_archive_requires_every_script_and_output_copy(stores):
     )
     receipt = await artifacts.verify_archive(storage, backend, "p_test", "t_one", source, now=2)
     assert receipt["status"] == "verified" and not receipt["rejected"]
+
+
+def archive_bytes(members):
+    import io
+    import tarfile
+
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w:gz") as archive:
+        for name, raw in members.items():
+            member = tarfile.TarInfo(name)
+            member.size = len(raw)
+            archive.addfile(member, io.BytesIO(raw))
+    return data.getvalue()
+
+
+def editor_prose():
+    return {
+        "_thread": thread_memory.Prose(
+            paraphrase="Reviewed the study.", summary="Study reviewed."
+        ).model_dump_json()
+    }
+
+
+async def test_large_archive_never_opens_and_does_not_block_conversation_import(
+    stores, monkeypatch
+):
+    from dataclasses import replace
+    from unittest.mock import Mock
+
+    storage, backend, _ = stores
+    pid = seed_project(storage)
+    source = "projects/_threads/t_one/archives/large.tar.gz"
+    storage.put(source, b"placeholder")
+    storage.put(
+        "projects/_threads/t_one/checkpoint.json",
+        json.dumps(
+            {
+                "context": {"project_slug": pid, "workdir": "/srv/pistachio/work/thread"},
+                "archive": source,
+                "messages": [{"id": "old", "user": "Earlier request"}],
+            }
+        ).encode(),
+    )
+    stat = artifacts.stat
+    monkeypatch.setattr(
+        artifacts,
+        "stat",
+        lambda s, k: replace(stat(s, k), size=109_000_000_000) if k == source else stat(s, k),
+    )
+    opened = Mock(side_effect=AssertionError("Large archive must not be downloaded"))
+    monkeypatch.setattr(storage, "open_read", opened)
+    monkeypatch.setattr(memory_tasks, "edit", AsyncMock(return_value=editor_prose()))
+    preview = await thread_import.import_threads(storage, backend, apply=False)
+    assert preview[0]["events"] == preview[0]["checkpoint_only_events"] == 1
+    result = await thread_import.import_threads(storage, backend, apply=True, model_key="test")
+    assert result[0]["status"] == "imported"
+    assert "bounded scan size" in result[0]["archive"]["rejected"]["archive"]
+    assert (await artifacts.coverage(storage, backend, strict_checkpoint=True))["complete"]
+    assert (await artifacts.verify_archive(storage, backend, pid, "t_one", source, now=1))[
+        "status"
+    ] == "retained"
+    opened.assert_not_called()
+    assert storage.get(source)[0] == b"placeholder"
+
+
+async def test_script_only_archive_scan_stops_before_expansion_and_retains_source(stores):
+    storage, backend, _ = stores
+    backend.settings.thread_archive_expanded_mb = 1
+    source = "projects/_threads/t_one/archives/bomb.tar.gz"
+    storage.put(
+        source,
+        archive_bytes(
+            {
+                "work/thread/code/run.py": b"print(7)\n",
+                "work/thread/outputs/large.txt": b"0" * (2 * 1024**2),
+            }
+        ),
+    )
+    info = artifacts.stat(storage, source)
+    scripts, rejected = thread_import.read_scripts(
+        storage,
+        info,
+        {"context": {"workdir": "/srv/pistachio/work/thread"}},
+        await backend.read("p_test"),
+        "t_one",
+        backend.settings,
+    )
+    assert scripts == {"run.py": "print(7)\n"}
+    assert "expansion" in rejected["archive"]
+    assert storage.get(source)
+
+
+async def test_archive_script_validation_and_retry_are_idempotent(stores):
+    storage, backend, github = stores
+    source = "projects/_threads/t_one/archives/old.tar.gz"
+    storage.put(
+        source,
+        archive_bytes(
+            {
+                "work/thread/code/good.py": b"print(7)",
+                "work/thread/code/bad.py": b"password = 'unsafe'",
+                "work/thread/outputs/ignore.txt": b"not a script",
+            }
+        ),
+    )
+    state = {"archive": source, "context": {"workdir": "/srv/pistachio/work/thread"}}
+    receipt = await thread_import.import_scripts(
+        storage, backend, "p_test", "t_one", state, await backend.read("p_test")
+    )
+    assert receipt["accepted"] == ["good.py"] and receipt["rejected"]
+    count = len(github.commits)
+    await thread_import.import_scripts(
+        storage, backend, "p_test", "t_one", state, await backend.read("p_test")
+    )
+    assert len(github.commits) == count
+    assert (await backend.read_bytes("p_test", "threads/t_one/scripts/good.py"))[0] == b"print(7)"
+
+
+async def test_native_github_only_coverage_requires_verified_receipts(stores):
+    from test_thread_memory import update
+
+    storage, backend, _ = stores
+    item = update()
+    await backend.commit(
+        "p_test",
+        await backend.read("p_test"),
+        {},
+        source="worker",
+        event_id=item.entry.event_id,
+        thread_update=item,
+    )
+    storage.put(
+        "projects/_threads/t_one/checkpoint.json",
+        json.dumps(
+            {
+                "context": {"project_slug": "p_test"},
+                "thread_memory_origin": "github_only",
+                "messages": [{"id": item.entry.event_id}],
+            }
+        ).encode(),
+    )
+    assert not (await artifacts.coverage(storage, backend))["complete"]
+    receipt = await memory_tasks.verify(backend, "p_test", item)
+    storage.put(
+        f"projects/_threads/t_one/pending/{item.entry.event_id}/receipt.json",
+        json.dumps(receipt).encode(),
+    )
+    assert (await artifacts.coverage(storage, backend))["complete"]
+    storage.put("projects/_threads/t_one/history/p_test/missing.json", b'{"id":"missing"}')
+    assert not (await artifacts.coverage(storage, backend))["complete"]
+
+
+async def test_cutover_checks_fresh_checkpoint_and_active_retry_state(stores, monkeypatch):
+    from types import SimpleNamespace
+
+    from mica.storage.memory import InMemoryRepository
+
+    storage, backend, _ = stores
+    pid = seed_project(storage)
+    key = "projects/_threads/t_one/checkpoint.json"
+    storage.put(key, json.dumps({"context": {"project_slug": pid}, "messages": []}).encode())
+    await thread_import.import_threads(storage, backend, apply=True, model_key="test")
+    storage.put(
+        key, json.dumps({"context": {"project_slug": pid}, "messages": [], "turn": 1}).encode()
+    )
+    assert not (await artifacts.coverage(storage, backend, strict_checkpoint=True))["complete"]
+    await thread_import.import_threads(storage, backend, apply=True, model_key="test")
+    repo = InMemoryRepository()
+    bridge = SimpleNamespace(settings=backend.settings, storage=storage, repository=repo)
+    monkeypatch.setattr(artifacts.project_memory, "GitHubMemory", lambda _: backend)
+    report = await artifacts.cutover_report(bridge)
+    assert report["complete"]
+    with pytest.raises(ValueError, match="cutover receipt"):
+        artifacts.validate_cutover(backend.settings, report)
+    backend.settings.thread_memory_cutover_at = report["checked_at"]
+    artifacts.validate_cutover(backend.settings, report)
+    await repo.set_connector_state("claude-event:pending", {"memory_due": 1})
+    assert not (await artifacts.cutover_report(bridge))["complete"]
+
+
+async def test_unanswered_legacy_message_without_id_is_imported_as_pending(stores, monkeypatch):
+    storage, backend, _ = stores
+    pid = seed_project(storage)
+    storage.put(
+        "projects/_threads/t_one/checkpoint.json",
+        json.dumps(
+            {"context": {"project_slug": pid}, "messages": [{"user": "Please review the study"}]}
+        ).encode(),
+    )
+    editor = AsyncMock(return_value=editor_prose())
+    monkeypatch.setattr(memory_tasks, "edit", editor)
+    await thread_import.import_threads(storage, backend, apply=True, model_key="test")
+    assert editor.call_args.args[2]["success"] is False
+    rows = thread_memory.log_entries(
+        {p: f.text for p, f in (await backend.read(pid)).files.items()}, "t_one"
+    )
+    assert len(rows) == 1 and not rows[0].success
+    assert (await artifacts.coverage(storage, backend, strict_checkpoint=True))["complete"]
