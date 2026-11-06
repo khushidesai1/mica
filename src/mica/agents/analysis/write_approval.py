@@ -159,6 +159,11 @@ def blocks(approval: Approval, grant_uri: str) -> tuple[str, list[dict[str, Any]
 async def ready(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage
 ) -> bool:
+    if (record.get("ambient") or {}).get("kind") == "session_import":
+        if record.get("write_grant"):
+            raise PermissionError("Import passes cannot publish data outputs")
+        record.update(overwrite_checked=True, overwrite_paths=[])
+        return True
     if record.get("ambient"):
         frozen = record.get("write_grant") or {}
         grant = await asyncio.to_thread(

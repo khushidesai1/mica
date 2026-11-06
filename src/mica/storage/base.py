@@ -35,7 +35,9 @@ class EventClaim:
     token: str = ""
 
 
-FailureProjection = Literal["outcome_review_due", "stall_check_at", "memory_due", "ambient_due"]
+FailureProjection = Literal[
+    "outcome_review_due", "stall_check_at", "memory_due", "ambient_due", "import_due"
+]
 
 
 class Repository(Protocol):

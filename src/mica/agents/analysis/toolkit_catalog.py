@@ -13,7 +13,8 @@ if TYPE_CHECKING:
     from .storage import Storage
 
 BUNDLED_SKILLS = (
-    "mica:spatial-analysis", "mica:cellpose", "mica:project-knowledge", "mica:segmentation-report"
+    "mica:spatial-analysis", "mica:cellpose", "mica:project-knowledge", "mica:segmentation-report",
+    "mica:session-import"
 )
 
 
