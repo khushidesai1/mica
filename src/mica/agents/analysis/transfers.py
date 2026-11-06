@@ -24,6 +24,7 @@ from . import (
     job_lifecycle,
     observability,
     project_memory,
+    thread_history,
     transfer_destinations,
 )
 from .access import Grant
@@ -350,15 +351,7 @@ class Transfers:
                 record["reply_handoff"] = "transfer"
                 return "Your transfer request is recorded in this thread."
             login = await self.login(grant.email)
-            snapshot = await project_memory.GitHubMemory(self.settings).read(grant.project_id)
-            guide = (
-                snapshot.files["PROJECT.md"].text
-                if snapshot and "PROJECT.md" in snapshot.files
-                else ""
-            )
-            config = transfer_destinations.resolve(
-                request, guide, str(event.get("text", "")), grant.doc, grant.project_id, grant.email
-            )
+            config = await self.configuration(grant, record, request)
             p = {
                 "id": event_id,
                 "project": grant.project_id,
@@ -392,6 +385,24 @@ class Transfers:
             "Preparing your AtoMx transfer request."
             if request
             else "Opening the saved-login controls."
+        )
+
+    async def configuration(
+        self, grant: Grant, record: dict[str, Any], request: TransferRequest,
+        *, guide: str | None = None,
+    ) -> TransferProject:
+        """Read-only validation shared by proposal repair and actual dispatch."""
+        if guide is None:
+            snapshot = await project_memory.GitHubMemory(self.settings).read(grant.project_id)
+            guide = (
+                snapshot.files["PROJECT.md"].text
+                if snapshot and "PROJECT.md" in snapshot.files
+                else ""
+            )
+        inputs = await thread_history.supplied_inputs(self.repo, grant, record)
+        return transfer_destinations.resolve(
+            request, guide, str(record["payload"]["event"].get("text", "")),
+            grant.doc, grant.project_id, grant.email, history_text=inputs,
         )
 
     async def confirm(self, pid: str, email: str) -> None:

@@ -10,7 +10,7 @@ import hashlib
 import json
 import re
 from collections.abc import Mapping
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -183,6 +183,34 @@ def context(files: Mapping[str, str], thread: str, limit: int = 16000) -> str:
     if omitted:
         result += f"\nMore uncovered entries: read {root}log*.md; this view is incomplete.\n"
     return result[:limit]
+
+
+def recall(
+    files: Mapping[str, str], thread: str, query: str = "", event_id: str = "", offset: int = 0
+) -> dict[str, Any]:
+    """Search the active GitHub history without restoring retired raw transcripts."""
+    rows = log_entries(files, thread)
+    if event_id:
+        row = next((row for row in rows if row.event_id == event_id), None)
+        if row is None:
+            raise FileNotFoundError("That event is unavailable in this thread.")
+        text = row.line()
+        return {
+            "event_id": event_id, "text": text[offset : offset + 20000],
+            "next_offset": offset + 20000 if len(text) > offset + 20000 else None,
+        }
+    words = set(re.findall(r"\w+", query.casefold()))
+    ranked = sorted(
+        ((sum(word in row.line().casefold() for word in words), row) for row in rows),
+        key=lambda item: (item[0], item[1].seq), reverse=True,
+    )
+    matches = [row for score, row in ranked if score or not words]
+    page = matches[offset : offset + 4]
+    return {
+        "source": "project_thread_memory",
+        "matches": [row.model_dump() for row in page],
+        "next_offset": offset + len(page) if offset + len(page) < len(matches) else None,
+    }
 
 
 def pages(rows: list[Entry], thread: str, settings: Settings) -> dict[str, str]:
