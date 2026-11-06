@@ -51,6 +51,35 @@ class WriteGrant(BaseModel):
     expires_at: AwareDatetime | None = None
 
 
+class EventWriteGrant(WriteGrant):
+    event_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    project_id: str
+    issuer: str
+    owner: str
+    sample: str
+    expires_at: AwareDatetime
+
+
+def event_key(event_id: str) -> str:
+    if not re.fullmatch(r"[a-f0-9]{32}", event_id):
+        raise ValueError("Invalid event ID")
+    return f"write-access/events/{hashlib.sha256(event_id.encode()).hexdigest()}.json"
+
+
+def issue_event(storage: Storage, grant: EventWriteGrant) -> None:
+    """A controller retry may reuse the exact grant, never replace or extend it."""
+    try:
+        storage.put_if(event_key(grant.event_id), grant.model_dump_json().encode(), None)
+    except Conflict:
+        saved = EventWriteGrant.model_validate_json(storage.get(event_key(grant.event_id))[0])
+        if saved != grant:
+            raise PermissionError("The event already has a different write grant") from None
+
+
+def event_grant_id(event_id: str) -> str:
+    return hashlib.sha256(f"mica-event-write:{event_id}".encode()).hexdigest()[:32]
+
+
 class WriteState(BaseModel):
     grant: WriteGrant | None = None
     last_timestamp: str = "0"
@@ -107,7 +136,38 @@ def validate_project(uri: str, doc: RegistryDoc, project_id: str, actor: str) ->
         raise ValueError("Choose a destination in this project's linked data bucket.")
 
 
-def active(storage: Storage, project_id: str, settings: Settings) -> WriteGrant | None:
+def active(
+    storage: Storage, project_id: str, settings: Settings, event_id: str = ""
+) -> WriteGrant | None:
+    if event_id:
+        try:
+            raw = storage.get(event_key(event_id))[0]
+        except FileNotFoundError:
+            pass
+        else:
+            # An invalid event grant is a denial, never a fallback to broader authority.
+            try:
+                event_grant = EventWriteGrant.model_validate_json(raw)
+                from .ambient import issuer_permitted
+
+                doc = Registry(storage).load()
+                if (
+                    event_grant.event_id != event_id
+                    or event_grant.project_id != project_id
+                    or event_grant.id != event_grant_id(event_id)
+                    or event_grant.actor != event_grant.owner
+                    or event_grant.admin_id != event_grant.issuer
+                    or now() >= event_grant.expires_at
+                    or not doc.owns(project_id, event_grant.owner)
+                    or scope(event_grant.uri) != event_grant.uri
+                    or not issuer_permitted(settings, doc, event_grant)
+                ):
+                    return None
+                validate_scope(event_grant.uri, settings)
+                validate_project(event_grant.uri, doc, project_id, event_grant.owner)
+                return event_grant
+            except (ValueError, KeyError):
+                return None
     grant = load(storage, project_id).grant
     if grant is None or (grant.expires_at is not None and now() >= grant.expires_at):
         return None
@@ -124,9 +184,9 @@ def active(storage: Storage, project_id: str, settings: Settings) -> WriteGrant 
 
 
 def require_active(
-    storage: Storage, project_id: str, grant_id: str, settings: Settings
+    storage: Storage, project_id: str, grant_id: str, settings: Settings, event_id: str = ""
 ) -> WriteGrant:
-    grant = active(storage, project_id, settings)
+    grant = active(storage, project_id, settings, event_id)
     if grant is None or grant.id != grant_id:
         raise PermissionError("Write access expired, was revoked, or changed. Request a new run.")
     return grant

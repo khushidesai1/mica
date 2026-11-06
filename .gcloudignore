@@ -13,6 +13,7 @@
 !scripts/check_atomx_release.py
 !scripts/check_compute_release.py
 !scripts/check_spatial_release.py
+!scripts/check_segmentation_release.py
 !scripts/check_cellpose_release.py
 !scripts/check_cellpose_gpu.py
 !scripts/check_gpu_hardware.py

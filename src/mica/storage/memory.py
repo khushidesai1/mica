@@ -221,6 +221,13 @@ class InMemoryRepository:
         async with self._lock:
             self.connector_state[key] = deepcopy(value)
 
+    async def create_connector_state(self, key: str, value: dict[str, Any]) -> bool:
+        async with self._lock:
+            if key in self.connector_state:
+                return False
+            self.connector_state[key] = deepcopy(value)
+            return True
+
     async def get_connector_state(self, key: str) -> dict[str, Any] | None:
         value = self.connector_state.get(key)
         return deepcopy(value) if value else None

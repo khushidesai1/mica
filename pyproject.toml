@@ -37,7 +37,7 @@ dependencies = [
 
 [project.optional-dependencies]
 slack = ["claude-agent-sdk==0.2.163", "anthropic==2.3.0", "aiohttp==3.14.3", "uv==0.9.6"]
-analysis-test = ["anndata==0.11.4", "pandas==2.2.3", "pyarrow==25.0.1", "matplotlib==3.10.3", "pypdfium2==5.14.0"]
+analysis-test = ["anndata==0.12.2", "pandas==2.2.3", "pyarrow==25.0.1", "matplotlib==3.10.3", "pypdfium2==5.14.0", "shapely==2.1.1", "tifffile==2025.9.9", "zarr==3.1.3"]
 transfer-test = ["paramiko==3.5.1"]
 dev = [
   "google-auth-oauthlib==1.2.2",

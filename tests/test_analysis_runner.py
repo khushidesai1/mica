@@ -1,4 +1,5 @@
 import asyncio
+import json
 import socket
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -52,6 +53,27 @@ def setup(tmp_path):
     ctx = Context(tmp_path / "work", tmp_path / "data")
     ctx.data_path.mkdir()
     return ctx, Settings(_env_file=None, work_root=tmp_path, state_db=tmp_path / "state.db")
+
+
+@pytest.mark.parametrize("via_repo", [False, True])
+async def test_final_memory_gate_repairs_malformed_model_prose(setup, via_repo):
+    ctx, settings = setup
+    settings.thread_memory_enabled = not via_repo
+    settings.memory_repo = "example/memory" if via_repo else ""
+    options = build_options(ctx, settings, thread_key="t_smoke")
+    hook = options.hooks["Stop"][0].hooks[0]
+    event = {"hook_event_name": "Stop"}
+    assert (await hook(event, None, {}))["decision"] == "block"
+    path = ctx.workdir / "knowledge/threads/t_smoke/turn.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"summary": "Done", "entries": [], "covered": ["forged"]}))
+    assert (await hook(event, None, {}))["decision"] == "block"
+    path.write_text(json.dumps({"paraphrase": "Completed synthetic QC.", "summary": "Done"}))
+    assert await hook(event, None, {}) == {}
+    settings.thread_memory_enabled = False
+    settings.memory_repo = ""
+    path.unlink()
+    assert await hook(event, None, {}) == {}
 
 
 async def test_runner_resume_and_files(setup, monkeypatch):

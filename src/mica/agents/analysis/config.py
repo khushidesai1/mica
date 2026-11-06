@@ -3,9 +3,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field, SecretStr
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from .ambient_config import AmbientTask
 from .transfer_config import TransferProject
 
 CHECKPOINT_PREFIX = "tasks/slack-analysis"
@@ -154,6 +155,13 @@ class Settings(BaseSettings):
     transfer_image: str = ""
     transfer_service_account: str = ""
     transfer_projects: dict[str, TransferProject] = Field(default_factory=dict)
+    ambient_tasks: list[AmbientTask] = Field(default_factory=list, max_length=20)
+
+    @model_validator(mode="after")
+    def unique_ambient_tasks(self) -> Settings:
+        if len({task.id for task in self.ambient_tasks}) != len(self.ambient_tasks):
+            raise ValueError("Ambient task IDs must be unique")
+        return self
 
     def csv(self, field: str) -> set[str]:
         return {x.strip() for x in getattr(self, field).split(",") if x.strip()}

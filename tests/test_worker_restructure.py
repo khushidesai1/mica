@@ -131,7 +131,12 @@ async def test_stable_system_per_turn_hook_and_trusted_skills(tmp_path):
     assert "FIRST FACT" not in text
     assert second.setting_sources == []
     assert second.plugins == [{"type": "local", "path": "/opt/pistachio/plugin"}]
-    assert second.skills == ["mica:spatial-analysis", "mica:cellpose", "mica:project-knowledge"]
+    assert second.skills == [
+        "mica:spatial-analysis",
+        "mica:cellpose",
+        "mica:project-knowledge",
+        "mica:segmentation-report",
+    ]
     guard = second.hooks["PreToolUse"][0].hooks[0]
     assert not await guard(
         {

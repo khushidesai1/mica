@@ -392,6 +392,8 @@ async def write_output(
         paths = [write_broker.relative_path(p) for p in body.relative_paths]
         saved = await asyncio.to_thread(write_approval.load, storage, event_id)
         approval = saved[0] if saved else None
+        if record.get("ambient"):
+            approval = None
         if approval:
             await asyncio.to_thread(write_approval.validate, bridge, storage, record, approval)
     except identity.IdentityUnavailable:
@@ -422,7 +424,9 @@ async def write_output(
             or grant.signature != record.get("access_signature")
         ):
             raise PermissionError("Project access changed. GCS publishing is blocked.")
-        write_access.require_active(storage, grant.project_id, body.grant_id, bridge.settings)
+        write_access.require_active(
+            storage, grant.project_id, body.grant_id, bridge.settings, event_id
+        )
 
     deadline = time.monotonic() + bridge.settings.write_upload_seconds
     results = []

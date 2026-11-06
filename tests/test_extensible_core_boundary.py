@@ -11,7 +11,7 @@ from mica.agents.analysis.transfers import Transfers
 
 @pytest.mark.parametrize("module", [
     "batch", "conversation", "tiers", "runner", "recovery_tools",
-    "email_delivery", "failure_investigation",
+    "email_delivery", "failure_investigation", "ambient",
 ])
 def test_core_modules_do_not_name_incident_specific_methods_or_providers(module):
     source = (Path(__file__).parents[1] / "src/mica/agents/analysis" / (module + ".py"))

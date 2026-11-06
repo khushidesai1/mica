@@ -322,7 +322,12 @@ def check_worker(work: Path, source: Path, settings: Settings) -> None:
     assert "project-knowledge skill" in opts.system_prompt["append"]
     assert "User hypothesis: unverified" not in opts.system_prompt["append"]
     assert opts.setting_sources == []
-    assert opts.skills == ["mica:spatial-analysis", "mica:cellpose", "mica:project-knowledge"]
+    assert opts.skills == [
+        "mica:spatial-analysis",
+        "mica:cellpose",
+        "mica:project-knowledge",
+        "mica:segmentation-report",
+    ]
     plugin = Path("/opt/pistachio/plugin")
     for file in (source / "skills").rglob("*"):
         if file.is_file():

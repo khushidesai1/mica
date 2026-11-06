@@ -161,6 +161,8 @@ def build_options(
         compute_tools.append(history.tool())
     tools.extend(f"mcp__pistachio__{t.name}" for t in compute_tools)
 
+    from . import thread_memory
+
     visual_reads = 0
     capture = (
         (capture or script_capture.Capture(ctx.workdir))
@@ -342,9 +344,13 @@ def build_options(
                 + "/. Grep other threads when project context is ambiguous. "
                 "Before finishing write knowledge/threads/"
                 + thread_key
-                + "/turn.json with paraphrase, methods, summary, progress, tags, related. "
-                "Use concise paraphrases only, never transcripts. Preserve the supplied summary "
-                "and entries. Other thread files are read-only. Scripts are collected from code/.\n"
+                + "/turn.json as one object matching this exact JSON schema: "
+                + json.dumps(thread_memory.Prose.model_json_schema())
+                + ". In particular paraphrase is a required top-level string. Do not include "
+                "entries, covered, identity, sequence or other application-owned fields. "
+                "Use concise paraphrases only, never transcripts. Incorporate prior context "
+                "into summary; do not copy the supplied log/summary wrappers into turn.json. "
+                "Other thread files are read-only. Scripts are collected from code/.\n"
                 + thread_context
             )
         if compute:
@@ -360,6 +366,34 @@ def build_options(
                 "additionalContext": "\n\n".join(sections),
             }
         }
+
+    async def memory_ready(
+        event: HookInput, _tool_id: str | None, _context: HookContext
+    ) -> HookJSONOutput:
+        from . import thread_memory
+
+        if (
+            event["hook_event_name"] != "Stop"
+            or not thread_key
+            or not thread_memory.enabled(settings)
+            or ctx.survey_only
+            or (compute and (compute.pending or compute.stop.is_set()))
+        ):
+            return {}
+        path = Path("knowledge") / thread_memory.prefix(thread_key) / "turn.json"
+        try:
+            raw = await asyncio.to_thread(script_capture.read_regular, ctx.workdir, path)
+            thread_memory.Prose.model_validate_json(raw)
+        except (OSError, ValueError):
+            # Let the same bounded turn repair its own prose before final delivery. The
+            # strict validator and application-owned identity/coverage remain unchanged.
+            return {
+                "decision": "block",
+                "reason": f"Write valid {path.as_posix()} before finishing. Use this exact "
+                "JSON schema (no entries or covered wrapper): "
+                + json.dumps(thread_memory.Prose.model_json_schema()),
+            }
+        return {}
 
     return ClaudeAgentOptions(
         model=settings.model,
@@ -432,6 +466,8 @@ def build_options(
         hooks={
             "PreToolUse": [HookMatcher(hooks=[guard])],
             "UserPromptSubmit": [HookMatcher(hooks=[turn_context])],
+            **({"Stop": [HookMatcher(hooks=[memory_ready])]}
+               if thread_key and thread_memory.enabled(settings) and not ctx.survey_only else {}),
             **(
                 {
                     "PostToolUse": [

@@ -35,7 +35,7 @@ class EventClaim:
     token: str = ""
 
 
-FailureProjection = Literal["outcome_review_due", "stall_check_at", "memory_due"]
+FailureProjection = Literal["outcome_review_due", "stall_check_at", "memory_due", "ambient_due"]
 
 
 class Repository(Protocol):
@@ -80,6 +80,7 @@ class Repository(Protocol):
     ) -> None: ...
     async def get_channel_project(self, key: str) -> str | None: ...
     async def set_connector_state(self, key: str, value: dict[str, Any]) -> None: ...
+    async def create_connector_state(self, key: str, value: dict[str, Any]) -> bool: ...
     async def get_connector_state(self, key: str) -> dict[str, Any] | None: ...
     async def patch_connector_state(
         self, key: str, updates: dict[str, Any], remove: tuple[str, ...] = ()

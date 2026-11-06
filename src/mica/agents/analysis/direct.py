@@ -440,7 +440,9 @@ async def handle(
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
     if not grant.email:
         return await finish(bridge, event_id, record, access.deny_text(grant))
-    cmd = commands.parse(event.get("text", ""))
+    if record.get("ambient") and not grant.allowed:
+        return await finish(bridge, event_id, record, access.deny_text(grant))
+    cmd = None if record.get("ambient") else commands.parse(event.get("text", ""))
     if (
         not grant.allowed
         and cmd is None
@@ -705,7 +707,27 @@ async def handle(
         )
     current_ids = {f["id"] for f in record.get("attachments", [])}
     decision: conversation.Decision
-    if saved := conversation.saved_decision(record):
+    if record.get("ambient"):
+        from .ambient_config import AmbientWorker
+
+        preset = AmbientWorker.model_validate(record["ambient"]["preset"])
+        decision = conversation.Decision(
+            route="compute", reply=text,
+            worker=tiers.WorkerChoice(
+                tier=preset.tier, on_demand=preset.on_demand,
+                expected_hours=preset.max_hours,
+                gpu_hours=preset.max_hours if preset.tier == "gpu" else None,
+                gpu_type=preset.gpu_type,
+                gpu_sizing=preset.gpu_sizing,
+                allow_resize=False, reason="Operator-configured background task",
+            ),
+        )
+        record["direct_decision"] = decision.model_dump()
+        record["direct_decision_pending"] = False
+        record["decision_access"] = grant.signature
+        record["memory_project_id"] = grant.project_id
+        await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+    elif saved := conversation.saved_decision(record):
         decision = conversation.Decision.model_validate(saved)
     else:
         await bridge.notify(event_id, record, "replying", "Mica is thinking")
@@ -857,7 +879,7 @@ async def handle(
     if decision.route == "compute":
         from .tiers import launch_choice
 
-        selected = {
+        selected = set() if record.get("ambient") else {
             reference_repos.valid_repo(name, bridge.settings.reference_github_org)
             for name in decision.reference_repos
         } or current.project.reference_repos

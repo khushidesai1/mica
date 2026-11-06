@@ -1,5 +1,11 @@
 # Architecture
 
+Operator-configured [ambient tasks](ambient-tasks.md) use the existing reconciliation schedule
+to discover newly completed samples and submit trusted presets into ordinary private worker
+threads. Create-only discovery receipts, event-bound output grants and fixed run deadlines keep
+starts idempotent and publishing scoped. Tasks default off; project recipes determine the
+scientific method and the bundled segmentation-report skill provides reusable QC outputs.
+
 Lab admission is configured in `projects/_access/lab.json`, read live by the API and workers.
 Its `members` list admits verified Slack humans in channel mode even outside enabled channels;
 workspace and legacy mapped admission retain their existing behavior. Lab membership does not

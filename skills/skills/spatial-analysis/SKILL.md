@@ -56,11 +56,21 @@ Proseg's `um_per_px` must come from verified sample metadata or the user, not it
   FOV has its image and that the export is complete before ingest: the pinned implementation
   silently replaces missing image tiles with zeros. A directory listing alone does not prove
   a completed transfer.
+- For a new transferred CosMx sample, copy `scripts/check_cosmx_sample.py` into `code/` and
+  run it with `/opt/sap/bin/python code/check_cosmx_sample.py --request '<JSON>'` before ingest.
+  Supply `sample`, `bucket_root` (the read-only mounted bucket), `raw` and `additional`
+  (bucket-relative sample folders), and `output` under `outputs/`. It requires both verified
+  marker-v1 `done.txt` files and their authoritative JSON, checks listing/count/FOV agreement,
+  and reads TIFF headers without decoding pixels. A listing-only backfill fails. Stop on a
+  nonzero exit and report the JSON errors; do not ingest an incomplete sample.
 - Write stores and scratch files only into a new directory under the thread workspace
   (for example `checkpoints/ingest/` for a completed store and `scratch/` for temporary data).
   Never point `store_path`, `output_path`, or `temp_dir`
   into the read-only data mount, `inputs/`, or an existing result directory. Proseg removes
   its temp directory on success. Use distinct temp directories and check for existing files.
+- Finish every whole-sample or multi-FOV segmentation with `mica:segmentation-report`.
+  Verify the image/polygon coordinate frame, inspect the crop overlays, add review notes,
+  publish its schema-v1 summary beside the result and deliver its PDF.
 - The bundled `/opt/sap` environment is CPU-only. Set `gpu=False` explicitly and use its cached
   `cyto3` model. For GPU Cellpose, follow the separate Cellpose skill and registered CUDA
   environment through `run_gpu`. Do not infer GPU execution from the upstream SAP default.
