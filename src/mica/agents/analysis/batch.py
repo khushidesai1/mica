@@ -436,15 +436,16 @@ class BatchBridge:
         if surface_name not in {"slack", "email"}:
             raise ValueError("Unknown intake surface")
         if self.settings.thread_memory == "github_only":
+            from .memory_artifacts import validate_cutover
+
             report = json.loads(
                 (
                     await asyncio.to_thread(
-                        self.storage.get, "projects/_registry/thread-memory-coverage.json"
+                        self.storage.get, "projects/_registry/thread-memory-cutover.json"
                     )
                 )[0]
             )
-            if not report.get("complete"):
-                raise ValueError("github_only requires a complete thread migration report")
+            validate_cutover(self.settings, report)
         payload = await scrub_password_paste(self, payload)
         event = payload["event"]
         thread = event.get("thread_ts") or event["ts"]

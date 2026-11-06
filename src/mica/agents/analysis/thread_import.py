@@ -5,15 +5,135 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import tempfile
+import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import checkpoints as workspace
-from . import memory_artifacts, memory_tasks, memory_workspace, project_memory, thread_memory
+from . import memory_artifacts, memory_tasks, project_memory, thread_memory
+from .config import Settings
 from .registry import Registry
 from .storage import Storage
+
+
+def read_scripts(
+    storage: Storage,
+    info: memory_artifacts.ObjectInfo,
+    state: dict[str, Any],
+    base: project_memory.Snapshot,
+    thread: str,
+    settings: Settings,
+) -> tuple[dict[str, str], dict[str, str]]:
+    scripts: dict[str, str] = {}
+    rejected: dict[str, str] = {}
+    parts = Path(state.get("context", {}).get("workdir", "")).parts
+    if "work" not in parts or ".." in parts:
+        return {}, {"archive": "Unrecognized workspace path; source retained."}
+    root = Path(*parts[parts.index("work") :]).as_posix() + "/code/"
+    target_root = thread_memory.prefix(thread) + "scripts/"
+    sizes = {p: b.size for p, b in base.assets.items() if p.startswith(target_root)}
+    total = sum(sizes.values())
+    try:
+        for archive, member in memory_artifacts.archive_members(storage, info, settings):
+            if not member.name.startswith(root) or member.isdir():
+                continue
+            relative = member.name.removeprefix(root)
+            if len(scripts) + len(rejected) >= 190:
+                raise memory_artifacts.ArchiveLimit("Script entry limit")
+            try:
+                path = target_root + relative
+                project_memory.valid_path(path)
+                if relative == "MANIFEST.json" or member.size > settings.thread_script_kb * 1024:
+                    raise ValueError("Script size or reserved path")
+                stream = archive.extractfile(member)
+                if stream is None:
+                    raise ValueError("Unreadable script")
+                data = stream.read(settings.thread_script_kb * 1024 + 1)
+                text = project_memory.validate(path, data, settings)
+                proposed = total - sizes.get(path, 0) + len(data)
+                if proposed > settings.thread_scripts_kb * 1024 * 9 // 10:
+                    raise ValueError("Script capacity reserve")
+                scripts[relative], total = text, proposed
+            except (ValueError, UnicodeError):
+                rejected[f"script-{len(rejected) + 1}"] = (
+                    "Unsafe, secret-like or oversized script; archive retained."
+                )
+    except (ValueError, OSError, EOFError, tarfile.TarError) as exc:
+        rejected["archive"] = (
+            str(exc) if isinstance(exc, memory_artifacts.ArchiveLimit) else "Unreadable archive"
+        ) + "; source retained."
+    return scripts, rejected
+
+
+async def import_scripts(
+    storage: Storage,
+    backend: project_memory.GitHubMemory,
+    pid: str,
+    thread: str,
+    state: dict[str, Any],
+    base: project_memory.Snapshot,
+) -> dict[str, Any]:
+    source = state["archive"]
+    info = await asyncio.to_thread(memory_artifacts.stat, storage, source)
+    event = "scripts-" + hashlib.sha256((source + info.generation).encode()).hexdigest()[:32]
+    cache = f"projects/_threads/{thread}/migration-proposals/{pid}/{event}.json"
+    try:
+        update = thread_memory.Update.model_validate_json(
+            (await asyncio.to_thread(storage.get, cache))[0]
+        )
+    except FileNotFoundError:
+        scripts, rejected = await asyncio.to_thread(
+            read_scripts, storage, info, state, base, thread, backend.settings
+        )
+        if (
+            await asyncio.to_thread(memory_artifacts.stat, storage, source)
+        ).generation != info.generation:
+            raise ValueError("Archive changed while importing; retry") from None
+        update = thread_memory.make_update(
+            thread,
+            event,
+            0,
+            datetime.fromtimestamp(info.updated, UTC).isoformat(),
+            "Mica migration",
+            "email" if state.get("private_owner") else "channel",
+            True,
+            thread_memory.Prose(
+                paraphrase=f"Imported {len(scripts)} working scripts; "
+                "retained the source workspace for verification."
+            ),
+            [],
+            scripts=scripts,
+            rejected=rejected,
+            outputs=[source],
+        )
+        await asyncio.to_thread(storage.put, cache, update.model_dump_json().encode())
+    existing = next(
+        (
+            row
+            for row in thread_memory.log_entries({p: f.text for p, f in base.files.items()}, thread)
+            if row.event_id == event
+        ),
+        None,
+    )
+    if existing is None:
+        saved = await backend.commit(
+            pid, base, {}, source="import", event_id=event, thread_update=update
+        )
+        if saved.rejected or saved.unmerged:
+            raise ValueError("Script import was not saved; source retained")
+    elif existing.digest() != update.entry.digest():
+        raise ValueError("Script import event changed; source retained")
+    verified = await memory_tasks.verify(backend, pid, update)
+    return {
+        "source": source,
+        "generation": info.generation,
+        "bytes": info.size,
+        "verified_at": time_now(),
+        "scripts": verified["scripts"],
+        "accepted": sorted(update.scripts or {}),
+        "rejected": update.entry.rejected,
+        "retain": True,
+    }
 
 
 async def import_threads(
@@ -48,12 +168,53 @@ async def import_threads(
                 keys += [k for k in history if len(k.split("/")) == 5]
             info = [await asyncio.to_thread(memory_artifacts.stat, storage, k) for k in keys]
             info.sort(key=lambda i: (i.updated, i.key))
+            # Include bounded legacy checkpoint messages not yet backfilled to history.
+            records: list[tuple[dict[str, Any], str, str, str, float]] = []
+            for item in info:
+                if item.size > 512 * 1024:
+                    raise ValueError("Oversized legacy exchange; retain source for review")
+                body, source_generation = await asyncio.to_thread(storage.get, item.key)
+                if source_generation != item.generation:
+                    raise ValueError("History changed while importing")
+                row = json.loads(body)
+                event = thread_memory.legacy_event_id(
+                    {**row, "id": row.get("id") or Path(item.key).stem}
+                )
+                row["id"] = event
+                records.append(
+                    (
+                        row,
+                        item.key,
+                        source_generation,
+                        hashlib.sha256(body).hexdigest(),
+                        item.updated,
+                    )
+                )
+            if state.get("context", {}).get("project_slug") == pid:
+                ids = {str(row[0]["id"]) for row in records}
+                for row in state.get("messages", []):
+                    event = thread_memory.legacy_event_id(row)
+                    if event not in ids:
+                        records.append(
+                            (
+                                {**row, "id": event},
+                                checkpoint,
+                                generation,
+                                hashlib.sha256(raw).hexdigest(),
+                                0,
+                            )
+                        )
+            raw_bytes = sum(len(json.dumps(row).encode()) for row, *_ in records)
             result: dict[str, Any] = {
                 "project": pid,
                 "thread": tid,
-                "events": len(info),
-                "estimated_input_tokens": sum(i.size for i in info) // 4,
-                "model_calls_upper_bound": len(info),
+                "events": len(records),
+                "history_objects": len(info),
+                "checkpoint_only_events": len(records) - len(info),
+                "raw_input_bytes": raw_bytes,
+                "estimated_raw_input_tokens": raw_bytes // 4,
+                "estimated_input_tokens": raw_bytes // 4 + len(records) * 6500,
+                "model_calls_upper_bound": len(records),
                 "status": "would-import",
             }
             results.append(result)
@@ -73,43 +234,6 @@ async def import_threads(
                 e.event_id: e
                 for e in thread_memory.log_entries({p: f.text for p, f in base.files.items()}, tid)
             }
-            # Include bounded legacy checkpoint messages not yet backfilled to history.
-            records: list[tuple[dict[str, Any], str, str, str, float]] = []
-            for item in info:
-                if item.size > 512 * 1024:
-                    raise ValueError("Oversized legacy exchange; retain source for review")
-                body, source_generation = await asyncio.to_thread(storage.get, item.key)
-                if source_generation != item.generation:
-                    raise ValueError("History changed while importing")
-                row = json.loads(body)
-                event = str(row.get("id") or Path(item.key).stem)
-                row["id"] = event
-                records.append(
-                    (
-                        row,
-                        item.key,
-                        source_generation,
-                        hashlib.sha256(body).hexdigest(),
-                        item.updated,
-                    )
-                )
-            if state.get("context", {}).get("project_slug") == pid:
-                ids = {str(row[0]["id"]) for row in records}
-                for row in state.get("messages", []):
-                    event = str(
-                        row.get("id")
-                        or hashlib.sha256(json.dumps(row, sort_keys=True).encode()).hexdigest()
-                    )
-                    if event not in ids:
-                        records.append(
-                            (
-                                {**row, "id": event},
-                                checkpoint,
-                                generation,
-                                hashlib.sha256(raw).hexdigest(),
-                                0,
-                            )
-                        )
             for ordinal, (row, source, source_generation, source_hash, updated) in enumerate(
                 records, 1
             ):
@@ -118,10 +242,13 @@ async def import_threads(
                 if old_source and old_source.get("sha256") != source_hash and source != checkpoint:
                     raise ValueError("Imported source changed; preserve it for review")
                 if event not in existing:
+                    input_hash = hashlib.sha256(
+                        json.dumps(row, sort_keys=True).encode()
+                    ).hexdigest()
                     cache_key = f"projects/_threads/{tid}/migration-proposals/{pid}/{event}.json"
                     try:
                         cached = json.loads((await asyncio.to_thread(storage.get, cache_key))[0])
-                        if cached["source_sha256"] != source_hash:
+                        if cached["input_sha256"] != input_hash:
                             raise ValueError("Changed migration input")
                         prose = thread_memory.Prose.model_validate(cached["prose"])
                     except FileNotFoundError:
@@ -135,7 +262,7 @@ async def import_threads(
                                 "thread": view,
                                 "user": str(row.get("user", "")),
                                 "reply": str(row.get("assistant", "")),
-                                "success": row.get("success", True),
+                                "success": row.get("success", bool(row.get("assistant"))),
                                 "speaker": "Unknown legacy speaker",
                                 "date": datetime.fromtimestamp(updated, UTC).isoformat()
                                 if updated
@@ -145,7 +272,7 @@ async def import_threads(
                         )
                         prose = thread_memory.Prose.model_validate_json(edits["_thread"])
                         cached = {
-                            "source_sha256": source_hash,
+                            "input_sha256": input_hash,
                             "prose": prose.model_dump(),
                             "covered": view["covered"],
                         }
@@ -157,7 +284,7 @@ async def import_threads(
                         datetime.fromtimestamp(updated, UTC).isoformat() if updated else "unknown",
                         "Unknown legacy speaker",
                         "email" if state.get("private_owner") else "channel",
-                        bool(row.get("success", True)),
+                        bool(row.get("success", bool(row.get("assistant")))),
                         prose,
                         cached.get("covered", []),
                     )
@@ -183,65 +310,15 @@ async def import_threads(
                     "sha256": source_hash,
                     "event_id": event,
                     "entry_sha256": entry.digest(),
-                    "verified_at": time_now(),
+                    "verified_at": (old_source or {}).get("verified_at", time_now())
+                    if old_source and old_source.get("generation") == source_generation
+                    else time_now(),
                 }
                 await asyncio.to_thread(storage.put, rkey, json.dumps(receipt).encode())
-            # Import the latest working code only for this checkpoint's actual project.
+            # Script failures retain their source without blocking conversation coverage.
             if state.get("context", {}).get("project_slug") == pid and state.get("archive"):
-                archive_key = state["archive"]
-                archive_info = await asyncio.to_thread(memory_artifacts.stat, storage, archive_key)
-                old = receipt.get("archive", {})
-                if old.get("generation") != archive_info.generation:
-                    with tempfile.TemporaryDirectory(prefix="mica-thread-import-") as temporary:
-                        home = Path(temporary)
-                        parts = Path(state["context"]["workdir"]).parts
-                        relative = Path(*parts[parts.index("work") :])
-                        work = home / relative
-                        with storage.open_read(archive_key) as stream:
-                            workspace.restore_workspace(stream, home, work=work)
-                        proposal = memory_workspace.decode_pending(
-                            memory_workspace.pending(
-                                work,
-                                project_memory.Snapshot(head_oid=base.head_oid),
-                                backend.settings,
-                                thread=tid,
-                            ),
-                            backend.settings,
-                        )
-                        event = (
-                            "scripts-"
-                            + hashlib.sha256(
-                                (archive_key + archive_info.generation).encode()
-                            ).hexdigest()[:32]
-                        )
-                        prose = thread_memory.Prose(
-                            paraphrase="Imported the retained working scripts."
-                        )
-                        update = thread_memory.make_update(
-                            tid,
-                            event,
-                            0,
-                            datetime.fromtimestamp(archive_info.updated, UTC).isoformat(),
-                            "Mica migration",
-                            "email" if state.get("private_owner") else "channel",
-                            True,
-                            prose,
-                            [],
-                            scripts=proposal.scripts,
-                            rejected=proposal.rejected,
-                        )
-                        await backend.commit(
-                            pid, base, {}, source="import", event_id=event, thread_update=update
-                        )
-                        verified = await memory_tasks.verify(backend, pid, update)
-                        receipt["archive"] = {
-                            "source": archive_key,
-                            "generation": archive_info.generation,
-                            "verified_at": time_now(),
-                            "scripts": verified["scripts"],
-                            "rejected": proposal.rejected,
-                            "retain": True,
-                        }
+                receipt["archive"] = await import_scripts(storage, backend, pid, tid, state, base)
+                result["archive"] = receipt["archive"]
             if (await asyncio.to_thread(memory_artifacts.checkpoint_state, storage, checkpoint))[
                 1
             ] != generation:
