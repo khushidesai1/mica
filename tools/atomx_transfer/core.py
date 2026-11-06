@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import posixpath
 import re
 import time
 from collections.abc import Callable, Iterator
@@ -19,6 +20,12 @@ from .errors import TransferFailure, reason
 
 MARKER = "done.txt"
 SCOPES = ("raw", "additional_files")
+# AtoMx appends the export time to the export name: TMA37_05_11_2026_22_59_07_541.
+EXPORT_STAMP = re.compile(r"_\d{1,2}_\d{1,2}_\d{4}_\d{1,2}_\d{1,2}_\d{1,2}(?:_\d{1,3})?$")
+RUN_FOLDER = re.compile(r"\d{8}_\d{6}_S\d+")
+SEARCH_DEPTH = 3  # Folder levels below the search start that may hold an export.
+SEARCH_LISTINGS = 400  # SFTP directory listings one inventory may spend searching.
+SHOWN_EXPORTS, SHOWN_SAMPLES = 30, 20
 
 
 def now() -> str:
@@ -33,6 +40,41 @@ def sample_name(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value):
         raise ValueError("Invalid sample name")
     return value
+
+
+def remote_name(value: str) -> str:
+    """AtoMx slide folders are typed by people: allow any single path segment."""
+    if (
+        not value
+        or len(value) > 255
+        or value in {".", ".."}
+        or "/" in value
+        or any(ord(c) < 32 or ord(c) == 127 for c in value)
+    ):
+        raise ValueError("Invalid remote folder name")
+    return value
+
+
+def sample_key(value: str) -> str:
+    """Spelling-insensitive identity: case, separators and leading zeros are ignored."""
+    key = re.sub(r"[^a-z0-9]", "", value.lower())
+    return re.sub(r"\d+", lambda m: str(int(m[0])), key)
+
+
+def same_sample(remote: str, wanted: str) -> bool:
+    a, b = sample_key(remote), sample_key(wanted)
+    if not a or not b:
+        return False
+    # A bare number on either side ("21") also names the lettered sample ("TMA21").
+    return (
+        a == b
+        or (a.isdigit() and re.sub(r"^[a-z]+", "", b) == a)
+        or (b.isdigit() and re.sub(r"^[a-z]+", "", a) == b)
+    )
+
+
+def export_label(root: str) -> str:
+    return EXPORT_STAMP.sub("", PurePosixPath(root).name)
 
 
 def export_path(value: str) -> str:
@@ -259,13 +301,11 @@ def plan(
     heartbeat: Callable[[], None] = lambda: None,
 ) -> tuple[str, list[File]]:
     export_path(root)
-    sample_name(sample)
+    remote_name(sample)
     sample_name(target)
     base = f"{root}/DecodedFiles/{sample}"
-    runs = sorted(x for x in remote.dirs(base) if re.fullmatch(r"\d{8}_\d{6}_S\d+", x))
-    if not runs:
-        raise ValueError("No decoded run folder found")
-    run = f"{base}/{runs[-1]}"
+    latest = run_folder(remote, base)
+    run = f"{base}/{latest}"
     files = []
     for rel, size in remote.files(run):
         heartbeat()
@@ -276,7 +316,11 @@ def plan(
         else:
             destination = f"raw_outputs/additional_files/{target}/{rel}"
         files.append(File(f"{run}/{rel}", destination, size))
-    for rel, size in remote.files(f"{root}/flatFiles/{sample}"):
+    try:
+        flat = list(remote.files(f"{root}/flatFiles/{sample}"))
+    except FileNotFoundError:
+        raise ValueError("No flatFiles folder for this slide") from None
+    for rel, size in flat:
         heartbeat()
         files.append(
             File(f"{root}/flatFiles/{sample}/{rel}", f"raw_outputs/raw/{target}/{rel}", size)
@@ -288,7 +332,21 @@ def plan(
             raise ValueError("Invalid source file")
         if PurePosixPath(file.name).name == MARKER:
             raise ValueError("Source file collides with reserved done.txt marker")
-    return runs[-1], sorted(files, key=lambda f: f.name)
+    return latest, sorted(files, key=lambda f: f.name)
+
+
+def run_folder(remote: Remote, base: str) -> str:
+    """Latest timestamped run, directly under the slide folder or nested one level down."""
+    runs = [x for x in remote.dirs(base) if RUN_FOLDER.fullmatch(x)]
+    if not runs:
+        for child in sorted(remote.dirs(base)):
+            runs += [
+                f"{child}/{x}" for x in remote.dirs(f"{base}/{child}") if RUN_FOLDER.fullmatch(x)
+            ]
+    if not runs:
+        raise ValueError("No decoded run folder found")
+    # Timestamp prefixes sort chronologically, as in the original scripts.
+    return max(runs, key=lambda r: (PurePosixPath(r).name, r))
 
 
 def fingerprint(run: str, files: list[File]) -> str:
@@ -451,26 +509,72 @@ class Transfer:
             raise TransferFailure(step, exc) from None
 
 
+def export_roots(remote: Remote, start: str) -> tuple[list[str], int, bool]:
+    """Folders holding DecodedFiles, searched breadth-first and bounded below ``start``."""
+    roots: list[str] = []
+    frontier = [(start, 0)]
+    listings = 0
+    truncated = False
+    while frontier:
+        if listings >= SEARCH_LISTINGS:
+            return roots, listings, True
+        path, depth = frontier.pop(0)
+        listings += 1
+        try:
+            children = remote.dirs(path)
+        except (FileNotFoundError, PermissionError):
+            continue
+        if "DecodedFiles" in children and path != "/":
+            roots.append(path)  # An export's own subfolders are never searched as exports.
+        elif depth < SEARCH_DEPTH:
+            frontier += [(posixpath.join(path, child), depth + 1) for child in sorted(children)]
+        elif children:
+            truncated = True
+    return roots, listings, truncated
+
+
+def matching_slides(root: str, slides: list[str], wanted: str) -> list[str]:
+    if not wanted:
+        return slides
+    if wanted in slides:
+        return [wanted]  # An exact folder name always wins over spelling-insensitive matches.
+    named = [
+        slide
+        for slide in slides
+        if same_sample(slide, wanted) or same_sample(EXPORT_STAMP.sub("", slide), wanted)
+    ]
+    if not named and len(slides) == 1 and same_sample(export_label(root), wanted):
+        return slides  # An export named for the sample that holds a single slide folder.
+    return named
+
+
 def inventory(remote: Remote, bucket: Bucket, request: dict[str, Any]) -> dict[str, Any]:
-    roots = (
-        [request["export_root"]]
-        if request.get("export_root")
-        else ["/" + x for x in remote.dirs("/")]
-    )
-    entries = []
+    wanted = request.get("sample") or ""
+    start = request.get("export_root") or "/"
+    roots, listings, truncated = export_roots(remote, start)
+    entries: list[dict[str, Any]] = []
+    searched = []
     for root in roots:
         try:
-            samples = remote.dirs(root + "/DecodedFiles")
-        except FileNotFoundError:
+            slides = sorted(remote.dirs(root + "/DecodedFiles"))
+        except (FileNotFoundError, PermissionError):
             continue
-        for sample in samples:
-            if request.get("sample") and sample != request["sample"]:
+        searched.append({"export_root": root, "samples": slides[:SHOWN_SAMPLES]})
+        for sample in matching_slides(root, slides, wanted):
+            target = (request.get("as_sample") or wanted) if wanted else sample
+            entry: dict[str, Any] = {
+                "sample": sample,
+                "as_sample": target,
+                "export_root": root,
+                "matched": bool(wanted),
+            }
+            try:
+                run, files = plan(remote, root, sample, target)
+            except (ValueError, OSError) as exc:
+                # A matching folder that cannot be planned is reported instead of hidden.
+                problem = str(exc) if isinstance(exc, ValueError) else "Export files unreadable"
+                entries.append({**entry, "status": "incomplete", "problem": problem[:200]})
                 continue
-            sample_name(sample)
-            target = (
-                (request.get("as_sample") or sample) if sample == request.get("sample") else sample
-            )
-            run, files = plan(remote, root, sample, target)
             status = "on_atomx_only"
             for suffix in ("failed", "done", "in_progress"):
                 marker = bucket.read(f"transfer_status/{target}.{suffix}.json")
@@ -483,9 +587,7 @@ def inventory(remote: Remote, bucket: Bucket, request: dict[str, Any]) -> dict[s
                             status = "changed_since_done"
             entries.append(
                 {
-                    "sample": sample,
-                    "as_sample": target,
-                    "export_root": root,
+                    **entry,
                     "run_folder": run,
                     "n_files": len(files),
                     "total_bytes": sum(f.size for f in files),
@@ -511,6 +613,7 @@ def inventory(remote: Remote, bucket: Bucket, request: dict[str, Any]) -> dict[s
                     "status": (
                         "done_backfilled" if body.get("provenance") == "backfill" else "bucket_only"
                     ),
+                    "matched": False,
                 }
             )
     return {
@@ -519,4 +622,12 @@ def inventory(remote: Remote, bucket: Bucket, request: dict[str, Any]) -> dict[s
         "requested_by": request["requested_by"],
         "login_saved_by": request["login_saved_by"],
         "samples": entries,
+        # What the search saw, so a miss can name the folders that do exist.
+        "searched": {
+            "start": start,
+            "exports": searched[:SHOWN_EXPORTS],
+            "export_count": len(searched),
+            "listings": listings,
+            "truncated": truncated,
+        },
     }

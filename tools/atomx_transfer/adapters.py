@@ -113,7 +113,15 @@ class SFTP:
         return items
 
     def dirs(self, path: str) -> list[str]:
-        return [a.filename for a in self.entries(path) if stat.S_ISDIR(a.st_mode)]
+        # Searching skips symlinks and odd entries; transferred files still use entries().
+        return [
+            a.filename
+            for a in self.sftp.listdir_attr(path)
+            if a.filename not in {".", ".."}
+            and "/" not in a.filename
+            and a.st_mode
+            and stat.S_ISDIR(a.st_mode)
+        ]
 
     def files(self, path: str) -> Iterator[tuple[str, int]]:
         for item in self.entries(path):

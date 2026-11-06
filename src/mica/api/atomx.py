@@ -242,8 +242,13 @@ async def bootstrap(request: Request, run: str) -> Response:
             "connection_revision": pending["login_version"],
             "destinations": pending["config"],
             "kind": pending["job_kind"],
-            "sample": pending["request"]["sample"],
-            "as_sample": pending["request"]["as_sample"],
+            # A pull copies the previewed AtoMx folder; an inventory searches by request name.
+            "sample": (
+                pending["preview"]["sample"]
+                if pending["job_kind"] == "pull"
+                else pending["request"]["sample"]
+            ),
+            "as_sample": pending["request"]["as_sample"] or pending["request"]["sample"],
             "export_root": pending.get("preview", {}).get(
                 "export_root", pending["request"]["export_root"]
             ),

@@ -96,19 +96,21 @@ class MemoryRemote:
 
     def dirs(self, path: str) -> list[str]:
         prefix = path.rstrip("/") + "/"
-        return sorted(
-            {
-                name[len(prefix) :].split("/")[0]
-                for name in self.data
-                if name.startswith(prefix) and "/" in name[len(prefix) :]
-            }
-        )
+        under = [name[len(prefix) :] for name in self.data if name.startswith(prefix)]
+        if not under and path != "/":
+            raise FileNotFoundError(path)  # Like SFTP, a missing folder cannot be listed.
+        return sorted({rel.split("/")[0] for rel in under if "/" in rel})
 
     def files(self, path: str) -> Iterator[tuple[str, int]]:
         prefix = path + "/"
-        for name, data in sorted(self.data.items()):
-            if name.startswith(prefix):
-                yield name[len(prefix) :], len(data)
+        found = [
+            (name[len(prefix) :], len(data))
+            for name, data in sorted(self.data.items())
+            if name.startswith(prefix)
+        ]
+        if not found:
+            raise FileNotFoundError(path)
+        yield from found
 
     def size(self, path: str) -> int:
         return len(self.data[path])
@@ -484,3 +486,122 @@ def test_gcs_folders_consumes_all_pages():
         "raw_outputs/raw/B/",
         "raw_outputs/raw/C/",
     ]
+
+
+def export_tree(slides: dict[str, str], root: str = ROOT) -> MemoryRemote:
+    """A synthetic export whose slide folders hold runs at the given relative paths."""
+    remote = MemoryRemote()
+    remote.data = {}
+    for slide, run in slides.items():
+        decoded = f"{root}/DecodedFiles/{slide}/{run}"
+        remote.data.update(
+            {
+                f"{decoded}/CellStatsDir/Morphology2D/image.tif": b"pixels",
+                f"{decoded}/RunSummary/Morphology_ChannelID_Dictionary.txt": b"map",
+                f"{root}/flatFiles/{slide}/cells.csv": b"cells",
+            }
+        )
+    return remote
+
+
+def search(remote: MemoryRemote, sample: str = "TMA37", **extra: Any) -> dict[str, Any]:
+    request = {"sample": sample, "requested_by": "manual:test", "login_saved_by": "test", **extra}
+    return core.inventory(remote, MemoryBucket(), request)
+
+
+@pytest.mark.parametrize(
+    ("remote", "wanted", "same"),
+    [
+        ("TMA37", "TMA37", True),
+        ("tma37", "TMA37", True),
+        ("TMA_037", "TMA37", True),
+        ("tma-37 ", "TMA37", True),
+        ("37", "TMA37", True),
+        ("TMA37", "37", True),
+        ("TMA3", "TMA37", False),
+        ("TMA370", "TMA37", False),
+        ("Slide37", "TMA37", False),
+        ("", "TMA37", False),
+    ],
+)
+def test_sample_names_match_without_spelling_details(remote, wanted, same):
+    assert core.same_sample(remote, wanted) is same
+
+
+def test_inventory_finds_loosely_named_slide_and_keeps_bucket_name():
+    remote = export_tree({"tma_037": RUN, "TMA38": RUN})
+    [item] = search(remote)["samples"]
+    assert (item["sample"], item["as_sample"], item["matched"]) == ("tma_037", "TMA37", True)
+    assert item["export_root"] == ROOT and item["plan_fingerprint"]
+
+
+def test_inventory_finds_nested_export_named_for_the_sample():
+    # AtoMx names the export folder after what was typed and appends the export time.
+    root = "/Lab exports/2026/TMA37_05_11_2026_22_59_07_541"
+    remote = export_tree({"Slide 1": f"run-batch/{RUN}"}, root)
+    remote.data[f"/Other_19_08_2026_13_58_54_505/DecodedFiles/TMA19/{RUN}/a.csv"] = b"x"
+    result = search(remote)
+    [item] = result["samples"]
+    assert (item["export_root"], item["sample"], item["as_sample"]) == (root, "Slide 1", "TMA37")
+    assert item["run_folder"] == f"run-batch/{RUN}"
+    run, files = core.plan(remote, root, "Slide 1", "TMA37")
+    assert run == item["run_folder"]
+    assert {f.name for f in files} == {
+        "raw_outputs/raw/TMA37/Morphology2D/image.tif",
+        "raw_outputs/raw/TMA37/Morphology_ChannelID_Dictionary.txt",
+        "raw_outputs/raw/TMA37/cells.csv",
+    }
+    assert {e["export_root"] for e in result["searched"]["exports"]} == {
+        root,
+        "/Other_19_08_2026_13_58_54_505",
+    }
+
+
+def test_timestamped_slide_folder_matches_its_sample():
+    [item] = search(export_tree({"TMA37_05_11_2026_22_59_07_541": RUN, "TMA38": RUN}))["samples"]
+    assert (item["sample"], item["as_sample"]) == ("TMA37_05_11_2026_22_59_07_541", "TMA37")
+
+
+def test_exact_folder_name_wins_and_ambiguous_names_are_all_reported():
+    assert [x["sample"] for x in search(export_tree({"TMA37": RUN, "tma_37": RUN}))["samples"]] == [
+        "TMA37"
+    ]
+    loose = search(export_tree({"tma37": RUN, "tma_37": RUN}))["samples"]
+    assert sorted(x["sample"] for x in loose) == ["tma37", "tma_37"]
+
+
+def test_inventory_miss_lists_what_it_searched():
+    remote = export_tree({"TMA3": RUN, "TMA370": RUN})
+    result = search(remote)
+    assert result["samples"] == []
+    assert result["searched"]["exports"] == [{"export_root": ROOT, "samples": ["TMA3", "TMA370"]}]
+    assert result["searched"]["truncated"] is False
+
+
+def test_matching_slide_without_flat_files_is_reported_not_hidden():
+    remote = export_tree({"TMA37": RUN})
+    del remote.data[f"{ROOT}/flatFiles/TMA37/cells.csv"]
+    [item] = search(remote)["samples"]
+    assert item["status"] == "incomplete" and "plan_fingerprint" not in item
+    assert item["problem"] == "No flatFiles folder for this slide"
+
+
+def test_export_search_is_bounded(monkeypatch):
+    remote = MemoryRemote()
+    remote.data = {f"/a{i}/b/c/d/file": b"x" for i in range(20)}
+    monkeypatch.setattr(core, "SEARCH_LISTINGS", 10)
+    searched = search(remote)["searched"]
+    assert searched["truncated"] is True and searched["listings"] == 10
+    monkeypatch.setattr(core, "SEARCH_LISTINGS", 400)
+    remote.data = {f"/a/b/c/d/TMA37_05_11_2026_22_59_07_541/DecodedFiles/TMA37/{RUN}/x": b"x"}
+    # Deeper than the search depth: never crawled, so a miss stays cheap.
+    searched = search(remote)["searched"]
+    assert searched["exports"] == []
+    assert searched["truncated"] is True
+
+
+def test_explicit_export_folder_limits_the_search():
+    remote = export_tree({"TMA37": RUN})
+    remote.data.update(export_tree({"TMA37": RUN}, "/Other").data)
+    [item] = search(remote, export_root="/Other")["samples"]
+    assert item["export_root"] == "/Other"
