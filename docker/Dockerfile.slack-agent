@@ -2,7 +2,9 @@
 ARG SCIENCE_IMAGE
 FROM ${SCIENCE_IMAGE}
 USER root
-RUN apt-get update && apt-get install -y --no-install-recommends socat git && rm -rf /var/lib/apt/lists/*
+COPY docker/ensure-worker-user.sh /tmp/mica-ensure-worker-user.sh
+RUN apt-get update && apt-get install -y --no-install-recommends socat git passwd && \
+    sh /tmp/mica-ensure-worker-user.sh && rm -rf /var/lib/apt/lists/*
 COPY deploy/requirements-bot.txt /tmp/requirements-bot.txt
 COPY deploy/requirements-email.txt /tmp/requirements-email.txt
 RUN pip install -r /tmp/requirements-bot.txt -r /tmp/requirements-email.txt

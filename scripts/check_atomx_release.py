@@ -3,7 +3,10 @@
 import asyncio
 import hashlib
 import json
+import os
+import pwd
 import shutil
+import subprocess
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -17,6 +20,21 @@ from mica.agents.analysis.atomx_connections import Connections
 from mica.agents.analysis.config import Settings
 from mica.config import Settings as AppSettings
 from mica.storage.memory import InMemoryRepository
+
+
+def check_worker_ssh():
+    """Exercise OpenSSH initialization under the actual image user without connecting."""
+    assert os.getuid() == os.getgid() == 65532, "Unexpected worker UID/GID"
+    entry = pwd.getpwuid(os.getuid())
+    assert entry.pw_gid == 65532 and entry.pw_dir == "/srv/pistachio"
+    assert entry.pw_shell == "/usr/sbin/nologin"
+    assert shutil.which("sshpass") and shutil.which("sftp")
+    result = subprocess.run(
+        ["ssh", "-G", "-F", "/dev/null", "-o", "User=synthetic", "localhost"],
+        capture_output=True, text=True, timeout=10, check=True,
+    )
+    assert "user synthetic" in result.stdout.splitlines()
+    print("ATOMX_WORKER_ACCOUNT_AND_OPENSSH_VERIFIED (offline)")
 
 
 def check_layout_free_job():
@@ -134,7 +152,7 @@ async def check():
     assert "StrictHostKeyChecking=yes" in script and "sshpass -d" in script
     assert worker.ScriptSFTP.quote("/plain file") == '"/plain file"'
     if sys.argv[-1] == "worker":
-        assert shutil.which("sshpass") and shutil.which("sftp")
+        check_worker_ssh()
     print("ATOMX_PRIVATE_CONNECTION_AND_WORKER_TOOL_VERIFIED (offline)")
 
 
