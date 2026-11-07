@@ -5,9 +5,11 @@ import hashlib
 import json
 import os
 import pwd
+import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,6 +37,61 @@ def check_worker_ssh():
     )
     assert "user synthetic" in result.stdout.splitlines()
     print("ATOMX_WORKER_ACCOUNT_AND_OPENSSH_VERIFIED (offline)")
+
+
+def check_sftp_password_mode(scripts: Path):
+    """Inspect the real scripts' effective OpenSSH options without opening a connection."""
+    ssh = shutil.which("ssh")
+    assert ssh and shutil.which("sftp"), "OpenSSH is required"
+    with tempfile.TemporaryDirectory(prefix="mica-sftp-check-") as directory:
+        root = Path(directory)
+        config = root / "ssh-config"
+        probe = root / "ssh-probe"
+        probe.write_text(
+            "#!/bin/sh\n"
+            f"{shlex.quote(ssh)} -G \"$@\" > {shlex.quote(str(config))} || exit 2\n"
+            # sftp expects its binary protocol; stop after obtaining configuration.
+            "exit 1\n"
+        )
+        helper = root / "sshpass"
+        helper.write_text(
+            "#!/bin/sh\n"
+            # Intercept only the password helper; run the actual sftp and ssh binaries.
+            "test \"$1\" = -d || exit 2\nshift 2\n"
+            "client=$1\nshift\n"
+            f"exec \"$client\" -S {shlex.quote(str(probe))} \"$@\"\n"
+        )
+        probe.chmod(0o700)
+        helper.chmod(0o700)
+        batch = root / "download.batch"
+        batch.write_text("bye\n")
+        known = root / "known_hosts"
+        known.write_text("")
+        env = {
+            "PATH": str(root) + os.pathsep + os.environ["PATH"],
+            "ATOMX_PASSWORD_FD": "0",
+            "ATOMX_KNOWN_HOSTS": str(known),
+            "ATOMX_SFTP_HOST": "fixture.invalid",
+            "ATOMX_SFTP_PORT": "22",
+            "ATOMX_SFTP_USER": "synthetic",
+        }
+        for script in ("get_tma.sh", "get_tma_addfiles.sh"):
+            config.unlink(missing_ok=True)
+            result = subprocess.run(
+                ["bash", str(scripts / script), "--download-only", str(batch)],
+                env=env, capture_output=True, text=True, timeout=10,
+            )
+            assert result.returncode != 0, "Configuration probe must not download files"
+            options = dict(line.split(" ", 1) for line in config.read_text().splitlines())
+            assert options["batchmode"] == "no", "Password authentication disabled by batch mode"
+            assert options["user"] == "synthetic"
+            assert options["hostname"] == "fixture.invalid"
+            assert options["preferredauthentications"] == "password,keyboard-interactive"
+            assert options["pubkeyauthentication"] in {"no", "false"}
+            assert options["stricthostkeychecking"] in {"yes", "true"}
+            assert options["userknownhostsfile"] == str(known)
+            assert options["globalknownhostsfile"] == "/dev/null"
+    print("ATOMX_SFTP_PASSWORD_MODE_AND_HOST_CHECKING_VERIFIED (offline)")
 
 
 def check_layout_free_job():
@@ -199,6 +256,7 @@ async def check():
     assert worker.ScriptSFTP.quote("/plain file") == '"/plain file"'
     if sys.argv[-1] == "worker":
         check_worker_ssh()
+        check_sftp_password_mode(installed / "scripts")
     print("ATOMX_PRIVATE_CONNECTION_AND_WORKER_TOOL_VERIFIED (offline)")
 
 
