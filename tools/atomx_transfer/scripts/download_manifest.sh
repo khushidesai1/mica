@@ -5,8 +5,10 @@
 set -euo pipefail
 : "${ATOMX_PASSWORD_FD:?}" "${ATOMX_KNOWN_HOSTS:?}" "${ATOMX_SFTP_HOST:?}"
 : "${ATOMX_SFTP_USER:?}" "${ATOMX_SFTP_PORT:?}"
-exec sshpass -d "$ATOMX_PASSWORD_FD" sftp -F /dev/null -b "$1" \
-  -o BatchMode=no -o StrictHostKeyChecking=yes \
+# OpenSSH keeps the first option value; -b adds BatchMode=yes internally.
+# Enable the private-pipe password helper before selecting the batch file.
+exec sshpass -d "$ATOMX_PASSWORD_FD" sftp -F /dev/null -o BatchMode=no -b "$1" \
+  -o StrictHostKeyChecking=yes \
   -o "UserKnownHostsFile=$ATOMX_KNOWN_HOSTS" -o GlobalKnownHostsFile=/dev/null \
   -o IdentityAgent=none -o PubkeyAuthentication=no -o PreferredAuthentications=password,keyboard-interactive \
   -o ConnectTimeout=30 -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \

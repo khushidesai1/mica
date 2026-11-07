@@ -86,6 +86,9 @@ The worker keeps UID/GID `65532` and a locked, noninteractive local account with
 `/srv/pistachio`. OpenSSH requires that local account independently of the requester's SFTP
 login. The installed-worker release gate resolves the account and runs OpenSSH's configuration-only
 startup under the actual worker user, with networking disabled, before the image can be released.
+The gate also runs both download scripts through OpenSSH's configuration parser and checks that
+password authentication remains enabled with strict host checking. `BatchMode=no` must precede
+SFTP's `-b` option, which otherwise disables the private-pipe password helper.
 
 Deploy with `cloudbuild/build-slack-release.yaml`; its offline AtoMx gates check encryption,
 revocation, installed source and script dependencies. Presentation/controller-only updates can use
