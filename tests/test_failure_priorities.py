@@ -109,22 +109,23 @@ async def test_sustained_intake_and_brief_or_unmatched_noise(repository, route, 
 
 
 @pytest.mark.parametrize(
-    "cause,status,label,color",
+    "cause,status,label",
     [
-        ("request_stalled", "active", "High · Mica not responding", "red"),
-        ("request_blocked", "complete", "Medium · Couldn't complete", "orange"),
-        ("memory_editor_failed", "complete", "Low · Background", "gray"),
-        ("compute_control_failed", "recovered", "Low · Background", "gray"),
+        ("request_stalled", "active", "High · Mica not responding"),
+        ("request_blocked", "complete", "Medium · Couldn't complete"),
+        ("memory_editor_failed", "complete", "Low · Background"),
+        ("compute_control_failed", "recovered", "Low · Background"),
     ],
 )
-async def test_cards_and_evidence_use_same_priority(repository, cause, status, label, color):
+async def test_cards_and_evidence_use_same_priority(repository, cause, status, label):
     row = await repository.record_failure(obs(cause=cause), 1000)
     row.request_status = status
     for native in (True, False):
         rendered = failure_cards.blocks(row, [CATALOG[cause].explanation], status, native=native)
-        assert label in str(rendered)
-        if native:
-            assert rendered[0]["elements"][0]["elements"][0]["color"] == color
+        assert label.split(" · ")[0] + " priority" in str(rendered)
+        if cause == "request_blocked":
+            assert "Couldn't complete requested work" in str(rendered)
+            assert "Completed · follow-up needed" not in str(rendered)
     assert label in str(failure_cards.details_view(row, []))
     assert failure_investigation.evidence(row, status, None, CATALOG)[
         "priority"
@@ -230,7 +231,9 @@ async def queue_review(repository, settings, event="a", **changes):
     await repository.set_connector_state("claude-event:" + event, row)
 
 
-@pytest.mark.parametrize("outcome", ["completed", "clarification", "policy_denied"])
+@pytest.mark.parametrize(
+    "outcome", ["completed", "clarification", "policy_denied", "in_progress", "unknown"]
+)
 async def test_nonfailure_reviews_do_not_record_incidents(
     repository, settings, monkeypatch, outcome
 ):
@@ -337,12 +340,78 @@ async def test_persistence_retry_reuses_classification(repository, settings, mon
         {"approval_expired": "compute"},
         {"consumed_into": "parent"},
         {"status": "running"},
+        {"reply_handoff": "transfer"},
+        {"reply_handoff": "atomx"},
+        {"direct_decision": {"route": "cloud_access"}, "reply_scope": "account"},
+        {"direct_decision": {"route": "access"}},
+        {"access_request_id": "pending-approval"},
+        {"notice_phase": "denied"},
+        {"stop_reason": "access_revoked"},
     ],
 )
 async def test_ineligible_requests_are_not_queued(repository, settings, changes):
     row = record(**changes)
     await outcome_review.enqueue(repository, settings, Settings(), "a", row, 1000)
     assert "outcome_review_due" not in row
+
+
+@pytest.mark.parametrize("handoff", ["transfer", "atomx"])
+@pytest.mark.parametrize("cached", [False, True])
+async def test_queued_transfer_preparation_never_emits_semantic_failure(
+    repository, settings, monkeypatch, handoff, cached
+):
+    settings.anthropic_api_key = SecretStr("test-key")
+    await repository.set_connector_state(
+        "claude-event:a",
+        record(reply_handoff=handoff, terminal_reply="Preparing your AtoMx transfer request.",
+               outcome_review_due=1000),
+    )
+    if cached:
+        await repository.set_connector_state("claude-outcome:a", {
+            "attempts": 1, "status": "classified",
+            "result": {"outcome": "not_completed", "blockers": ["other"]},
+        })
+    call = AsyncMock()
+    monkeypatch.setattr(outcome_review, "assess", call)
+    await outcome_review.review_due(repository, settings, Settings(), 1000)
+    call.assert_not_awaited()
+    assert not repository.failures
+    assert (await repository.get_connector_state("claude-outcome:a"))["status"] == "complete"
+    assert (await repository.get_connector_state("claude-event:a"))["outcome_review_due"] == NEVER
+
+
+@pytest.mark.parametrize("status", ["complete", "failed"])
+async def test_background_incident_does_not_hide_task_blocker(
+    repository, settings, monkeypatch, status
+):
+    row = await repository.record_failure(
+        obs("a", "memory_editor_failed", observability.request_scope(settings)), 900
+    )
+    await queue_review(repository, settings, status=status)
+    monkeypatch.setattr(outcome_review, "assess", AsyncMock(return_value=outcome_review.Review(
+        outcome="not_completed", blockers=["software_environment"],
+    )))
+    await outcome_review.review_due(repository, settings, Settings(), 1000)
+    assert len(repository.failures) == 1
+    assert set(repository.failures[row.id].causes) == {"memory_editor_failed", "request_blocked"}
+
+
+def test_progress_is_not_a_final_reply_but_terminal_legacy_notices_are():
+    value = record(
+        terminal_reply="", notice_text="Still waiting on a worker…", notice_phase="queued"
+    )
+    assert outcome_review.inputs(value)["final_reply"] == ""
+    assert not outcome_review.eligible(value)
+    value.update(notice_phase="failed", notice_text="Required package could not be installed.")
+    assert outcome_review.eligible(value)
+    assert outcome_review.inputs(value)["final_reply"] == value["notice_text"]
+
+
+def test_failed_transfer_setup_still_gets_outcome_review():
+    assert outcome_review.eligible(record(
+        status="failed", direct_decision={"route": "transfer"},
+        terminal_reply="Couldn't complete: the source is unavailable.",
+    ))
 
 
 @pytest.mark.parametrize(

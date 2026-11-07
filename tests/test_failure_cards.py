@@ -243,13 +243,14 @@ async def test_details_preserves_reopened_review_and_missing_assessment(reposito
     assert "Assessment unavailable" in text and "Worker stopped." in text
 
 
-async def test_card_limits_and_tags(repository):
+async def test_card_keeps_metadata_inside_card_and_within_limits(repository):
     row = await repository.record_failure(
         observation(request_scoped=True, event_id="event", actor="x" * 254, project_name="p" * 200),
         1000,
     )
-    tags, card = failure_cards.blocks(row, ["Error " * 500, "Other issue"], "failed")
-    assert "Medium · Couldn't complete" in str(tags) and "Compute" in str(tags)
+    (card,) = failure_cards.blocks(row, ["Error " * 500, "Other issue"], "failed")
+    assert "Medium priority · Compute" in card["subtext"]["text"]
+    assert '"type": "tag"' not in json.dumps(card)
     assert len(card["title"]["text"]) <= 150 and len(card["subtitle"]["text"]) <= 150
     assert len(card["body"]["text"]) <= 200 and len(card["subtext"]["text"]) <= 200
 
@@ -264,7 +265,7 @@ async def test_card_prefers_request_diagnosis_and_lookup_outage_never_claims_rec
     await repository.record_failure(row.observation.model_copy(update={"occurrence": "new"}), 1000)
     monkeypatch.setattr(repository, "get_connector_state", AsyncMock(side_effect=TimeoutError()))
     await observability.flush(repository, settings, operators)
-    card = slack.chat_update.call_args.kwargs["blocks"][1]
+    card = slack.chat_update.call_args.kwargs["blocks"][0]
     assert "worker stopped" in card["body"]["text"]
     assert "Needs investigation" in card["subtext"]["text"]
 
