@@ -708,7 +708,8 @@ submission stores a durable receipt and acknowledges without downloading the fil
 
 Deploy the API and CPU/GPU workers together. Leave `AGENT_SESSION_IMPORT_PROJECTS` empty during
 the release, verify the installed app's scope and modal with a synthetic test project, then
-add approved project IDs. Measure a full-size slice; if it spends over 60% of the existing
+add approved project IDs, or set it to `*` for all current and future projects while retaining
+ordinary project access checks. Measure a full-size slice; if it spends over 60% of the existing
 per-turn budget, reduce `AGENT_SESSION_IMPORT_SLICE_CHARS`. Verify a two-pass import, a separate
 follow-on question and a new-thread reference lookup before enabling a collaborator's project.
 See [project memory](project-memory.md#detailed-results-and-session-imports) for storage,
