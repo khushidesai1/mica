@@ -7,7 +7,7 @@ from unittest.mock import Mock
 
 import pytest
 from test_analysis_batch import bridge  # noqa: F401
-from test_conversation_tools import Client, reply, run, tool, turn  # noqa: F401
+from test_conversation_tools import Client, run, tool, turn  # noqa: F401
 
 from mica.agents.analysis import access, command_intent, thread_history, thread_memory, transfers
 
@@ -93,7 +93,7 @@ async def test_old_repo_parameter_is_reusable_without_old_ownership_intent(turn)
 async def test_invalid_transfer_can_repair_inside_the_same_conversation(turn):  # noqa: F811
     turn[2]["payload"]["event"]["text"] = "Transfer TMA7 to gs://lab-data/raw"
     client = Client(
-        tool("propose_transfer", sample="TMA7", destination="gs://lab-data/invented"),
+        tool("propose_transfer", sample="TMA7", destination="gs://other-data/raw"),
         tool("propose_transfer", sample="TMA7", destination="gs://lab-data/raw"),
     )
     result = await run(turn, client)
@@ -146,12 +146,13 @@ async def test_github_only_history_recovers_parameters_beyond_recent_window(
     assert record["input_history"] == {"access": grant.signature, "ids": ["earlier"]}
 
 
-async def test_expired_receipt_does_not_turn_paraphrase_into_explicit_input(turn):  # noqa: F811
+async def test_context_can_propose_transfer_without_original_path_receipt(turn):  # noqa: F811
     bridge, _, record, grant = turn
     record["input_history"] = {"access": grant.signature, "ids": ["expired"]}
     assert await thread_history.supplied_inputs(bridge.repository, grant, record) == ""
     client = Client(
-        tool("propose_transfer", sample="TMA7", destination="gs://lab-data/invented"),
-        reply("The destination is not recorded in accessible instructions."),
+        tool("propose_transfer", sample="TMA7", destination="gs://lab-data/proposed/raw"),
     )
-    assert (await run(turn, client)).route == "reply"
+    assert (await run(turn, client)).route == "transfer"
+    assert not await bridge.repository.get_connector_state("transfer-pending:" + turn[1])
+    bridge.test_client.create_job.assert_not_called()

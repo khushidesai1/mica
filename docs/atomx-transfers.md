@@ -6,11 +6,20 @@ open only once. Your saved connection belongs to your verified email identity, w
 your authorized projects, and is never shared with project collaborators. Ask to replace or
 forget it to open the same form. Saving a login does not test it or approve a transfer.
 
-Request a sample transfer and optionally its export folder, destination alias, and raw-data
-base such as `gs://your-bucket/project/raw/`. An explicit destination takes precedence over
-`PROJECT.md`; otherwise Mica uses a single clear raw folder documented there. If the guide is
-ambiguous, Mica asks for the path. It does not use the analysis mount or a `processed` folder
-as an implicit destination. Each sample gets a child folder under the selected base.
+Request a sample transfer in ordinary language, such as “start that transfer.” Mica uses the
+current request, project documents, conversation history, previous personal transfer requests
+and folder listings to propose the source selection and destinations. You do not need to repeat
+paths or save a guide before receiving the preview. Current corrections take precedence; Mica
+asks only when the available context cannot resolve the intended sample or layout. Recent
+personal transfer requests are available across threads in the requester's private conversation;
+they are suggestions, not approval or evidence that a previous transfer completed.
+
+You may supply an export folder, destination alias, and raw-data parent base such as
+`gs://your-bucket/project/raw/`, or the final sample folder `gs://your-bucket/project/raw/TMA37/`.
+Mica appends the destination sample name exactly once. An explicitly proposed destination takes
+precedence over the guide; omitted destinations can use a single documented raw base. Ordinary
+prose such as “raw images” is not treated as a path. The analysis mount and `processed` folder
+are not implicit destinations. Each sample gets a child folder under the selected base.
 Additional files use a documented corresponding folder, or `.additional_files/<sample>/`
 under that raw base. Progress/completion records live under `.mica-transfers/` there.
 
@@ -60,6 +69,11 @@ Historical messages are not deleted or replayed by deployment; the next ordinary
 saved request activity when available. No approval or real transfer is triggered by that update.
 
 ## Runtime and operator setup
+
+Context-based destination proposals and sample-folder normalization run in the control plane.
+An API-only change to this flow uses `cloudbuild/build-slack-api.yaml`, including its installed
+transfer checks and existing worker compatibility gate; preserve the transfer/analysis worker
+image pins and runtime settings. No application release confirms an existing transfer request.
 
 The existing Claude worker image includes the `atomx-transfer` tool. Transfer jobs invoke its
 CLI directly; no language model runs in that job. The reviewed download-only adaptations of

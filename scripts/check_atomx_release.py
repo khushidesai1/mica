@@ -138,7 +138,9 @@ async def check():
     page = Path(mica.__file__).with_name("api") / "atomx_form.html"
     assert 'type="password"' in page.read_text() and "location.hash" in page.read_text()
     if sys.argv[-1] == "api":
-        from mica.agents.analysis import transfer_cards
+        from mica.agents.analysis import transfer_cards, transfer_destinations
+        from mica.agents.analysis.registry import RegistryDoc
+        from mica.agents.analysis.transfer_config import TransferRequest
         from mica.api.atomx import PAGE
 
         assert page.read_text() == PAGE
@@ -163,6 +165,28 @@ async def check():
         pending["state"] = "running"
         assert transfer_cards.blocks(pending, "Copying files", ("cancel",))[0]["type"] == "plan"
         print("ATOMX_SLACK_APPROVAL_AND_ACTIVITY_VERIFIED (offline)")
+        doc = RegistryDoc()
+        owner = "fixture@example.com"
+        pid = doc.create(owner, "fixture", "gs://fixture-bucket/project/")
+        proposal = TransferRequest(
+            sample="sample", destination="gs://fixture-bucket/project/raw/sample/",
+            additional_destination="gs://fixture-bucket/project/additional_files/sample/",
+        )
+        config = transfer_destinations.resolve(proposal, "", "Start that transfer", doc, pid, owner)
+        assert config.raw_prefix == "project/raw/"
+        assert config.additional_prefix == "project/additional_files/"
+        guide = (
+            "Data: gs://fixture-bucket/project/\nRaw: `raw/`\nAdditional: `additional_files/`\n"
+            "Images were rebuilt from raw Morphology2D."
+        )
+        assert transfer_destinations.resolve(
+            TransferRequest(sample="sample"), guide, "Start", doc, pid, owner,
+        ).raw_prefix == "project/raw/"
+        pending.update(state="preview", config=config.model_dump())
+        blocks = transfer_cards.blocks(pending, "Review transfer", ("confirm", "cancel"))
+        assert "gs://fixture-bucket/project/raw/sample/" in str(blocks)
+        assert "sample/sample/" not in str(blocks)
+        print("ATOMX_CONTEXT_PROPOSAL_AND_SAMPLE_PATHS_VERIFIED (offline)")
     source = Path("/workspace/tools/atomx_transfer")
     installed = Path(cli.__file__).parent
     for path in [*source.glob("*.py"), *source.glob("scripts/*.sh")]:

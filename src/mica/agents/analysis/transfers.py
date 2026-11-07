@@ -24,7 +24,6 @@ from . import (
     job_lifecycle,
     observability,
     project_memory,
-    thread_history,
     transfer_cards,
     transfer_destinations,
 )
@@ -428,10 +427,9 @@ class Transfers:
                 if snapshot and "PROJECT.md" in snapshot.files
                 else ""
             )
-        inputs = await thread_history.supplied_inputs(self.repo, grant, record)
         return transfer_destinations.resolve(
             request, guide, str(record["payload"]["event"].get("text", "")),
-            grant.doc, grant.project_id, grant.email, history_text=inputs,
+            grant.doc, grant.project_id, grant.email,
         )
 
     async def confirm(self, pid: str, email: str, *, expected: str | None = None) -> None:
@@ -936,13 +934,15 @@ class Transfers:
             p["cancelled_by"] = email
             await self.cancel_locked(p)
 
-    async def context(self, project: str, owner: str = "") -> dict[str, Any]:
+    async def context(
+        self, project: str, owner: str = "", *, include_requests: bool = False,
+    ) -> dict[str, Any]:
         capability = transfer_capability()
         try:
             self.config(project)
         except ValueError as exc:
             return {**capability, "available": False, "reason": str(exc)}
-        rows = []
+        rows: list[dict[str, Any]] = []
         if owner:
             self.authorize(project, owner)
             index = await self.repo.get_connector_state(
@@ -951,20 +951,30 @@ class Transfers:
             for pid in reversed(index["ids"][-100:]):
                 pending = await self.pending(pid)
                 if pending["project"] == project and pending["requested_by"] == owner:
-                    rows.append(
-                        {
-                            "sample": pending["request"]["as_sample"]
-                            or pending["request"]["sample"],
-                            "status": pending["state"],
-                            "pending_id": pid,
-                        }
-                    )
+                    row: dict[str, Any] = {
+                        "sample": pending["request"]["as_sample"]
+                        or pending["request"]["sample"],
+                        "status": pending["state"],
+                        "pending_id": pid,
+                    }
+                    # Private, requester/project-scoped context survives a new conversation.
+                    # Only expose bounded request fields, never credentials or bearer links.
+                    if include_requests and len(rows) < 5:
+                        config = pending["config"]
+                        row["request"] = TransferRequest.model_validate({
+                            **pending["request"],
+                            "destination": f"gs://{config['bucket']}/{config['raw_prefix']}",
+                            "additional_destination": (
+                                f"gs://{config['bucket']}/{config['additional_prefix']}"
+                            ),
+                        }).model_dump()
+                    rows.append(row)
         return {
             **capability,
             "available": True,
             "reason": (
-                "Uses your personal connection and a destination from your request"
-                " or project guide. Preview and confirmation required."
+                "Uses your personal connection and destinations proposed from project context. "
+                "The source and final destinations require private approval before copying."
             ),
             "connection": await self.connections.status(owner) if owner else {},
             "samples": rows,

@@ -790,6 +790,14 @@ async def handle(
         decision = conversation.Decision.model_validate(saved)
     else:
         await bridge.notify(event_id, record, "replying", "Mica is thinking")
+        private_transfer_context = grant.private
+        if surface.is_email(record):
+            from mica.connectors.gmail_client import is_own
+
+            private_transfer_context = private_transfer_context and all(
+                email == grant.email or is_own(email, bridge.app)
+                for email in record["payload"].get("_email", {}).get("recipients", [])
+            )
         model_context = {
             "request": text,
             "brief": ctx["project_md"],
@@ -801,7 +809,10 @@ async def handle(
                 grant.project.reference_repos
                 | await reference_repos.shared_repos(bridge.repository, bridge.settings)
             ),
-            "transfer_tool": await transfer_service.context(grant.project_id, grant.email),
+            "transfer_tool": await transfer_service.context(
+                grant.project_id, grant.email,
+                include_requests=private_transfer_context,
+            ),
             "analysis_tools": [spatial_analysis_capability()],
             "gpu_available": bool(tiers.available_gpus(bridge.settings)),
             "gpu_types": tiers.available_gpus(bridge.settings),

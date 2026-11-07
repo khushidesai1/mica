@@ -1,4 +1,4 @@
-"""Resolve request-specific import folders from explicit instructions or project layout."""
+"""Resolve proposed import folders; the exact preview separately authorizes writes."""
 
 from __future__ import annotations
 
@@ -14,11 +14,17 @@ URI = re.compile(r"gs://[^\s<>`\"')\]]+")
 
 
 def guide_paths(guide: str, data_uri: str) -> set[str]:
-    explicit = {scope(p.rstrip(".,;")) for p in URI.findall(guide)}
+    explicit = set()
+    for path in URI.findall(guide):
+        try:
+            explicit.add(scope(path.rstrip(".,;")))
+        except ValueError:
+            continue  # Examples/patterns are context, not literal destination folders.
     # Resolve relative layout entries only against an explicitly documented bucket root.
     relative = set(
         re.findall(
-            r"(?<![\w/])(?:raw_outputs/raw|raw_outputs/additional_files|raw|additional_files)(?:/)?(?=[`\s<]|$)",
+            r"(?<![\w/])(?:raw_outputs/raw|raw_outputs/additional_files|raw|additional_files)"
+            r"(?:/|(?=`))(?=[`\s<]|$)",
             guide,
         )
     )
@@ -36,44 +42,48 @@ def guide_paths(guide: str, data_uri: str) -> set[str]:
     return result
 
 
+def destination_base(value: str, target: str) -> str:
+    """Accept either a parent folder or this sample's final folder, appending it once."""
+    path = scope(value)
+    if urlsplit(path).path.rstrip("/").split("/")[-1] == target:
+        path = path.rstrip("/").rsplit("/", 1)[0] + "/"
+    return path
+
+
 def resolve(
     request: TransferRequest, guide: str, text: str, doc: RegistryDoc, project: str, owner: str,
-    *, history_text: str = "",
 ) -> TransferProject:
     if not doc.can_use(project, owner):
         raise ValueError("Project membership is required.")
     linked = doc.projects[project].data_uri
     bucket = urlsplit(linked).netloc
-    requested = {scope(p.rstrip(".,;")) for p in URI.findall(message_text(text))}
-    previous = {scope(p.rstrip(".,;")) for p in URI.findall(message_text(history_text))}
+    target = request.as_sample or request.sample
+    requested = {
+        destination_base(p.rstrip(".,;"), target) for p in URI.findall(message_text(text))
+    }
     documented = guide_paths(guide, linked)
     raw = {p for p in documented if urlsplit(p).path.rstrip("/").split("/")[-1] == "raw"}
-    chosen = scope(request.destination) if request.destination else ""
-    if chosen:
-        if chosen not in requested | previous | documented:
-            raise ValueError(
-                "What exact raw import folder should I use? Include its gs:// "
-                "path, or add it to the project guide."
-            )
-    elif len(requested) == 1:
+    # Model-supplied paths may come from authorized documents, history, or a folder listing.
+    # Literal repetition in the latest message is not authorization: the private, frozen
+    # source/destination preview is. Validate the location here, not the wording of consent.
+    chosen = destination_base(request.destination, target) if request.destination else ""
+    if not chosen and len(requested) == 1:
         chosen = next(iter(requested))
-    elif len(raw) == 1:
+    elif not chosen and len(raw) == 1:
         chosen = next(iter(raw))
-    else:
+    if not chosen:
         raise ValueError(
-            "Which raw import folder should I use for this transfer? The "
-            "project guide does not identify one unambiguous raw base. Include"
-            " the gs:// path."
+            "No unambiguous raw base was selected. Infer destination and additional_destination "
+            "from the project documents, previous transfers or a folder listing, then propose "
+            "the concrete paths for approval. Ask only if that context cannot resolve the layout."
         )
-    extra = scope(request.additional_destination) if request.additional_destination else ""
+    extra = (
+        destination_base(request.additional_destination, target)
+        if request.additional_destination else ""
+    )
     additional = {
         p for p in documented if urlsplit(p).path.rstrip("/").split("/")[-1] == "additional_files"
     }
-    if extra and extra not in requested | previous | documented:
-        raise ValueError(
-            "Please specify the additional-files destination explicitly or "
-            "document it in the project guide."
-        )
     if not extra:
         sibling = chosen.rstrip("/").rsplit("/", 1)[0] + "/additional_files/"
         if sibling in additional:
@@ -87,7 +97,6 @@ def resolve(
         raise ValueError("Choose import folders in this project's linked bucket.")
     if chosen == extra:
         raise ValueError("Raw and additional files require separate folders.")
-    target = request.as_sample or request.sample
     sample_paths = (chosen + target + "/", extra + target + "/")
     if sample_paths[0].startswith(sample_paths[1]) or sample_paths[1].startswith(sample_paths[0]):
         raise ValueError("The two sample destination folders must not overlap.")
@@ -106,5 +115,5 @@ def resolve(
         raw_prefix=urlsplit(chosen).path.lstrip("/"),
         additional_prefix=urlsplit(extra).path.lstrip("/"),
         status_prefix=urlsplit(chosen).path.lstrip("/") + ".mica-transfers/",
-        layout_source="request" if chosen in requested | previous else "project_guide",
+        layout_source="request" if request.destination or chosen in requested else "project_guide",
     )

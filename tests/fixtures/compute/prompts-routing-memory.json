@@ -336,7 +336,7 @@
     },
     {
       "name": "propose_transfer",
-      "description": "Propose a sample transfer using the managed service, with the known sample and optional export_root/as_sample/destinations. Never use a compute worker or request secrets for transfers; propose_command manages personal connections. This does not claim completion.",
+      "description": "Prepare a transfer preview. Infer paths from documents, history and folder listings; use transfer_tool guidance. Do not ask users to retype known paths or save a guide before proposing. The exact source/destinations need approval. Never use a compute worker or request secrets for transfers.",
       "input_schema": {
         "properties": {
           "sample": {
@@ -349,9 +349,11 @@
             "type": "string"
           },
           "destination": {
+            "description": "Proposed raw-data gs:// folder inferred from project context. Prefer the parent base; a final folder ending in as_sample or sample is also accepted. The preview appends that sample folder exactly once and requires approval.",
             "type": "string"
           },
           "additional_destination": {
+            "description": "Proposed additional-files gs:// parent base or final sample folder. Infer from the same project layout; it need not be repeated in the user's message.",
             "type": "string"
           }
         },
