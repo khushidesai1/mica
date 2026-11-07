@@ -227,10 +227,10 @@ DESCRIPTIONS = {
         "or hardware requirements."
     ),
     ("propose_transfer"): (
-        "Propose a sample transfer using the managed service, with the known sample and "
-        "optional export_root/as_sample/destinations. Never use a compute worker or request "
-        "secrets for transfers; propose_command manages personal connections. "
-        "This does not claim completion."
+        "Prepare a transfer preview. Infer paths from documents, history and "
+        "folder listings; use transfer_tool guidance. Do not ask users to retype known paths "
+        "or save a guide before proposing. The exact source/destinations need approval. "
+        "Never use a compute worker or request secrets for transfers."
     ),
     ("propose_command"): (
         "Perform a supported account/project/control request. Use user-supplied"

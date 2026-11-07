@@ -186,15 +186,11 @@ def test_destination_precedence_ambiguity_and_project_authorization():
         transfer_destinations.resolve(request, guide, "to gs://other-data/raw", doc, pid, A)
     with pytest.raises(ValueError, match="owner"):
         transfer_destinations.resolve(request, guide, "transfer", doc, pid, B)
-    with pytest.raises(ValueError, match="exact raw"):
-        transfer_destinations.resolve(
-            request.model_copy(update={"destination": "gs://lab-data/invented"}),
-            guide,
-            "transfer",
-            doc,
-            pid,
-            A,
-        )
+    result = transfer_destinations.resolve(
+        request.model_copy(update={"destination": "gs://lab-data/proposed/raw"}),
+        guide, "Start this transfer", doc, pid, A,
+    )
+    assert result.raw_prefix == "proposed/raw/"  # A proposal still needs private approval.
 
 
 def test_worker_job_uses_existing_worker_without_analysis_or_password(connections):
@@ -227,8 +223,15 @@ def test_script_manifest_rejects_sftp_command_injection(path):
         ScriptSFTP.quote(path)
 
 
+@pytest.mark.parametrize("text,destinations", [
+    ("Transfer sample to gs://lab-data/import/raw", {}),
+    ("Start this transfer", {"destination": "gs://lab-data/import/raw",
+                             "additional_destination": "gs://lab-data/import/additional_files"}),
+    ("These two paths are correct", {"destination": "gs://lab-data/import/raw/sample/",
+                                    "additional_destination": "gs://lab-data/import/additional_files/sample/"}),
+])
 async def test_transfer_flow_keeps_login_out_of_artifacts_and_freezes_destinations(
-    connections, tmp_path, monkeypatch
+    connections, tmp_path, monkeypatch, text, destinations,
 ):
     from mica.agents.analysis import project_memory, transfers
     from mica.agents.analysis.access import Grant
@@ -267,12 +270,12 @@ async def test_transfer_flow_keeps_login_out_of_artifacts_and_freezes_destinatio
                 "user": "user",
                 "channel": "D1",
                 "ts": "1",
-                "text": "Transfer sample to gs://lab-data/import/raw",
+                "text": text,
             },
         }
     }
     eid = "1" * 32
-    await service.request(grant, record, eid, TransferRequest(sample="sample"))
+    await service.request(grant, record, eid, TransferRequest(sample="sample", **destinations))
     pending = await service.pending(eid)
     await service.advance(pending)
     pending = await service.pending(eid)
@@ -314,6 +317,11 @@ async def test_transfer_flow_keeps_login_out_of_artifacts_and_freezes_destinatio
     await service.preview(pending, {"samples": [item]})
     preview = await service.pending(eid)
     assert "gs://lab-data/import/raw/sample/" in preview["preview_text"]
+    assert "sample/sample/" not in preview["preview_text"]
+    assert preview["state"] == "preview" and preview["job_kind"] == "inventory"
+    assert not preview.get("confirmed_by")
+    with pytest.raises(ValueError, match="confirmation"):
+        await service.submit(preview, "pull")
     with pytest.raises(ValueError, match="membership"):
         await service.confirm(eid, B)
     await service.confirm(eid, A)

@@ -38,8 +38,17 @@ class TransferRequest(BaseModel):
     sample: str = Field(min_length=1, max_length=128)
     export_root: str = Field(default="", max_length=2048)
     as_sample: str = Field(default="", max_length=128)
-    destination: str = Field(default="", max_length=2048)
-    additional_destination: str = Field(default="", max_length=2048)
+    destination: str = Field(
+        default="", max_length=2048,
+        description="Proposed raw-data gs:// folder inferred from project context. Prefer the "
+        "parent base; a final folder ending in as_sample or sample is also accepted. "
+        "The preview appends that sample folder exactly once and requires approval.",
+    )
+    additional_destination: str = Field(
+        default="", max_length=2048,
+        description="Proposed additional-files gs:// parent base or final sample folder. "
+        "Infer from the same project layout; it need not be repeated in the user's message.",
+    )
 
     @field_validator("sample")
     @classmethod
