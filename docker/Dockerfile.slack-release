@@ -8,10 +8,11 @@ RUN pip install --no-cache-dir -r /tmp/mica-requirements-conversation.txt
 COPY deploy/requirements-bot.txt /tmp/mica-requirements-bot.txt
 COPY deploy/requirements-transfer.txt /tmp/mica-requirements-transfer.txt
 COPY deploy/requirements-email.txt /tmp/mica-requirements-email.txt
+COPY docker/ensure-worker-user.sh /tmp/mica-ensure-worker-user.sh
 RUN pip install --no-cache-dir --no-deps -r /tmp/mica-requirements-email.txt -r /tmp/mica-requirements-transfer.txt
 RUN if [ "$INSTALL_BOT_DEPENDENCIES" = "1" ]; then \
-      apt-get update && apt-get install -y --no-install-recommends openssh-client sshpass && \
-      rm -rf /var/lib/apt/lists/*; \
+      apt-get update && apt-get install -y --no-install-recommends openssh-client sshpass passwd && \
+      sh /tmp/mica-ensure-worker-user.sh && rm -rf /var/lib/apt/lists/*; \
     fi
 RUN if [ "$INSTALL_BOT_DEPENDENCIES" = "1" ]; then \
       pip install --no-cache-dir --no-deps -r /tmp/mica-requirements-bot.txt; \
