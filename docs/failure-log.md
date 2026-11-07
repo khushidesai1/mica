@@ -91,7 +91,8 @@ with bold labels, headings and dividers for the assessment, recorded evidence, t
 and any operator review. Requester, status and project context appear first. Model and diagnostic
 values remain literal rich text, so they cannot introduce Slack mentions or formatting. The
 message's accessibility text also retains the full overview for forwarding to a developer.
-Priority tags, request links and Mark resolved continue to work; an assessment never resolves,
+Priority and category appear in the card's metadata beneath the summary, rather than as detached
+tags above it. Request links and Mark resolved continue to work; an assessment never resolves,
 retries or changes the underlying request.
 
 This is a bounded review of saved diagnostics, not an autonomous log/code investigation. Claude
@@ -124,16 +125,27 @@ queues a bounded review of the saved request (4,000 characters), planned worker 
 and final reply (12,000), using the existing Anthropic credential and
 `AGENT_ROUTING_REPAIR_MODEL`. Unlike the diagnostic assessment above, this classifier reads
 conversation content. Its output is strictly validated enums: completed, partial, not completed,
-clarification or policy denied, plus at most three blocker categories. No input text crosses into
+clarification, policy denied, in progress or unknown, plus at most three blocker categories.
+Only positive evidence of blocked requested work can produce a semantic failure; an absent result,
+queued work or missing context does not establish failure. No input text crosses into
 the incident index, cards or diagnostic assessment. Ordinary questions, valid permission denials,
-clarifications and cancelled turns do not produce a failure card.
+clarifications, in-progress/unknown outcomes and cancelled turns do not produce a failure card.
+Current and legacy transfer handoffs bypass this classifier: the transfer controller reports actual
+inventory, authentication, transfer and delivery errors. A completed access-request/approval handoff
+also bypasses it, even in older receipts whose reply scope was account-level. A transfer setup failure
+before handoff remains eligible. These checks also discard queued or cached classifications when the
+receipt is no longer eligible. Reviews use saved final replies, never a stale progress notice; legacy
+notices are accepted only when their phase explicitly identifies a terminal complete/failed response.
 
 Partial or uncompleted work records `request_blocked` (Medium), with the primary blocker as the
 card category: hardware, software environment, data/repository access, output delivery, time,
 capability, internal error or other. An explanation or CPU substitute does not by itself complete
-a requested GPU action. Each request still has one incident. Most already-reported failures skip
-this extra call; a completed request with only recovered processing errors is reviewed because
-recovery of a control API call does not establish that the requested work was completed.
+a requested GPU action. Each request still has one incident. A failed request with a recorded
+processing failure skips this extra call. A completed conversation turn or a request with only
+background/delivery incidents is still reviewed: neither a recovered control API call nor a memory
+editor error establishes whether the requested work was completed. New blockers join the existing
+incident; an already recorded task blocker is never classified again. Cards describe blocked work
+as incomplete even when the conversation turn itself completed.
 
 Maintenance processes at most three due reviews per cycle. Each call is bounded to eight seconds
 and 250 output tokens; invalid output or timeout retries once in a later cycle, then remains

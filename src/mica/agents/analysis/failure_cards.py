@@ -8,7 +8,7 @@ from typing import Any
 
 from mica.storage.failures import BLOCKER_LABELS, PRIORITY_LABELS, Incident, priority
 
-VERSION = 4
+VERSION = 5
 PREFIX = "mica_failure_"
 CATEGORIES = {
     "compute": "Compute",
@@ -46,6 +46,8 @@ def status_label(row: Incident, status: str) -> str:
         "complete": "Completed · follow-up needed",
         "recovered": "Recovered automatically",
     }.get(status, "Needs investigation")
+    if status == "complete" and "request_blocked" in (row.causes or [row.observation.cause]):
+        state = "Couldn't complete requested work"
     if row.resolved:
         return "Resolved by operator"
     return "Reopened · " + state if row.resolved_at else state
@@ -72,7 +74,6 @@ def blocks(
 ) -> list[dict[str, Any]]:
     o = row.observation
     level = priority(row, status)
-    impact = PRIORITY_LABELS[level]
     state = status_label(row, status)
     who = o.actor or ("Requester unknown" if row.user_related else "No linked user request")
     subtitle = clipped("Requester: " + who, 150) if row.user_related else who
@@ -93,9 +94,9 @@ def blocks(
     ):
         explanation = row.investigation.assessment.summary
     latest = datetime.fromtimestamp(row.last_seen, UTC).strftime("%b %d, %H:%M UTC")
-    subtext = clipped(
-        f"{state}\n{row.count} reports · Latest {latest}\nFull assessment in Details", 200
-    )
+    metadata = f"{level.title()} priority · {category(row)}"
+    reports = f"{row.count} {'report' if row.count == 1 else 'reports'}"
+    subtext = clipped(f"{metadata}\n{state}\n{reports} · Latest {latest}", 200)
     value = json.dumps({"id": row.id, "count": row.count}, separators=(",", ":"))
     actions: list[dict[str, Any]] = []
     if link:
@@ -125,22 +126,8 @@ def blocks(
                 "value": value,
             }
         )
-    tags = [
-        {
-            "type": "tag",
-            "text": impact,
-            "color": (
-                "gray" if row.resolved
-                else {"high": "red", "medium": "orange", "low": "gray"}[level]
-            ),
-        },
-        {"type": "tag", "text": category(row), "color": "blue" if row.user_related else "gray"},
-    ]
-    if row.resolved:
-        tags.append({"type": "tag", "text": "Resolved", "color": "green"})
     if native:
         return [
-            {"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": tags}]},
             {
                 "type": "card",
                 "title": {"type": "plain_text", "text": clipped(title(row), 150)},
@@ -151,10 +138,6 @@ def blocks(
             },
         ]
     return [
-        {
-            "type": "context",
-            "elements": [{"type": "plain_text", "text": " · ".join(t["text"] for t in tags)}],
-        },
         {
             "type": "section",
             "text": {"type": "plain_text", "text": clipped(title(row), 150)},

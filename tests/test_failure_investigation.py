@@ -128,7 +128,7 @@ async def test_baseline_post_precedes_claude_and_same_card_gets_forwardable_summ
     slack.chat_update.assert_awaited_once()
     message = slack.chat_update.call_args.kwargs
     assert message["ts"] == "123.1" and "Likely cause (unconfirmed)" in message["text"]
-    assert [b["type"] for b in message["blocks"]] == ["rich_text", "card"]
+    assert [b["type"] for b in message["blocks"]] == ["card"]
     assert ASSESSMENT["summary"] in str(message["blocks"])
     assert ASSESSMENT["next_check"] not in str(message["blocks"])
     assert "Mark resolved" in str(message["blocks"])
