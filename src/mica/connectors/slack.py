@@ -504,10 +504,16 @@ async def slack_actions(request: Request, background_tasks: BackgroundTasks) -> 
         from mica.agents.analysis.storage import GCSStorage
         from mica.agents.analysis.transfers import Transfers
 
-        return await transfer_interactions.handle(
-            Transfers(BatchBridge(services.settings, services.repository),
-                      GCSStorage(services.settings.gcs_bucket)), payload,
+        transfer = Transfers(
+            BatchBridge(services.settings, services.repository),
+            GCSStorage(services.settings.gcs_bucket),
         )
+        if payload.get("type") == "block_actions":
+            # Acknowledge the signed click before identity/storage checks and message edits.
+            # The controller still validates the original card and plan under its lease.
+            background_tasks.add_task(transfer_interactions.handle, transfer, payload)
+            return {}
+        return await transfer_interactions.handle(transfer, payload)
 
     user_id, principal = _slack_principal(services, payload)
     if not principal:

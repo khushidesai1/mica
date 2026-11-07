@@ -300,6 +300,11 @@ class BatchBridge:
                 await observability.report(self, cause, event_id, record)
         from .session_review import origin
 
+        if phase == "complete" and record.get("transfer_status_owned"):
+            # The transfer controller now owns this Slack activity/approval message.
+            # Finishing the routing turn must not overwrite its current state.
+            record.update(terminal_reply=text, notice_phase=phase, notice_text=text)
+            return
         if origin(record):
             record.update(notice_phase=phase, notice_text=text)
             if phase in {"complete", "failed", "denied", "cancelled"}:

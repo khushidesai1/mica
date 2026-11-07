@@ -138,9 +138,31 @@ async def check():
     page = Path(mica.__file__).with_name("api") / "atomx_form.html"
     assert 'type="password"' in page.read_text() and "location.hash" in page.read_text()
     if sys.argv[-1] == "api":
+        from mica.agents.analysis import transfer_cards
         from mica.api.atomx import PAGE
 
         assert page.read_text() == PAGE
+        pending = {
+            "id": "a" * 32, "state": "preview", "expires": 2000000000,
+            "request": {"sample": "sample", "as_sample": ""},
+            "preview": {"sample": "sample", "export_root": "/Export", "run_folder": "run",
+                        "n_files": 12, "total_bytes": 1200, "plan_fingerprint": "fixture"},
+            "config": {"bucket": "fixture-bucket", "raw_prefix": "raw/",
+                       "additional_prefix": "additional/"},
+        }
+        blocks = transfer_cards.blocks(pending, "Review transfer", ("confirm", "cancel"))
+        assert "gs://fixture-bucket/raw/sample/" in str(blocks)
+        assert "gs://fixture-bucket/additional/sample/" in str(blocks)
+        assert [b["text"]["text"] for b in blocks[-1]["elements"]] == [
+            "Approve transfer", "Cancel transfer",
+        ]
+        assert all("url" not in b for b in blocks[-1]["elements"])
+        before = transfer_cards.token(pending)
+        pending["config"]["raw_prefix"] = "different/"
+        assert transfer_cards.token(pending) != before
+        pending["state"] = "running"
+        assert transfer_cards.blocks(pending, "Copying files", ("cancel",))[0]["type"] == "plan"
+        print("ATOMX_SLACK_APPROVAL_AND_ACTIVITY_VERIFIED (offline)")
     source = Path("/workspace/tools/atomx_transfer")
     installed = Path(cli.__file__).parent
     for path in [*source.glob("*.py"), *source.glob("scripts/*.sh")]:
