@@ -278,8 +278,10 @@ with one attached `.jsonl` starts intake directly. Email and channel imports are
 Everyone with project access can use the original session, so remove secrets and patient
 identifiers before uploading. There is no user-facing deletion command in this release.
 
-`AGENT_SESSION_IMPORT_PROJECTS` is a comma-separated, operator-controlled project allowlist;
-empty disables new imports. Existing imports can finish if the allowlist changes, but every
+`AGENT_SESSION_IMPORT_PROJECTS` accepts a comma-separated list of project IDs or `*` to enable
+imports for every current and future project. Empty disables new imports. Global enablement
+still requires the uploader's existing project access and a private Slack DM; it grants no
+additional access. Existing imports can finish if the setting changes, but every
 pass and delivery rechecks the uploader's current project access. Import passes require project
 membership and do not receive a data-output write grant. They preserve ambient jobs' separate
 owner and event-grant requirements.

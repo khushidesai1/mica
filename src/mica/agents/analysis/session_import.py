@@ -43,9 +43,10 @@ def key(identifier: str) -> str:
 
 
 def enabled(bridge: BatchBridge, project: str) -> bool:
-    return project in {
+    projects = {
         s.strip() for s in bridge.settings.session_import_projects.split(",") if s.strip()
     }
+    return "*" in projects or project in projects
 
 
 def highlights(text: str) -> dict[str, str]:

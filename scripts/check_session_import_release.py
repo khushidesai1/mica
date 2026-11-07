@@ -2,8 +2,9 @@
 import json
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 
-from mica.agents.analysis import memory_workspace, session_render, session_review
+from mica.agents.analysis import memory_workspace, session_import, session_render, session_review
 from mica.agents.analysis.config import Settings
 
 with tempfile.TemporaryDirectory() as folder:
@@ -21,4 +22,12 @@ with tempfile.TemporaryDirectory() as folder:
     assert memory_workspace.decode_pending(
         proposal.model_dump_json().encode(), Settings(_env_file=None)
     ).review == review
-print("Installed session renderer and review contract verified")
+settings = Settings(_env_file=None, session_import_projects="*")
+bridge = SimpleNamespace(settings=settings)
+assert session_import.enabled(bridge, "new-project")
+settings.session_import_projects = ""
+assert not session_import.enabled(bridge, "new-project")
+settings.session_import_projects = "project-one"
+assert session_import.enabled(bridge, "project-one")
+assert not session_import.enabled(bridge, "new-project")
+print("Installed session renderer, review contract and project enablement verified")

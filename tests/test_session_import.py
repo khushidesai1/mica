@@ -408,12 +408,29 @@ def attachments_for_test():
     return attachments
 
 
-async def test_import_gates_surface_project_and_actor(importer):
+@pytest.mark.parametrize(
+    ("projects", "project", "expected"),
+    [
+        ("", "new-project", False),
+        ("project-one, project-two", "project-two", True),
+        ("project-one", "new-project", False),
+        ("*", "new-project", True),
+        ("project-one, *, ", "new-project", True),
+        ("project-*", "project-two", False),
+    ],
+)
+def test_import_project_enablement(importer, projects, project, expected):
+    importer.settings.session_import_projects = projects
+    assert session_import.enabled(importer, project) is expected
+
+
+@pytest.mark.parametrize("global_imports", [False, True])
+async def test_import_gates_surface_project_and_actor(importer, global_imports):
     record = {"payload": payload(text="import session"), "thread_key": "a" * 32}
     grant = access.resolve(importer.app, importer.settings, importer.store, record)
     importer.settings.session_import_projects = ""
     assert "aren't enabled" in await session_import.start(importer, "a" * 32, record, grant)
-    importer.settings.session_import_projects = importer.pid
+    importer.settings.session_import_projects = "*" if global_imports else importer.pid
     state = await open_import(importer)
     wrong = action(state)
     wrong["user"]["id"] = "U2"
@@ -421,6 +438,19 @@ async def test_import_gates_surface_project_and_actor(importer):
         await session_import.handle(importer, importer.store, wrong, BackgroundTasks())
     record["surface"] = "email"
     assert "only in Slack" in await session_import.start(importer, "a" * 32, record, grant)
+
+
+async def test_global_import_still_rechecks_project_access(importer):
+    from mica.agents.analysis.registry import REGISTRY_KEY, Registry
+
+    importer.settings.session_import_projects = "*"
+    state = await open_import(importer)
+    await session_import.permitted(importer, state, intake=True)
+    doc = Registry(importer.store).load()
+    doc.projects[importer.pid].owner = "other@example.com"
+    importer.store.put(REGISTRY_KEY, doc.model_dump_json().encode())
+    with pytest.raises(PermissionError, match="Project access changed"):
+        await session_import.permitted(importer, state, intake=True)
 
 
 async def ready_state(importer):
