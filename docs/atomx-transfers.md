@@ -27,16 +27,37 @@ search saw. If several match, it lists them and asks you to name one, for exampl
 `transfer "Slide 1" from /TMA37_05_11_2026_22_59_07_541 as TMA37`.
 
 Mica inventories the requested sample using your connection, then privately sends a preview
-with the selected source run, file count, bytes and exact destinations. Open its private form
-to confirm. A changed connection or source requires a new preview. Completion means source
+with the selected source run, file count, size and exact destinations. In Slack, review the
+approval card and choose **Approve transfer** or **Cancel transfer** directly in the conversation.
+No web approval link is needed. Email retains its private confirmation form. A changed connection
+or source requires a new preview. Completion means source
 sizes and CRC32C matched the uploaded objects and the destination manifest was checked.
 Existing different objects are never overwritten. `done.txt` in both sample folders points
 to the detailed completion record. Ask for transfer status or cancellation in either interface.
 Connection links and transfer notices go only to the requesting user, including email threads
 with multiple recipients. Separate durable outbox stages leave the normal email reply intact.
-In an existing Slack DM, connection links, previews, progress and final notices reply in the
-request's thread. A new top-level request starts a thread under that message. Requests from a
-shared channel still receive private links and notices in a separate one-to-one DM.
+In an existing Slack DM, the transfer takes over its request's activity message. File checks,
+queued/running progress and the final result use the same compact status dropdown as Mica's
+other activity. The approval card replaces that status while awaiting a decision; later updates
+edit the same message. Full source and destination paths remain visible on the approval card.
+A new top-level request starts a thread under that message. Requests from a shared channel use
+one separate private message, never publish export details to that channel, and bind approval
+to the requester and the privately delivered card. If a login is needed, **Connect AtoMx** opens
+the secure credential form; passwords still never enter Slack.
+
+Each approval button binds the displayed source plan, destinations, connection revision, attempt
+and expiry. The signed Slack action must match the original private message, workspace and
+requester; the controller rechecks the bound plan, current access, login and destination markers
+under its existing project lock. Duplicate, stale or copied clicks cannot approve another plan.
+The transfer's ordinary scheduled poll owns expiry; no new timer or approval system is added.
+
+Private message timestamps and delivery intent are durable. Repeated status updates are deduplicated,
+and a failed update retries the same message. An ambiguous first post is held and reconciled against
+a bounded Slack history window for Mica's exact message ID before it can continue; it is never blindly
+reposted. If history access is unavailable, the delivery remains held for operator investigation.
+Native activity rejection falls back to standard Slack blocks with the same status and controls.
+Historical messages are not deleted or replayed by deployment; the next ordinary update adopts the
+saved request activity when available. No approval or real transfer is triggered by that update.
 
 ## Runtime and operator setup
 
@@ -53,7 +74,10 @@ login. The installed-worker release gate resolves the account and runs OpenSSH's
 startup under the actual worker user, with networking disabled, before the image can be released.
 
 Deploy with `cloudbuild/build-slack-release.yaml`; its offline AtoMx gates check encryption,
-revocation, installed source and script dependencies. Set `AGENT_TRANSFERS_ENABLED=true`,
+revocation, installed source and script dependencies. Presentation/controller-only updates can use
+the existing API-only pipeline and preserve the verified transfer worker image after source and
+worker-contract checks. Check transfer slots and active jobs before rollout; do not deploy during a
+user's running transfer. Set `AGENT_TRANSFERS_ENABLED=true`,
 `AGENT_TRANSFER_HOST`, `AGENT_TRANSFER_PORT`, and `AGENT_TRANSFER_HOST_KEY` to the trusted
 provider's public `key-type base64-key` record. Never acquire trust through `accept-new` or
 an unverified `ssh-keyscan`. The default image and service account are the existing immutable

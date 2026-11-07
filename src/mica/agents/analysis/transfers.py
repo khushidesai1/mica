@@ -25,6 +25,7 @@ from . import (
     observability,
     project_memory,
     thread_history,
+    transfer_cards,
     transfer_destinations,
 )
 from .access import Grant
@@ -298,7 +299,22 @@ class Transfers:
         record = await self.repo.get_connector_state(f"claude-event:{p['id']}")
         if not record:
             raise ValueError("The requesting conversation is unavailable.")
-        if "login" in buttons or "confirm" in buttons:
+        if not surface.is_email(record):
+            url = ""
+            if "login" in buttons:
+                url = await self.connections.issue(
+                    p["requested_by"], "connection",
+                    f"{p['id']}:{p['attempt']}:{p.get('login_version', '')}", p["id"],
+                )
+            blocks = transfer_cards.blocks(p, text, buttons, login_url=url)
+            content = hashlib.sha256(
+                json.dumps([text, blocks], sort_keys=True).encode()
+            ).hexdigest()
+            await atomx_delivery.deliver(
+                self.bridge, p["requested_by"], record, p["id"], text,
+                "card:" + content, blocks=blocks, replace=True,
+            )
+        elif "login" in buttons or "confirm" in buttons:
             purpose = "connection" if "login" in buttons else "approval"
             url = await self.connections.issue(
                 p["requested_by"],
@@ -348,6 +364,9 @@ class Transfers:
             if existing:
                 if existing["state"] not in TERMINAL:
                     await self.schedule(existing)
+                message = await self.repo.get_connector_state(atomx_delivery.message_key(event_id))
+                if message and message.get("ts") == record.get("notice_ts"):
+                    record["transfer_status_owned"] = True
                 record["reply_handoff"] = "transfer"
                 return "Your transfer request is recorded in this thread."
             login = await self.login(grant.email)
@@ -380,6 +399,16 @@ class Transfers:
             await self.transition(
                 p, "prepare" if request and login.get("status") == "valid" else "login"
             )
+            if not surface.is_email(record):
+                await self.notify(
+                    p,
+                    "Use the secure form to connect your personal AtoMx account."
+                    if p["state"] == "login" else "Preparing your transfer details…",
+                    ("login", "cancel") if p["state"] == "login" else ("cancel",),
+                )
+                message = await self.repo.get_connector_state(atomx_delivery.message_key(event_id))
+                if message and message.get("ts") == record.get("notice_ts"):
+                    record["transfer_status_owned"] = True
         record["reply_handoff"] = "transfer"
         return (
             "Preparing your AtoMx transfer request."
@@ -405,11 +434,13 @@ class Transfers:
             grant.doc, grant.project_id, grant.email, history_text=inputs,
         )
 
-    async def confirm(self, pid: str, email: str) -> None:
+    async def confirm(self, pid: str, email: str, *, expected: str | None = None) -> None:
         p = await self.pending(pid)
         async with self.locked(p["project"]):
             p = await self.pending(pid)
             self.authorize(p["project"], email, p)
+            if expected is not None and expected != transfer_cards.token(p):
+                raise ValueError("The transfer details changed. Review the current approval card.")
             if p["requested_by"] != email or p["state"] != "preview":
                 raise ValueError("Only the requester can confirm a pending preview, once.")
             if time.time() > p["expires"]:
@@ -420,6 +451,8 @@ class Transfers:
             await self.available(p)
             p["confirmed_by"] = email
             await self.transition(p, "submitting")
+            if expected is not None:
+                await self.notify(p, "Transfer approved. Waiting for a worker.", ("cancel",))
 
     def destination_markers(self, p: dict[str, Any], sample: str) -> dict[str, Any]:
         store = GCSStorage(p["config"]["bucket"])
@@ -608,7 +641,7 @@ class Transfers:
             f"Existing marker status: {marker_state(marker_values)}.\n"
             f"Using `{escape(login['username'])}`, saved by {escape(login['saved_by'])} "
             f"on {escape(str(login['saved_at']))}. "
-            "This private confirmation link expires in 15 minutes."
+            "Review the details and approve the transfer before this preview expires."
         )
         p["preview_text"] = text
         await self.save(p)
@@ -618,7 +651,7 @@ class Transfers:
         p = await self.pending(pid)
         async with self.locked(p["project"]):
             p = await self.pending(pid)
-            if p.get("delivery") and p.get("notice") != p["delivery"]:
+            if p.get("delivery"):
                 await self.notify(
                     p, p["delivery"][0], tuple(p["delivery"][1]),
                     progress=p.get("delivery_progress"),
@@ -690,6 +723,13 @@ class Transfers:
                 p.pop("confirmed_by", None)
                 await self.transition(p, "prepare" if current.get("status") == "valid" else "login")
             else:
+                # Adopt pending previews from older releases on their ordinary poll.
+                # Delivery deduplicates the unchanged card without posting again.
+                await self.notify(
+                    p,
+                    str(p.get("preview_text") or "Review the transfer details before approving."),
+                    ("confirm", "cancel"),
+                )
                 await self.transition(p, "preview", delay=300)
         elif p["state"] == "submitting":
             if await self.reserve(p):
@@ -880,11 +920,13 @@ class Transfers:
             p, "Cancellation requested." if p["state"] == "cancelling" else "Cancelled."
         )
 
-    async def cancel(self, pid: str, email: str) -> None:
+    async def cancel(self, pid: str, email: str, *, expected: str | None = None) -> None:
         p = await self.pending(pid)
         async with self.locked(p["project"]):
             p = await self.pending(pid)
             self.authorize(p["project"], email, p)
+            if expected is not None and expected != transfer_cards.token(p):
+                raise ValueError("The transfer details changed. Use the current transfer message.")
             if email != p["requested_by"] and not Registry(self.store).load().owns(
                 p["project"], email
             ):
