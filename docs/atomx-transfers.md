@@ -47,6 +47,10 @@ CLI directly; no language model runs in that job. The reviewed download-only ada
 an exact manifest, and the scripts download that manifest using strict host checking. Uploads
 use the existing create-only verification engine. Disk sizing follows the preview (15% margin
 plus 40 GB; default maximum 2,048 GB), with a free-space check and automatic temporary cleanup.
+The worker keeps UID/GID `65532` and a locked, noninteractive local account with home
+`/srv/pistachio`. OpenSSH requires that local account independently of the requester's SFTP
+login. The installed-worker release gate resolves the account and runs OpenSSH's configuration-only
+startup under the actual worker user, with networking disabled, before the image can be released.
 
 Deploy with `cloudbuild/build-slack-release.yaml`; its offline AtoMx gates check encryption,
 revocation, installed source and script dependencies. Set `AGENT_TRANSFERS_ENABLED=true`,
