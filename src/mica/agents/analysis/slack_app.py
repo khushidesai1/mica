@@ -33,13 +33,14 @@ from .runner import Context, Runner, TurnResult
 from .sessions import Sessions
 from .slack_format import activity_blocks, chunks, status_blocks, to_mrkdwn
 from .storage import Storage
-from .transport import EmailWorkerTransport, SlackTransport, Transport
+from .transport import EmailWorkerTransport, SlackTransport, Transport, upload_batches
 from .write_worker import Publication
 
 log = logging.getLogger(__name__)
 EXTENSIONS = ATTACHMENT_SUFFIXES
 MAX_UPLOAD_BYTES = MAX_ATTACHMENT_BYTES
 HEARTBEAT_SECONDS = 10
+STATUS_UPDATE_SECONDS = 30
 
 
 class SlackAgent:
@@ -295,7 +296,7 @@ class SlackAgent:
                     self.settings.long_run_threshold_seconds,
                     self.settings.long_run_update_seconds,
                 )
-                if (version == shown and not due) or now - last < 5:
+                if (version == shown and not due) or now - last < STATUS_UPDATE_SECONDS:
                     return
                 pending = steps.copy()
                 task_snapshot, snapshot_version = list(tasks.values()), version
@@ -460,7 +461,7 @@ class SlackAgent:
 
         packaged = {p for members in result.delivery_packages.values() for p in members}
         figure_types = {".png", ".jpg", ".jpeg", ".pdf", ".svg"}
-        for path in sorted(result.files, key=lambda p: p not in result.delivery_packages):
+        for path in sorted(result.attachments, key=lambda p: p not in result.delivery_packages):
             if path in packaged and path.suffix.lower() not in figure_types:
                 continue
             issue = await asyncio.to_thread(attachment_issue, path, ctx.workdir)
@@ -487,23 +488,31 @@ class SlackAgent:
         if uploads and not await self.permitted(delivery=True):
             raise PermissionError("Project access changed before file delivery")
         if uploads and not self.terminal_delivery:
-            try:
-                await self.transport.upload(channel=key[0], thread_ts=key[1], file_uploads=uploads)
-                self.delivered = await asyncio.to_thread(
-                    self.record_delivered, uploads, ctx, turn, published
-                )
-            except Exception:
-                log.exception("Slack attachment delivery failed: %s", key)
-                delivery_issues.append(
-                    "The files were generated, but I couldn't confirm their delivery to Slack. "
-                    "They're kept with this thread so I can resend them."
-                )
+            for batch in upload_batches(uploads):
+                if not await self.permitted(delivery=True):
+                    raise PermissionError("Project access changed before file delivery")
+                try:
+                    await self.transport.upload(
+                        channel=key[0], thread_ts=key[1], file_uploads=batch
+                    )
+                    self.delivered.extend(
+                        await asyncio.to_thread(self.record_delivered, batch, ctx, turn, published)
+                    )
+                except Exception:
+                    log.exception("Slack attachment delivery failed: %s", key)
+                    delivery_issues.append(
+                        (f"{len(self.delivered)} files delivered. " if self.delivered else "")
+                        + "The files were generated, but I couldn't confirm their delivery "
+                        "to Slack. "
+                        "They're kept with this thread so I can resend them."
+                    )
+                    break
         # Preserve the workspace checkpoint after an upload failure so a resend can reuse
         # the reports. Record what the user actually received, not the model's success claim.
         reply = result.text
         omitted = [
             str(path.relative_to(ctx.workdir))
-            for path in result.files
+            for path in result.attachments
             if path not in packaged
             and path.relative_to(ctx.workdir).parts[:2] != ("outputs", "gcs")
             and retention_reason(path.relative_to(ctx.workdir), path.stat().st_size)

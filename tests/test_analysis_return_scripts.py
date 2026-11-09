@@ -247,7 +247,7 @@ async def script_runner(bot, *, continuing=False):
             import asyncio
 
             bot.runner.compute = type("Compute", (), {"pending": True, "stop": asyncio.Event()})()
-        return TurnResult("session", "The figure is ready.", files)
+        return TurnResult("session", "The figure is ready.", files, attachments=files)
 
     bot.runner.run_turn = run
 

@@ -221,7 +221,10 @@ def send_tool(
 
     @tool(
         "send_files",
-        "Send completed files under outputs/ or complete code/output folders as attachments "
+        "Select only figures necessary for user review and files the user requested. "
+        "Files are never attached just because they exist in outputs/. Keep intermediates, "
+        "diagnostics and large datasets internal unless requested. "
+        "Send completed outputs/ files or explicitly requested code/output folders as attachments "
         "at turn end, including unchanged files requested again. A folder becomes one ZIP "
         "with every nested file and empty directory preserved. Links, unsafe scripts and "
         f"trees over {limit:,} bytes or {MAX_FOLDER_ENTRIES:,} entries fail without a partial ZIP. "
@@ -257,6 +260,9 @@ def send_tool(
             pending = set(manifest.get("pending_outputs", []))
             pending.update(str(p.relative_to(work / "outputs")) for p in named)
             manifest["pending_outputs"] = sorted(pending)
+            selected = set(manifest.get("pending_attachments", []))
+            selected.update(str(p.relative_to(work / "outputs")) for p in named)
+            manifest["pending_attachments"] = sorted(selected)
         return {
             "content": [{"type": "text", "text": json.dumps(result)}],
             "isError": bool(result["errors"]),

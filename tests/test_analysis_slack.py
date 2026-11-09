@@ -90,7 +90,7 @@ class FakeRunner:
         )
         path.write_text("# Draft" if path.suffix == ".md" else "figure")
         self.active -= 1
-        return TurnResult("session", "Data: fixture.h5ad", [path])
+        return TurnResult("session", "Data: fixture.h5ad", [path], attachments=[path])
 
 
 @pytest.fixture
@@ -207,21 +207,21 @@ async def test_heartbeat_flushes_throttled_step_and_retries_failure(bot, monkeyp
         if kwargs["text"] == "Mica is working: &lt;!channel&gt; b &amp; c":
             attempts += 1
             if fail_once and attempts == 1:
-                clock.now += 6
+                clock.now += 31
                 raise RuntimeError("temporary Slack failure")
             delivered.set()
 
     async def slow(ctx, prompt, status):
-        clock.now = 6
+        clock.now = 31
         await status("Reading PROJECT.md")
         await status("<!channel> b & c")
         await status("<!channel> b & c")  # Consecutive duplicates don't add history.
         await asyncio.sleep(0.02)
-        assert not delivered.is_set()  # Heartbeat also respects the five-second throttle.
-        clock.now = 12
+        assert not delivered.is_set()  # Heartbeat also respects the 30-second throttle.
+        clock.now = 62
         await asyncio.wait_for(delivered.wait(), timeout=1)
         count = bot.client.chat_update.call_count
-        clock.now = 30
+        clock.now = 100
         await asyncio.sleep(0.02)
         assert bot.client.chat_update.call_count == count
         return TurnResult("session", "Finished plotting.", [])
@@ -257,7 +257,25 @@ async def test_help_me_plot_is_computed(bot):
     assert first["blocks"] == status_blocks(bot.settings.loading_emoji, "Working on it…")
 
 
-async def test_pdf_and_png_reports_are_attached_to_thread_before_answer(bot, monkeypatch):
+@pytest.fixture
+def file_selector(monkeypatch):
+    from mica.agents.analysis import runner
+
+    selected = []
+    original = runner.send_tool
+
+    def tool(*args, **kwargs):
+        result = original(*args, **kwargs)
+        selected.append(result)
+        return result
+
+    monkeypatch.setattr(runner, "send_tool", tool)
+    return selected
+
+
+async def test_pdf_and_png_reports_are_attached_to_thread_before_answer(
+    bot, monkeypatch, file_selector
+):
     from claude_agent_sdk import ResultMessage
 
     from mica.agents.analysis import runner
@@ -275,6 +293,9 @@ async def test_pdf_and_png_reports_are_attached_to_thread_before_answer(bot, mon
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(b"report or figure")
             paths.append(path)
+        await file_selector[-1].handler(
+            {"paths": [str(p.relative_to(ctx.workdir)) for p in paths]}
+        )
         yield ResultMessage(
             subtype="success",
             duration_ms=1,
@@ -330,7 +351,7 @@ async def test_oversized_report_is_reported_as_undelivered(bot, monkeypatch):
     assert bot.completed
 
 
-async def test_existing_reports_can_be_resent_without_regenerating(bot, monkeypatch):
+async def test_existing_reports_can_be_resent_without_regenerating(bot, monkeypatch, file_selector):
     from claude_agent_sdk import ResultMessage
 
     from mica.agents.analysis import runner
@@ -343,8 +364,9 @@ async def test_existing_reports_can_be_resent_without_regenerating(bot, monkeypa
         os.utime(path, ns=(1, 1))
 
     async def query(**kwargs):
-        for path in paths:
-            path.touch()
+        await file_selector[-1].handler(
+            {"paths": [str(p.relative_to(ctx.workdir)) for p in paths]}
+        )
         yield ResultMessage(
             subtype="success",
             duration_ms=1,
@@ -436,9 +458,9 @@ async def test_activity_compatibility_preserves_details_and_completion(
 
     async def compute(ctx, prompt, status):
         task = TaskProgress("one", "Check counts", "Checking data…")
-        now[0] = 6
+        now[0] = 31
         await status(task)
-        now[0] = 12
+        now[0] = 62
         await status(replace(task, status="complete"))
         return TurnResult("session", "Done.")
 
@@ -475,15 +497,15 @@ async def test_activity_switches_without_repeating_status_or_posting_messages(bo
     monkeypatch.setattr(slack_app, "time", type("Clock", (), {"monotonic": lambda: now[0]}))
 
     async def compute(ctx, prompt, status):
-        now[0] = 6
+        now[0] = 31
         await status(ActivityState("thinking"))
-        now[0] = 12
+        now[0] = 62
         await status(ActivityState("thinking"))
         task = TaskProgress("tile", "Segmenting Cellpose-SAM: tile_02.npy", "Segmenting cells…")
         await status(task)
-        now[0] = 18
+        now[0] = 93
         await status(replace(task, status="complete"))
-        now[0] = 24
+        now[0] = 124
         await status(ActivityState("thinking"))
         return TurnResult("session", "Done.")
 
@@ -559,7 +581,7 @@ async def test_project_named_output_is_an_ordinary_deliverable(bot):
         draft = ctx.workdir / "outputs/PROJECT.md"
         draft.parent.mkdir(parents=True, exist_ok=True)
         draft.write_text(ctx.project_md)
-        return TurnResult("session", "Here is the answer.", [draft])
+        return TurnResult("session", "Here is the answer.", [draft], attachments=[draft])
 
     bot.runner.run_turn = rewrite
     await send(bot, event("Explain this result"))
@@ -604,14 +626,14 @@ async def test_progress_note_survives_tool_updates_and_heartbeat_but_not_complet
             delivered.set()
 
     async def compute(ctx, prompt, status):
-        clock.now = 6
+        clock.now = 31
         await status(ProgressNote(note))
-        clock.now = 12
+        clock.now = 62
         await status(TaskProgress("one", "Read table", "Reading"))
         await status(ProgressNote(next_note))
         await status(ProgressNote(next_note))
         assert not delivered.is_set()
-        clock.now = 18
+        clock.now = 93
         await asyncio.wait_for(delivered.wait(), 1)
         return TurnResult("session", "Final answer.")
 
@@ -630,3 +652,86 @@ async def test_progress_note_survives_tool_updates_and_heartbeat_but_not_complet
     assert note not in repr(updates[-1]) and next_note not in repr(updates[-1])
     assert bot.client.chat_postMessage.call_count == 1
     assert bot.last_reply == "Final answer."
+
+
+@pytest.mark.parametrize("email", [False, True])
+@pytest.mark.parametrize("select", [False, True])
+async def test_large_output_tree_delivers_only_selected_figures(
+    bot, monkeypatch, file_selector, email, select
+):
+    from test_analysis_runner import result
+
+    from mica.agents.analysis import runner
+    from mica.agents.analysis.transport import EmailWorkerTransport
+
+    ctx = bot.sessions.get("C123", "1.0")[0]
+    if email:
+        bot.transport = EmailWorkerTransport()
+        bot.terminal_delivery = AsyncMock(return_value=("Two populations are separated.",
+                                                        ["review.png"] if select else []))
+
+    async def query(**kwargs):
+        for i in range(60):
+            (ctx.workdir / "outputs" / f"diagnostic-{i}.png").write_bytes(b"internal")
+        for name in ("cell_status.parquet", "metrics.csv", "run.log", "review.png"):
+            (ctx.workdir / "outputs" / name).write_bytes(b"result")
+        if select:
+            await file_selector[-1].handler({"paths": ["outputs/review.png"]})
+        yield result(result="Two populations are separated.")
+
+    monkeypatch.setattr(runner, "query", query)
+    bot.runner = runner.Runner(bot.settings)
+    await send(bot, event("Show the cell populations", _notice_ts="9.0"))
+    assert bot.last_error is None
+    assert bot.last_reply == "Two populations are separated."
+    assert len(bot.runner.last_result.files) == 64  # Provenance still sees internal outputs.
+    assert [p.name for p in bot.runner.last_result.attachments] == (
+        ["review.png"] if select else []
+    )
+    if email:
+        uploads = bot.terminal_delivery.await_args.args[1]
+    elif select:
+        uploads = bot.client.files_upload_v2.await_args.kwargs["file_uploads"]
+    else:
+        bot.client.files_upload_v2.assert_not_awaited()
+        uploads = []
+    assert [u["filename"] for u in uploads] == (["review.png"] if select else [])
+    assert len(bot.delivered) == int(select)
+
+
+@pytest.mark.parametrize("fail_second", [False, True])
+async def test_explicit_many_files_have_bounded_uploads_and_partial_receipts(bot, fail_second):
+    async def run(ctx, prompt, status):
+        paths = []
+        for i in range(13):
+            path = ctx.workdir / "outputs" / f"requested-{i:02}.png"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"requested figure")
+            paths.append(path)
+        return TurnResult("session", "Requested figures.", paths, attachments=paths)
+
+    bot.runner.run_turn = run
+    if fail_second:
+        bot.client.files_upload_v2.side_effect = [None, RuntimeError("ambiguous completion")]
+    await send(bot, event("Send all 13 requested figures"))
+    batches = [c.kwargs["file_uploads"] for c in bot.client.files_upload_v2.await_args_list]
+    assert [len(b) for b in batches] == ([5, 5] if fail_second else [5, 5, 3])
+    assert len(bot.delivered) == (5 if fail_second else 13)
+    assert all(u["filename"].startswith("requested-") for b in batches for u in b)
+    if fail_second:
+        assert "5 files delivered." in bot.last_reply
+        assert bot.last_error == "File delivery incomplete"
+    else:
+        assert bot.last_error is None
+
+
+def test_upload_batches_bound_combined_memory(tmp_path, monkeypatch):
+    from mica.agents.analysis import transport
+
+    monkeypatch.setattr(transport, "MAX_ATTACHMENT_BYTES", 10)
+    uploads = []
+    for i, size in enumerate((6, 4, 6, 6)):
+        path = tmp_path / f"{i}.png"
+        path.write_bytes(b"x" * size)
+        uploads.append({"file": str(path), "filename": path.name})
+    assert list(transport.upload_batches(uploads)) == [uploads[:2], uploads[2:3], uploads[3:]]

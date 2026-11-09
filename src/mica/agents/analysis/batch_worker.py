@@ -385,6 +385,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             compute.poll_addenda = poll_addenda
         if resume:
             compute.manifest["pending_outputs"] = resume.get("pending_outputs", [])
+            compute.manifest["pending_attachments"] = resume.get("pending_attachments", [])
         compute.manifest["sdk_cost_total"] = saved.get("sdk_cost_total")
         sample_task = asyncio.create_task(sampler.run())
 
@@ -656,6 +657,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                 "sdk_cost_total": compute.sdk_cost_total,
                 "stages": stages.manifest(),
                 "pending_outputs": compute.manifest.get("pending_outputs", []),
+                "pending_attachments": compute.manifest.get("pending_attachments", []),
                 "state": {
                     "context": context,
                     "turn": int(request.get("turn_start", {}).get("turn", current_state[1])) + 1,
@@ -868,6 +870,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             "stages": stages.manifest() if stages else {},
             "runtimes": sorted(runtimes.thread_ids) if runtimes else saved.get("runtimes", []),
             "pending_outputs": compute.manifest.get("pending_outputs", []),
+            "pending_attachments": compute.manifest.get("pending_attachments", []),
         }
         await asyncio.to_thread(
             storage.put,
