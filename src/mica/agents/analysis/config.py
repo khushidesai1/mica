@@ -68,6 +68,7 @@ class Settings(BaseSettings):
     thread_archive_scan_seconds: int = Field(default=30, ge=1, le=60)
     thread_memory_cutover_at: float = Field(default=0, ge=0)
     memory_router_chars: int = Field(default=12000, ge=1, le=64000)
+    memory_editor_chars: int = Field(default=32000, ge=1000, le=128000)
     memory_auto_edit: bool = True
     memory_compaction_enabled: bool = True
     # During coordinated rollout, keep the old layout until old API requests have drained.

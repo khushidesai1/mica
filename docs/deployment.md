@@ -572,3 +572,11 @@ application overlay as coordinated releases so attachment, conversation and tran
 remain installed. Reuse the verified runtime base from the release inputs rather than adding
 unbounded layers to successive application images. Headless API, source/attachment, transfer
 and API/worker contract checks must all pass before promotion.
+
+Memory-editor context and retry fixes are API-only releases; preserve all worker image pins.
+Pending conversational saves without accepted changes upgrade their cached input on the next
+dispatch. For recovery, dispatch affected memory tasks individually and verify both the durable
+thread receipt and `memory_editor_done`; a successful HTTP response alone is insufficient.
+Do not delete pending caches, regenerate accepted proposals, or mark incidents resolved merely
+because the new API is healthy. A `context_limit` requires a reviewed writer-budget or memory
+layout adjustment; increasing router context does not change the writer budget.
