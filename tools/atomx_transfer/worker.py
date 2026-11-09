@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import os
 import re
 import shutil
@@ -161,6 +162,8 @@ class ScriptSFTP(SFTP):
                 commands.append(f"get {self.quote(file.source)} {self.quote(str(target))}")
             if not commands:
                 continue
+            print(json.dumps({"event": "atomx_staging", "operation": script,
+                              "status": "started", "files": len(commands)}), flush=True)
             batch = root / "download.batch"
             batch.write_text("\n".join(commands) + "\nbye\n")
             read_fd, write_fd = os.pipe()
@@ -199,7 +202,11 @@ class ScriptSFTP(SFTP):
                         except subprocess.TimeoutExpired:
                             pass
                     if code:
+                        print(json.dumps({"event": "atomx_staging", "operation": script,
+                                          "status": "failed", "exit_code": code}), flush=True)
                         raise ValueError("SFTP script download failed")
+                    print(json.dumps({"event": "atomx_staging", "operation": script,
+                                      "status": "downloaded"}), flush=True)
                 finally:
                     if process.poll() is None:
                         os.killpg(process.pid, signal.SIGKILL)
@@ -208,12 +215,16 @@ class ScriptSFTP(SFTP):
                 os.close(read_fd)
                 if write_fd >= 0:
                     os.close(write_fd)
+        print(json.dumps({"event": "atomx_staging", "operation": "validate_sizes",
+                          "status": "started"}), flush=True)
         for file in files:
             if (
                 self.local[file.source].stat().st_size != file.size
                 or self.size(file.source) != file.size
             ):
                 raise ValueError("Source changed during staging")
+        print(json.dumps({"event": "atomx_staging", "operation": "validate_sizes",
+                          "status": "done"}), flush=True)
 
     def open(self, path):
         return self.local[path].open("rb")
