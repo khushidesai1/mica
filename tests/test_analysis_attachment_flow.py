@@ -65,7 +65,7 @@ async def test_direct_compute_direct_files_survive(
             if note == "updated":
                 methods_path.parent.mkdir(parents=True, exist_ok=True)
                 methods_path.write_text(methods_text)
-            return TurnResult("session", "I plotted B against A.", [path])
+            return TurnResult("session", "I plotted B against A.", [path], attachments=[path])
 
     class Blob:
         def __init__(self, key):

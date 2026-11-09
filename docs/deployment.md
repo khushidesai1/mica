@@ -351,11 +351,19 @@ those external policies were applied or that the operator received a notificatio
 
 ## Folder and script delivery
 
-Both conversation surfaces use the same attachment policy. New or modified reports,
-text/configuration files, source scripts and ZIPs in `outputs/` are eligible at any depth;
-`outputs/gcs/` is exclusively bucket staging. Unsupported files produce an explicit delivery
-failure, rather than being silently skipped. Prepared ZIPs and source files are retained with
-run provenance for resends.
+Both conversation surfaces deliver only files explicitly selected with `send_files`, plus
+script snapshots when the user has enabled `scripts on`. Select only figures needed for review
+and requested files. Creating or changing a file anywhere in `outputs/` does not select it.
+Internal datasets, diagnostics and unused figures remain separate from attachments and do not
+produce user-facing attachment or retention warnings. Provenance and workspace retention keep
+their existing policies; `outputs/gcs/` remains exclusively bucket staging. Invalid explicit
+selections return per-file tool errors. Prepared ZIPs and source files retain run provenance.
+Selected attachments survive worker continuation separately from internal pending outputs;
+legacy pending outputs do not implicitly become attachments.
+
+Slack uploads selected files in batches of at most five and 200 MB combined, bounding SDK memory
+and completion URL size. Each confirmed batch is recorded before the next; a later failure stops
+delivery without retrying already shared files or treating unconfirmed files as delivered.
 
 The worker's `send_files` tool accepts individual output files or complete folders. A folder
 under `code/` or an `outputs/` subfolder becomes one ZIP. It includes every regular file and empty
@@ -367,8 +375,8 @@ Existing credential checks for source scripts remain in force. Large folders use
 recursive GCS publisher; packaging does not grant bucket write access.
 
 Explicit folder requests are ZIPs; individual reports and figures remain direct attachments.
-When a folder is packaged, only its figure/PDF previews accompany the ZIP; contained scripts
-and tables are not sent again individually. Email's combined attachment/MIME limit still
+When a folder is packaged, only explicitly selected figure/PDF previews accompany the ZIP;
+contained scripts and tables are not sent again individually. Email's combined attachment/MIME limit still
 applies, and any omitted attachments are named in the final reply. Model text and tool results
 say a package is prepared, not delivered; actual delivery is recorded after the transport succeeds.
 

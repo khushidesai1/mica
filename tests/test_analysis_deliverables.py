@@ -103,7 +103,7 @@ async def test_actual_missing_script_case_delivers_nested_python_files(bot):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("print(1)")
             paths.append(path)
-        return TurnResult("session", "Sending scripts.", paths)
+        return TurnResult("session", "Sending scripts.", paths, attachments=paths)
 
     bot.runner.run_turn = run
     await send(bot, event("Please send my scripts"))
@@ -128,6 +128,7 @@ async def test_script_zip_plus_figures_has_no_duplicate_script_or_table_attachme
             + [root / "nested/metrics.csv", root / "figures/view.png"]
             + list(prepared),
             delivery_packages=prepared,
+            attachments=list(prepared) + [root / "figures/view.png"],
         )
 
     bot.runner.run_turn = run
@@ -144,7 +145,7 @@ async def test_unsupported_output_is_an_explicit_delivery_failure(bot):
         path = ctx.workdir / "outputs/result.unknown"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"result")
-        return TurnResult("session", "Result.", [path])
+        return TurnResult("session", "Result.", [path], attachments=[path])
 
     bot.runner.run_turn = run
     await send(bot, event("Send results"))

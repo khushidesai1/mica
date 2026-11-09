@@ -107,11 +107,13 @@ async def test_resend_unchanged_file_union_and_pending_restart(tmp_path, monkeyp
     monkeypatch.setattr(runner, "query", query)
     delivered = await runner.Runner(Settings(_env_file=None)).run_turn(ctx, "Resend", AsyncMock())
     assert delivered.files == sorted([existing, output / "new.txt"])
+    assert delivered.attachments == delivered.files
     assert existing.stat().st_mtime_ns == before
     named = set()
     await send_tool(tmp_path, named, manifest=manifest).handler({"paths": ["outputs/figure.png"]})
     restored = json.loads(json.dumps(manifest))
     assert restored["pending_outputs"] == ["figure.png"]
+    assert restored["pending_attachments"] == ["figure.png"]
     assert select_files(tmp_path, ["outputs/" + p for p in restored["pending_outputs"]])[
         "accepted"
     ] == ["outputs/figure.png"]
@@ -173,3 +175,36 @@ def test_worker_prompt_budget_includes_all_static_sections():
         for scripts in (False, True):
             settings = Settings(_env_file=None, runtimes_enabled=runtimes)
             assert len(prompts.build_system_append(ctx, settings, return_scripts=scripts)) <= 4347
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_continuation_restores_only_explicit_attachments(tmp_path, monkeypatch, legacy):
+    from mica.agents.analysis.recovery_tools import RecoveryManager
+    from mica.agents.analysis.resources import Sampler
+
+    ctx = Context(tmp_path, tmp_path / "data")
+    output = tmp_path / "outputs"
+    output.mkdir()
+    for name in ("review.png", "internal.png", "cell_status.parquet"):
+        (output / name).write_bytes(b"saved result")
+    manifest = {
+        "attempt": 1, "tier": "standard", "provisioning": "SPOT",
+        "request_deadline": 9999999999,
+        "pending_outputs": ["review.png", "internal.png", "cell_status.parquet"],
+    }
+    if not legacy:
+        manifest["pending_attachments"] = ["review.png"]
+    settings = Settings(_env_file=None)
+    compute = RecoveryManager(settings, manifest, Sampler(tmp_path), AsyncMock())
+
+    async def resumed(*args):
+        yield result(result="Checked result.")
+
+    monkeypatch.setattr(runner, "recovery_query", resumed)
+    restored = await runner.Runner(settings, compute_manager=compute).run_turn(
+        ctx, "Continue", AsyncMock()
+    )
+    assert restored.error is None
+    assert {p.name for p in restored.files} == set(manifest["pending_outputs"])
+    assert [p.name for p in restored.attachments] == ([] if legacy else ["review.png"])
+    assert manifest["pending_attachments"] == ([] if legacy else ["review.png"])

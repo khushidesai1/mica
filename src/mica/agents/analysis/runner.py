@@ -101,6 +101,7 @@ class TurnResult:
     summary_generated: bool = False
     runtimes: list[RuntimeEvent] = field(default_factory=list)
     delivery_packages: dict[Path, dict[Path, str]] = field(default_factory=dict)
+    attachments: list[Path] = field(default_factory=list)
 
 
 def build_options(
@@ -921,6 +922,7 @@ class Runner:
                 for path in list(self.script_capture.scripts):
                     self.script_capture.skip(path, "attachment copy could not be prepared")
         result.files = sorted(set(changed_files(ctx.workdir / "outputs", before)) | named_outputs)
+        result.attachments = sorted(named_outputs)
         result.delivery_packages = delivery_packages
         if self.compute:
             # Tar restore can round mtimes. Carry only this request's pending outputs,
@@ -928,8 +930,18 @@ class Runner:
             from .outputs import files_under
 
             pending = set(self.compute.manifest.get("pending_outputs", []))
+            selected = set(self.compute.manifest.get("pending_attachments", []))
+            result.attachments = sorted(
+                named_outputs
+                | {
+                    p
+                    for p in files_under(ctx.workdir / "outputs")
+                    if str(p.relative_to(ctx.workdir / "outputs")) in selected
+                }
+            )
             result.files = sorted(
                 set(result.files)
+                | set(result.attachments)
                 | {
                     p
                     for p in files_under(ctx.workdir / "outputs")
@@ -938,6 +950,9 @@ class Runner:
             )
             self.compute.manifest["pending_outputs"] = [
                 str(p.relative_to(ctx.workdir / "outputs")) for p in result.files
+            ]
+            self.compute.manifest["pending_attachments"] = [
+                str(p.relative_to(ctx.workdir / "outputs")) for p in result.attachments
             ]
         if manager:
             result.runtimes = list(manager.events)

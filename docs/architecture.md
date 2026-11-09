@@ -214,9 +214,10 @@ standards and the project guide. Prompt budgets are checked in `test_conversatio
 `send_files` explicitly selects files or folders, including unchanged outputs for resending.
 Folders become complete ZIPs with paths preserved. Opted-in code delivery snapshots changes under
 `code/` after execution tools and adds one ZIP of the last captured bytes to the same output path;
-it does not infer successful execution from shell syntax. New/changed outputs remain a delivery
-safety net. Named files are deduplicated and carried in checkpoint
-`pending_outputs`; unsafe, empty, oversized and unsupported attachments return per-file errors.
+it does not infer successful execution from shell syntax. Changed files remain provenance inputs,
+not implicit attachments. Only selected files produce delivery or retention notices. Named files
+are deduplicated and carried in checkpoint `pending_attachments`, separately from internal
+`pending_outputs`; unsafe, empty, oversized and unsupported selections return per-file errors.
 Memory writers supply missing entry headers from the path and application attribution before
 validation, preserving existing valid headers and superseded status.
 
