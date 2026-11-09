@@ -42,3 +42,20 @@ async def save(storage: Storage, event_id: str, value: dict[str, Any]) -> None:
 async def archive(storage: Storage, event_id: str, value: dict[str, Any]) -> None:
     path = key(event_id).removesuffix("state.json") + f"context-{value['compactions']}.json"
     await asyncio.to_thread(storage.put, path, json.dumps(value).encode())
+
+
+def evidence(value: Any) -> Any:
+    """Summarize ordinary evidence as text, not provider tool/thinking blocks.
+
+    The exact transcript remains archived. Binary media can be viewed again by its
+    authorized file reference; base64 payloads must not consume a text context window.
+    """
+    if isinstance(value, list):
+        return [evidence(item) for item in value if not (
+            isinstance(item, dict) and item.get("type") in {"thinking", "redacted_thinking"}
+        )]
+    if isinstance(value, dict):
+        if value.get("type") in {"base64", "image", "document"}:
+            return {"media": "Retained in archived evidence; use its file reference to view again."}
+        return {k: evidence(v) for k, v in value.items()}
+    return value

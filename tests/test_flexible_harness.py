@@ -83,6 +83,11 @@ async def test_compaction_archives_evidence_and_keeps_request(flexible_turn):
         "messages": [original, {"role": "assistant", "content": "x" * 400000}],
     }
     await conversation_state.save(bridge.store, event_id, saved)
+    for _ in range(6):
+        sdk = Client(reply("Verified findings and next step."))
+        with pytest.raises(conversation_state.YieldConversation):
+            await run(flexible_turn, sdk)
+        assert len(json.dumps(sdk.calls[0]["messages"])) < 70000
     sdk = Client(reply("Verified findings, source references and unresolved next step."), reply())
     await run(flexible_turn, sdk)
     assert sdk.calls[1]["messages"][0] == original
