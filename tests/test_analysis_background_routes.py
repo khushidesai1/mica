@@ -47,6 +47,8 @@ async def test_memory_route_dispatches_and_propagates_transient_errors(bridge, m
     process = AsyncMock()
     monkeypatch.setattr(memory_tasks, "process", process)
     assert await slack_analysis.process_memory("a" * 32, request(bridge)) == {"status": "complete"}
+    process.side_effect = memory_tasks.EditorDeferred("cooldown")
+    assert await slack_analysis.process_memory("a" * 32, request(bridge)) == {"status": "pending"}
     process.side_effect = TimeoutError()
     with pytest.raises(HTTPException) as error:
         await slack_analysis.process_memory("a" * 32, request(bridge))

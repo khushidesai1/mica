@@ -83,6 +83,24 @@ for the guide. Correct mistakes in plain language. The old `remember`, `forget`,
 `save brief`, and `clean brief` commands explain this change without editing memory.
 Memory saves run silently; use `memory` or `brief` when you want to inspect saved content.
 
+The conversational editor has its own `AGENT_MEMORY_EDITOR_CHARS=32000` file budget,
+separate from router context. It reserves room for the complete `open.md` before optional
+files. Failed turns receive only that pending-work file. Existing files may be replaced
+only when their complete contents were supplied; oversized required files remain pending
+with a `context_limit` diagnostic rather than being truncated.
+
+Rejected model proposals retain a safe validation reason for the next attempt. An attempted
+edit to an omitted existing topic prioritizes that complete file on retry. Inputs from older
+editor versions, and rejected inputs being repaired, refresh the project snapshot and thread
+coverage together while preserving the original request, reply, date and speaker. Accepted
+proposals and worker proposals retain their original merge base and are never regenerated.
+This also repairs previously queued conversational saves without deleting their cached evidence.
+
+Attempts are persisted before each model call, with at most three attempts per save per hour.
+Further queue retries during that window keep the save pending without another model call or
+duplicate application failure report. The existing maintenance redispatch recovers exhausted
+queues. Logs include the stage and a fixed validation reason, without model text or credentials.
+
 ## Shared thread memory
 
 Project conversation memory is shared with every member of that project, including summaries

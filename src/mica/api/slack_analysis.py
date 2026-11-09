@@ -197,6 +197,10 @@ async def process_memory(event_id: str, request: Request) -> dict[str, str]:
             event_id,
             GCSStorage(services.settings.gcs_bucket),
         )
+    except memory_tasks.EditorDeferred:
+        # Acknowledge this dispatch. Durable memory_due state lets maintenance resume
+        # the save after cooldown without treating an intentional delay as an outage.
+        return {"status": "pending"}
     except Exception:
         # after_turn logs only the failure type. Do not let an upstream validation
         # exception (which can contain model text) become a server traceback.

@@ -219,7 +219,7 @@ async def test_editor_rejects_unseen_replacements_but_allows_new_topics(monkeypa
     if allowed:
         assert path in await memory_tasks.edit("test", "model", context)
     else:
-        with pytest.raises(ValueError, match="not shown"):
+        with pytest.raises(memory_tasks.EditorError, match="unseen_file"):
             await memory_tasks.edit("test", "model", context)
 
 
