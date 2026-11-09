@@ -11,9 +11,11 @@ from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 from test_analysis_runner import result, setup  # noqa: F401
 from test_conversation_tools import Client, reply, run, tool, turn  # noqa: F401
+from test_gpu_compute import gpu  # noqa: F401
 
 from mica.agents.analysis import (
     approvals,
+    compute_approval,
     conversation,
     conversation_state,
     direct,
@@ -277,3 +279,52 @@ def test_flexible_recovery_preserves_compute_deadline_but_not_model_cap():
     assert recovery.limits(record, settings, now=100) == (100, 5)
     with pytest.raises(ValueError, match="approved compute"):
         recovery.limits(record, settings, now=201)
+
+
+async def test_gpu_approval_discloses_and_binds_notification_policy(gpu):
+    gpu.settings.flexible_harness = True
+    event_id = await gpu.accept(payload())
+    assert await gpu.process(event_id, 0) == "awaiting_approval"
+    record = await gpu.repository.get_connector_state("claude-event:" + event_id)
+    approval, _ = compute_approval.load(gpu.store, event_id)
+    assert approval.flexible_harness
+    assert "model usage check-in" in gpu.test_slack.chat_update.call_args.kwargs["text"]
+    record["flexible_harness"] = False
+    with pytest.raises(ValueError, match="fresh confirmation"):
+        compute_approval.validate(gpu, gpu.store, record, approval)
+
+
+async def test_pending_report_delivery_works_after_task_finishes(checkin, monkeypatch):
+    bridge, event_id, record = checkin
+    state, generation = approvals.load_json(bridge.store, request_controls.key(event_id))
+    state["report_pending"] = True
+    approvals.save(bridge.store, request_controls.key(event_id), state, generation)
+    record["status"] = "complete"
+    await bridge.repository.set_connector_state("claude-event:" + event_id, record)
+    monkeypatch.setattr(observability, "flush", AsyncMock())
+    await request_controls.expire(bridge, bridge.store, event_id)
+    incident = await bridge.repository.request_failure(
+        observability.request_scope(bridge.app), event_id
+    )
+    assert incident.observation.cause == "request_reported"
+    assert not await request_controls.cancelled(bridge.store, event_id)
+
+
+async def test_rejected_post_can_retry_without_duplicate_accepted_post(bridge, monkeypatch):
+    from slack_sdk.errors import SlackApiError
+
+    bridge.settings.flexible_harness = True
+    monkeypatch.setattr(request_controls, "AsyncWebClient", lambda **kw: bridge.test_slack)
+    event_id = await bridge.accept(payload())
+    record = await bridge.repository.get_connector_state("claude-event:" + event_id)
+    record["routing_calls"] = 6
+    bridge.test_slack.chat_postMessage.side_effect = SlackApiError(
+        "Rate limited", {"error": "ratelimited"}
+    )
+    with pytest.raises(SlackApiError):
+        await request_controls.sync(bridge, event_id, record)
+    bridge.test_slack.chat_postMessage.side_effect = None
+    await request_controls.sync(bridge, event_id, record)
+    state, _ = approvals.load_json(bridge.store, request_controls.key(event_id))
+    assert state["ts"] == "9.0"
+    bridge.test_slack.conversations_replies.assert_not_awaited()

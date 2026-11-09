@@ -9,11 +9,12 @@ import time
 from typing import TYPE_CHECKING, Any
 from uuid import NAMESPACE_URL, uuid5
 
+from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
 from mica.storage.failures import Observation, digest
 
-from . import access, approvals, memory_workspace, observability, surface
+from . import access, approvals, job_lifecycle, memory_workspace, observability, surface
 from .config import CHECKPOINT_PREFIX
 from .storage import Storage
 
@@ -131,7 +132,7 @@ async def sync(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> No
     async with approvals.lease(bridge, f"request-controls:{event_id}"):
         saved = await asyncio.to_thread(approvals.load_json, storage, key(event_id))
         state, generation = saved if saved else ({"reasons": [], "acknowledged": []}, None)
-        if not current and not saved:
+        if not saved and (not current or not active):
             return
         if state.get("report_pending"):
             await report(bridge, event_id, record)
@@ -156,7 +157,7 @@ async def sync(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> No
         if signature == state.get("rendered"):
             return
         event = record["payload"]["event"]
-        client = AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5)
+        client = AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5, retry_handlers=[])
         message_id = str(uuid5(NAMESPACE_URL, "mica-request-controls:" + event_id))
         if not state.get("ts") and state.get("sending"):
             # Recover an accepted-but-unacknowledged post instead of blindly posting again.
@@ -165,9 +166,14 @@ async def sync(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> No
                 ts=event.get("thread_ts") or event["ts"],
                 limit=1000,
             )
+            who = await client.auth_test()
             messages: list[dict[str, Any]] = history.get("messages", [])
             match = next(
-                (m for m in messages if m.get("client_msg_id") == message_id),
+                (
+                    m
+                    for m in messages
+                    if m.get("client_msg_id") == message_id and m.get("user") == who["user_id"]
+                ),
                 None,
             )
             if not match:
@@ -185,15 +191,32 @@ async def sync(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> No
             generation = await asyncio.to_thread(
                 approvals.save, storage, key(event_id), state, generation
             )
-            result = await client.chat_postMessage(
-                channel=event["channel"],
-                thread_ts=event.get("thread_ts") or event["ts"],
-                text=text,
-                blocks=blocks(event_id, text, active),
-                client_msg_id=message_id,
-                unfurl_links=False,
-                unfurl_media=False,
-            )
+            try:
+                result = await client.chat_postMessage(
+                    channel=event["channel"],
+                    thread_ts=event.get("thread_ts") or event["ts"],
+                    text=text,
+                    blocks=blocks(event_id, text, active),
+                    client_msg_id=message_id,
+                    unfurl_links=False,
+                    unfurl_media=False,
+                )
+            except SlackApiError as exc:
+                if exc.response.get("error") in {
+                    "ratelimited",
+                    "not_in_channel",
+                    "channel_not_found",
+                    "missing_scope",
+                    "invalid_auth",
+                    "account_inactive",
+                    "token_revoked",
+                }:
+                    # These responses affirm rejection; ambiguous delivery stays unreplayed.
+                    state["sending"] = False
+                    await asyncio.to_thread(
+                        approvals.save, storage, key(event_id), state, generation
+                    )
+                raise
             state["ts"] = result["ts"]
         state["rendered"] = signature
         await asyncio.to_thread(approvals.save, storage, key(event_id), state, generation)
@@ -255,6 +278,12 @@ async def handle(
             approvals.save, storage, key(event_id), state, generation
         )
         if state.get("report_pending"):
+            # An independent durable delivery also retries reports after the task finishes.
+            await job_lifecycle.enqueue(
+                bridge.app,
+                f"request-report-{event_id}",
+                f"/api/v1/internal/slack-analysis/approvals/request/{event_id}",
+            )
             await report(bridge, event_id, record)
             state.update(reported=True, report_pending=False)
             await asyncio.to_thread(approvals.save, storage, key(event_id), state, generation)
@@ -264,7 +293,11 @@ async def handle(
 
 
 async def expire(bridge: BatchBridge, storage: Storage, event_id: str) -> None:
-    return None  # Check-ins have no approval expiry and never suspend the request.
+    # Reuse the authenticated control delivery. This check-in has no expiry or task deadline.
+    record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
+    if record:
+        await sync(bridge, event_id, record)
+        await observability.flush(bridge.repository, bridge.app, bridge.settings)
 
 
 KIND = approvals.Kind("request", (PREFIX,), key, None, handle, expire)
