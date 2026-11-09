@@ -14,6 +14,7 @@ from test_analysis_runner import result
 
 from mica.agents.analysis import batch_worker, runner
 from mica.agents.analysis.config import Settings
+from mica.agents.analysis.deliverables import send_tool
 from mica.agents.analysis.recovery import event_prefix
 from mica.agents.analysis.runner import Context
 from mica.agents.analysis.storage import LocalStorage
@@ -109,6 +110,10 @@ async def test_cold_resize_suppresses_intermediate_delivery_and_preserves_output
         work = Path(options.cwd)
         if manager.attempt == 0:
             (work / "outputs/first.txt").write_text("first result")
+            (work / "outputs/internal.csv").write_text("internal result")
+            await send_tool(work, set(), manifest=manager.manifest).handler(
+                {"paths": ["outputs/first.txt"]}
+            )
             (work / "knowledge/PROJECT.md").write_text("# Verified shared guide")
             (work / "scratch/temporary.txt").write_text("not retained")
             (work / "checkpoints/ingest").mkdir()
@@ -131,6 +136,9 @@ async def test_cold_resize_suppresses_intermediate_delivery_and_preserves_output
             assert not (work / "scratch/temporary.txt").exists()
             assert (work / "checkpoints/ingest/complete.txt").read_text() == "closed stage"
             (work / "outputs/second.txt").write_text("second result")
+            await send_tool(work, set(), manifest=manager.manifest).handler(
+                {"paths": ["outputs/second.txt"]}
+            )
         yield result(total_cost_usd=0.1 * (manager.attempt + 1), result="Both results verified.")
 
     monkeypatch.setattr(runner, "recovery_query", stream)
@@ -149,6 +157,7 @@ async def test_cold_resize_suppresses_intermediate_delivery_and_preserves_output
     assert pending["changes"] == {"PROJECT.md": "# Verified shared guide"}
     assert not list(store.keys("projects/test/knowledge/"))
     assert handoff["outcome"] == "handoff" and handoff["state"]["turn"] == 7
+    assert handoff["pending_attachments"] == ["first.txt"]
     assert handoff["stages"]["stages"][0]["fingerprint"] == "synthetic-input-v1"
     shutil.rmtree(home)
     home.mkdir()

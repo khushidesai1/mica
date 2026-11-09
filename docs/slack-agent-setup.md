@@ -77,7 +77,8 @@ updates with reasoning omitted, and uses only text notes when a fallback model a
 Notes are bounded plain text and stay out of application run logs, history and memory. The final
 answer appears once, and finished/stopped cards discard the note. Email still sends no progress.
 Phase changes come from SDK lifecycle events. Identical
-states are deduplicated and updates are throttled without posting extra messages. Unsupported
+states are deduplicated; worker updates are coalesced to at most once per 30 seconds in the same
+message, with terminal states shown immediately. Unsupported
 surfaces fall back to small context text. Status failures do not prevent work, and webhook/poll
 deliveries reuse the stored message timestamp.
 

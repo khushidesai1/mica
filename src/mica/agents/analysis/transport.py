@@ -3,14 +3,32 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any, Protocol
 
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
+from .outputs import MAX_ATTACHMENT_BYTES
 from .slack_format import activity_fallback
 
 log = logging.getLogger(__name__)
+
+
+def upload_batches(uploads: list[dict[str, str]]) -> Iterator[list[dict[str, str]]]:
+    """Bound SDK memory use and the async client's completion URL parameters."""
+    batch: list[dict[str, str]] = []
+    size = 0
+    for upload in uploads:
+        length = Path(upload["file"]).stat().st_size
+        if batch and (len(batch) >= 5 or size + length > MAX_ATTACHMENT_BYTES):
+            yield batch
+            batch, size = [], 0
+        batch.append(upload)
+        size += length
+    if batch:
+        yield batch
 
 
 class Transport(Protocol):
