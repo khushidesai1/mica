@@ -608,8 +608,10 @@ class Runner:
         memory_base: project_memory.Snapshot | None = None,
         import_highlights: list[str] | None = None,
         attachment_limit: int = MAX_ATTACHMENT_BYTES,
+        on_attention: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self.settings, self.sandbox = settings, sandbox
+        self.on_attention = on_attention
         self.project_name = project_name
         self.return_scripts = return_scripts
         self.attachment_limit = attachment_limit
@@ -679,7 +681,8 @@ class Runner:
                 log.warning("Could not refresh the runtime catalog", exc_info=True)
                 manager.restore_errors.append("Saved toolkit status could not be refreshed.")
         # Keep the closing call inside the existing model allowance, including on budget stops.
-        summary_budget = min(0.50, self.settings.max_budget_usd_per_turn * 0.1)
+        summary_budget = (0.0 if self.settings.flexible_harness else
+                          min(0.50, self.settings.max_budget_usd_per_turn * 0.1))
         tasks: dict[str, TaskProgress] = {}
         activity: ActivityState | None = None
         message_id: str | None = None
@@ -708,7 +711,12 @@ class Runner:
             ctx.workdir, self.settings, self.thread_key, self.memory_base, self.import_highlights
         )
         try:
-            for attempt in range(2):
+            missing_retry = False
+            baseline = restored_cost(ctx.session_id) if self.compute else 0.0
+            if self.compute and baseline is None:
+                baseline = self.compute.manifest.get("sdk_cost_total")
+            sdk_total = baseline or 0.0
+            while True:
                 details, got_result = "", False
                 message_id, pending_note = None, None
                 try:
@@ -736,9 +744,10 @@ class Runner:
                         checks=checks,
                     )
                     options.max_budget_usd = self.settings.max_budget_usd_per_turn - summary_budget
-                    baseline = restored_cost(ctx.session_id) if self.compute else 0.0
-                    if self.compute and baseline is None:
-                        baseline = self.compute.manifest.get("sdk_cost_total")
+                    if self.settings.flexible_harness:
+                        # The SDK budget includes the restored session's cumulative cost.
+                        # Each segment permits another notification interval, not a task cap.
+                        options.max_budget_usd += sdk_total
                     stream = (
                         recovery_query(prompt, options, self.compute)
                         if self.compute
@@ -849,6 +858,9 @@ class Runner:
                             got_result = True
                             result.session_id = msg.session_id
                             result.cost = (result.cost or 0) + (msg.total_cost_usd or 0)
+                            if self.settings.flexible_harness and msg.total_cost_usd is not None:
+                                sdk_total = msg.total_cost_usd
+                                result.cost = sdk_total - (baseline or 0)
                             if self.compute:
                                 total = msg.total_cost_usd
                                 self.compute.sdk_cost_total = total
@@ -880,8 +892,26 @@ class Runner:
                         "could not load session",
                     )
                 )
-                if not (attempt == 0 and ctx.session_id and missing and not result.run_log):
+                if (self.settings.flexible_harness and result.session_id
+                        and result.error in {"error_max_turns", "error_max_budget_usd"}):
+                    if self.on_attention:
+                        await self.on_attention(
+                            "worker_effort" if result.error == "error_max_turns"
+                            else "worker_spend"
+                        )
+                    ctx = dataclasses.replace(ctx, session_id=result.session_id)
+                    result.error, result.text = None, ""
+                    prompt = (
+                        "Continue the original authorized request from the saved session. "
+                        "The previous segment reached a user notification threshold, not a "
+                        "task deadline. Keep completed work, choose the next useful step, "
+                        "and finish when the task is complete or explain a real blocker. "
+                        "Existing permissions and compute approvals still apply."
+                    )
+                    continue
+                if not (not missing_retry and ctx.session_id and missing and not result.run_log):
                     break
+                missing_retry = True
                 ctx = dataclasses.replace(ctx, session_id=None)
                 result.session_id = None
                 result.error, result.text = None, ""

@@ -482,6 +482,16 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                                json.dumps({"error": error}).encode())
         return text, []
 
+    async def attention(reason: str) -> None:
+        # Small, attempt-bound telemetry; no prompts, paths, model text or tool output.
+        from .recovery import read_json
+
+        path = f"{prefix}/attention-a{request['recovery']['attempt']}.json"
+        state = await asyncio.to_thread(read_json, storage, path) or {}
+        state.update(event_id=event_id, attempt=request["recovery"]["attempt"])
+        state[reason] = True
+        await asyncio.to_thread(storage.put, path, json.dumps(state).encode())
+
     agent = SlackAgent(
         settings,
         storage,
@@ -504,6 +514,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             attachment_limit=(17_000_000 if surface.is_email(request) else 200_000_000),
             script_manifest=resume.get("script_manifest") if resume else None,
             compute_manager=compute,
+            on_attention=attention if compute else None,
             gcs_publisher=publisher if current_write_grant else None,
             project_name=request.get("project_name", ""),
             memory_context=project_memory.context(

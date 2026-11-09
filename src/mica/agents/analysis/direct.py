@@ -68,7 +68,7 @@ class DecisionFields(BaseModel):
     history_query: str | None = Field(default=None, max_length=500)
     history_event_id: str = Field(default="", max_length=128)
     history_offset: int = Field(default=0, ge=0, le=1_000_000)
-    reply: str = Field(min_length=1, max_length=16000)
+    reply: str = Field(min_length=1)
     guide: str | None = Field(
         default=None,
         max_length=99_999,

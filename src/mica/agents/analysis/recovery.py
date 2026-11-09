@@ -92,6 +92,10 @@ def remaining_recoveries(record: dict[str, Any], settings: Settings) -> int:
 
 def limits(record: dict[str, Any], settings: Settings, *, now: float) -> tuple[int, float]:
     seconds = int(record["request_deadline"] - now)
+    if record.get("flexible_harness"):
+        if seconds < 1:
+            raise ValueError("This request reached its approved compute time allowance.")
+        return seconds, settings.max_budget_usd_per_turn
     remaining = record["model_limit"] - record["model_spent"]
     reserve = record["model_limit"] * 0.1 * remaining_recoveries(record, settings)
     allowance = max(0.0, remaining - reserve)
