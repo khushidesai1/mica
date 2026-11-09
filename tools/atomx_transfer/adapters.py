@@ -7,7 +7,7 @@ import json
 import posixpath
 import stat
 from collections.abc import Iterator
-from typing import Any
+from typing import Any, Literal
 
 from .core import Busy, Object
 
@@ -71,8 +71,18 @@ class GCS:
 
 class SFTP:
     def __init__(self, config: dict[str, Any], login: dict[str, str]) -> None:
+        self._config, self._login = dict(config), dict(login)
+        self._closed = False
+        self._connect()
+
+    def _connect(self) -> None:
         import paramiko
 
+        if self._closed:
+            raise ValueError("SFTP connection is closed")
+        if hasattr(self, "ssh"):
+            self.ssh.close()
+        config, login = self._config, self._login
         host, port = config["host"], int(config.get("port", 22))
         kind, key = config["host_key"].split()[:2]
         self.ssh = paramiko.SSHClient()
@@ -96,15 +106,40 @@ class SFTP:
             )
             self.sftp = self.ssh.open_sftp()
             self.sftp.get_channel().settimeout(60)
+            self.ssh.get_transport().set_keepalive(30)
         except Exception:
             self.ssh.close()
             raise
 
     def close(self) -> None:
         self.ssh.close()
+        self._login.clear()
+        self._closed = True
+
+    def _connected(self) -> bool:
+        transport = self.ssh.get_transport()
+        return bool(transport and transport.is_active() and not self.sftp.get_channel().closed)
+
+    def _request(self, operation: Literal["listdir_attr", "stat"], path: str) -> Any:
+        """Retry one read after a dropped metadata connection; never retry remote file errors."""
+        import paramiko
+
+        if not self._connected():
+            print(json.dumps({"event": "atomx_sftp_reconnect", "operation": operation}), flush=True)
+            self._connect()
+        try:
+            return getattr(self.sftp, operation)(path)
+        except (EOFError, OSError, paramiko.SSHException):
+            if self._connected():
+                raise
+        # Downloads run in a separate OpenSSH process, leaving this channel idle for hours.
+        # Reauthentication retains the same pinned host key and personal login.
+        print(json.dumps({"event": "atomx_sftp_reconnect", "operation": operation}), flush=True)
+        self._connect()
+        return getattr(self.sftp, operation)(path)
 
     def entries(self, path: str) -> list[Any]:
-        items = self.sftp.listdir_attr(path)
+        items = self._request("listdir_attr", path)
         for item in items:
             if item.filename in {".", ".."} or "/" in item.filename or not item.st_mode:
                 raise ValueError("Invalid remote entry")
@@ -116,7 +151,7 @@ class SFTP:
         # Searching skips symlinks and odd entries; transferred files still use entries().
         return [
             a.filename
-            for a in self.sftp.listdir_attr(path)
+            for a in self._request("listdir_attr", path)
             if a.filename not in {".", ".."}
             and "/" not in a.filename
             and a.st_mode
@@ -132,7 +167,7 @@ class SFTP:
                 yield item.filename, item.st_size
 
     def size(self, path: str) -> int:
-        return int(self.sftp.stat(path).st_size)
+        return int(self._request("stat", path).st_size)
 
     def open(self, path: str) -> Any:
         return self.sftp.open(path, "rb")

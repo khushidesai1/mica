@@ -89,6 +89,13 @@ startup under the actual worker user, with networking disabled, before the image
 The gate also runs both download scripts through OpenSSH's configuration parser and checks that
 password authentication remains enabled with strict host checking. `BatchMode=no` must precede
 SFTP's `-b` option, which otherwise disables the private-pipe password helper.
+The worker gate also downloads fixture bytes through both real shell scripts from a local,
+password-authenticated SFTP server. It deliberately drops the separate metadata connection
+during download and checks recovery, downloaded bytes, and staging cleanup. Metadata reads
+reconnect once after a closed transport or channel, retaining the pinned host key and login;
+missing files and other remote file errors still fail. This also protects size and manifest
+checks after long downloads or uploads. Structured staging logs identify each download script
+and the size-validation phase without recording credentials, file paths, or server messages.
 
 Deploy with `cloudbuild/build-slack-release.yaml`; its offline AtoMx gates check encryption,
 revocation, installed source and script dependencies. Presentation/controller-only updates can use

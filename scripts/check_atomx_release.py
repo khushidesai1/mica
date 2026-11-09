@@ -255,8 +255,11 @@ async def check():
     assert "StrictHostKeyChecking=yes" in script and "sshpass -d" in script
     assert worker.ScriptSFTP.quote("/plain file") == '"/plain file"'
     if sys.argv[-1] == "worker":
+        from check_atomx_download import check_download
+
         check_worker_ssh()
         check_sftp_password_mode(installed / "scripts")
+        check_download()
     print("ATOMX_PRIVATE_CONNECTION_AND_WORKER_TOOL_VERIFIED (offline)")
 
 
