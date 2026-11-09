@@ -159,9 +159,40 @@ Run live Slack smoke checks only in the owner's private DM, never in shared proj
 Simulate malformed model output, outages, and retry timing locally with fakes; do not inject
 failures into collaborators' conversations. Remove synthetic DM messages after verification.
 
-All requests use the conversation loop with `AGENT_MODEL` and the shared 120-second routing
-budget. Invalid tool input returns to the model for correction; unfinished responses retain the
-existing bounded retry behavior. Starting a worker requires a validated terminal tool call.
+All requests use the conversation loop with `AGENT_MODEL`. Enable `AGENT_FLEXIBLE_HARNESS=true`
+on a coordinated API and Slack CPU/GPU worker release. The policy is pinned when each request
+is received; already accepted requests retain their policy. Disabling the flag affects new
+requests, without discarding active checkpoints. Deploy matching worker source before enabling it.
+
+With this policy, routing persists its provider transcript and references in private control-plane
+storage between queue deliveries. Six calls and the 90-second default delivery slice yield to
+another delivery; they do not end the task. Transient provider failures retry with backoff and no
+three-attempt ceiling. Active context is compacted while the original transcript is archived.
+Invalid tool input returns to the model for correction. Refusals and permanent provider errors
+end with an explanation. Starting a worker still requires a validated terminal tool call.
+
+Slack check-ins offer **Keep working**, **Cancel task**, and **Report a problem** after two minutes
+of routing, six routing calls, three transient routing failures, or 24 hours of unresolved routing.
+The last threshold applies only to routing, never to an active analysis. Silence continues work;
+acknowledging a reason suppresses repeat notifications for that reason. Reports are idempotently
+saved to the existing failure queue, then delivered to `AGENT_FAILURE_CHANNEL`, with request and
+project identifiers, phase, bounded counters, provider status and worker-attempt evidence. Reports
+do not cancel or restart work. Only the original requester, in the original card, with current
+access can act. Cancellation uses the existing cooperative stop and preserves saved outputs.
+Email requests continue with the same routing policy, but do not receive Slack action cards.
+
+Worker turn/model thresholds become continuation points: the saved SDK session resumes with full
+tools and the controller posts a check-in. Model-cost accounting remains cumulative. GPU approval
+cards explicitly describe the model notification threshold for new flexible requests. Existing
+explicit compute time/hardware approvals, access controls, isolation, allocation ceilings and
+bounded I/O remain enforced. Individual provider, HTTP and tool timeouts still protect connections;
+they are not a total routing deadline. Cloud Tasks process deliveries allow 900 seconds and use a
+960-second poll lease; configured routing slices cannot exceed 600 seconds. The deployment's
+Cloud Run request timeout must be at least 900 seconds. No queue/IAM/Terraform changes are needed.
+
+Requests accepted before this rollout retain the previous shared 120-second/six-call routing
+policy and bounded retries. Cancel or explicitly resubmit a failed old request to use the new
+policy; deployment never silently replays scientific work.
 Remove the retired `AGENT_CONVERSATION_PRINCIPALS` environment variable during an API release;
 there is no per-user routing flag. `AGENT_ROUTING_REPAIR_MODEL` remains the model setting for
 failure-card assessments, with its existing `claude-opus-5` default.

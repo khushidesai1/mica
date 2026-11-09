@@ -34,6 +34,7 @@ class Approval(BaseModel):
     seconds: int = Field(gt=0)
     hourly_estimate: float = Field(gt=0)
     model_allowance: float = Field(gt=0)
+    flexible_harness: bool = False
     expires_at: float
     approved_at: float = 0
     status: Literal["pending", "approved", "cancelled", "expired"] = "pending"
@@ -74,6 +75,7 @@ def validate(
         or max(gpu_estimate(bridge.settings, item) for item in shapes) != approval.hourly_estimate
         or selected_gpu_choice(record) not in gpu_choices(record)
         or bridge.settings.max_budget_usd_per_turn != approval.model_allowance
+        or bool(record.get("flexible_harness")) != approval.flexible_harness
     ):
         raise ValueError("GPU execution choices changed. Request fresh confirmation.")
     if record.get("recovery_version") and (
@@ -118,6 +120,7 @@ async def ready(
                 for name in gpu_choices(record)
             ),
             model_allowance=bridge.settings.max_budget_usd_per_turn,
+            flexible_harness=bool(record.get("flexible_harness")),
             expires_at=KIND.deadline(),
         )
         try:
@@ -179,7 +182,10 @@ async def ready(
         + fallback
         + f"Time allowance: {approval.seconds / 3600:g} hours including startup/retries. "
         f"Estimated compute and disk: ${compute:.2f}; "
-        f"model allowance: ${approval.model_allowance:.2f}. "
+        + (f"model usage check-in at ${approval.model_allowance:.2f}; work continues "
+           "unless you cancel. " if approval.flexible_harness
+           else f"model allowance: ${approval.model_allowance:.2f}. ")
+        +
         "This is an estimate, not a billing cap. Startup can take several minutes. "
         + (
             "Saved work can continue on replacement Spot workers within this same allowance."

@@ -28,16 +28,24 @@ and the commit, distinguishes inspected code from executed/tested behavior, and 
 coverage. Requested README text is delivered directly through the ordinary chunked reply path;
 Mica does not start a worker merely to compose documentation or claim an attachment was created.
 All users use the conversation tool loop with the same access checks.
-`AGENT_CONVERSATION_EFFORT` defaults to `medium` and
-`AGENT_CONVERSATION_MAX_CALLS` to 6, plus one final no-tool answer when the call/time reserve is
-reached. The total request budget is 120 seconds across retries. List, view and source-read tools
-can run in any order. Source/text/history content shares a 384 KiB request budget, and text
-attachments remain capped at 64 KiB each. Source inspection never executes code.
+`AGENT_CONVERSATION_EFFORT` defaults to `medium`. With `AGENT_FLEXIBLE_HARNESS=true`, the
+`AGENT_CONVERSATION_MAX_CALLS` default of 6 and 90-second delivery slice are checkpoint boundaries:
+the same request continues with its evidence on another delivery. There is no total routing
+deadline. The former 120-second, six-call and three-retry stops become nonblocking check-ins.
+An unresolved routing request also gets a check-in after 24 hours. Keep working, Cancel task and
+Report a problem are bound to the requester; silence and reports continue the task. Reports go
+through the configured Mica failures channel. See [deployment](deployment.md) for rollout and
+recovery details. Receipts accepted before enabling the policy keep their previous limits.
+List, view and source-read tools can run in any order. Each source read remains bounded to
+384 KiB and text attachments to 64 KiB; these limits protect individual reads. Active conversation
+context is compacted while the full original evidence remains saved. Source inspection never
+executes code.
 All reads are restricted to authorized catalog/project repositories, registered attachments and
 this thread's history. Access is checked before each tool and again before delivery. Invalid tool
-input is returned to Claude for correction. Timeouts, refusals and truncated responses use the
-existing three-attempt queue recovery; failed routing never invents computation or bypasses
-approval. Terminal actions persist before dispatch and retry without another model call.
+input is returned to Claude for correction. Timeouts retry with saved context and backoff;
+truncated tool proposals are repaired before execution. Refusals and permanent provider errors
+receive an explanation. Failed routing never invents computation or bypasses approval. Terminal
+actions persist before dispatch and retry without another model call.
 Tool inputs can reuse the requester's earlier messages in the same project and thread. The
 controller checks original event receipts rather than treating assistant replies or memory
 paraphrases as user-supplied values. Destination validation runs inside the conversation loop
@@ -205,7 +213,7 @@ The local implementation was followed by the user-authorized deployment recorded
 
 ## Settings and use
 
-See `deploy/slack.env.example`. Defaults are 500 model turns, $5 per message and three concurrent
+See `deploy/slack.env.example`. Defaults are 500 model turns, a $5 model threshold and three concurrent
 standard jobs. Large and xlarge jobs in separate threads have no application-level concurrency
 cap; GCP quota and capacity still apply. Each conversation remains ordered, and per-request time,
 model and access controls still apply. Queued requests do not allocate a worker, so parallelism

@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     slack_app_token: SecretStr = Field(default=SecretStr(""), alias="SLACK_APP_TOKEN")
     model: str = "claude-opus-5-5"
     conversation_effort: Literal["low", "medium", "high"] = "medium"
+    flexible_harness: bool = False  # Rollout: new requests only; pinned on the receipt.
+    conversation_slice_seconds: int = Field(default=90, ge=30, le=600)
     conversation_max_calls: int = Field(default=6, ge=1, le=12)
     routing_repair_model: str = "claude-opus-5"  # Failure investigation assessments.
     loading_emoji: str = ":hourglass_flowing_sand:"  # AGENT_LOADING_EMOJI; custom emoji supported.

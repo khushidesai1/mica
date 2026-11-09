@@ -65,6 +65,7 @@ ENUMS = {
     "gpu_type": {"t4", "l4", "a100", "a100-80gb", "h100"},
     "provisioning": {"SPOT", "STANDARD"},
     "reply_handoff": set(HANDOFFS),
+    "routing_error_kind": {"timeout", "provider"},
 }
 
 
@@ -98,11 +99,13 @@ def evidence(
             value = record.get(field)
             if isinstance(value, str) and value in allowed:
                 state[field] = HANDOFF if field == "reply_handoff" else value
-        for field in ("attempt", "preemption_count", "resize_count", "max_run_seconds"):
+        for field in ("attempt", "preemption_count", "resize_count", "max_run_seconds",
+                      "routing_calls", "routing_failures", "routing_api_status"):
             value = record.get(field)
             if type(value) is int and 0 <= value <= 31_536_000:
                 state[field] = HANDOFF if field == "reply_handoff" else value
-        for field in ("worker_stopped", "cancel_requested"):
+        for field in ("worker_stopped", "cancel_requested", "flexible_harness",
+                      "worker_effort", "worker_spend"):
             if type(record.get(field)) is bool:
                 state[field] = record[field]
         packet["saved_request_state"] = state

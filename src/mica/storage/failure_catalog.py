@@ -21,6 +21,9 @@ CATALOG: dict[str, CauseInfo] = {
     "infra_platform_error": CauseInfo(
         "infrastructure", "Cloud Run reported a platform error.", "low"
     ),
+    "request_reported": CauseInfo(
+        "request", "The requester reported a problem; reporting does not stop the task.", "medium"
+    ),
     "routing_exhausted": CauseInfo(
         "routing", "Request routing exhausted its automatic retries.", "high"
     ),

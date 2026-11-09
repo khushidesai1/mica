@@ -69,6 +69,7 @@ def job_spec(
     duration: int | None = None,
     provisioning: Provisioning = "SPOT",
     gpu_type: str = "l4",
+    flexible_harness: bool = False,
 ) -> batch_v1.Job:
     import math
 
@@ -125,6 +126,7 @@ def job_spec(
         "AGENT_ACCESS_CACHE_SECONDS": str(settings.access_cache_seconds),
         "AGENT_ACCESS_UNAVAILABLE_GRACE_SECONDS": str(settings.access_unavailable_grace_seconds),
         "AGENT_MODEL": settings.model,
+        "AGENT_FLEXIBLE_HARNESS": str(flexible_harness).lower(),
         "AGENT_LOADING_EMOJI": settings.loading_emoji,
         "AGENT_FALLBACK_MODEL": settings.fallback_model,
         "AGENT_MAX_TURNS": str(settings.max_turns),
@@ -498,6 +500,7 @@ class BatchBridge:
                     "status": "pending",
                     "tick": 0,
                     "created": time.time(),
+                    "flexible_harness": self.settings.flexible_harness,
                     "write_control": surface_name == "slack"
                     and write_access.is_command(event.get("text", "")),
                 }
@@ -532,7 +535,7 @@ class BatchBridge:
 
     async def process(self, event_id: str, tick: int) -> str:
         mutex = f"claude-poll:{event_id}"
-        claim = await self.repository.begin_event(mutex, lease_seconds=240)
+        claim = await self.repository.begin_event(mutex, lease_seconds=960)
         if claim.status != "claimed":
             raise RuntimeError("Poll already in progress")
         key = f"claude-event:{event_id}"
@@ -541,6 +544,9 @@ class BatchBridge:
             if not record:
                 raise LookupError("Unknown Slack event")
             if record["status"] in {"complete", "failed"} or tick < record["tick"]:
+                from . import request_controls
+
+                await request_controls.sync(self, event_id, record)
                 if record["status"] == "failed" and (
                     record.get("stop_reason") or record.get("cancel_requested")
                 ):
@@ -568,12 +574,19 @@ class BatchBridge:
                     await self.repository.set_connector_state(key, record)
             if not record.get("notice_ts"):
                 await self.notify(event_id, record, "received", "Mica is working")
-            from . import commands, conversation
+            from . import commands, conversation, request_controls
 
             if record["status"] == "pending":
                 conversation.start(record)
             from .direct import RoutingUnavailable, finish
 
+            if record.get("flexible_harness"):
+                await request_controls.reconcile_cancel(self, event_id, record)
+                if record["status"] == "failed":
+                    await request_controls.sync(self, event_id, record)
+                    await self.record_terminal(event_id, record)
+                    await self.repository.set_connector_state(key, record)
+                    return "failed"
             previous = (
                 await self.repository.get_connector_state(f"claude-event:{record['previous']}")
                 if record.get("previous")
@@ -607,7 +620,7 @@ class BatchBridge:
                             await self.repository.set_connector_state(key, record)
                 except RoutingUnavailable:
                     record["routing_failures"] = int(record.get("routing_failures", 0)) + 1
-                    if record["routing_failures"] >= 3:
+                    if record["routing_failures"] >= 3 and not record.get("flexible_harness"):
                         record.update(status="failed", failure_cause="routing_exhausted")
                         await self.notify(
                             event_id,
@@ -624,6 +637,7 @@ class BatchBridge:
                             "I'm retrying a temporary routing issue. No need to resend.",
                         )
                     record["tick"] = tick + 1
+                    await request_controls.sync(self, event_id, record)
                     await self.repository.set_connector_state(key, record)
                     if record["status"] == "pending":
                         await self.schedule(event_id, tick + 1)
@@ -675,6 +689,11 @@ class BatchBridge:
             if record["status"] not in {"complete", "failed"}:
                 await self.schedule(event_id, tick + 1)
                 record["tick"] = tick + 1
+            if record.get("flexible_harness"):
+                try:
+                    await request_controls.sync(self, event_id, record)
+                except Exception:
+                    log.warning("request_checkin_pending event=%s", event_id)
             record.pop("identity_unavailable_since", None)
             await observability.report_runtime_failure(self, event_id, record)
             await self.cleanup_terminal(event_id, record)
@@ -818,6 +837,7 @@ class BatchBridge:
                 await self.notify(event_id, record, "denied", surface.EMAIL_READ_ONLY)
                 return
         if record["status"] == "pending" and record.get("route") != "compute":
+            from . import conversation_state, request_controls
             from .direct import RoutingUnavailable, handle
 
             if time.time() < record.get("routing_retry_at", 0):
@@ -825,14 +845,20 @@ class BatchBridge:
             try:
                 if await handle(self, event_id, record, GCSStorage(self.app.gcs_bucket)):
                     return
+            except conversation_state.YieldConversation:
+                record["routing_retry_at"] = 0
+                return
+            except conversation_state.CancelConversation:
+                await request_controls.reconcile_cancel(self, event_id, record)
+                return
             except RoutingUnavailable:
                 attempts = int(record.get("routing_failures", 0)) + 1
                 record["routing_failures"] = attempts
                 log.warning("routing_recovery event=%s attempt=%s", event_id, attempts)
-                if attempts < 3:
+                if attempts < 3 or record.get("flexible_harness"):
                     # The original receipt remains pending; normal polling survives restarts,
                     # deduplicates deliveries, and rechecks access before each routing attempt.
-                    record["routing_retry_at"] = time.time() + 30 * attempts
+                    record["routing_retry_at"] = time.time() + min(300, 30 * attempts)
                     await self.notify(
                         event_id,
                         record,
@@ -1207,6 +1233,14 @@ class BatchBridge:
                 await self.notify(event_id, record, "failed", str(exc))
                 return
             await self.repository.set_connector_state(f"claude-event:{event_id}", record)
+            if record.get("flexible_harness"):
+                from . import request_controls
+
+                if await request_controls.reconcile_cancel(self, event_id, record):
+                    # Do not create a worker after a cancel received during preparation.
+                    # A previously accepted submission is reconciled on the next poll.
+                    record.update(status="running", started=time.time())
+                    return
             try:
                 await asyncio.to_thread(
                     client.create_job,
@@ -1225,6 +1259,7 @@ class BatchBridge:
                         event_id,
                         set(record["mount_buckets"]) if "mount_buckets" in record else None,
                         gpu_type=selected_gpu_choice(record),
+                        flexible_harness=bool(record.get("flexible_harness")),
                         **(
                             {
                                 "tier": record["tier"],
@@ -1430,7 +1465,7 @@ class BatchBridge:
                 break
             if prior["status"] not in {"complete", "failed"}:
                 claim = await self.repository.begin_event(
-                    f"claude-poll:{cursor}", lease_seconds=240
+                    f"claude-poll:{cursor}", lease_seconds=960
                 )
                 if claim.status != "claimed":
                     waiting = True

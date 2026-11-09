@@ -16,7 +16,9 @@ async def enqueue(app: Settings, task_id: str, path: str, delay: int = 0) -> Non
     parent = f"projects/{app.gcp_project}/locations/{app.gcp_region}/queues/{app.cloud_tasks_queue}"
     task: dict[str, Any] = {
         "name": f"{parent}/tasks/{task_id}",
-        "dispatchDeadline": "180s",
+        "dispatchDeadline": (
+            "900s" if path.startswith("/api/v1/internal/slack-analysis/process/") else "180s"
+        ),
         "httpRequest": {
             "httpMethod": "POST",
             "url": f"{app.control_plane_url}{path}",

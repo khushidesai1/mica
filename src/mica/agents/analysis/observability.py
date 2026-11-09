@@ -56,6 +56,7 @@ Cause = Literal[
     "smoke_test",
     "request_blocked",
     "request_stalled",
+    "request_reported",
     "requests_failing",
 ]
 
@@ -242,8 +243,17 @@ async def report(
 
 
 def summarize(row: Incident, *, request_status: str = "unknown") -> str:
-    text = (PRIORITY_LABELS[priority(row, request_status)] + "\n"
+    title = ("Requester reported a problem" if row.observation.cause == "request_reported"
+             else PRIORITY_LABELS[priority(row, request_status)])
+    text = (title + "\n"
             + _summary(row, request_status=request_status))
+    if row.investigation and "request_reported" in (row.causes or [row.observation.cause]):
+        state = row.investigation.evidence.get("saved_request_state", {})
+        fields = ("status", "routing_calls", "routing_failures", "routing_error_kind",
+                  "routing_api_status", "attempt", "worker_effort", "worker_spend")
+        details = [f"{field}: {label(state[field], 40)}" for field in fields if field in state]
+        if details:
+            text += "\nSaved diagnostics: " + " · ".join(details)
     if row.observation.api_status:
         text += f"\nCloud API status: {row.observation.api_status}"
     assessment = failure_investigation.details(row)
