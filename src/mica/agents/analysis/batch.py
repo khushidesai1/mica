@@ -1097,11 +1097,16 @@ class BatchBridge:
             if "return_scripts" not in record:
                 from . import user_settings
 
-                record["return_scripts"] = await asyncio.to_thread(
-                    user_settings.effective,
-                    storage,
-                    record["principal"],
-                    self.settings.return_scripts_default,
+                configured = (record.get("ambient") or {}).get("return_scripts")
+                record["return_scripts"] = (
+                    configured
+                    if isinstance(configured, bool)
+                    else await asyncio.to_thread(
+                        user_settings.effective,
+                        storage,
+                        record["principal"],
+                        self.settings.return_scripts_default,
+                    )
                 )
                 await self.repository.set_connector_state(f"claude-event:{event_id}", record)
             memory_key = f"{PREFIX}/events/{event_id}/memory-snapshot.json"

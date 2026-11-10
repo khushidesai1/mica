@@ -234,9 +234,7 @@ async def test_blocked_start_notifies_once_and_recovers(background, problem):
 async def test_preset_and_seed_win_over_active_project_and_no_model(background):
     other = seed_project(background.store, name="other", channel="D2")
     assert other != background.pid
-    background.settings.ambient_tasks.append(
-        AmbientTask(**(definition(other) | {"id": "other"}))
-    )
+    background.settings.ambient_tasks.append(AmbientTask(**(definition(other) | {"id": "other"})))
     background.bucket_fake.add("sample")
     await scan(background)
     record = await event_record(background)
@@ -269,6 +267,21 @@ async def test_preset_and_seed_win_over_active_project_and_no_model(background):
     assert not access.worker_permitted(
         background.store, manifest, state, settings=background.settings
     )
+
+
+@pytest.mark.parametrize("configured,expected", [(None, True), (False, False), (True, True)])
+async def test_task_script_delivery_overrides_owner_default(background, configured, expected):
+    background.settings.return_scripts_default = True
+    background.settings.ambient_tasks[0].return_scripts = configured
+    background.bucket_fake.add("sample")
+    await scan(background)
+    record = await event_record(background)
+    assert record["ambient"]["return_scripts"] is configured
+    assert await background.process(record["event_id"], 0) == "running"
+    manifest = json.loads(
+        background.store.get(f"tasks/slack-analysis/events/{record['event_id']}/request.json")[0]
+    )
+    assert manifest.get("return_scripts", False) is expected
 
 
 @pytest.mark.parametrize(
@@ -386,8 +399,13 @@ async def test_real_broker_and_api_use_event_grant_and_never_overwrite(backgroun
     background.store.bucket.blob = source_factory
     with pytest.raises(ValueError, match="already includes results/sample/"):
         write_broker.upload(
-            background.store, background.settings, background.pid, event,
-            "results/sample/qc/report.pdf", grant.id, lambda: None,
+            background.store,
+            background.settings,
+            background.pid,
+            event,
+            "results/sample/qc/report.pdf",
+            grant.id,
+            lambda: None,
         )
     source_factory.assert_not_called()
     background.store.bucket.blob = lambda name: source
