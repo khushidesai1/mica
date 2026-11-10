@@ -68,6 +68,7 @@ def fixture(root):
         "transcripts": str(root / "tx.parquet"),
         "review": "Synthetic fixture. Nuclear signal and outlines align. Last tile is blank.",
         "output_dir": "outputs/qc",
+        "pdf_only": False,
     }
 
 
@@ -104,8 +105,8 @@ def test_report_outputs_flags_and_pdf_pages(tmp_path, monkeypatch, kind):
     assert len(summary["crops"]) == 6
     assert all(crop["cells"] >= 1 and crop["prior_cells"] >= 1 for crop in summary["crops"])
     with pdfium.PdfDocument("outputs/qc/report.pdf") as pdf:
-        assert len(pdf) == 8
-        text = "\n".join(page.get_textpage().get_text_range() for page in pdf)
+        assert len(pdf) >= 8
+        text = " ".join("\n".join(page.get_textpage().get_text_range() for page in pdf).split())
         assert "Matched stain and mask comparison" in text
         assert "Input prior" in text and "Final segmentation" in text
         assert "sampled transcripts (n)" in text
@@ -128,45 +129,33 @@ def test_crops_move_into_off_center_cells_instead_of_empty_fov_centers():
     assert box[2] < 4256 / 2 and box[3] < 4256 / 2
 
 
-def test_concise_report_is_one_pdf_with_checks_and_no_sidecars(tmp_path, monkeypatch):
+def test_pdf_only_keeps_all_panels_and_long_review_without_sidecars(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    request = fixture(tmp_path / "inputs") | {
-        "format": "concise",
-        "run_status": "completed",
-        "publication_status": "verified",
-        "outcome": "Segmentation finished and the data were saved; review the blank tile.",
-    }
+    request = fixture(tmp_path / "inputs")
+    request.pop("pdf_only")  # A single PDF is the default deliverable.
+    request["prior"] = {"path": str(tmp_path / "inputs/cells.parquet"), "units": "pixel"}
+    request["review"] = ("A region needs further scientific review. " * 120) + "FINAL REVIEW NOTE"
     summary = report.make_report(request)
     assert summary["cell_count"] == 6 and summary["assigned_pct"] == 50
-    assert sorted(p.name for p in Path(request["output_dir"]).iterdir()) == ["report.pdf"]
+    assert [p.name for p in Path(request["output_dir"]).iterdir()] == ["report.pdf"]
     with pdfium.PdfDocument(str(Path(request["output_dir"]) / "report.pdf")) as pdf:
-        assert len(pdf) == 1
-        text = pdf[0].get_textpage().get_text_range()
-        assert "Run: Completed" in text and "50.0%" in text
-        assert "zero image: 1" in text and "low assignment: 1" in text
-        assert "Last tile is blank" in text and "biological accuracy" in text
-        assert pdf[0].render(scale=0.5).to_numpy().std() > 5
+        assert len(pdf) > 8
+        text = "\n".join(page.get_textpage().get_text_range() for page in pdf)
+        assert "Matched stain and mask comparison" in text
+        assert "Input prior" in text and "Final segmentation" in text
+        assert "FINAL REVIEW NOTE" in " ".join(text.split()) and "QC thresholds" in text
+        assert "All-zero image tile" in text
+        assert "flags.json" not in text and "provenance.json" not in text
 
 
-@pytest.mark.parametrize(
-    "change",
-    [{"run_status": None}, {"publication_status": None}, {"review": ""}, {"review": "x" * 651}],
-)
-def test_concise_report_requires_observed_status_and_bounded_review(tmp_path, monkeypatch, change):
-    monkeypatch.chdir(tmp_path)
-    request = (
-        fixture(tmp_path / "inputs")
-        | {
-            "format": "concise",
-            "run_status": "completed",
-            "publication_status": "verified",
-            "outcome": "Completed with review findings.",
-        }
-        | change
-    )
-    with pytest.raises(ValueError, match="Concise reports require"):
-        report.make_report(request)
-    assert not Path(request["output_dir"]).exists()
+def test_pdf_notes_preserve_every_flag_and_affected_field():
+    flags = [{"text": f"Finding number {i}", "fov": str(i)} for i in range(100)]
+    flags.append({"text": "Sampling limitation", "fovs": ["field-A", "field-Z"]})
+    pages = report.notes_pages(flags, "The complete review.", {"request": {"method": {}}})
+    text = "\n".join(left + right for left, right in pages)
+    assert len(pages) > 1
+    assert all(f"Finding number {i}" in text for i in range(100))
+    assert "field-A" in text and "field-Z" in text
 
 
 def test_sparse_assignment_estimates_are_not_ranked_or_flagged_as_bad(tmp_path, monkeypatch):

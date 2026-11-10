@@ -22,7 +22,7 @@ to `[]`. Deploy it empty; enabling scientific processing is a separate operator 
     "return_scripts": false,
     "max_concurrent": 1,
     "max_starts_per_day": 4,
-    "task": "For {sample}, validate {markers}, follow {recipe}, publish segmentation data under {output}, and deliver one concise PDF. Do not publish report/QC bundles."
+    "task": "For {sample}, validate {markers}, follow {recipe}, publish under {output}, and deliver the segmentation report."
   }
 ]
 ```
@@ -110,25 +110,23 @@ text records and their authoritative JSON, compares exact file/size listings and
 reads TIFF headers without decoding pixels. Listing-only backfills fail. These checks do not
 reread all checksums or establish that a scientifically meaningful result is possible.
 
-The `segmentation-report` skill produces eight PDF pages, paired crop PNGs, flags, provenance and a
-schema-v1 summary for polygon or label segmentations. It requires verified scale, channels and
+The `segmentation-report` skill produces one self-contained PDF for polygon or label
+segmentations. The summary, comparison panels, flags, complete review and method details stay
+in that PDF, with no page cap. Its default `pdf_only: true` emits no JSON or PNG sidecars. It requires verified scale, channels and
 coordinate alignment. Image reads use a low-resolution overview and full-resolution crop
 windows; labels and transcript sampling are streamed. The worker views crops, adds visual-review
-notes, and publishes the summary next to the result for subsequent cohort comparisons.
+notes, and delivers the report directly to the configured recipients.
 Report version 2 anchors crops to actual cells and shows identical stain pixels alongside
 prior/final mask overlays, with channel legends and calibrated scale bars. Per-FOV assignment
 ranking requires a disclosed minimum of 100 sampled transcripts; unsupported fields remain
 visible as sampling limitations. Same-sample count/area comparisons are separated from cohort
 context, and missing cohort transcript data is not plotted as a comparison. Background-only
 crops or invisible masks must be corrected before delivery.
-Ambient tasks should request `format: "concise"` for a single-page PDF with the observed run
-status, verified publication status, key metrics, automatic flags and review/next steps. This
-mode emits only the PDF; it retains the same input and statistical checks. Review images stay
-private. Publish scientific result data separately; report PDFs, JSON sidecars and QC folders
-are not written to the project bucket unless explicitly requested. Keep only the final PDF in
-the attachment folder. `return_scripts: false` on a task suppresses automatic script ZIPs for
-that task, without changing its owner's preference for ordinary conversations. Omit the field
-to inherit the owner's preference. Already-started tasks retain their saved setting. Before final delivery, the worker validates its thread-memory JSON and lets
+Keep only the final PDF in the attachment folder. Publish scientific data separately; report
+PDFs, QC bundles and review intermediates do not go to the project bucket unless explicitly
+requested. `return_scripts: false` on a task suppresses automatic script ZIPs without changing
+the owner's preference for ordinary conversations. Omit it to inherit that preference.
+Already-started tasks retain their saved setting. Before final delivery, the worker validates its thread-memory JSON and lets
 the same bounded model turn correct malformed prose; identity and coverage remain application-owned.
 
 ## Release and smoke checks

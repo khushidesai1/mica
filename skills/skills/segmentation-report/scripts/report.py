@@ -8,7 +8,6 @@ import json
 import math
 import textwrap
 import xml.etree.ElementTree as ET
-from collections import Counter
 from pathlib import Path
 
 import matplotlib
@@ -381,11 +380,6 @@ def area_summary(areas, thresholds):
 
 
 def make_report(request):
-    report_format = request.get("format", "detailed")
-    if report_format not in {"concise", "detailed"}:
-        raise ValueError("Report format must be concise or detailed")
-    if report_format == "concise":
-        validate_concise(request)
     scale = float(request["um_per_px"])
     if not math.isfinite(scale) or scale <= 0:
         raise ValueError("um_per_px must be a positive finite value from metadata")
@@ -395,8 +389,8 @@ def make_report(request):
     if not output.is_relative_to(Path("outputs").resolve()) or output == Path("outputs").resolve():
         raise ValueError("Use a new folder under outputs/")
     output.mkdir(parents=True, exist_ok=False)
-    figures = output / "figures"
-    if report_format == "detailed":
+    figures = None if request.get("pdf_only", True) else output / "figures"
+    if figures is not None:
         figures.mkdir()
     thresholds = {**DEFAULTS, **request.get("thresholds", {})}
     if set(thresholds) != set(DEFAULTS) or not all(
@@ -616,9 +610,6 @@ def make_report(request):
                         "can explain this.",
                     )
         summary["flag_count"] = len(flags)
-        if report_format == "concise":
-            render_concise(output / "report.pdf", summary, flags, request)
-            return summary
         provenance = {
             "schema_version": 1,
             "report_version": 2,
@@ -668,11 +659,15 @@ def make_report(request):
             str(request.get("review", "Not yet visually reviewed.")),
             provenance,
         )
-        for name, value in [
-            ("segmentation_summary.json", summary),
-            ("flags.json", flags),
-            ("provenance.json", provenance),
-        ]:
+        for name, value in (
+            []
+            if request.get("pdf_only", True)
+            else [
+                ("segmentation_summary.json", summary),
+                ("flags.json", flags),
+                ("provenance.json", provenance),
+            ]
+        ):
             (output / name).write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
         return summary
     finally:
@@ -681,95 +676,6 @@ def make_report(request):
             cells.labels.close()
         if prior and prior.labels:
             prior.labels.close()
-
-
-def validate_concise(request):
-    if request.get("run_status") not in {"completed", "failed", "incomplete"}:
-        raise ValueError("Concise reports require an observed run_status")
-    if request.get("publication_status") not in {"verified", "failed", "not attempted"}:
-        raise ValueError("Concise reports require an observed publication_status")
-    for name, limit in [("review", 650), ("outcome", 220)]:
-        value = request.get(name)
-        if not isinstance(value, str) or not value.strip() or len(value) > limit:
-            raise ValueError(f"Concise reports require {name} of 1-{limit} characters")
-
-
-def render_concise(path, summary, flags, request):
-    """One self-contained PDF; no JSON, image, script or directory deliverables."""
-    validate_concise(request)
-    fig = plt.figure(figsize=(8.5, 11), facecolor="white")
-    try:
-
-        def text(x, y, value, size=11, **kwargs):
-            return fig.text(x, y, value, fontsize=size, fontfamily="DejaVu Sans", **kwargs)
-
-        text(0.08, 0.94, "Segmentation summary", 22, weight="bold", color="#193b39")
-        text(0.08, 0.905, "\n".join(textwrap.wrap(str(summary["sample"]), 65)), 14, va="top")
-        text(0.08, 0.85, "Run: " + request["run_status"].capitalize(), 15, weight="bold")
-        text(
-            0.08,
-            0.815,
-            "\n".join(textwrap.wrap(request["outcome"], 90)),
-            10,
-            va="top",
-            linespacing=1.45,
-        )
-
-        prior = summary.get("prior")
-        assigned = summary.get("assigned_pct")
-        rows = [
-            ("Method", textwrap.shorten(summary["method"]["name"], width=38, placeholder="...")),
-            ("Final cells", f"{summary['cell_count']:,}"),
-            ("Prior cells", f"{prior['cell_count']:,}" if prior else "Not supplied"),
-            (
-                "Transcript assignment (estimate)",
-                f"{assigned:.1f}%" if assigned is not None else "Unavailable",
-            ),
-            (
-                "Transcripts sampled / observed",
-                f"{summary['transcripts_sampled']:,} / {summary['transcripts_observed']:,}",
-            ),
-            ("Segmentation data saved", request["publication_status"].capitalize()),
-        ]
-        ax = fig.add_axes([0.08, 0.53, 0.84, 0.23])
-        ax.axis("off")
-        table = ax.table(cellText=rows, colWidths=[0.57, 0.43], loc="center", cellLoc="left")
-        table.auto_set_font_size(False)
-        table.set_fontsize(10)
-        table.scale(1, 1.7)
-        for (_r, c), cell in table.get_celld().items():
-            cell.set_edgecolor("white")
-            cell.set_facecolor("#e5eeea" if c == 0 else "#f1f4ef")
-
-        text(0.08, 0.49, "Checks and limitations", 13, weight="bold")
-        counts = Counter(flag["code"].replace("_", " ") for flag in flags)
-        warning = "; ".join(f"{name}: {count}" for name, count in sorted(counts.items()))
-        warning = f"{len(flags)} automatic flags. " + warning if flags else "No automatic flags."
-        lines = textwrap.wrap(warning, 100)
-        if len(lines) > 7:
-            raise ValueError("Too many flag categories for a concise page; summarize for review")
-        text(0.08, 0.455, "\n".join(lines), 9, va="top", linespacing=1.4)
-        text(0.08, 0.33, "Review and next step", 13, weight="bold")
-        text(
-            0.08,
-            0.295,
-            "\n".join(textwrap.wrap(request["review"], 95)),
-            10,
-            va="top",
-            linespacing=1.45,
-        )
-        text(
-            0.08,
-            0.09,
-            "Completion and assignment rates do not establish biological accuracy.",
-            9,
-            color="#526360",
-        )
-        text(0.08, 0.055, "Mica | Segmentation summary", 9, color="#526360")
-        text(0.92, 0.055, "1 / 1", 9, ha="right", color="#526360")
-        fig.savefig(path, format="pdf")
-    finally:
-        plt.close(fig)
 
 
 def render(
@@ -804,11 +710,12 @@ def render(
                 title, x=0.06, y=0.96, ha="left", fontsize=19, fontweight="bold", color="#193b39"
             )
             fig.text(0.06, 0.025, f"Mica · {summary['sample']} · Segmentation QC", color="#526360")
-            fig.text(0.94, 0.025, f"{number} / 8", ha="right", color="#526360")
+            fig.text(0.94, 0.025, str(number), ha="right", color="#526360")
             return fig
 
         def save(fig, name):
-            fig.savefig(figures / (name + ".png"), dpi=120)
+            if figures is not None:
+                fig.savefig(figures / (name + ".png"), dpi=120)
             pdf.savefig(fig)
             plt.close(fig)
 
@@ -843,7 +750,7 @@ def render(
         for (_r, c), cell in table.get_celld().items():
             cell.set_edgecolor("white")
             cell.set_facecolor("#e5eeea" if c == 0 else "#f1f4ef")
-        details = "Parameters: " + json.dumps(method.get("parameters", {}), sort_keys=True)
+        details = "Full method parameters and reproducibility details follow the visual review."
         details += "\nReport code: " + provenance["script_sha256"][:16]
         details += "\n" + provenance["transcript_sampling"]
         details += (
@@ -856,7 +763,7 @@ def render(
         fig.text(
             0.06,
             0.27,
-            "\n".join(textwrap.fill(line, 120) for line in details.splitlines())[:1800],
+            "\n".join(textwrap.fill(line, 120) for line in details.splitlines()),
             va="top",
             fontsize=9,
         )
@@ -982,13 +889,16 @@ def render(
                     va="top",
                     fontsize=8.5,
                 )
-                crop_fig, crop_axes = plt.subplots(1, 3, figsize=(12, 4.4))
-                crop_fig.subplots_adjust(left=0.025, right=0.98, top=0.78, bottom=0.12, wspace=0.06)
-                crop_fig.suptitle(crop_caption(index, crop), fontsize=10, y=0.97)
-                draw_triptych(crop_axes, crop, rgb)
-                crop_fig.text(0.04, 0.035, legend, fontsize=8)
-                crop_fig.savefig(figures / f"crop-{index + 1}.png", dpi=170)
-                plt.close(crop_fig)
+                if figures is not None:
+                    crop_fig, crop_axes = plt.subplots(1, 3, figsize=(12, 4.4))
+                    crop_fig.subplots_adjust(
+                        left=0.025, right=0.98, top=0.78, bottom=0.12, wspace=0.06
+                    )
+                    crop_fig.suptitle(crop_caption(index, crop), fontsize=10, y=0.97)
+                    draw_triptych(crop_axes, crop, rgb)
+                    crop_fig.text(0.04, 0.035, legend, fontsize=8)
+                    crop_fig.savefig(figures / f"crop-{index + 1}.png", dpi=170)
+                    plt.close(crop_fig)
             fig.text(0.06, 0.075, legend, fontsize=8)
             fig.text(
                 0.06,
@@ -1113,28 +1023,55 @@ def render(
             fontsize=8,
         )
         save(fig, "07-fov-qc")
-        fig = page("Flags, limitations and visual review", 8)
-        lines = [f"{len(flags)} flags / limitations; full details in flags.json.", ""]
-        shown = 0
-        for flag in flags:
-            wrapped = textwrap.wrap(f"• {flag.get('fov', 'Sample')}: {flag['text']}", 57)
-            if len(lines) + len(wrapped) > 31:
-                break
-            lines.extend(wrapped)
-            lines.append("")
-            shown += 1
-        if shown < len(flags):
-            lines.append(f"{len(flags) - shown} additional flags in flags.json.")
-        fig.text(0.06, 0.87, "\n".join(lines), va="top", fontsize=9, linespacing=1.35)
-        review_lines = textwrap.wrap(review, 57)
-        if len(review_lines) > 32:
-            review_lines = review_lines[:30] + [
-                "Full visual-review notes are preserved in",
-                "provenance.json.",
-            ]
-        fig.text(0.55, 0.87, "Visual review", va="top", fontsize=12, fontweight="bold")
-        fig.text(0.55, 0.82, "\n".join(review_lines), va="top", fontsize=9, linespacing=1.35)
-        save(fig, "08-flags")
+        for offset, (left, right) in enumerate(notes_pages(flags, review, provenance)):
+            number = 8 + offset
+            fig = page("Flags, limitations and visual review", number)
+            fig.text(0.06, 0.87, "Flags and limitations", va="top", fontsize=12, fontweight="bold")
+            fig.text(0.06, 0.82, left, va="top", fontsize=9, linespacing=1.35)
+            fig.text(
+                0.55, 0.87, "Review and reproducibility", va="top", fontsize=12, fontweight="bold"
+            )
+            fig.text(0.55, 0.82, right, va="top", fontsize=9, linespacing=1.35)
+            save(fig, f"{number:02}-flags")
+
+
+def notes_pages(flags, review, provenance):
+    """Paginate every finding and review note inside the PDF, without sidecar references."""
+
+    def wrapped(value):
+        return [
+            line
+            for paragraph in value.splitlines()
+            for line in (textwrap.wrap(paragraph, 57) or [""])
+        ]
+
+    left = [f"{len(flags)} automatic flags / limitations.", ""]
+    for flag in flags:
+        left.extend(wrapped(f"{flag.get('fov', 'Sample')}: {flag['text']}"))
+        if flag.get("fovs"):
+            left.extend(wrapped("Affected FOVs: " + ", ".join(map(str, flag["fovs"]))))
+        left.append("")
+    right = wrapped(review) + ["", "Reproducibility"]
+    for label, value in [
+        ("Method parameters", provenance["request"]["method"].get("parameters", {})),
+        ("QC thresholds", provenance.get("thresholds", {})),
+        ("Sampling", provenance.get("transcript_sampling", "Unavailable")),
+        ("Coordinates", provenance.get("coordinates", "Unavailable")),
+        ("Code SHA-256", provenance.get("script_sha256", "Unavailable")),
+    ]:
+        right.extend(
+            wrapped(
+                label
+                + ": "
+                + (json.dumps(value, sort_keys=True) if isinstance(value, dict) else str(value))
+            )
+        )
+        right.append("")
+    size = 35
+    return [
+        ("\n".join(left[i : i + size]), "\n".join(right[i : i + size]))
+        for i in range(0, max(len(left), len(right)), size)
+    ]
 
 
 def main():

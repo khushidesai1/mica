@@ -3,10 +3,10 @@ name: segmentation-report
 description: Generate and visually review a standard PDF QC report after whole-sample or multi-FOV segmentation, including Cellpose, Cellpose-SAM and Proseg; compare prior masks and cohort summaries when available.
 ---
 
-Follow the requested report format. For ambient segmentation, deliver one concise PDF unless
-the task explicitly requests a detailed review. Report delivery and project-bucket publication
-are separate choices: a write grant does not authorize adding an unwanted QC bundle.
-Use actual result statistics, never copied or hard-coded statistics from a previous batch. Copy
+Deliver this report as one self-contained PDF, using as many pages as its contents require.
+Preserve the summary, stain/mask comparisons, metrics, every QC flag, review and limitations.
+"One PDF" does not mean one page or permission to omit scientific content. Use actual result
+statistics, never copied or hard-coded statistics from a previous batch. Copy
 `scripts/report.py` into `code/` and run it with `/opt/sap/bin/python` in Bash:
 
 ```bash
@@ -28,26 +28,6 @@ Required JSON fields:
   Never label fluorescence as H&E/brightfield or fabricate a stain that was not acquired.
   NGFF/OME channel names and order are checked against image metadata when available.
 - `output_dir`: a **new** folder under `outputs/` (for example `outputs/segmentation-qc-v1`).
-
-For a concise report, add `format: "concise"`, `run_status` (`completed`, `failed`, or
-`incomplete`), `publication_status` (`verified`, `failed`, or `not attempted`), an `outcome`
-of at most 220 characters, and concrete `review` findings/next steps of at most 650 characters.
-The statuses must come from observed run and publication checks. This writes **only one
-single-page `report.pdf`**, with actual metrics, automatic-flag counts and the review. It does
-not write JSON summaries, flags, provenance, page images or crop folders. Existing input,
-scale, coordinate and statistical checks still run. Review representative aligned stain/mask
-crops privately before reporting success; concise output does not waive scientific checks.
-If processing failed before valid report inputs exist, create a short failure PDF with the
-observed failure and next step; leave unavailable metrics unavailable. Never fabricate inputs
-to make this generator succeed. Render and inspect the final PDF for legibility.
-
-Keep exactly this final PDF in `outputs/report-delivery/` for Slack/email. Do not attach JSON,
-scripts, archives, or review PNGs. Do not stage the PDF or any QC bundle under `outputs/gcs/`
-unless report storage was explicitly requested. Temporary visual checks belong in the private
-workspace. A successful data publication and a generated PDF do not prove delivery.
-
-The following detailed-report workflow applies only when that format is requested. Set
-`format: "detailed"` (the script's compatibility default) to produce its review bundle.
 
 All coordinates must use the same image frame: origin at the upper left, x right and y down.
 The image is a single 2D plane. Label shape must match it. Polygon coordinates in µm are
@@ -80,9 +60,13 @@ Optional inputs:
   ranking/low-assignment flags. Lower-support FOVs remain visible as a sampling limitation.
 - `review`: visual findings and limitations as a string.
 
-The script writes an eight-page `report.pdf`, schema-v1 `segmentation_summary.json` with
-`report_version: 2`, `flags.json`, `provenance.json`, eight page PNGs and six matched-region
-comparison PNGs under `figures/`. Each comparison shows identical stain pixels/contrast,
+The script writes **only `report.pdf` by default** (`pdf_only: true`). It preserves the seven
+summary/comparison pages and adds as many findings/review pages as needed. Complete flags,
+affected fields, review notes and method/threshold details are inside the PDF, never truncated
+with a reference to a JSON sidecar. It does not generate separate JSON or PNG deliverables.
+For explicitly requested private machine-readable diagnostics, `pdf_only: false` additionally
+writes a schema-v1 summary, flags, provenance and page/crop PNGs; these are not routine delivery.
+Each of the six matched-region comparisons in the PDF shows identical stain pixels/contrast,
 the input-prior outlines and the final-mask outlines, with channel/color legends, calibrated
 scale bars and region/FOV identifiers. Six cell-containing regions are selected from supported
 higher/lower assignment FOVs and seeded FOVs; crops are anchored to cells instead of empty
@@ -91,7 +75,7 @@ It reads a low-resolution image overview and full-resolution crop windows; label
 stream in 512-pixel tiles. It does not materialize a whole-slide image or all transcripts.
 Large TIFFs should be tiled or pyramidal; a strip-based TIFF may require expensive strip reads.
 
-View **all eight pages and all six paired crop PNGs**, checking that the stains and both mask
+Render and view **all PDF pages and all six embedded paired crops**, checking that stains and both mask
 sets are actually visible and spatially aligned, along with merging/splitting, stain coverage
 and missing tiles. Empty background or invisible outlines do not satisfy visual review:
 correct crop selection/alignment and regenerate before delivery. Do not merely note that five
@@ -107,13 +91,13 @@ differences may reflect tissue amount/composition. Do not present a lone new-sam
 a cohort transcript comparison, rank a few sampled transcripts as best/worst segmentation,
 or claim that high transcript assignment alone validates the masks.
 
-Only if explicitly requested, publish the detailed bundle next to the segmentation results
-(e.g. the authorized output's `qc/` folder) for later cohort use. After viewing the crops,
-copy only the final `report.pdf` to `outputs/report-delivery/`. Move the complete QC folders
-(including draft reports and figure PNGs) into `checkpoints/` before finishing the turn. Mica
-attaches every remaining file under `outputs/`; the PDF already contains the review figures,
-so do not send intermediate PNGs or JSON as separate Slack attachments. If using `send_outputs`, register
-only `outputs/report-delivery/` after organizing these files, never a draft or full QC folder.
+After review, keep only the final PDF in `outputs/report-delivery/`. Move any temporary
+renderings and diagnostics out of `outputs/`; Mica attaches every remaining file there.
+Do not attach JSON, CSV, PNG or ZIP sidecars. If using `send_outputs`, register only the final
+PDF. Publish scientific data separately: do not copy report PDFs, QC bundles, report scripts
+or review intermediates into `outputs/gcs/` unless report storage was explicitly requested.
+A data write grant does not require report publication. A report must be complete and useful
+without opening any sidecar or visiting a project-bucket folder.
 
 Deliver the final PDF and concise findings;
 include missing inputs, flagged FOVs and any open scientific choices. Do not claim success when

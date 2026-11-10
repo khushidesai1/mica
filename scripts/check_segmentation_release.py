@@ -113,6 +113,7 @@ def main():
                     "nuclear_channel": "DNA",
                 },
                 "output_dir": "outputs/qc",
+                "pdf_only": False,
             }
         )
         assert result["cell_count"] == 1 and result["area_um2"]["median"] == 36
@@ -120,27 +121,16 @@ def main():
         assert all(c["cells"] == c["prior_cells"] == 1 for c in result["crops"])
         assert (root / "outputs/qc/report.pdf").read_bytes().startswith(b"%PDF")
         assert len(list((root / "outputs/qc/figures").glob("crop-*.png"))) == 6
-        assert len(list((root / "outputs/qc/figures").glob("[0-9][0-9]-*.png"))) == 8
+        assert len(list((root / "outputs/qc/figures").glob("[0-9][0-9]-*.png"))) >= 8
         crop = np.asarray(
             Image.open(root / "outputs/qc/figures/crop-1.png").convert("RGB"), dtype=float
         )
         for color in [[57, 217, 255], [255, 209, 102]]:
             assert np.sum(np.max(np.abs(crop - color), axis=2) < 5) > 10
-        concise = root / "outputs/concise"
-        concise.mkdir()
-        report.render_concise(
-            concise / "report.pdf",
-            result,
-            [],
-            {
-                "run_status": "completed",
-                "publication_status": "verified",
-                "outcome": "Synthetic segmentation completed and publication was verified.",
-                "review": "Synthetic fixture only; no biological quality claim.",
-            },
-        )
-        assert [p.name for p in concise.iterdir()] == ["report.pdf"]
-        assert (concise / "report.pdf").read_bytes().startswith(b"%PDF")
+        request = json.loads((root / "outputs/qc/provenance.json").read_text())["request"]
+        request.update(output_dir="outputs/pdf-only", pdf_only=True)
+        report.make_report(request)
+        assert [p.name for p in (root / "outputs/pdf-only").iterdir()] == ["report.pdf"]
     print("SEGMENTATION_REPORT_AND_COMPLETENESS_VERIFIED")
 
 
