@@ -3,7 +3,7 @@
 # ruff: noqa: F811
 import asyncio
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
@@ -52,7 +52,7 @@ async def test_failure_logs_type_only_and_retries(chat, monkeypatch, caplog):
     assert editor.await_count == 2
 
 
-async def test_editor_has_time_for_45_second_response(chat, monkeypatch):
+async def test_editor_has_time_for_large_response(chat, monkeypatch):
     chat.settings.memory_auto_edit = True
     monkeypatch.setattr(job_lifecycle, "enqueue", AsyncMock())
     timeout = asyncio.timeout
@@ -63,8 +63,8 @@ async def test_editor_has_time_for_45_second_response(chat, monkeypatch):
         return timeout(seconds)
 
     async def slow_model(*args):
-        # Simulate elapsed model time without adding 45 s to the offline suite.
-        assert budgets[-1] > 45
+        # The full-file writer can spend 240 seconds generating a large proposal.
+        assert budgets[-1] > 240
         await asyncio.sleep(0)
         return compact_edit()
 
@@ -73,7 +73,7 @@ async def test_editor_has_time_for_45_second_response(chat, monkeypatch):
     event = await chat.accept(payload(text="Explain this result"))
     await chat.process(event, 0)
     await memory_tasks.process(chat, event, chat.store)
-    assert 150 in budgets
+    assert 270 in budgets
 
 
 async def test_worker_slot_released_before_memory_enqueue(bridge, monkeypatch):
@@ -135,7 +135,26 @@ async def test_editor_budget_leaves_time_for_commit_and_verification(monkeypatch
 
     monkeypatch.setattr(memory_tasks.httpx, "AsyncClient", client)
     await memory_tasks.edit("test", "model", {})
-    assert budgets == [120]  # Within the 150-second process and 180-second dispatch.
+    assert budgets == [240]  # Within the 270-second process and 300-second dispatch.
+
+
+@pytest.mark.parametrize("route,deadline", [
+    ("memory", "300s"), ("process", "900s"), ("session-import", "180s"),
+])
+async def test_queue_deadline_covers_memory_writer_without_changing_other_tasks(
+    settings, monkeypatch, route, deadline
+):
+    session = MagicMock()
+    session.__enter__.return_value = session
+    session.post.return_value.status_code = 200
+    monkeypatch.setattr(job_lifecycle, "default", lambda **kwargs: (object(), None))
+    monkeypatch.setattr(job_lifecycle, "AuthorizedSession", lambda credentials: session)
+    path = f"/api/v1/internal/slack-analysis/{route}/" + "a" * 32
+    await job_lifecycle.enqueue(settings, "memory-test", path)
+    task = session.post.call_args.kwargs["json"]["task"]
+    assert task["dispatchDeadline"] == deadline
+    assert task["httpRequest"]["url"] == settings.control_plane_url + path
+    assert task["httpRequest"]["oidcToken"]["audience"] == settings.control_plane_url
 
 
 async def test_rejected_save_stays_pending_and_maintenance_redrives(chat, monkeypatch):

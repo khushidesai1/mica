@@ -14,11 +14,14 @@ from mica.config import Settings
 
 async def enqueue(app: Settings, task_id: str, path: str, delay: int = 0) -> None:
     parent = f"projects/{app.gcp_project}/locations/{app.gcp_region}/queues/{app.cloud_tasks_queue}"
+    deadline = "180s"
+    if path.startswith("/api/v1/internal/slack-analysis/process/"):
+        deadline = "900s"
+    elif path.startswith("/api/v1/internal/slack-analysis/memory/"):
+        deadline = "300s"
     task: dict[str, Any] = {
         "name": f"{parent}/tasks/{task_id}",
-        "dispatchDeadline": (
-            "900s" if path.startswith("/api/v1/internal/slack-analysis/process/") else "180s"
-        ),
+        "dispatchDeadline": deadline,
         "httpRequest": {
             "httpMethod": "POST",
             "url": f"{app.control_plane_url}{path}",
