@@ -118,42 +118,19 @@ discards the stale assessment and retains the original diagnostics. Resolved inc
 investigated. Turning the setting off stops further model calls. Existing historical cards are
 enriched only when they next become due; deployment does not repost old incidents.
 
-## Completed replies that still could not do the work
+## Conversation outcome review is disabled
 
-`AGENT_OUTCOME_REVIEW_ENABLED` defaults to true. After a conversation turn finishes, the API
-queues a bounded review of the saved request (4,000 characters), planned worker task (4,000),
-and final reply (12,000), using the existing Anthropic credential and
-`AGENT_ROUTING_REPAIR_MODEL`. Unlike the diagnostic assessment above, this classifier reads
-conversation content. Its output is strictly validated enums: completed, partial, not completed,
-clarification, policy denied, in progress or unknown, plus at most three blocker categories.
-Only positive evidence of blocked requested work can produce a semantic failure; an absent result,
-queued work or missing context does not establish failure. No input text crosses into
-the incident index, cards or diagnostic assessment. Ordinary questions, valid permission denials,
-clarifications, in-progress/unknown outcomes and cancelled turns do not produce a failure card.
-Current and legacy transfer handoffs bypass this classifier: the transfer controller reports actual
-inventory, authentication, transfer and delivery errors. A completed access-request/approval handoff
-also bypasses it, even in older receipts whose reply scope was account-level. A transfer setup failure
-before handoff remains eligible. These checks also discard queued or cached classifications when the
-receipt is no longer eligible. Reviews use saved final replies, never a stale progress notice; legacy
-notices are accepted only when their phase explicitly identifies a terminal complete/failed response.
+Mica does not judge each conversational reply against the user's requested scope by default.
+Whether a clarification, alternative, or partial answer is appropriate depends on the conversation
+and belongs in case-by-case review. `AGENT_OUTCOME_REVIEW_ENABLED=false` disables both new
+post-turn classifications and processing of already queued or cached classifications. The active
+service uses this setting; keep it disabled in deployment inputs.
 
-Partial or uncompleted work records `request_blocked` (Medium), with the primary blocker as the
-card category: hardware, software environment, data/repository access, output delivery, time,
-capability, internal error or other. An explanation or CPU substitute does not by itself complete
-a requested GPU action. Each request still has one incident. A failed request with a recorded
-processing failure skips this extra call. A completed conversation turn or a request with only
-background/delivery incidents is still reviewed: neither a recovered control API call nor a memory
-editor error establishes whether the requested work was completed. New blockers join the existing
-incident; an already recorded task blocker is never classified again. Cards describe blocked work
-as incomplete even when the conversation turn itself completed.
-
-Maintenance processes at most three due reviews per cycle. Each call is bounded to eight seconds
-and 250 output tokens; invalid output or timeout retries once in a later cycle, then remains
-unavailable without inventing an incident. Attempt reservations and cached enum results survive
-process interruption and incident-write retries. Reviews never delay the user's reply, retry work,
-change permissions, allocate a worker, or read project files. Existing historical turns are not
-backfilled automatically. Classification is based on the saved text, not independent verification
-of a scientific result or delivered attachment, and may miss context in short follow-ups.
+Operational failures, stalled requests, memory/storage errors, delivery failures, and explicit
+**Report a problem** reports still reach the failures channel. The diagnostic Claude assessment
+of an actual recorded incident remains enabled. Previously posted outcome alerts remain historical
+records; disabling the classifier neither deletes them nor marks the underlying work recovered.
+The legacy classifier is retained behind an explicit opt-in for compatibility.
 
 ## Stalls and wider failures
 

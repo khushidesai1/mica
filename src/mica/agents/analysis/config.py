@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     amendments: bool = False
     backchannel: bool = True  # New conversation/worker launches; old attempts stay unchanged.
     failure_channel: str = Field(default="", pattern=r"^(?:[CG][A-Z0-9]+)?$")
-    outcome_review_enabled: bool = True  # Post-turn enum-only completion checks.
+    outcome_review_enabled: bool = False  # Legacy opt-in; conversation fit is case by case.
     failure_investigation_enabled: bool = True  # Bounded read-only Claude assessments.
     failure_operator_ids: str = ""  # Explicit team:user IDs allowed to resolve incident alerts.
     reference_github_org: Literal["azizilab"] = "azizilab"
