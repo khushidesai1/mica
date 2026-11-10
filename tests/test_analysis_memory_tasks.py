@@ -107,7 +107,7 @@ async def test_worker_slot_released_before_memory_enqueue(bridge, monkeypatch):
     queued.assert_awaited_once()
 
 
-async def test_http_timeout_is_90_seconds(monkeypatch):
+async def test_editor_budget_leaves_time_for_commit_and_verification(monkeypatch):
     import json
 
     budgets = []
@@ -117,7 +117,7 @@ async def test_http_timeout_is_90_seconds(monkeypatch):
         budgets.append(kwargs["timeout"])
 
         def respond(request):
-            assert json.loads(request.content)["max_tokens"] == 8192
+            assert json.loads(request.content)["max_tokens"] == 16384
             return httpx.Response(
                 200,
                 json={
@@ -135,7 +135,7 @@ async def test_http_timeout_is_90_seconds(monkeypatch):
 
     monkeypatch.setattr(memory_tasks.httpx, "AsyncClient", client)
     await memory_tasks.edit("test", "model", {})
-    assert budgets == [90]
+    assert budgets == [120]  # Within the 150-second process and 180-second dispatch.
 
 
 async def test_rejected_save_stays_pending_and_maintenance_redrives(chat, monkeypatch):

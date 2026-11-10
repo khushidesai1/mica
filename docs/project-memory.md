@@ -83,6 +83,10 @@ for the guide. Correct mistakes in plain language. The old `remember`, `forget`,
 `save brief`, and `clean brief` commands explain this change without editing memory.
 Memory saves run silently; use `memory` or `brief` when you want to inspect saved content.
 
+The conversational editor allows up to 16,384 output tokens and 120 seconds for full-file
+replacements plus thread prose. Token-truncated output is rejected as `output_limit`, retaining
+the original pending turn for retry; it is never committed or marked saved.
+
 The conversational editor has its own `AGENT_MEMORY_EDITOR_CHARS=32000` file budget,
 separate from router context. It reserves room for the complete `open.md` before optional
 files. Failed turns receive only that pending-work file. Existing files may be replaced

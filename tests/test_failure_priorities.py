@@ -169,14 +169,14 @@ async def test_stall_sweep_ignores_old_terminal_and_approval_records(repository,
 async def test_ticks_refresh_stamps_and_preserve_request_fields(repository, settings, monkeypatch):
     monkeypatch.setattr(failure_monitor.time, "time", lambda: 1000)
     await repository.set_connector_state("claude-event:a", record(status="running", job="real-job"))
-    await failure_monitor.tick(repository, settings, Settings(), "a")
+    await failure_monitor.tick(repository, settings, Settings(outcome_review_enabled=True), "a")
     row = await repository.get_connector_state("claude-event:a")
     assert row["stall_check_at"] == 1900 and row["job"] == "real-job"
     monkeypatch.setattr(failure_monitor.time, "time", lambda: 1200)
-    await failure_monitor.tick(repository, settings, Settings(), "a")
+    await failure_monitor.tick(repository, settings, Settings(outcome_review_enabled=True), "a")
     assert (await repository.get_connector_state("claude-event:a"))["stall_check_at"] == 2100
     await repository.patch_connector_state("claude-event:a", {"status": "complete"})
-    await failure_monitor.tick(repository, settings, Settings(), "a")
+    await failure_monitor.tick(repository, settings, Settings(outcome_review_enabled=True), "a")
     row = await repository.get_connector_state("claude-event:a")
     assert "stall_check_at" not in row and row["outcome_review_due"] == 1200
 
@@ -227,8 +227,39 @@ async def test_breadth_counts_distinct_recent_requests_not_blockers_or_replays(
 async def queue_review(repository, settings, event="a", **changes):
     settings.anthropic_api_key = SecretStr("test-key")
     row = record(**changes)
-    await outcome_review.enqueue(repository, settings, Settings(), event, row, 1000)
+    await outcome_review.enqueue(
+        repository, settings, Settings(outcome_review_enabled=True), event, row, 1000
+    )
     await repository.set_connector_state("claude-event:" + event, row)
+
+
+@pytest.mark.parametrize("cached", [False, True])
+async def test_default_disables_new_queued_and_cached_outcome_alerts(
+    repository, settings, monkeypatch, cached
+):
+    disabled = Settings()
+    assert not disabled.outcome_review_enabled
+    call = AsyncMock()
+    monkeypatch.setattr(outcome_review, "assess", call)
+    row = record()
+    await outcome_review.enqueue(repository, settings, disabled, "new", row, 1000)
+    assert "outcome_review_due" not in row
+    await queue_review(repository, settings)
+    if cached:
+        await repository.set_connector_state("claude-outcome:a", {
+            "status": "classified", "attempts": 1,
+            "result": {"outcome": "not_completed", "blockers": ["capability"]},
+        })
+    assert await outcome_review.review_due(repository, settings, disabled, 1000) == {
+        "outcome_reviewed": 0, "outcome_blocked": 0, "outcome_unavailable": 0,
+    }
+    call.assert_not_awaited()
+    assert not repository.failures
+    # Disabling semantic judgments does not disable the operational watchdog.
+    await repository.set_connector_state("claude-event:stalled", record(status="running"))
+    await failure_monitor.tick(repository, settings, disabled, "stalled")
+    saved = await repository.get_connector_state("claude-event:stalled")
+    assert saved["stall_check_at"] > 0
 
 
 @pytest.mark.parametrize(
@@ -240,12 +271,16 @@ async def test_nonfailure_reviews_do_not_record_incidents(
     await queue_review(repository, settings)
     call = AsyncMock(return_value=outcome_review.Review(outcome=outcome, blockers=[]))
     monkeypatch.setattr(outcome_review, "assess", call)
-    await outcome_review.review_due(repository, settings, Settings(), 1000)
+    await outcome_review.review_due(
+        repository, settings, Settings(outcome_review_enabled=True), 1000
+    )
     assert not repository.failures
     assert (await repository.get_connector_state("claude-event:a"))["outcome_review_due"] == NEVER
     # A stale request writer cannot re-spend a finished review.
     await repository.patch_connector_state("claude-event:a", {"outcome_review_due": 1000})
-    await outcome_review.review_due(repository, settings, Settings(), 1001)
+    await outcome_review.review_due(
+        repository, settings, Settings(outcome_review_enabled=True), 1001
+    )
     call.assert_awaited_once()
 
 
@@ -253,11 +288,19 @@ async def test_invalid_reviews_retry_later_once_then_stop(repository, settings, 
     await queue_review(repository, settings)
     call = AsyncMock(return_value=None)
     monkeypatch.setattr(outcome_review, "assess", call)
-    await outcome_review.review_due(repository, settings, Settings(), 1000)
-    await outcome_review.review_due(repository, settings, Settings(), 1001)
+    await outcome_review.review_due(
+        repository, settings, Settings(outcome_review_enabled=True), 1000
+    )
+    await outcome_review.review_due(
+        repository, settings, Settings(outcome_review_enabled=True), 1001
+    )
     assert call.await_count == 1
-    await outcome_review.review_due(repository, settings, Settings(), 1300)
-    await outcome_review.review_due(repository, settings, Settings(), 1600)
+    await outcome_review.review_due(
+        repository, settings, Settings(outcome_review_enabled=True), 1300
+    )
+    await outcome_review.review_due(
+        repository, settings, Settings(outcome_review_enabled=True), 1600
+    )
     assert call.await_count == 2 and not repository.failures
     state = await repository.get_connector_state("claude-outcome:a")
     assert state["status"] == "unavailable" and state["attempts"] == 2
@@ -277,7 +320,9 @@ async def test_blocked_review_keeps_input_out_of_incident_card_and_assessment(
             )
         ),
     )
-    await outcome_review.review_due(repository, settings, Settings(), 1000)
+    await outcome_review.review_due(
+        repository, settings, Settings(outcome_review_enabled=True), 1000
+    )
     row = next(iter(repository.failures.values()))
     assert row.observation.slack_channel == "DTEST" and row.observation.slack_thread_ts == "123.4"
     assert failures.priority(row) == "medium"
@@ -312,7 +357,9 @@ async def test_recovered_control_failure_does_not_hide_uncompleted_work(
             )
         ),
     )
-    await outcome_review.review_due(repository, settings, Settings(), 1000)
+    await outcome_review.review_due(
+        repository, settings, Settings(outcome_review_enabled=True), 1000
+    )
     assert len(repository.failures) == 1
     saved = await repository.get_failure(old.id)
     assert "request_blocked" in saved.causes and failures.priority(saved) == "medium"
@@ -325,9 +372,13 @@ async def test_persistence_retry_reuses_classification(repository, settings, mon
     save = repository.record_failure
     monkeypatch.setattr(repository, "record_failure", AsyncMock(side_effect=OSError("offline")))
     with pytest.raises(OSError):
-        await outcome_review.review_due(repository, settings, Settings(), 1000)
+        await outcome_review.review_due(
+            repository, settings, Settings(outcome_review_enabled=True), 1000
+        )
     monkeypatch.setattr(repository, "record_failure", save)
-    await outcome_review.review_due(repository, settings, Settings(), 1300)
+    await outcome_review.review_due(
+        repository, settings, Settings(outcome_review_enabled=True), 1300
+    )
     assert len(repository.failures) == 1
     call.assert_awaited_once()
 
@@ -351,7 +402,9 @@ async def test_persistence_retry_reuses_classification(repository, settings, mon
 )
 async def test_ineligible_requests_are_not_queued(repository, settings, changes):
     row = record(**changes)
-    await outcome_review.enqueue(repository, settings, Settings(), "a", row, 1000)
+    await outcome_review.enqueue(
+        repository, settings, Settings(outcome_review_enabled=True), "a", row, 1000
+    )
     assert "outcome_review_due" not in row
 
 
@@ -373,7 +426,9 @@ async def test_queued_transfer_preparation_never_emits_semantic_failure(
         })
     call = AsyncMock()
     monkeypatch.setattr(outcome_review, "assess", call)
-    await outcome_review.review_due(repository, settings, Settings(), 1000)
+    await outcome_review.review_due(
+        repository, settings, Settings(outcome_review_enabled=True), 1000
+    )
     call.assert_not_awaited()
     assert not repository.failures
     assert (await repository.get_connector_state("claude-outcome:a"))["status"] == "complete"
@@ -391,7 +446,9 @@ async def test_background_incident_does_not_hide_task_blocker(
     monkeypatch.setattr(outcome_review, "assess", AsyncMock(return_value=outcome_review.Review(
         outcome="not_completed", blockers=["software_environment"],
     )))
-    await outcome_review.review_due(repository, settings, Settings(), 1000)
+    await outcome_review.review_due(
+        repository, settings, Settings(outcome_review_enabled=True), 1000
+    )
     assert len(repository.failures) == 1
     assert set(repository.failures[row.id].causes) == {"memory_editor_failed", "request_blocked"}
 
