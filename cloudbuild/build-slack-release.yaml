@@ -59,6 +59,14 @@ steps:
     name: gcr.io/cloud-builders/docker
     waitFor: [build-slack-worker]
     args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_SLACK_IMAGE}', /workspace/scripts/check_compute_release.py]
+  - id: verify-backchannel-api
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-api]
+    args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_backchannel_release.py]
+  - id: verify-backchannel-worker
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-slack-worker]
+    args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_SLACK_IMAGE}', /workspace/scripts/check_backchannel_release.py]
   - id: verify-spatial-sizing
     name: gcr.io/cloud-builders/docker
     waitFor: [build-slack-worker]
@@ -89,6 +97,7 @@ steps:
           docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_slack_release.py worker
           docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_atomx_release.py worker
           docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_compute_release.py
+          docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_backchannel_release.py
           docker run --rm --network=none --privileged -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_cellpose_gpu.py
         fi
   - id: refresh-shared-worker

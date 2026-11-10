@@ -143,7 +143,7 @@ def test_default_off_and_strict_operator_configuration():
     schema = next(t for t in tools if t["name"] == "request_cloud_access")
     assert set(schema["input_schema"]["properties"]) == {"bundle", "email", "note"}
     assert schema["strict"]
-    assert sum(len(t["description"]) for t in conversation.tools_for(True, config)) <= 3910
+    assert sum(len(t["description"]) for t in conversation.tools_for(True, config)) <= 4800
     assert bundle(approver_emails=[" Alice@EXAMPLE.com "]).approver_emails == ("alice@example.com",)
 
 

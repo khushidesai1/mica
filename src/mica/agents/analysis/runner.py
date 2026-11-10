@@ -138,6 +138,8 @@ def build_options(
         tools.append(TOOL_NAME)
     compute = compute_manager if not ctx.survey_only else None
     compute_tools = compute.tools() if compute else []
+    if compute and compute.backchannel and not ctx.survey_only:
+        compute_tools.append(compute.backchannel.tool())
     if not ctx.survey_only:
         from . import gpu_tools
 
@@ -181,6 +183,17 @@ def build_options(
         if event["hook_event_name"] != "PreToolUse":
             return {}
         name, args = event["tool_name"], event["tool_input"]
+        if compute and compute.backchannel and name in {"Bash", "mcp__pistachio__run_gpu"}:
+            update = await compute.backchannel.poll()
+            if update:
+                return {
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": "Review this project update before retrying "
+                        "the command; no command has started.\n" + update,
+                    }
+                }
         reason = ""
         visual_read = False
         if (
@@ -299,6 +312,17 @@ def build_options(
                     )
         return {}
 
+    async def coordination_feedback(
+        event: HookInput, _tool_id: str | None, _context: HookContext
+    ) -> HookJSONOutput:
+        if compute and compute.backchannel:
+            text = await compute.backchannel.poll()
+            if text:
+                return cast(HookJSONOutput, {"hookSpecificOutput": {
+                    "hookEventName": event["hook_event_name"], "additionalContext": text,
+                }})
+        return {}
+
     async def resource_feedback(
         event: HookInput,
         tool_id: str | None,
@@ -359,6 +383,11 @@ def build_options(
             )
         if compute:
             sections.append(compute.prompt())
+            if compute.backchannel:
+                from .backchannel import GUIDANCE
+
+                sections.append(GUIDANCE)
+                sections.append(await compute.backchannel.poll(force=True))
         from .toolkit_catalog import environment_prompt
 
         sections.append(environment_prompt(settings, manager.records.values() if manager else ()))
@@ -462,6 +491,8 @@ def build_options(
             **(
                 {
                     "PostToolUse": [
+                        *([HookMatcher(hooks=[coordination_feedback])]
+                          if compute and compute.backchannel else []),
                         HookMatcher(
                             matcher="Bash|mcp__pistachio__run_gpu" if capture else "Bash",
                             hooks=([resource_feedback] if compute else [])
@@ -474,6 +505,8 @@ def build_options(
                         ),
                     ],
                     "PostToolUseFailure": [
+                        *([HookMatcher(hooks=[coordination_feedback])]
+                          if compute and compute.backchannel else []),
                         HookMatcher(
                             matcher="Bash|mcp__pistachio__run_gpu" if capture else "Bash",
                             hooks=([resource_feedback] if compute else [])

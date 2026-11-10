@@ -15,6 +15,7 @@ from typing import Any
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, SdkMcpTool, tool
 from claude_agent_sdk.types import Message
 
+from .backchannel_worker import Client as BackchannelClient
 from .checkpoints import Stages
 from .config import Settings
 from .recovery import RecoverCall
@@ -83,6 +84,7 @@ class RecoveryManager:
         self.stop_reason = ""
         self.stop = asyncio.Event()
         self.poll_addenda: Callable[[], Awaitable[str]] | None = None
+        self.backchannel: BackchannelClient | None = None
         self.persist_resources: Callable[[], Awaitable[None]] | None = None
         self.stop_tools: Callable[[], Awaitable[None]] | None = None
         self.started = time.time()

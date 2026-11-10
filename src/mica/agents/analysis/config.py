@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     routing_repair_model: str = "claude-opus-5"  # Failure investigation assessments.
     loading_emoji: str = ":hourglass_flowing_sand:"  # AGENT_LOADING_EMOJI; custom emoji supported.
     amendments: bool = False
+    backchannel: bool = True  # New conversation/worker launches; old attempts stay unchanged.
     failure_channel: str = Field(default="", pattern=r"^(?:[CG][A-Z0-9]+)?$")
     outcome_review_enabled: bool = True  # Post-turn enum-only completion checks.
     failure_investigation_enabled: bool = True  # Bounded read-only Claude assessments.

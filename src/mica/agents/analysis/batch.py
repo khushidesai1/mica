@@ -505,6 +505,7 @@ class BatchBridge:
                     "tick": 0,
                     "created": time.time(),
                     "flexible_harness": self.settings.flexible_harness,
+                    "backchannel_enabled": self.settings.backchannel,
                     "write_control": surface_name == "slack"
                     and write_access.is_command(event.get("text", "")),
                 }
@@ -1194,6 +1195,8 @@ class BatchBridge:
                 manifest["project_sessions"] = [source.model_dump() for source in selected_sessions]
             if record.get("amendments_enabled"):
                 manifest["amendments_enabled"] = True
+            if record.get("backchannel_enabled"):
+                manifest["backchannel_enabled"] = True
             if record.get("ambient"):
                 manifest["ambient"] = record["ambient"]
                 manifest["deadline_at"] = record["deadline_at"]

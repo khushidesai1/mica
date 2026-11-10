@@ -71,6 +71,12 @@ No Terraform apply or cloud deployment is implied by these source changes.
 
 ## Release validation
 
+Project-backchannel changes require coordinated API and Claude CPU/GPU worker application
+sources. The manifest enables live coordination only for newly routed requests; existing
+workers cannot acquire hooks retroactively. `AGENT_BACKCHANNEL=false` disables new conversation
+tools and worker broker access. The offline `check_backchannel_release.py` gate checks the board,
+peer exchange and worker-hook contract without model calls or scientific execution.
+
 Run Ruff, mypy and the fast automated suite, then use small, bounded live smoke checks for
 changed behavior. Prefer fakes for large file counts, large object sizes and failure injection.
 Do not run lengthy model conversations or full-scale data transfers for routine releases;

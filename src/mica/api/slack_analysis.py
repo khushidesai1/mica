@@ -19,6 +19,7 @@ from requests.exceptions import Timeout
 
 from mica.agents.analysis import (
     access,
+    backchannel,
     channel_access,
     cloud_access,
     identity,
@@ -343,6 +344,43 @@ async def worker_context(
 class WriteUpload(BaseModel):
     relative_paths: list[str] = Field(min_length=1, max_length=write_broker.BATCH_SIZE)
     grant_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+
+
+class BackchannelRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    attempt: int = Field(ge=0)
+    call: backchannel.Call
+
+
+@router.post("/backchannel/{event_id}", include_in_schema=False)
+async def project_coordination(
+    event_id: str, request: Request, response: Response
+) -> dict[str, Any]:
+    bridge, storage, _ = await worker_context(event_id, request)
+    response.headers["Cache-Control"] = "no-store"
+    raw = await request.body()
+    if len(raw) > 12000:
+        raise HTTPException(413, "Coordination request too large")
+    try:
+        body = BackchannelRequest.model_validate_json(raw)
+    except ValueError as exc:
+        raise HTTPException(422, "Invalid coordination request") from exc
+    mutex = f"claude-poll:{event_id}"
+    claim = await bridge.repository.begin_event(mutex, lease_seconds=60)
+    if claim.status != "claimed":
+        raise HTTPException(409, "Controller busy; retry shortly")
+    try:
+        bridge, storage, record = await worker_context(event_id, request)
+        if (not bridge.settings.backchannel or not record.get("backchannel_enabled")
+                or body.attempt != record.get("attempt", 0)):
+            raise HTTPException(403, "Project coordination is inactive for this attempt")
+        return await asyncio.to_thread(
+            backchannel.operate, storage, {**record, "event_id": event_id}, body.call
+        )
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    finally:
+        await bridge.repository.release_event(mutex, claim.token)
 
 
 def retryable_write_error(exc: Exception) -> bool:
