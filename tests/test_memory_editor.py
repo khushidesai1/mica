@@ -94,7 +94,7 @@ def test_repair_includes_required_topic_before_optional_core():
         (model_response({"open.md": "PRIVATE"}), "unseen_file"),
         (model_response({"archive/private.md": "PRIVATE"}), "unsupported_path"),
         (model_response(thread={"paraphrase": "PRIVATE", "unknown": "PRIVATE"}), "invalid_schema"),
-        (model_response(stop_reason="max_tokens"), "incomplete_output"),
+        (model_response(stop_reason="max_tokens"), "output_limit"),
         ({"content": []}, "incomplete_output"),
         (
             {
@@ -137,6 +137,22 @@ async def test_failed_turn_rejects_verified_result_and_only_allows_pending_work(
         await memory_tasks.edit("test", "test", {"files": {}, "success": False})
     schema = requests[0]["tools"][0]["input_schema"]
     assert schema["properties"]["changes"]["propertyNames"] == {"enum": ["open.md"]}
+
+
+async def test_large_full_file_replacement_keeps_unrelated_memory(monkeypatch):
+    # The writer sees complete files, including a large accumulated pending-work file.
+    original = OPEN + "An unrelated attributed fact must survive.\n" * 750
+    replacement = original + "2026-11-10: Alice requested clearer segmentation figures.\n"
+    requests = []
+    mock_model(monkeypatch, model_response({"open.md": replacement}), requests)
+    result = await memory_tasks.edit("test", "test", {
+        "files": {"open.md": original}, "existing_paths": ["open.md"],
+        "thread": {"summary": "Earlier context"},
+    })
+    assert original in result["open.md"]
+    assert "clearer segmentation figures" in result["open.md"]
+    assert json.loads(result["_thread"])["paraphrase"] == "A pending request."
+    assert requests[0]["max_tokens"] == 16384
 
 
 async def start(chat, monkeypatch):

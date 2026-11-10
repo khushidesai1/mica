@@ -67,7 +67,7 @@ EDITOR_VERSION = 1
 EDITOR_ATTEMPTS = 3
 EDITOR_RETRY_SECONDS = 3600
 EditorReason = Literal[
-    "incomplete_output", "invalid_schema", "missing_thread", "unsupported_path",
+    "incomplete_output", "output_limit", "invalid_schema", "missing_thread", "unsupported_path",
     "unseen_file", "failed_turn_path", "context_limit",
 ]
 
@@ -129,13 +129,16 @@ async def edit(key: str, model: str, context: dict[str, Any]) -> dict[str, str]:
         schema["properties"]["thread"] = {"$ref": "#/$defs/Prose"}
     if context.get("success") is False:
         schema["properties"]["changes"]["propertyNames"] = {"enum": ["open.md"]}
-    async with httpx.AsyncClient(timeout=90) as client:
+    # Full-file replacements must fit alongside thread prose. The writer can see
+    # 32,000 characters of editable files; 8,192 output tokens can truncate valid
+    # replacements. Keep the call below the memory task's 180-second dispatch limit.
+    async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(
             "https://api.anthropic.com/v1/messages",
             headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
             json={
                 "model": model,
-                "max_tokens": 8192,
+                "max_tokens": 16384,
                 "system": EDITOR_RULES + project_memory.GUIDE_POLICY,
                 "messages": [{"role": "user", "content": json.dumps(context)}],
                 "tools": [
@@ -159,7 +162,9 @@ async def edit(key: str, model: str, context: dict[str, Any]) -> dict[str, str]:
             for b in body.get("content", [])
             if b.get("type") == "tool_use" and b.get("name") == "edit_project_memory"
         ]
-        if len(calls) != 1 or body.get("stop_reason") == "max_tokens":
+        if body.get("stop_reason") == "max_tokens":
+            raise EditorError("output_limit")
+        if len(calls) != 1:
             raise EditorError("incomplete_output")
         try:
             edits = Edits.model_validate(calls[0].get("input"))
