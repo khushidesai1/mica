@@ -389,8 +389,9 @@ def make_report(request):
     if not output.is_relative_to(Path("outputs").resolve()) or output == Path("outputs").resolve():
         raise ValueError("Use a new folder under outputs/")
     output.mkdir(parents=True, exist_ok=False)
-    figures = output / "figures"
-    figures.mkdir()
+    figures = None if request.get("pdf_only", True) else output / "figures"
+    if figures is not None:
+        figures.mkdir()
     thresholds = {**DEFAULTS, **request.get("thresholds", {})}
     if set(thresholds) != set(DEFAULTS) or not all(
         math.isfinite(float(v)) and v >= 0 for v in thresholds.values()
@@ -658,11 +659,15 @@ def make_report(request):
             str(request.get("review", "Not yet visually reviewed.")),
             provenance,
         )
-        for name, value in [
-            ("segmentation_summary.json", summary),
-            ("flags.json", flags),
-            ("provenance.json", provenance),
-        ]:
+        for name, value in (
+            []
+            if request.get("pdf_only", True)
+            else [
+                ("segmentation_summary.json", summary),
+                ("flags.json", flags),
+                ("provenance.json", provenance),
+            ]
+        ):
             (output / name).write_text(json.dumps(value, indent=2, allow_nan=False) + "\n")
         return summary
     finally:
@@ -705,11 +710,12 @@ def render(
                 title, x=0.06, y=0.96, ha="left", fontsize=19, fontweight="bold", color="#193b39"
             )
             fig.text(0.06, 0.025, f"Mica · {summary['sample']} · Segmentation QC", color="#526360")
-            fig.text(0.94, 0.025, f"{number} / 8", ha="right", color="#526360")
+            fig.text(0.94, 0.025, str(number), ha="right", color="#526360")
             return fig
 
         def save(fig, name):
-            fig.savefig(figures / (name + ".png"), dpi=120)
+            if figures is not None:
+                fig.savefig(figures / (name + ".png"), dpi=120)
             pdf.savefig(fig)
             plt.close(fig)
 
@@ -744,7 +750,7 @@ def render(
         for (_r, c), cell in table.get_celld().items():
             cell.set_edgecolor("white")
             cell.set_facecolor("#e5eeea" if c == 0 else "#f1f4ef")
-        details = "Parameters: " + json.dumps(method.get("parameters", {}), sort_keys=True)
+        details = "Full method parameters and reproducibility details follow the visual review."
         details += "\nReport code: " + provenance["script_sha256"][:16]
         details += "\n" + provenance["transcript_sampling"]
         details += (
@@ -757,7 +763,7 @@ def render(
         fig.text(
             0.06,
             0.27,
-            "\n".join(textwrap.fill(line, 120) for line in details.splitlines())[:1800],
+            "\n".join(textwrap.fill(line, 120) for line in details.splitlines()),
             va="top",
             fontsize=9,
         )
@@ -883,13 +889,16 @@ def render(
                     va="top",
                     fontsize=8.5,
                 )
-                crop_fig, crop_axes = plt.subplots(1, 3, figsize=(12, 4.4))
-                crop_fig.subplots_adjust(left=0.025, right=0.98, top=0.78, bottom=0.12, wspace=0.06)
-                crop_fig.suptitle(crop_caption(index, crop), fontsize=10, y=0.97)
-                draw_triptych(crop_axes, crop, rgb)
-                crop_fig.text(0.04, 0.035, legend, fontsize=8)
-                crop_fig.savefig(figures / f"crop-{index + 1}.png", dpi=170)
-                plt.close(crop_fig)
+                if figures is not None:
+                    crop_fig, crop_axes = plt.subplots(1, 3, figsize=(12, 4.4))
+                    crop_fig.subplots_adjust(
+                        left=0.025, right=0.98, top=0.78, bottom=0.12, wspace=0.06
+                    )
+                    crop_fig.suptitle(crop_caption(index, crop), fontsize=10, y=0.97)
+                    draw_triptych(crop_axes, crop, rgb)
+                    crop_fig.text(0.04, 0.035, legend, fontsize=8)
+                    crop_fig.savefig(figures / f"crop-{index + 1}.png", dpi=170)
+                    plt.close(crop_fig)
             fig.text(0.06, 0.075, legend, fontsize=8)
             fig.text(
                 0.06,
@@ -1014,28 +1023,55 @@ def render(
             fontsize=8,
         )
         save(fig, "07-fov-qc")
-        fig = page("Flags, limitations and visual review", 8)
-        lines = [f"{len(flags)} flags / limitations; full details in flags.json.", ""]
-        shown = 0
-        for flag in flags:
-            wrapped = textwrap.wrap(f"• {flag.get('fov', 'Sample')}: {flag['text']}", 57)
-            if len(lines) + len(wrapped) > 31:
-                break
-            lines.extend(wrapped)
-            lines.append("")
-            shown += 1
-        if shown < len(flags):
-            lines.append(f"{len(flags) - shown} additional flags in flags.json.")
-        fig.text(0.06, 0.87, "\n".join(lines), va="top", fontsize=9, linespacing=1.35)
-        review_lines = textwrap.wrap(review, 57)
-        if len(review_lines) > 32:
-            review_lines = review_lines[:30] + [
-                "Full visual-review notes are preserved in",
-                "provenance.json.",
-            ]
-        fig.text(0.55, 0.87, "Visual review", va="top", fontsize=12, fontweight="bold")
-        fig.text(0.55, 0.82, "\n".join(review_lines), va="top", fontsize=9, linespacing=1.35)
-        save(fig, "08-flags")
+        for offset, (left, right) in enumerate(notes_pages(flags, review, provenance)):
+            number = 8 + offset
+            fig = page("Flags, limitations and visual review", number)
+            fig.text(0.06, 0.87, "Flags and limitations", va="top", fontsize=12, fontweight="bold")
+            fig.text(0.06, 0.82, left, va="top", fontsize=9, linespacing=1.35)
+            fig.text(
+                0.55, 0.87, "Review and reproducibility", va="top", fontsize=12, fontweight="bold"
+            )
+            fig.text(0.55, 0.82, right, va="top", fontsize=9, linespacing=1.35)
+            save(fig, f"{number:02}-flags")
+
+
+def notes_pages(flags, review, provenance):
+    """Paginate every finding and review note inside the PDF, without sidecar references."""
+
+    def wrapped(value):
+        return [
+            line
+            for paragraph in value.splitlines()
+            for line in (textwrap.wrap(paragraph, 57) or [""])
+        ]
+
+    left = [f"{len(flags)} automatic flags / limitations.", ""]
+    for flag in flags:
+        left.extend(wrapped(f"{flag.get('fov', 'Sample')}: {flag['text']}"))
+        if flag.get("fovs"):
+            left.extend(wrapped("Affected FOVs: " + ", ".join(map(str, flag["fovs"]))))
+        left.append("")
+    right = wrapped(review) + ["", "Reproducibility"]
+    for label, value in [
+        ("Method parameters", provenance["request"]["method"].get("parameters", {})),
+        ("QC thresholds", provenance.get("thresholds", {})),
+        ("Sampling", provenance.get("transcript_sampling", "Unavailable")),
+        ("Coordinates", provenance.get("coordinates", "Unavailable")),
+        ("Code SHA-256", provenance.get("script_sha256", "Unavailable")),
+    ]:
+        right.extend(
+            wrapped(
+                label
+                + ": "
+                + (json.dumps(value, sort_keys=True) if isinstance(value, dict) else str(value))
+            )
+        )
+        right.append("")
+    size = 35
+    return [
+        ("\n".join(left[i : i + size]), "\n".join(right[i : i + size]))
+        for i in range(0, max(len(left), len(right)), size)
+    ]
 
 
 def main():
