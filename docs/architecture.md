@@ -157,6 +157,12 @@ answer. If that worker fails or restarts after handoff, the amendment is marked 
 check-and-resend notice rather than automatically repeating possible side effects. A process crash
 between its durable handoff record and SDK receipt remains an acknowledgment ambiguity.
 
+[Project backchannel](project-backchannel.md) adds project-scoped scientific updates, questions,
+answers and recipe references through the trusted conversation/worker tool boundary. A bounded
+GCS board preserves concurrent publications; workers check at safe tool boundaries. The broker
+revalidates project access and active attempt. Peer messages remain advisory and separate from
+human amendments. Verified transfer completions contribute minimal sample-readiness facts.
+
 ### Conversation tools and worker guidance
 
 Every Slack and email request uses the same conversation API and official Anthropic SDK.

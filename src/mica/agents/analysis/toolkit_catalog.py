@@ -97,6 +97,7 @@ class Environment:
     cuda: bool
     packages: tuple[str, ...]
     assets: tuple[str, ...] = ()
+    executables: tuple[str, ...] = ()
 
 
 def runtime_cuda(packages: dict[str, str]) -> bool:
@@ -167,7 +168,10 @@ def environments(
             False,
             ("NumPy", "SciPy", "scanpy", "scvi-tools", "squidpy"),
         ),
-        Environment("sap", "/opt/sap/bin/python", False, ("sap", "cellpose 3.1.1.3")),
+        Environment(
+            "sap", "/opt/sap/bin/python", False, ("sap", "cellpose 3.1.1.3", "proseg-py 3.1.1"),
+            executables=("Proseg CLI 3.1.1: /opt/proseg/3.1.1/bin/proseg (CPU; verify --help)",),
+        ),
         Environment(
             "cellpose-3.1.1.3",
             "/opt/cellpose/3.1.1.3/bin/python" if gpu else "/opt/sap/bin/python",
@@ -216,7 +220,10 @@ def environment_view(
     settings: Settings, records: Iterable[RuntimeRecord | Environment] = ()
 ) -> list[dict[str, Any]]:
     return [
-        {key: value for key, value in asdict(row).items() if key != "assets"}
+        {
+            key: value for key, value in asdict(row).items()
+            if key != "assets" and (key != "executables" or value)
+        }
         for row in environments(settings, records)
     ]
 
@@ -229,6 +236,7 @@ def environment_prompt(settings: Settings, records: Iterable[RuntimeRecord] = ()
             *(
                 f"- {row.id}: {row.python}; CUDA {'yes' if row.cuda else 'no'}; "
                 + ", ".join(row.packages)
+                + ("; executables: " + ", ".join(row.executables) if row.executables else "")
                 for row in environments(settings, records)
             ),
         ]

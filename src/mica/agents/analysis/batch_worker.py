@@ -362,6 +362,24 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             save_result=save_result,
             stages=stages,
         )
+        if request.get("backchannel_enabled"):
+            from .backchannel_worker import Client as BackchannelClient
+
+            async def coordinate(body: dict[str, Any]) -> dict[str, Any]:
+                fresh = await asyncio.to_thread(
+                    id_token.fetch_id_token, GoogleRequest(), url,  # type: ignore[no-untyped-call]
+                )
+                async with httpx.AsyncClient(timeout=15) as http:
+                    response = await http.post(
+                        f"{url}/api/v1/internal/slack-analysis/backchannel/{event_id}",
+                        json={"attempt": attempt, "call": body},
+                        headers={"Authorization": f"Bearer {fresh}"},
+                    )
+                    response.raise_for_status()
+                    value: dict[str, Any] = response.json()
+                    return value
+
+            compute.backchannel = BackchannelClient(coordinate, thread_key)
         if request.get("amendments_enabled") and not surface.is_email(request):
             last_addenda_poll = 0.0
 

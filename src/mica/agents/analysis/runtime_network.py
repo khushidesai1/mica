@@ -93,6 +93,16 @@ class WheelMirror(AbstractContextManager["WheelMirror"]):
                 except RuntimePolicyError as exc:
                     mirror.policy_errors.append(str(exc))
                     self.error(403, "Package source refused by runtime policy")
+                except httpx.HTTPStatusError as exc:
+                    # A missing package is a resolver fact, not a transient registry outage.
+                    missing = (
+                        exc.response.status_code == 404
+                        and urlsplit(self.path).path.startswith("/simple/")
+                    )
+                    self.error(
+                        404 if missing else 502,
+                        "Package not found" if missing else "Package registry request failed",
+                    )
                 except httpx.HTTPError:
                     self.error(502, "Package registry request failed")
                 except ValueError:

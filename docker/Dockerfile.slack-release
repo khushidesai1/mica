@@ -1,7 +1,22 @@
-# Refresh pinned application images; scientific runtimes remain in their existing environments.
+# syntax=docker/dockerfile:1
+# Refresh application images; preserve Python runtimes and add the pinned native CLI.
 ARG BASE_IMAGE
+FROM rust:1.90.0-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f AS proseg-build
+ADD https://static.crates.io/crates/proseg/proseg-3.1.1.crate /tmp/proseg.crate
+RUN echo '01ef31f4f7213ad79534d399fcd5dfe8ae2a012edb91275f05517f39368622f5  /tmp/proseg.crate' | sha256sum -c - && \
+    mkdir /tmp/proseg-source && tar -xzf /tmp/proseg.crate -C /tmp/proseg-source --strip-components=1
+WORKDIR /tmp/proseg-source
+ENV CARGO_PROFILE_RELEASE_DEBUG=0 CARGO_BUILD_JOBS=8
+RUN cargo build --locked --release --bin proseg && \
+    strip target/release/proseg && mkdir -p /opt/proseg/3.1.1/bin && \
+    cp target/release/proseg /opt/proseg/3.1.1/bin/ && \
+    cp LICENSE.md Cargo.lock /opt/proseg/3.1.1/ && \
+    /opt/proseg/3.1.1/bin/proseg --version
+COPY deploy/proseg-cli.json /opt/proseg/3.1.1/manifest.json
+
 FROM ${BASE_IMAGE}
 USER root
+COPY --from=proseg-build /opt/proseg /opt/proseg
 ARG INSTALL_BOT_DEPENDENCIES=0
 COPY deploy/requirements-conversation.txt /tmp/mica-requirements-conversation.txt
 RUN pip install --no-cache-dir -r /tmp/mica-requirements-conversation.txt

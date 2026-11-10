@@ -826,6 +826,7 @@ class Transfers:
             and p["job_kind"] == "pull"
             and completed_marker.get("run_id") == p["job_run"]
         ):
+            await self.share_completion(p, completed_marker)
             await self.transition(p, "done")
             await self.notify(
                 p, "The transfer finished and verified before cancellation took effect."
@@ -852,6 +853,7 @@ class Transfers:
                 marker = result["marker"]
                 if marker.get("run_id") != p["job_run"]:
                     raise ValueError("Transfer result does not match this job.")
+                await self.share_completion(p, marker)
                 await self.transition(p, "done")
                 await self.notify(
                     p,
@@ -862,6 +864,29 @@ class Transfers:
             await self.write_failure(p, "job_failed")
             await self.transition(p, "failed")
             await self.notify(p, failure_notice(result))
+
+    async def share_completion(self, p: dict[str, Any], marker: dict[str, Any]) -> None:
+        from . import backchannel
+        from .batch import digest
+
+        if not self.bridge.settings.backchannel:
+            return
+        if not {"sample", "n_files", "total_bytes"} <= marker.keys():
+            return  # Legacy receipts do not establish these details.
+        try:
+            call = backchannel.Call(
+                action="publish", topic="sample-transfers",
+                text=json.dumps({"sample": marker["sample"], "status": "transfer_verified",
+                                 "files": int(marker["n_files"]),
+                                 "bytes": int(marker["total_bytes"])}),
+            )
+        except ValueError:
+            return  # Never share malformed or credential-like metadata.
+        await asyncio.to_thread(
+            backchannel.publish, self.store, p["project"],
+            digest(f"{p['team']}:{p['channel']}:{p['thread']}"),
+            p["id"], int(p.get("attempt", 0)), call, source="transfer",
+        )
 
     async def report_failure(
         self, p: dict[str, Any], cause: observability.Cause, *, unit: str = ""

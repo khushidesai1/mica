@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from . import (
     access,
     attachments,
+    backchannel,
     command_intent,
     commands,
     conversation_state,
@@ -177,6 +178,7 @@ CLOUD_ACCESS_DESCRIPTION = (
     "Never infer a Mica project. Email requires approval; Slack links the form."
 )
 DESCRIPTIONS = {
+    backchannel.TOOL: backchannel.DESCRIPTION,
     "request_access": (
         "Request an owner approval card when project work is requested but "
         "project_access.allowed is false. No permissions or work are started. "
@@ -253,6 +255,7 @@ DESCRIPTIONS = {
     ),
 }
 MODELS: dict[str, type[BaseModel]] = {
+    backchannel.TOOL: backchannel.Call,
     "request_cloud_access": CloudAccessProposal,
     "request_access": RequestAccess,
     "list_folders": Folders,
@@ -326,6 +329,8 @@ def tools_for(allowed: bool, settings: Settings | None = None) -> list[dict[str,
             ),
             "input_schema": strict_schema(CloudAccessProposal),
         })
+    if settings and not settings.backchannel:
+        result = [item for item in result if item["name"] != backchannel.TOOL]
     return result
 
 
@@ -466,6 +471,14 @@ async def run(
         "channel_authorization_required": not grant.private and not grant.allowed,
     }
     data.pop("brief", None)
+    if grant.allowed and bridge.settings.backchannel and not init:
+        try:
+            data["project_backchannel"] = await asyncio.to_thread(
+                backchannel.read, storage, grant.project_id, backchannel.Call()
+            )
+        except Exception:
+            data["project_backchannel"] = {"unavailable": True}
+        data["coordination_guidance"] = backchannel.GUIDANCE
     messages: list[dict[str, Any]] = [
         {
             "role": "user",
@@ -487,6 +500,12 @@ async def run(
                     Decision(route="reply", reply="Project access changed. Send a new request."))
             checkpoint = saved_state
             messages = checkpoint["messages"]
+            if "project_backchannel" in data and isinstance(messages[0]["content"], list):
+                # A yielded conversation must see peer progress made during its queue delay.
+                initial = json.loads(messages[0]["content"][0]["text"])
+                initial["project_backchannel"] = data["project_backchannel"]
+                initial["coordination_guidance"] = backchannel.GUIDANCE
+                messages[0]["content"][0]["text"] = json.dumps(initial, ensure_ascii=False)
             snapshots = {k: reference_repos.RepoSnapshot.model_validate(v)
                          for k, v in checkpoint.get("snapshots", {}).items()}
         record["routing_calls"] = checkpoint["calls"]
@@ -708,6 +727,7 @@ async def run(
                         "list_folders": "Checking the requested folders…",
                         "view_files": "Looking at the attached files…",
                         "read_sources": "Reading the requested sources…",
+                        backchannel.TOOL: "Checking project coordination…",
                         "start_worker": "Preparing the requested computation…",
                         "propose_transfer": "Preparing the transfer request…",
                         "propose_command": "Checking the requested operation…",
@@ -718,6 +738,12 @@ async def run(
                 async with asyncio.timeout_at(deadline):
                     if isinstance(value, RequestAccess):
                         terminal = Decision(route="access", reply="Owner review requested")
+                    elif isinstance(value, backchannel.Call):
+                        result = await asyncio.to_thread(
+                            backchannel.operate, storage,
+                            {**record, "project_id": current.project_id, "event_id": event_id},
+                            value,
+                        )
                     elif isinstance(value, CloudAccessProposal):
                         terminal = Decision(
                             route="cloud_access", reply="Access request prepared",
@@ -786,6 +812,8 @@ async def run(
                         )
                     elif isinstance(value, Worker):
                         from .tiers import launch_choice
+
+                        record["backchannel_enabled"] = bridge.settings.backchannel
 
                         selected_repos = {
                             reference_repos.valid_repo(repo, bridge.settings.reference_github_org)

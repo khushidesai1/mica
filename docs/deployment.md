@@ -71,6 +71,12 @@ No Terraform apply or cloud deployment is implied by these source changes.
 
 ## Release validation
 
+Project-backchannel changes require coordinated API and Claude CPU/GPU worker application
+sources. The manifest enables live coordination only for newly routed requests; existing
+workers cannot acquire hooks retroactively. `AGENT_BACKCHANNEL=false` disables new conversation
+tools and worker broker access. The offline `check_backchannel_release.py` gate checks the board,
+peer exchange and worker-hook contract without model calls or scientific execution.
+
 Run Ruff, mypy and the fast automated suite, then use small, bounded live smoke checks for
 changed behavior. Prefer fakes for large file counts, large object sizes and failure injection.
 Do not run lengthy model conversations or full-scale data transfers for routine releases;
@@ -331,6 +337,26 @@ and stable email follow-up session metadata. It does not enable or replace AtoMx
 images, credentials, or infrastructure. Run the routing snapshot and complete application checks
 before the existing API/worker compatibility release gates.
 
+
+## Native Proseg runtime overlay
+
+The coordinated application overlay also carries native Proseg CLI 3.1.1 at
+`/opt/proseg/3.1.1/bin/proseg`. Its separate Rust builder verifies the crates.io archive checksum
+in `deploy/proseg-cli.json` and builds with the archive's `Cargo.lock`; no compiler or changed
+Python science dependencies enter the final image. The manifest, lockfile and MIT license
+remain beside the executable. `build-proseg-cli` warms the native build cache before the
+API/CPU/GPU overlays; retain that dependency when adding image-cache pulls to the pipeline.
+
+`scripts/check_proseg_release.py` runs in each Claude worker image, offline and as UID 65532.
+It enters the existing bubblewrap compute sandbox, checks isolation, exact version and flags,
+then runs 4,000 synthetic transcripts through nondefault prior/connectivity/compactness controls
+and validates cell metadata, transcript metadata, counts and SpatialData output. The outer
+container permits nested bubblewrap and is capped at 2 CPUs/2 GiB; each subprocess has a
+120-second limit. Temporary data is local and automatically removed. This gate proves native
+runtime availability, not biological quality, convergence, a selected TMA recipe, or equivalence
+to the custom SAP Python wrapper. Legacy perimeter controls and a random-seed flag are absent
+in 3.1.1; they must not be fabricated or silently mapped to other controls. Real runs are neither
+restarted nor reconfigured by deployment.
 
 ## Project memory archive rollout
 

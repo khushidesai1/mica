@@ -417,7 +417,7 @@ def test_strict_schema_budget():
         assert spec["strict"] is (spec["name"] != "start_worker")
         check(spec["input_schema"])
     assert len(prompts.CONVERSATION) <= 1502
-    assert sum(map(len, conversation.DESCRIPTIONS.values())) <= 3910
+    assert sum(map(len, conversation.DESCRIPTIONS.values())) <= 4800
 
 
 async def test_natural_init_uses_structured_guide_without_worker(turn, monkeypatch):

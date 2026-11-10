@@ -1,16 +1,20 @@
 # Build coordinated API, Slack, and science workers from one source snapshot.
 steps:
-  - id: build-api
+  - id: build-proseg-cli
     name: gcr.io/cloud-builders/docker
     waitFor: ['-']
+    args: [build, --target, proseg-build, --build-arg, 'BASE_IMAGE=${_API_BASE}', -f, docker/Dockerfile.slack-release, -t, mica-proseg-build, .]
+  - id: build-api
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-proseg-cli]
     args: [build, --build-arg, 'BASE_IMAGE=${_API_BASE}', --build-arg, 'SOURCE_COMMIT=${_SOURCE_COMMIT}', -f, docker/Dockerfile.slack-release, -t, '${_API_IMAGE}', .]
   - id: build-slack-worker
     name: gcr.io/cloud-builders/docker
-    waitFor: ['-']
+    waitFor: [build-proseg-cli]
     args: [build, --build-arg, 'BASE_IMAGE=${_SLACK_BASE}', --build-arg, 'INSTALL_BOT_DEPENDENCIES=1', --build-arg, 'SOURCE_COMMIT=${_SOURCE_COMMIT}', -f, docker/Dockerfile.slack-release, -t, '${_SLACK_IMAGE}', .]
   - id: build-gpu-worker
     name: gcr.io/cloud-builders/docker
-    waitFor: ['-']
+    waitFor: [build-proseg-cli]
     entrypoint: bash
     args:
       - -ceu
@@ -59,6 +63,18 @@ steps:
     name: gcr.io/cloud-builders/docker
     waitFor: [build-slack-worker]
     args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_SLACK_IMAGE}', /workspace/scripts/check_compute_release.py]
+  - id: verify-backchannel-api
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-api]
+    args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_API_IMAGE}', /workspace/scripts/check_backchannel_release.py]
+  - id: verify-backchannel-worker
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-slack-worker]
+    args: [run, --rm, --network=none, -v, /workspace:/workspace:ro, --entrypoint, python, '${_SLACK_IMAGE}', /workspace/scripts/check_backchannel_release.py]
+  - id: verify-proseg-cli
+    name: gcr.io/cloud-builders/docker
+    waitFor: [build-slack-worker]
+    args: [run, --rm, --network=none, --privileged, --cpus=2, --memory=2g, -v, /workspace:/workspace:ro, --entrypoint, python, '${_SLACK_IMAGE}', /workspace/scripts/check_proseg_release.py]
   - id: verify-spatial-sizing
     name: gcr.io/cloud-builders/docker
     waitFor: [build-slack-worker]
@@ -89,6 +105,8 @@ steps:
           docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_slack_release.py worker
           docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_atomx_release.py worker
           docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_compute_release.py
+          docker run --rm --network=none -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_backchannel_release.py
+          docker run --rm --network=none --privileged --cpus=2 --memory=2g -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_proseg_release.py
           docker run --rm --network=none --privileged -v /workspace:/workspace:ro --entrypoint python '${_GPU_IMAGE}' /workspace/scripts/check_cellpose_gpu.py
         fi
   - id: refresh-shared-worker
