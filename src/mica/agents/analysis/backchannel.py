@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import project_memory
 from .storage import Storage, update_model
@@ -44,12 +45,20 @@ GUIDANCE = (
 class Call(BaseModel):
     model_config = ConfigDict(extra="forbid")
     action: Literal["read", "publish"] = "read"
-    topic: str = Field(default="", max_length=80, pattern=r"^(?:[a-z0-9][a-z0-9_-]*)?$")
+    topic: str = Field(
+        default="", max_length=80, pattern=r"^(?:[a-z0-9][a-z0-9_-]*)?$",
+        description="Shared topic, such as segmentation-recipe; spaces normalize to hyphens.",
+    )
     kind: Literal["update", "question", "answer", "blocked", "recipe"] = "update"
     text: str = Field(default="", max_length=MAX_BYTES)
     reply_to: str = Field(default="", pattern=r"^(?:[a-f0-9]{64})?$")
     message_id: str = Field(default="", pattern=r"^(?:[a-f0-9]{64})?$")
     after: int | None = Field(default=None, ge=0)
+
+    @field_validator("topic", mode="before")
+    @classmethod
+    def normalize_topic(cls, value: Any) -> Any:
+        return re.sub(r"\s+", "-", value.strip().lower()) if isinstance(value, str) else value
 
     @model_validator(mode="after")
     def valid(self) -> Call:

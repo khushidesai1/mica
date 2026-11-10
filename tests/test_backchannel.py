@@ -120,6 +120,12 @@ def test_invalid_publications(kwargs):
         bc.Call.model_validate({"action": "publish", "topic": "topic", "text": "hello", **kwargs})
 
 
+def test_natural_topic_names_match_shared_slug(store):
+    call = bc.Call(action="publish", topic=" Segmentation Recipe ", text="Still investigating")
+    bc.publish(store, "project-a", "a", "a", 0, call)
+    assert messages(store, topic="segmentation-recipe")[0]["text"] == "Still investigating"
+
+
 def test_replies_cannot_cross_project_or_topic(store):
     parent = send(store)
     with pytest.raises(ValueError, match="same project topic"):
