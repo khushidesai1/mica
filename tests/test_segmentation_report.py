@@ -91,6 +91,8 @@ def test_report_outputs_flags_and_pdf_pages(tmp_path, monkeypatch, kind):
     request["prior"] = {"path": str(tmp_path / "inputs/cells.parquet"), "units": "pixel"}
     request["cohort"] = [request["prior"]]
     summary = report.make_report(request)
+    assert summary["report_version"] == 2
+    assert summary["prior"]["cell_count"] == 6
     assert summary["cell_count"] == 6
     assert summary["area_um2"]["median"] == pytest.approx(4)
     assert summary["assigned_pct"] == 50
@@ -100,13 +102,82 @@ def test_report_outputs_flags_and_pdf_pages(tmp_path, monkeypatch, kind):
     flags = json.loads(Path("outputs/qc/flags.json").read_text())
     assert {f["code"] for f in flags} >= {"low_assignment", "small_cells", "zero_image"}
     assert len(summary["crops"]) == 6
+    assert all(crop["cells"] >= 1 and crop["prior_cells"] >= 1 for crop in summary["crops"])
     with pdfium.PdfDocument("outputs/qc/report.pdf") as pdf:
-        assert len(pdf) == 6
+        assert len(pdf) == 8
+        text = "\n".join(page.get_textpage().get_text_range() for page in pdf)
+        assert "Matched stain and mask comparison" in text
+        assert "Input prior" in text and "Final segmentation" in text
+        assert "sampled transcripts (n)" in text
         for page in pdf:
             rendered = page.render(scale=0.3).to_numpy()
             assert rendered.shape[0] > 100 and rendered.std() > 5
     assert len(list(Path("outputs/qc/figures").glob("crop-*.png"))) == 6
     assert json.loads(Path("outputs/qc/provenance.json").read_text())["seed"] == 17
+
+
+def test_crops_move_into_off_center_cells_instead_of_empty_fov_centers():
+    from types import SimpleNamespace
+
+    cells = SimpleNamespace(xy=np.array([[80, 100], [95, 120], [120, 110], [100, 150], [150, 150]]))
+    row = {"box": [0, 0, 4256, 4256], "cells": 5}
+    box, count = report.crop_box(row, cells)
+    assert count == 5
+    assert report.inside(cells.xy, box).all()
+    assert box[2] - box[0] == box[3] - box[1] == 512
+    assert box[2] < 4256 / 2 and box[3] < 4256 / 2
+
+
+def test_sparse_assignment_estimates_are_not_ranked_or_flagged_as_bad(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    request = fixture(tmp_path / "inputs")
+    # An unsupported zero-percent FOV must not be called the worst segmentation.
+    frame = pd.DataFrame(
+        {"x": [22] + [90] * 120, "y": [22] + [25] * 120, "cell_id": [0] + [2] * 108 + [0] * 12}
+    )
+    frame.to_parquet(tmp_path / "inputs/tx.parquet", index=False)
+    monkeypatch.setattr(report, "render", lambda *a: None)
+    summary = report.make_report(request)
+    low = next(r for r in summary["fovs"] if r["id"] == "0")
+    supported = next(r for r in summary["fovs"] if r["id"] == "1")
+    assert low["transcripts_sampled"] == 1 and low["assigned_pct"] == 0
+    assert low["score"] is None and not low["assignment_ranked"]
+    assert supported["transcripts_sampled"] == 120 and supported["score"] == pytest.approx(0.9)
+    flags = json.loads(Path("outputs/qc/flags.json").read_text())
+    assert any(f["code"] == "limited_fov_sampling" for f in flags)
+    assert not any(f["code"] == "low_fov_assignment" and f.get("fov") == "0" for f in flags)
+    assert summary["crops"][0]["fov"] == "1"
+    assert summary["crops"][0]["reason"] == "Higher sampled assignment"
+
+
+def test_channel_names_must_match_ngff_metadata(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    request = fixture(tmp_path / "inputs")
+    path = tmp_path / "inputs/image.ome.zarr"
+    group = zarr.open_group(str(path), mode="w")
+    group.create_array("s0", data=tifffile.imread(tmp_path / "inputs/image.tif"))
+    group.attrs["ome"] = {
+        "multiscales": [{"axes": ["c", "y", "x"], "datasets": [{"path": "s0"}]}],
+        "omero": {"channels": [{"label": "DNA"}, {"label": "Membrane"}]},
+    }
+    request["image"]["path"] = str(path)
+    request["image"]["channels"] = ["Membrane", "DNA"]
+    with pytest.raises(ValueError, match="Channel names/order"):
+        report.make_report(request)
+
+
+def test_outlines_do_not_invent_mask_edges_along_crop_borders(tmp_path):
+    path = tmp_path / "large.parquet"
+    pq.write_table(pa.table({"geometry": shapely.to_wkb([shapely.box(0, 0, 1000, 1000)])}), path)
+    cells = report.Cells({"path": str(path), "units": "pixel"}, 1)
+    fig, ax = report.plt.subplots()
+    try:
+        cells.outlines(ax, [100, 100, 200, 200])
+        assert len(ax.lines) == 1
+        assert set(ax.lines[0].get_xdata()) == {0, 1000}
+        assert set(ax.lines[0].get_ydata()) == {0, 1000}
+    finally:
+        report.plt.close(fig)
 
 
 def test_optional_inputs_are_unavailable_not_zero_and_selection_repeats(tmp_path, monkeypatch):
