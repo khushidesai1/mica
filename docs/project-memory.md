@@ -19,9 +19,15 @@ never file contents.
 
 Allowed files: `PROJECT.md`, `INDEX.md`, `conventions.md`, `open.md`, `lessons.md`,
 `data/*.md`, `results/*.md`, and `recipes/*.{md,py,R,sh}`. Markdown entries require
-`type:`, `source:`, and `status:` headers, except the guide and index. Limits are
+`type:`, `source:`, and `status:` headers, except the guide and index. Default limits are
 4,000 index characters, 16 KiB per Markdown entry, 100,000 guide bytes, 64 KiB per recipe,
 500 files, and 4 MiB per project, including archives and generated indexes. Secret-like content and unsafe paths are rejected.
+
+The active service sets `AGENT_MEMORY_FILE_KB=18` (18 KiB). This preserves an existing
+17,432-byte proposal without truncating it; the complete note still fits the 32,000-character
+writer context and crosses the automatic compaction threshold. The API passes this configured
+limit to new workers. A rejected save remains pending until its full proposal can be committed
+and verified; changing a budget does not mark it complete or regenerate accepted content.
 
 Run the live store check with `.venv/bin/python tools/memory_smoke.py`. For local setup,
 `--github-cli` uses the existing GitHub CLI login without printing or saving its token.
