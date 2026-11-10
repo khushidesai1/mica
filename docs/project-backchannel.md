@@ -7,7 +7,7 @@ that worker receives updates at its next tool boundary and can answer through th
 
 Use a common topic, such as `segmentation-recipe`, for related work. Messages can be updates,
 questions, answers, blockers or recipes. Answers reference the original message ID. Recipe notes
-should contain the reproducible method: software versions, inputs/priors, parameters, seeds,
+should contain the reproducible method: software versions, inputs/priors, parameters, supported seed controls,
 evidence and any immutable source reference. Consumers record the chosen message ID and actual
 settings in their methods. Different recommendations remain visible. Mica is guided to ask the
 investigating thread and defer dependent work when required settings are unresolved, rather
