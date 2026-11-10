@@ -109,11 +109,17 @@ text records and their authoritative JSON, compares exact file/size listings and
 reads TIFF headers without decoding pixels. Listing-only backfills fail. These checks do not
 reread all checksums or establish that a scientifically meaningful result is possible.
 
-The `segmentation-report` skill produces six PDF pages, crop PNGs, flags, provenance and a
+The `segmentation-report` skill produces eight PDF pages, paired crop PNGs, flags, provenance and a
 schema-v1 summary for polygon or label segmentations. It requires verified scale, channels and
 coordinate alignment. Image reads use a low-resolution overview and full-resolution crop
 windows; labels and transcript sampling are streamed. The worker views crops, adds visual-review
 notes, and publishes the summary next to the result for subsequent cohort comparisons.
+Report version 2 anchors crops to actual cells and shows identical stain pixels alongside
+prior/final mask overlays, with channel legends and calibrated scale bars. Per-FOV assignment
+ranking requires a disclosed minimum of 100 sampled transcripts; unsupported fields remain
+visible as sampling limitations. Same-sample count/area comparisons are separated from cohort
+context, and missing cohort transcript data is not plotted as a comparison. Background-only
+crops or invisible masks must be corrected before delivery.
 After publication, it retains the complete QC bundle in the bucket and keeps only the final
 PDF and summary in its attachment folder. Intermediate page/crop PNGs are for review, not a
 bulk Slack upload. Before final delivery, the worker validates its thread-memory JSON and lets
@@ -124,7 +130,8 @@ the same bounded model turn correct malformed prose; identity and coverage remai
 Use the coordinated `cloudbuild/build-slack-release.yaml` pipeline, preserving the current
 service configuration and compatible image pins. Its report gate uses tiny synthetic local
 inputs under `/opt/sap`; no new image family, infrastructure, IAM or secret changes are needed.
-Keep operator configuration empty for the release.
+Preserve existing operator task configuration during code releases. Do not clear an enabled
+task or its recipients; configuration changes require their own verified rollout.
 
 Before enabling a scientific task:
 

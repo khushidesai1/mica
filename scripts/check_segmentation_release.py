@@ -12,6 +12,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import shapely
 import tifffile
+from PIL import Image
 
 
 def load(path):
@@ -105,6 +106,7 @@ def main():
                 "method": {"name": "fixture", "version": "1"},
                 "um_per_px": 0.5,
                 "cells": {"path": str(root / "cells.parquet"), "units": "pixel"},
+                "prior": {"path": str(root / "cells.parquet"), "units": "pixel"},
                 "image": {
                     "path": str(raw / "Morphology2D/synthetic_F001.TIF"),
                     "channels": ["DNA"],
@@ -114,8 +116,16 @@ def main():
             }
         )
         assert result["cell_count"] == 1 and result["area_um2"]["median"] == 36
+        assert result["report_version"] == 2
+        assert all(c["cells"] == c["prior_cells"] == 1 for c in result["crops"])
         assert (root / "outputs/qc/report.pdf").read_bytes().startswith(b"%PDF")
         assert len(list((root / "outputs/qc/figures").glob("crop-*.png"))) == 6
+        assert len(list((root / "outputs/qc/figures").glob("[0-9][0-9]-*.png"))) == 8
+        crop = np.asarray(
+            Image.open(root / "outputs/qc/figures/crop-1.png").convert("RGB"), dtype=float
+        )
+        for color in [[57, 217, 255], [255, 209, 102]]:
+            assert np.sum(np.max(np.abs(crop - color), axis=2) < 5) > 10
     print("SEGMENTATION_REPORT_AND_COMPLETENESS_VERIFIED")
 
 
