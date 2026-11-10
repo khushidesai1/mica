@@ -13,6 +13,14 @@ from .slack_format import activity_blocks
 
 PREFIX = "mica_transfer_"
 TERMINAL = {"done", "failed", "cancelled", "expired"}
+PHASES = {
+    "listing": "Checking AtoMx source files",
+    "downloading": "Downloading to worker VM",
+    "checking_downloads": "Checking downloaded files",
+    "uploading": "Uploading to GCS",
+    "verifying": "Verifying GCS transfer",
+    "complete": "Transfer complete",
+}
 
 
 def token(pending: dict[str, Any]) -> str:
@@ -27,6 +35,49 @@ def size(value: int) -> str:
         if value >= divisor:
             return f"{value / divisor:.1f} {unit}"
     return f"{value:,} bytes"
+
+
+def progress_text(progress: dict[str, Any]) -> str:
+    """Show each leg separately; consumed upload bytes are not verified completion."""
+    def count(name: str) -> int:
+        value = progress.get(name)
+        return value if type(value) is int and value >= 0 else 0
+
+    total, files = count("total_bytes"), count("n_files")
+
+    def amount(done: int) -> str:
+        if not total:
+            return size(done)
+        return f"{size(done)} of {size(total)} ({min(100, done * 100 // total)}%)"
+
+    phase = progress.get("phase")
+    if not isinstance(phase, str):
+        phase = ""
+    if phase == "listing":
+        return "Checking the AtoMx source-file list before downloading."
+    if phase in {"downloading", "checking_downloads"}:
+        label = PHASES[phase]
+        return (
+            f"{label}: {amount(count('download_bytes'))}. "
+            f"{count('download_files'):,} of {files:,} files downloaded. "
+            "GCS uploads start after the download checks finish."
+        )
+    if phase == "uploading":
+        return (
+            f"Uploading to GCS: {amount(count('upload_bytes'))} streamed or checked. "
+            f"Verified in GCS: {count('files_done'):,} of {files:,} files "
+            f"({size(count('bytes_done'))})."
+        )
+    if phase in {"verifying", "complete"}:
+        return (
+            f"{PHASES[phase]}. Verified in GCS: {count('files_done'):,} of {files:,} files "
+            f"({amount(count('bytes_done'))})."
+        )
+    # Old workers report only verified GCS objects, never bytes downloaded onto the VM.
+    return (
+        f"Verified in GCS: {count('files_done'):,} files ({size(count('bytes_done'))}). "
+        "This worker does not report download progress."
+    )
 
 
 def button(p: dict[str, Any], action: str, label: str) -> dict[str, Any]:
@@ -98,6 +149,8 @@ def blocks(
             "done": "Transfer complete", "failed": "Transfer stopped",
             "cancelled": "Transfer cancelled", "expired": "Transfer approval expired",
         }.get(state, "Preparing transfer")
+        if state == "running":
+            title = PHASES.get(p.get("transfer_phase", ""), title)
         result = activity_blocks(
             [TaskProgress("transfer", target, title,
                           "error" if state == "failed" else

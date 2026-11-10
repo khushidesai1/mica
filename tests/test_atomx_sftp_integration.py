@@ -96,10 +96,16 @@ def test_real_scripts_transfer_and_verify_after_metadata_disconnect(server):
             "tool_version": "fixture", "requested_by": "fixture@example.com",
             "login_saved_by": "fixture@example.com",
         }
-        result = core.Transfer(remote, bucket, request).run()
+        updates = []
+        result = core.Transfer(remote, bucket, request, updates.append).run()
         assert server.dropped
         assert result["files_done"] == len(files) == 4
         assert result["bytes_done"] == sum(f.size for f in files)
+        checked = next(p for p in updates if p.get("phase") == "checking_downloads")
+        assert checked["download_bytes"] == result["bytes_done"]
+        assert checked["download_files"] == len(files)
+        assert checked["bytes_done"] == checked["files_done"] == 0
+        assert result["phase"] == "complete"
         for file in files:
             assert bucket.data[file.name] == MemoryRemote().data[file.source]
         assert bucket.read("transfer_status/TMA37.done.json")

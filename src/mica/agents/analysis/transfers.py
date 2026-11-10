@@ -772,18 +772,21 @@ class Transfers:
                 self.settings.long_run_threshold_seconds,
                 self.settings.long_run_update_seconds,
             )
-            if elapsed < self.settings.long_run_threshold_seconds or due:
+            # Refresh the existing private transfer card on every five-minute poll.
+            # Analysis-worker check-in intervals can be hours and hide an entire copy leg.
+            if p["job_kind"] == "pull" or elapsed < self.settings.long_run_threshold_seconds or due:
                 progress = await asyncio.to_thread(
                     read,
                     self.store,
                     f"tasks/transfers/{p['job_run']}/{p['job_kind']}-progress.json",
                 )
                 text = f"AtoMx job: {state.lower()}."
+                p.pop("transfer_phase", None)
                 if progress and progress.get("run_id") == p["job_run"]:
-                    text += (
-                        f" Last reported: {int(progress.get('files_done', 0)):,} files, "
-                        f"{int(progress.get('bytes_done', 0)):,} bytes transferred."
-                    )
+                    phase = progress.get("phase")
+                    if isinstance(phase, str) and phase in transfer_cards.PHASES:
+                        p["transfer_phase"] = phase
+                    text += " " + transfer_cards.progress_text(progress)
                     freshness = age(progress.get("heartbeat"))
                     if freshness != float("inf"):
                         text += f" Last transfer heartbeat {elapsed_label(freshness)} ago."

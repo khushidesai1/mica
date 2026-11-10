@@ -406,6 +406,9 @@ def test_large_file_renews_lease_while_streaming(setup, monkeypatch):
         entry for entry in progress if entry["event"] == "progress" and entry["files_done"] == 4
     ]
     assert len(partial) >= 3  # Lease checks continue inside a multi-chunk file.
+    streaming = [p for p in partial if p["phase"] == "uploading"]
+    assert any(p["bytes_done"] < p["upload_bytes"] < done["total_bytes"] for p in streaming)
+    assert done["upload_bytes"] == done["bytes_done"] == done["total_bytes"]
     assert done["total_bytes"] == sum(len(data) for data in remote.data.values())
     assert bucket.stat(RAW + "large.bin").size == 17 * 1024 * 1024
 

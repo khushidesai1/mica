@@ -169,7 +169,11 @@ def check_download(*, disconnect: bool = True):
             remote = ScriptSFTP(server.config, server.login)
             staging = Path(remote.temporary.name)
             try:
-                remote.stage(files, lambda: None)
+                updates = []
+                remote.stage(files, lambda: None, lambda *update: updates.append(update))
+                assert updates[0] == ("downloading", 0, 0)
+                assert updates[-1] == ("checking_downloads", len(files), sum(f.size for f in files))
+                assert any(phase == "downloading" and count > 0 for phase, count, _ in updates)
                 for file in files:
                     with remote.open(file.source) as stream:
                         assert stream.read() == payloads[file.source.lstrip("/")]
@@ -180,6 +184,7 @@ def check_download(*, disconnect: bool = True):
                 result = {"probe": "mica_atomx_real_sftp", "passed": True,
                           "files": len(files), "bytes": sum(f.size for f in files),
                           "metadata_disconnect": disconnect,
+                          "download_progress_verified": True,
                           "connections": len(server.transports)}
             finally:
                 remote.close()

@@ -49,6 +49,14 @@ In an existing Slack DM, the transfer takes over its request's activity message.
 queued/running progress and the final result use the same compact status dropdown as Mica's
 other activity. The approval card replaces that status while awaiting a decision; later updates
 edit the same message. Full source and destination paths remain visible on the approval card.
+During a pull, the card refreshes every five minutes with separate **Downloading to worker VM**
+and **Uploading to GCS** phases. Download bytes include partially written local files; upload
+bytes include blocks consumed by the upload stream or checked against existing objects. The
+verified file/byte counters advance only after size and CRC32C checks pass. Download checks
+and final source/destination verification have their own labels. Worker artifacts refresh at
+most once a minute and immediately on phase changes; they do not claim transfer completion
+until the completion markers are written. Older workers explicitly show that download progress
+is unavailable, rather than labeling zero verified GCS bytes as zero transferred bytes.
 A new top-level request starts a thread under that message. Requests from a shared channel use
 one separate private message, never publish export details to that channel, and bind approval
 to the requester and the privately delivered card. If a login is needed, **Connect AtoMx** opens
@@ -91,7 +99,8 @@ password authentication remains enabled with strict host checking. `BatchMode=no
 SFTP's `-b` option, which otherwise disables the private-pipe password helper.
 The worker gate also downloads fixture bytes through both real shell scripts from a local,
 password-authenticated SFTP server. It deliberately drops the separate metadata connection
-during download and checks recovery, downloaded bytes, and staging cleanup. Metadata reads
+during download and checks recovery, downloaded bytes, separate download progress, and staging
+cleanup. Metadata reads
 reconnect once after a closed transport or channel, retaining the pinned host key and login;
 missing files and other remote file errors still fail. This also protects size and manifest
 checks after long downloads or uploads. Structured staging logs identify each download script

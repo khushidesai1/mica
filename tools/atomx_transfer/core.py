@@ -384,17 +384,30 @@ class Transfer:
             "run_id": request["run_id"],
             "files_done": 0,
             "bytes_done": 0,
+            "phase": "listing",
+            "download_files": 0,
+            "download_bytes": 0,
+            "upload_bytes": 0,
             "plan_fingerprint": request.get("plan_fingerprint"),
         }
 
     def beat(self, *, force: bool = False) -> None:
-        if force or time.monotonic() - self.last_beat >= 300:
+        if force or time.monotonic() - self.last_beat >= 60:
             self.marker["heartbeat"] = now()
             self.generation = self.bucket.write(
                 self.prefix + ".in_progress.json", self.marker, self.generation
             )
             self.last_beat = time.monotonic()
             self.progress({"event": "progress", **self.marker})
+
+    def download_progress(self, phase: str, files: int, size: int) -> None:
+        changed = self.marker["phase"] != phase
+        self.marker.update(phase=phase, download_files=files, download_bytes=size)
+        self.beat(force=changed)
+
+    def phase(self, phase: str) -> None:
+        self.marker["phase"] = phase
+        self.beat(force=True)
 
     def run(self) -> dict[str, Any]:
         if self.bucket.read(self.prefix + ".done.json"):
@@ -427,8 +440,10 @@ class Transfer:
             stage = getattr(self.remote, "stage", None)
             if stage is not None:
                 step = "staging"
-                stage(files, self.beat)
+                self.phase("downloading")
+                stage(files, self.beat, self.download_progress)
             step = "upload"
+            self.phase("uploading")
             manifest = []
             for file in files:
                 self.beat()
@@ -441,8 +456,11 @@ class Transfer:
                         while block := stream.read(8 * 1024 * 1024):
                             read += len(block)
                             checksum.update(block)
-                            self.beat()
                             yield block
+                            # The destination consumed this block. Completion counters only
+                            # advance after object size and checksum verification below.
+                            self.marker["upload_bytes"] = self.marker["bytes_done"] + read
+                            self.beat()
                     if read != file.size or self.remote.size(file.source) != file.size:
                         raise ValueError("Source file changed during transfer")
 
@@ -459,6 +477,7 @@ class Transfer:
                 self.marker["files_done"] += 1
                 self.marker["bytes_done"] += read
             step = "verify"
+            self.phase("verifying")
             if plan(
                 self.remote,
                 self.request["export_root"],
@@ -475,6 +494,7 @@ class Transfer:
             self.beat(force=True)
             done = {
                 **self.marker,
+                "phase": "complete",
                 "provenance": "transfer",
                 "finished": now(),
                 "manifest": [asdict(f) for f in manifest],
