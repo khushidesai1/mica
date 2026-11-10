@@ -131,8 +131,8 @@ async def edit(key: str, model: str, context: dict[str, Any]) -> dict[str, str]:
         schema["properties"]["changes"]["propertyNames"] = {"enum": ["open.md"]}
     # Full-file replacements must fit alongside thread prose. The writer can see
     # 32,000 characters of editable files; 8,192 output tokens can truncate valid
-    # replacements. Keep the call below the memory task's 180-second dispatch limit.
-    async with httpx.AsyncClient(timeout=120) as client:
+    # replacements. Leave commit/verification time within the 300-second task.
+    async with httpx.AsyncClient(timeout=240) as client:
         response = await client.post(
             "https://api.anthropic.com/v1/messages",
             headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
@@ -317,14 +317,14 @@ async def enqueue(bridge: BatchBridge, event_id: str, record: dict[str, Any]) ->
 
 async def process(bridge: BatchBridge, event_id: str, storage: Storage) -> None:
     mutex = f"claude-memory:{event_id}"
-    claim = await bridge.repository.begin_event(mutex, lease_seconds=170)
+    claim = await bridge.repository.begin_event(mutex, lease_seconds=330)
     if claim.status != "claimed":
         raise RuntimeError("Memory editor busy; retry")
     outcome = "failed:CancelledError"
     stage, reason = "read", "none"
     record: dict[str, Any] | None = None
     try:
-        async with asyncio.timeout(150):
+        async with asyncio.timeout(270):
             record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
             if not record or not eligible(bridge, record):
                 outcome = "skipped"
