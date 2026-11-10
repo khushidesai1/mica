@@ -1,0 +1,11 @@
+{
+  "name": "proseg",
+  "version": "3.1.1",
+  "source": "https://github.com/dcjones/proseg",
+  "commit": "2c1e418393eb6d62ea7a95dd78d873c455333798",
+  "crate_url": "https://static.crates.io/crates/proseg/proseg-3.1.1.crate",
+  "crate_sha256": "01ef31f4f7213ad79534d399fcd5dfe8ae2a012edb91275f05517f39368622f5",
+  "builder": "rust:1.90.0-bookworm@sha256:3914072ca0c3b8aad871db9169a651ccfce30cf58303e5d6f2db16d1d8a7e58f",
+  "executable": "/opt/proseg/3.1.1/bin/proseg",
+  "license": "MIT"
+}

@@ -40,6 +40,11 @@ than cached. Transient download failures are also retryable, including failures 
 workers. HTTP transfers allow three retries and a five-minute read timeout. Repeating the same
 dependency set after a transient failure does not consume another distinct-runtime slot; each
 set still has at most three setup attempts per turn.
+The mirror preserves an upstream package-index HTTP 404 so the resolver reports an absent
+distribution. Real registry/network failures remain retryable 502 responses. This distinction
+does not change package permissions or allow external URLs. Native tools are not installed by
+`ensure_packages`: the pinned Proseg CLI is shipped with the worker image and advertised in
+the environment catalog; `proseg`/`proseg-py` are not PyPI install targets at this pin.
 Repeatable installation failures expire after 24 hours; changing the policy version or relevant limits
 also invalidates the old failure key. A failure incident records investigation, not proof that the
 package installation later recovered.

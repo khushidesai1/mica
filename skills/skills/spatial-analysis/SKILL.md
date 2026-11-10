@@ -48,6 +48,47 @@ metadata. Confirm consequential choices such as channels, diameter, scale, and s
 they are not specified; do not treat the API defaults as verified biological parameters.
 Proseg's `um_per_px` must come from verified sample metadata or the user, not its default `1.0`.
 
+## Proseg parameter investigations
+
+The bundled custom `proseg-py` 3.1.1 Python wrapper and `sap.segmentation.proseg` expose I/O
+arguments, not model hyperparameters. Do not claim a sweep by varying unsupported Python
+keywords. `proseg` and `proseg-py` are not available PyPI projects at this runtime pin;
+`ensure_packages` cannot install a tunable CLI from those names. A package-index 404 means
+absent distribution, not permission denied or a transient network failure.
+
+For an authorized parameter investigation, use the separate native CPU executable
+`/opt/proseg/3.1.1/bin/proseg`. First run it with `--version` and `--help` and read its packaged
+`/opt/proseg/3.1.1/manifest.json`. If it is missing or the version differs, report the runtime
+gap; do not upgrade Proseg, download a replacement, or patch the running Python environment.
+The native CLI uses official 3.1.1 source and its lockfile; the custom wrapper remains available
+for its existing API. Do not assume the two output formats or their defaults are interchangeable.
+
+Verified CLI 3.1.1 controls include `--prior-seg-reassignment-prob`,
+`--nuclear-reassignment-prob`, `--enforce-connectivity` (a flag), `--cell-compactness`,
+`--voxel-size`, `--burnin-voxel-size`, `--voxel-layers`, `--nthreads` and sampler iteration
+controls. `--cell-compactness` has an exponential prior: smaller values induce more compact
+cells. There is **no** `--perimeter-bound`, `--perimeter-eta`, or `--seed` option at this version.
+Do not substitute compactness for a requested perimeter parameter without resolving that
+scientific choice, and do not promise bitwise reproducibility from a fixed recipe.
+
+Before executing, prepare a transcript table or a supported SpatialData input that preserves
+the requested prior assignments, unique cell IDs/FOV identity, nuclear labels, coordinate
+frame and units. Check the corresponding `--*-column`, `--cell-id-unassigned`,
+`--non-unique-cell-ids` and `--coordinate-scale` options against the source data. Do not apply
+CosMx's default pixel scale to an already micron-scaled table, infer nuclear assignments from
+whole-cell assignments, or silently reduce the sample. Mask/polygon priors require the
+matching documented input options and verified image-to-micron transforms.
+
+Record the executable version, manifest, full command, input checksums, prior source,
+coordinate transform, all varied and held-constant parameters, thread count and output schema
+in the recipe. Use a fresh output directory per run (`--output-path`); validate transcript
+counts/IDs, cell metadata, polygons and AnnData/SpatialData outputs before checkpointing or
+publishing. CLI SpatialData output is distinct from SAP's output-store layout: any conversion
+must preserve identifiers, coordinate transforms and tables and be checked explicitly.
+Compare a bounded representative run before a full TMA sweep. Apply a selected recipe across
+TMAs only when the user's scope and verified inputs support it; report unsupported requested
+controls explicitly. Finish whole-sample results with the segmentation-report skill below.
+
 ## Data and resource requirements
 
 - CosMx input is one local raw sample directory on the read-only project mount. It needs

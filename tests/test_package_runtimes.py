@@ -190,6 +190,27 @@ def test_mirror_single_flight_cache_and_transient_failure_over_http(tmp_path, mo
             assert server.policy_errors == ["Package denied by runtime policy"]
 
 
+@pytest.mark.parametrize("upstream, expected", [(404, 404), (429, 502), (500, 502), (503, 502)])
+def test_mirror_preserves_missing_package_without_hiding_registry_outages(
+    tmp_path, monkeypatch, upstream, expected
+):
+    with WheelMirror(tmp_path / "http", set(), 1024**2) as server:
+        def fetch(url, **kwargs):
+            response = httpx.Response(upstream, request=httpx.Request("GET", url))
+            response.raise_for_status()
+
+        monkeypatch.setattr(server, "fetch", fetch)
+        with httpx.Client(trust_env=False, timeout=3) as client:
+            response = client.get(server.url + "/simple/proseg-py/")
+        assert response.status_code == expected
+        assert not server.policy_errors and not server.simple
+        if upstream == 404:
+            assert "Package not found" in response.text
+            assert not runtime_install.transient_failure(str(response.status_code) + response.text)
+        else:
+            assert runtime_install.transient_failure("502 Bad Gateway")
+
+
 def test_source_selection_obeys_age_python_constraints_and_existing_wheels(mirror):
     mirror.indexes["docrep"] = [
         index_file(version="0.3.1"),
