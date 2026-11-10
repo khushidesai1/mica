@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -138,8 +139,27 @@ class ScriptSFTP(SFTP):
             raise ValueError("Unsupported path in SFTP manifest")
         return '"' + path + '"'
 
-    def stage(self, files, heartbeat):
+    def stage(self, files, heartbeat, progress: Callable[[str, int, int], None] | None = None):
         root = Path(self.temporary.name)
+
+        def report(phase="downloading"):
+            if progress is None:
+                heartbeat()
+                return
+            count = total = 0
+            for file in files:
+                target = self.local.get(file.source)
+                if target is None:
+                    continue
+                try:
+                    length = target.stat().st_size
+                except FileNotFoundError:
+                    continue
+                # Include the partially written file, without counting it as complete.
+                total += min(length, file.size)
+                count += length == file.size
+            progress(phase, count, total)
+
         if sum(f.size for f in files) * 1.15 + 5_000_000_000 > shutil.disk_usage(root).free:
             raise ValueError("Insufficient transfer staging space")
         host = (
@@ -195,7 +215,7 @@ class ScriptSFTP(SFTP):
                 )
                 try:
                     while True:
-                        heartbeat()
+                        report()
                         try:
                             code = process.wait(timeout=15)
                             break
@@ -205,6 +225,7 @@ class ScriptSFTP(SFTP):
                         print(json.dumps({"event": "atomx_staging", "operation": script,
                                           "status": "failed", "exit_code": code}), flush=True)
                         raise ValueError("SFTP script download failed")
+                    report()
                     print(json.dumps({"event": "atomx_staging", "operation": script,
                                       "status": "downloaded"}), flush=True)
                 finally:
@@ -215,9 +236,11 @@ class ScriptSFTP(SFTP):
                 os.close(read_fd)
                 if write_fd >= 0:
                     os.close(write_fd)
+        report("checking_downloads")
         print(json.dumps({"event": "atomx_staging", "operation": "validate_sizes",
                           "status": "started"}), flush=True)
         for file in files:
+            heartbeat()
             if (
                 self.local[file.source].stat().st_size != file.size
                 or self.size(file.source) != file.size

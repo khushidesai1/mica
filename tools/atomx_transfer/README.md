@@ -39,6 +39,14 @@ Source listing changes and extra destination objects prevent a done marker. The 
 metadata snapshot: equal remote sizes alone cannot detect same-size source edits. Use a transfer
 or checksum verification appropriate to the source to establish content equality.
 
+Job progress distinguishes `listing`, `downloading`, `checking_downloads`, `uploading`, and
+`verifying` before `complete`. `download_bytes` includes the partial local file, while
+`download_files` counts files whose local size matches the plan. `upload_bytes` includes blocks
+consumed by the destination stream (or checked against existing objects); only `files_done`
+and `bytes_done` certify size/CRC32C-verified objects. Progress is published at most once a
+minute plus phase changes. The metadata and completion checks remain required even when a
+byte counter reaches 100%.
+
 ## Completion markers
 
 `transfer_status/<sample>.done.json` is the authoritative completion record. After verifying all

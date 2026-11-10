@@ -330,3 +330,60 @@ async def test_signed_click_is_acknowledged_before_cloud_checks(transfer, monkey
     assert len(background.tasks) == 1
     await background()
     handler.assert_awaited_once_with(service, action(p))
+
+
+@pytest.mark.parametrize("phase,expected", [
+    ("listing", "Checking the AtoMx source-file list"),
+    ("downloading", "Downloading to worker VM: 500 bytes of 1.0 KB (50%)"),
+    ("checking_downloads", "Checking downloaded files"),
+    ("uploading", "Uploading to GCS: 250 bytes of 1.0 KB (25%)"),
+    ("verifying", "Verifying GCS transfer"),
+    (None, "This worker does not report download progress"),
+])
+def test_progress_labels_keep_vm_downloads_separate_from_gcs_verification(phase, expected):
+    progress = {
+        "phase": phase, "download_bytes": 500, "download_files": 2,
+        "upload_bytes": 250, "bytes_done": 100, "files_done": 1,
+        "total_bytes": 1000, "n_files": 4,
+    }
+    text = transfer_cards.progress_text(progress)
+    assert expected in text
+    if phase in {"downloading", "checking_downloads"}:
+        assert "2 of 4 files downloaded" in text
+        assert "GCS uploads start after" in text
+        assert "100 bytes" not in text
+    elif phase == "uploading":
+        assert "Verified in GCS: 1 of 4 files (100 bytes)" in text
+    assert "bytes transferred" not in text
+
+
+async def test_long_transfer_polls_update_phase_in_place_without_waiting_hours(
+    transfer, monkeypatch,
+):
+    service, p = transfer
+    now = time.time()
+    p.update(state="running", job_kind="pull", job_run="b" * 32,
+             job_started=now - 3600, last_check_in=now - 60)
+    service.settings.long_run_threshold_seconds = 600
+    service.settings.long_run_update_seconds = 7200
+    running = SimpleNamespace(status=SimpleNamespace(state=SimpleNamespace(name="RUNNING")))
+    monkeypatch.setattr(transfers.batch_v1, "BatchServiceClient", lambda: SimpleNamespace(
+        get_job=lambda **_: running,
+    ))
+    progress = {
+        "run_id": p["job_run"], "heartbeat": transfers.datetime.now(transfers.UTC).isoformat(),
+        "phase": "downloading", "download_bytes": 500, "download_files": 2,
+        "upload_bytes": 0, "bytes_done": 0, "files_done": 0, "total_bytes": 1000, "n_files": 4,
+    }
+    monkeypatch.setattr(transfers, "read", lambda *args: progress)
+    await service.poll(p)
+    first = service.bridge.test_slack.chat_postMessage.call_args.kwargs
+    assert first["blocks"][0]["title"] == "Downloading to worker VM"
+    assert "500 bytes of 1.0 KB" in first["text"]
+    progress.update(phase="uploading", download_bytes=1000, download_files=4, upload_bytes=250)
+    await service.poll(p)
+    second = service.bridge.test_slack.chat_update.call_args.kwargs
+    assert second["blocks"][0]["title"] == "Uploading to GCS"
+    assert "250 bytes of 1.0 KB" in second["text"]
+    service.bridge.test_slack.chat_postMessage.assert_awaited_once()
+    assert service.schedule.call_args.args[1] == 300
