@@ -22,6 +22,9 @@ Required JSON fields:
   "nuclear_channel": "DNA", "membrane_channel": "Membrane" }`. TIFF is also supported.
   Set `axes` (e.g. `CYX`) only when metadata is ambiguous. `membrane_channel` can be omitted
   if no membrane stain exists; disclose that in `review`. Use exact channel names from metadata.
+  Optional `context_channel` adds a third verified stain, such as PanCK, to show tissue context.
+  Never label fluorescence as H&E/brightfield or fabricate a stain that was not acquired.
+  NGFF/OME channel names and order are checked against image metadata when available.
 - `output_dir`: a **new** folder under `outputs/` (for example `outputs/segmentation-qc-v1`).
 
 All coordinates must use the same image frame: origin at the upper left, x right and y down.
@@ -32,7 +35,10 @@ Do not infer scale from the algorithm's default, or relabel pixel areas as µm²
 
 Optional inputs:
 
-- `prior`: polygon input using the same schema as `cells`.
+- `prior`: the same sample's input masks, using the same schema as `cells`.
+  Supply it whenever available. Set `prior_label` (e.g. `AtoMx prior`) and `result_label`
+  (e.g. `Proseg`) to identify the actual comparison. A prior is not interchangeable with an
+  older segmentation pipeline: disclose when no older pipeline result is available.
 - `transcripts`: `{ "path": "checkpoints/transcripts.parquet", "x": "x_global_px",
   "y": "y_global_px", "cell_id": "cell_id" }`, or CSV/CSV.gz. Coordinates are pixels.
   Set `unassigned` to the source's unassigned identifiers if they differ from zero, -1,
@@ -48,18 +54,36 @@ Optional inputs:
   do not compare unrelated samples without explaining their differences.
 - `thresholds`: overrides for `cells_per_prior` (0.9), `assigned_pct` (90),
   `fov_assigned_pct` (80), `small_area_um2` (10), `small_cell_fraction` (0.1), `sparse_cells` (2).
+  `min_fov_transcripts` (100) is the minimum sampled-transcript denominator for FOV assignment
+  ranking/low-assignment flags. Lower-support FOVs remain visible as a sampling limitation.
 - `review`: visual findings and limitations as a string.
 
-The script writes `report.pdf`, schema-v1 `segmentation_summary.json`, `flags.json`,
-`provenance.json`, six page PNGs and six full-resolution crop PNGs under `figures/`.
+The script writes an eight-page `report.pdf`, schema-v1 `segmentation_summary.json` with
+`report_version: 2`, `flags.json`, `provenance.json`, eight page PNGs and six matched-region
+comparison PNGs under `figures/`. Each comparison shows identical stain pixels/contrast,
+the input-prior outlines and the final-mask outlines, with channel/color legends, calibrated
+scale bars and region/FOV identifiers. Six cell-containing regions are selected from supported
+higher/lower assignment FOVs and seeded FOVs; crops are anchored to cells instead of empty
+FOV centers. They are selected review examples, not an unbiased accuracy measurement.
 It reads a low-resolution image overview and full-resolution crop windows; label statistics
 stream in 512-pixel tiles. It does not materialize a whole-slide image or all transcripts.
 Large TIFFs should be tiled or pyramidal; a strip-based TIFF may require expensive strip reads.
 
-View **all six crop PNGs**, checking alignment, merging/splitting, stain coverage and missing
-tiles. Rerun into a new output folder with concrete `review` notes. On tiny samples, repeated
-crops are explicitly labelled. All-zero flags come from the overview and need visual follow-up.
+View **all eight pages and all six paired crop PNGs**, checking that the stains and both mask
+sets are actually visible and spatially aligned, along with merging/splitting, stain coverage
+and missing tiles. Empty background or invisible outlines do not satisfy visual review:
+correct crop selection/alignment and regenerate before delivery. Do not merely note that five
+of six crops are background and send the PDF anyway. Examine suspicious stain-rich regions
+with missing masks separately; selecting cell-containing crops can otherwise hide omissions.
+Rerun into a new output folder with concrete `review` notes describing observed regions and
+remaining uncertainty. On tiny samples, repeated crops are explicitly labelled. All-zero
+flags come from the overview and need visual follow-up.
 Keep automatic flags visible even when an unusual biological result explains them.
+Prior/final cell counts and area distributions are same-sample descriptive comparisons;
+count ratios do not prove cell identity retention or good boundaries. Cohort count/area
+differences may reflect tissue amount/composition. Do not present a lone new-sample point as
+a cohort transcript comparison, rank a few sampled transcripts as best/worst segmentation,
+or claim that high transcript assignment alone validates the masks.
 
 Publish the final summary next to the segmentation results (e.g. the authorized output's `qc/`
 folder), including the full figures, flags and provenance, so later runs can use it as a cohort
