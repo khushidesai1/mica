@@ -144,6 +144,10 @@ def job_spec(
             "AGENT_MEMORY_FILE_KB": str(settings.memory_file_kb),
             "AGENT_MEMORY_MAX_FILES": str(settings.memory_max_files),
             "AGENT_MEMORY_TOTAL_KB": str(settings.memory_total_kb),
+            # Keep this project's active recipes at their configured paths on worker saves.
+            "AGENT_AMBIENT_TASKS": json.dumps(
+                [task.model_dump(mode="json") for task in settings.ambient_tasks]
+            ),
             "AGENT_THREAD_MEMORY": settings.thread_memory,
             "AGENT_THREAD_MEMORY_ENABLED": str(thread_memory.enabled(settings)).lower(),
             **{
@@ -1254,6 +1258,10 @@ class BatchBridge:
                                     "data_buckets", self.settings.data_buckets
                                 ),
                                 "max_run_seconds": record.get("max_run_seconds", 3600),
+                                "ambient_tasks": [
+                                    task for task in self.settings.ambient_tasks
+                                    if task.project == record.get("project_id")
+                                ],
                             }
                         ),
                         event_id,

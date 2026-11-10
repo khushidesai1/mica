@@ -22,7 +22,14 @@ from google.oauth2 import id_token
 from .config import Settings
 from .outputs import files_under
 from .storage import Conflict, Storage
-from .write_broker import BATCH_SIZE, manifest_stage, relative_path, staged_key, valid_shard
+from .write_broker import (
+    BATCH_SIZE,
+    ambient_relative_path,
+    manifest_stage,
+    relative_path,
+    staged_key,
+    valid_shard,
+)
 
 if TYPE_CHECKING:
     from .runner import Context, TurnResult
@@ -229,6 +236,9 @@ class Publisher:
                 paths = self.select(ctx, result, folder)
                 root = ctx.workdir / "outputs/gcs"
                 selected = {relative_path(p.relative_to(root).as_posix()): p for p in paths}
+                if self.request.get("ambient") and self.grant:
+                    for path in selected:
+                        ambient_relative_path(self.grant["uri"], path)
                 for path in selected:
                     group = (
                         folder.removeprefix("outputs/gcs/").rstrip("/") + "/"

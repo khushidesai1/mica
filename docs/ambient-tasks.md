@@ -34,6 +34,12 @@ one `{sample}` segment; output folders end in `/`. No traversal, formatting expr
 paths, duplicate recipients or CPU dollar-budget settings are accepted. Project/bucket/write
 ceiling checks happen against the live registry at startup and publishing.
 
+Enabled tasks keep their configured recipes active during memory saves and index compaction.
+The recipe takes priority in the bounded index and cannot be deleted while its task is enabled.
+Workers receive only their project's task definitions so their memory saves enforce the same rule.
+Disabling a task removes that retention requirement. A previously archived recipe must be restored
+to its configured path; blocked arrivals then retry automatically without another CPU approval.
+
 ## Discovery and admission
 
 The existing five-minute Batch reconciliation route runs an isolated ambient scan with a
@@ -73,6 +79,11 @@ cancellation and stopped-attempt checks. An invalid event grant never falls back
 project grant. Writes use generation-zero preconditions; overwrite approvals cannot authorize
 replacement in an ambient run. A follow-up message is a new event and uses ordinary project
 write grants.
+
+The output grant already contains the sample folder. Stage `outputs/gcs/images/`,
+`outputs/gcs/points/`, and the other result directories relative to that root. Both the worker
+and controller reject a repeated bucket-relative grant prefix before publication, preventing a
+nested duplicate such as `resegmentation/TMA37/resegmentation/TMA37/`.
 
 The start fixes `deadline_at` to the smaller of `max_hours` and the deployment's runtime ceiling.
 Every CPU/GPU attempt uses that same absolute deadline, including resize, preemption and

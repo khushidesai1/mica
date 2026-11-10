@@ -342,6 +342,31 @@ def add_store(worker, name, count=1):
     return paths
 
 
+async def test_ambient_repeated_sample_path_is_rejected_before_staging(worker):
+    worker.request["ambient"] = {"task": "segmentation", "sample": "TMA37"}
+    worker.request["write_grant"]["uri"] = "gs://lab-data/resegmentation/TMA37/"
+    add_store(worker, "resegmentation/TMA37/images")
+    service = publisher(worker)
+    result = await service.publish(
+        worker.ctx, worker.result, folder="outputs/gcs/resegmentation/TMA37"
+    )
+    assert not result.uploaded
+    assert "already includes resegmentation/TMA37/" in result.errors[0]
+    worker.client.post.assert_not_called()
+    assert not worker.store.keys("tasks/slack-analysis/events/" + "a" * 32 + "/write-exports")
+    async def uploaded_scoped(url, **kwargs):
+        response = await uploaded_batch(url, **kwargs)
+        data = response.json()
+        for item in data["results"]:
+            item["uri"] = worker.request["write_grant"]["uri"] + item["relative_path"]
+        return httpx.Response(200, json=data, request=response.request)
+
+    worker.client.post.side_effect = uploaded_scoped
+    paths = add_store(worker, "images")
+    result = await service.publish(worker.ctx, TurnResult(files=paths), folder="outputs/gcs/images")
+    assert not result.errors and len(result.uploaded) == 1
+
+
 async def test_result_store_preserves_601_paths_with_bounded_concurrency(worker, monkeypatch):
     import asyncio
 

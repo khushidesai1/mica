@@ -173,6 +173,19 @@ def relative_path(raw: str) -> str:
     return raw
 
 
+def ambient_relative_path(uri: str, relative: str) -> str:
+    """Ambient grants already include the sample's bucket-relative destination."""
+    relative = relative_path(relative)
+    prefix = urlsplit(uri).path.lstrip("/").rstrip("/")
+    if prefix and (relative == prefix or relative.startswith(prefix + "/")):
+        raise ValueError(
+            f"The ambient grant already includes {prefix}/. "
+            "Stage paths relative to the sample root under outputs/gcs/, "
+            "for example outputs/gcs/images/, without repeating the grant path."
+        )
+    return relative
+
+
 def staged_key(event_id: str, relative: str) -> str:
     import re
 
@@ -279,6 +292,7 @@ def upload(
 
     grant = check()
     if isinstance(grant, write_access.EventWriteGrant):
+        ambient_relative_path(grant.uri, relative)
         approval = None
     uri = grant.uri + relative
     if len(urlsplit(uri).path.lstrip("/").encode()) > 1024:

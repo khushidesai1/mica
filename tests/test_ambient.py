@@ -234,6 +234,9 @@ async def test_blocked_start_notifies_once_and_recovers(background, problem):
 async def test_preset_and_seed_win_over_active_project_and_no_model(background):
     other = seed_project(background.store, name="other", channel="D2")
     assert other != background.pid
+    background.settings.ambient_tasks.append(
+        AmbientTask(**(definition(other) | {"id": "other"}))
+    )
     background.bucket_fake.add("sample")
     await scan(background)
     record = await event_record(background)
@@ -242,6 +245,12 @@ async def test_preset_and_seed_win_over_active_project_and_no_model(background):
     record = await event_record(background)
     assert record["project_id"] == background.pid and record["reference_repos"] == []
     assert record["request_deadline"] == record["deadline_at"]
+    assert record["status"] == "running" and not record.get("compute_approval")
+    job = background.test_client.create_job.call_args.kwargs["job"]
+    worker_environment = job.task_groups[0].task_spec.runnables[0].environment.variables
+    definitions = json.loads(worker_environment["AGENT_AMBIENT_TASKS"])
+    assert [task["project"] for task in definitions] == [background.pid]
+    assert definitions[0]["recipe"] == "recipes/ambient.md"
     grant = write_access.active(
         background.store, background.pid, background.settings, record["event_id"]
     )
@@ -371,6 +380,17 @@ async def test_real_broker_and_api_use_event_grant_and_never_overwrite(backgroun
     assert reply["results"][0]["status"] == "uploaded"
     assert dest.calls[0]["if_generation_match"] == 0
     assert dest.metadata["pistachio-grant"] == grant.id
+    source_factory = Mock(
+        side_effect=AssertionError("Nested export must fail before staging reads")
+    )
+    background.store.bucket.blob = source_factory
+    with pytest.raises(ValueError, match="already includes results/sample/"):
+        write_broker.upload(
+            background.store, background.settings, background.pid, event,
+            "results/sample/qc/report.pdf", grant.id, lambda: None,
+        )
+    source_factory.assert_not_called()
+    background.store.bucket.blob = lambda name: source
     # A distinct staged path must never replace an existing object, even with an approval.
     source.data = b"replacement"
     source.refresh()
