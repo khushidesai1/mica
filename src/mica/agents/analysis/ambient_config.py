@@ -64,6 +64,7 @@ class AmbientTask(BaseModel):
     max_concurrent: int = Field(default=1, ge=1, le=10)
     max_starts_per_day: int = Field(default=4, ge=1, le=100)
     task: str = Field(min_length=5, max_length=8000)
+    return_scripts: bool | None = None
 
     @field_validator("recipe")
     @classmethod

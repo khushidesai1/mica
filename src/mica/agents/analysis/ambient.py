@@ -330,8 +330,10 @@ async def start(
         f"Unattended ambient run set up by {task.authorized_by.email}. "
         "Follow the project recipe and skills. Check completeness first; stop and report any "
         "failure. If a consequential choice is unspecified, stop after the checks and ask here. "
-        f"Publish only new objects under {grant.uri}. Finish with the segmentation report PDF "
-        "and a short summary.\n" + prompt
+        f"Publish only the requested new data objects under {grant.uri}. "
+        "Follow the task and recipe's report format and storage instructions. "
+        "Deliver the requested PDF and a short summary to the configured recipients; "
+        "a data write grant does not require publishing reports or review intermediates.\n" + prompt
     )
     origin = {
         "task": task.id,
@@ -340,6 +342,7 @@ async def start(
         "preset": state["preset"],
         "deadline_at": state["deadline_at"],
         "key": key,
+        "return_scripts": task.return_scripts,
     }
     # Save event identity before accept: a lost enqueue response cannot allocate another run.
     state["event_id"] = event_id

@@ -128,6 +128,47 @@ def test_crops_move_into_off_center_cells_instead_of_empty_fov_centers():
     assert box[2] < 4256 / 2 and box[3] < 4256 / 2
 
 
+def test_concise_report_is_one_pdf_with_checks_and_no_sidecars(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    request = fixture(tmp_path / "inputs") | {
+        "format": "concise",
+        "run_status": "completed",
+        "publication_status": "verified",
+        "outcome": "Segmentation finished and the data were saved; review the blank tile.",
+    }
+    summary = report.make_report(request)
+    assert summary["cell_count"] == 6 and summary["assigned_pct"] == 50
+    assert sorted(p.name for p in Path(request["output_dir"]).iterdir()) == ["report.pdf"]
+    with pdfium.PdfDocument(str(Path(request["output_dir"]) / "report.pdf")) as pdf:
+        assert len(pdf) == 1
+        text = pdf[0].get_textpage().get_text_range()
+        assert "Run: Completed" in text and "50.0%" in text
+        assert "zero image: 1" in text and "low assignment: 1" in text
+        assert "Last tile is blank" in text and "biological accuracy" in text
+        assert pdf[0].render(scale=0.5).to_numpy().std() > 5
+
+
+@pytest.mark.parametrize(
+    "change",
+    [{"run_status": None}, {"publication_status": None}, {"review": ""}, {"review": "x" * 651}],
+)
+def test_concise_report_requires_observed_status_and_bounded_review(tmp_path, monkeypatch, change):
+    monkeypatch.chdir(tmp_path)
+    request = (
+        fixture(tmp_path / "inputs")
+        | {
+            "format": "concise",
+            "run_status": "completed",
+            "publication_status": "verified",
+            "outcome": "Completed with review findings.",
+        }
+        | change
+    )
+    with pytest.raises(ValueError, match="Concise reports require"):
+        report.make_report(request)
+    assert not Path(request["output_dir"]).exists()
+
+
 def test_sparse_assignment_estimates_are_not_ranked_or_flagged_as_bad(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     request = fixture(tmp_path / "inputs")

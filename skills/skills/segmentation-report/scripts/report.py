@@ -8,6 +8,7 @@ import json
 import math
 import textwrap
 import xml.etree.ElementTree as ET
+from collections import Counter
 from pathlib import Path
 
 import matplotlib
@@ -380,6 +381,11 @@ def area_summary(areas, thresholds):
 
 
 def make_report(request):
+    report_format = request.get("format", "detailed")
+    if report_format not in {"concise", "detailed"}:
+        raise ValueError("Report format must be concise or detailed")
+    if report_format == "concise":
+        validate_concise(request)
     scale = float(request["um_per_px"])
     if not math.isfinite(scale) or scale <= 0:
         raise ValueError("um_per_px must be a positive finite value from metadata")
@@ -390,7 +396,8 @@ def make_report(request):
         raise ValueError("Use a new folder under outputs/")
     output.mkdir(parents=True, exist_ok=False)
     figures = output / "figures"
-    figures.mkdir()
+    if report_format == "detailed":
+        figures.mkdir()
     thresholds = {**DEFAULTS, **request.get("thresholds", {})}
     if set(thresholds) != set(DEFAULTS) or not all(
         math.isfinite(float(v)) and v >= 0 for v in thresholds.values()
@@ -609,6 +616,9 @@ def make_report(request):
                         "can explain this.",
                     )
         summary["flag_count"] = len(flags)
+        if report_format == "concise":
+            render_concise(output / "report.pdf", summary, flags, request)
+            return summary
         provenance = {
             "schema_version": 1,
             "report_version": 2,
@@ -671,6 +681,95 @@ def make_report(request):
             cells.labels.close()
         if prior and prior.labels:
             prior.labels.close()
+
+
+def validate_concise(request):
+    if request.get("run_status") not in {"completed", "failed", "incomplete"}:
+        raise ValueError("Concise reports require an observed run_status")
+    if request.get("publication_status") not in {"verified", "failed", "not attempted"}:
+        raise ValueError("Concise reports require an observed publication_status")
+    for name, limit in [("review", 650), ("outcome", 220)]:
+        value = request.get(name)
+        if not isinstance(value, str) or not value.strip() or len(value) > limit:
+            raise ValueError(f"Concise reports require {name} of 1-{limit} characters")
+
+
+def render_concise(path, summary, flags, request):
+    """One self-contained PDF; no JSON, image, script or directory deliverables."""
+    validate_concise(request)
+    fig = plt.figure(figsize=(8.5, 11), facecolor="white")
+    try:
+
+        def text(x, y, value, size=11, **kwargs):
+            return fig.text(x, y, value, fontsize=size, fontfamily="DejaVu Sans", **kwargs)
+
+        text(0.08, 0.94, "Segmentation summary", 22, weight="bold", color="#193b39")
+        text(0.08, 0.905, "\n".join(textwrap.wrap(str(summary["sample"]), 65)), 14, va="top")
+        text(0.08, 0.85, "Run: " + request["run_status"].capitalize(), 15, weight="bold")
+        text(
+            0.08,
+            0.815,
+            "\n".join(textwrap.wrap(request["outcome"], 90)),
+            10,
+            va="top",
+            linespacing=1.45,
+        )
+
+        prior = summary.get("prior")
+        assigned = summary.get("assigned_pct")
+        rows = [
+            ("Method", textwrap.shorten(summary["method"]["name"], width=38, placeholder="...")),
+            ("Final cells", f"{summary['cell_count']:,}"),
+            ("Prior cells", f"{prior['cell_count']:,}" if prior else "Not supplied"),
+            (
+                "Transcript assignment (estimate)",
+                f"{assigned:.1f}%" if assigned is not None else "Unavailable",
+            ),
+            (
+                "Transcripts sampled / observed",
+                f"{summary['transcripts_sampled']:,} / {summary['transcripts_observed']:,}",
+            ),
+            ("Segmentation data saved", request["publication_status"].capitalize()),
+        ]
+        ax = fig.add_axes([0.08, 0.53, 0.84, 0.23])
+        ax.axis("off")
+        table = ax.table(cellText=rows, colWidths=[0.57, 0.43], loc="center", cellLoc="left")
+        table.auto_set_font_size(False)
+        table.set_fontsize(10)
+        table.scale(1, 1.7)
+        for (_r, c), cell in table.get_celld().items():
+            cell.set_edgecolor("white")
+            cell.set_facecolor("#e5eeea" if c == 0 else "#f1f4ef")
+
+        text(0.08, 0.49, "Checks and limitations", 13, weight="bold")
+        counts = Counter(flag["code"].replace("_", " ") for flag in flags)
+        warning = "; ".join(f"{name}: {count}" for name, count in sorted(counts.items()))
+        warning = f"{len(flags)} automatic flags. " + warning if flags else "No automatic flags."
+        lines = textwrap.wrap(warning, 100)
+        if len(lines) > 7:
+            raise ValueError("Too many flag categories for a concise page; summarize for review")
+        text(0.08, 0.455, "\n".join(lines), 9, va="top", linespacing=1.4)
+        text(0.08, 0.33, "Review and next step", 13, weight="bold")
+        text(
+            0.08,
+            0.295,
+            "\n".join(textwrap.wrap(request["review"], 95)),
+            10,
+            va="top",
+            linespacing=1.45,
+        )
+        text(
+            0.08,
+            0.09,
+            "Completion and assignment rates do not establish biological accuracy.",
+            9,
+            color="#526360",
+        )
+        text(0.08, 0.055, "Mica | Segmentation summary", 9, color="#526360")
+        text(0.92, 0.055, "1 / 1", 9, ha="right", color="#526360")
+        fig.savefig(path, format="pdf")
+    finally:
+        plt.close(fig)
 
 
 def render(

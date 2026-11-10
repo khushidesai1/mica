@@ -126,6 +126,21 @@ def main():
         )
         for color in [[57, 217, 255], [255, 209, 102]]:
             assert np.sum(np.max(np.abs(crop - color), axis=2) < 5) > 10
+        concise = root / "outputs/concise"
+        concise.mkdir()
+        report.render_concise(
+            concise / "report.pdf",
+            result,
+            [],
+            {
+                "run_status": "completed",
+                "publication_status": "verified",
+                "outcome": "Synthetic segmentation completed and publication was verified.",
+                "review": "Synthetic fixture only; no biological quality claim.",
+            },
+        )
+        assert [p.name for p in concise.iterdir()] == ["report.pdf"]
+        assert (concise / "report.pdf").read_bytes().startswith(b"%PDF")
     print("SEGMENTATION_REPORT_AND_COMPLETENESS_VERIFIED")
 
 

@@ -19,9 +19,10 @@ to `[]`. Deploy it empty; enabling scientific processing is a separate operator 
     "recipe": "recipes/ambient_segmentation.md",
     "recipients": [{"email": "owner@example.org", "slack_user": "UOWNER"}],
     "worker": {"tier": "standard", "on_demand": true, "max_hours": 1},
+    "return_scripts": false,
     "max_concurrent": 1,
     "max_starts_per_day": 4,
-    "task": "For {sample}, validate {markers}, follow {recipe}, publish under {output}, and deliver the segmentation report."
+    "task": "For {sample}, validate {markers}, follow {recipe}, publish segmentation data under {output}, and deliver one concise PDF. Do not publish report/QC bundles."
   }
 ]
 ```
@@ -120,9 +121,14 @@ ranking requires a disclosed minimum of 100 sampled transcripts; unsupported fie
 visible as sampling limitations. Same-sample count/area comparisons are separated from cohort
 context, and missing cohort transcript data is not plotted as a comparison. Background-only
 crops or invisible masks must be corrected before delivery.
-After publication, it retains the complete QC bundle in the bucket and keeps only the final
-PDF and summary in its attachment folder. Intermediate page/crop PNGs are for review, not a
-bulk Slack upload. Before final delivery, the worker validates its thread-memory JSON and lets
+Ambient tasks should request `format: "concise"` for a single-page PDF with the observed run
+status, verified publication status, key metrics, automatic flags and review/next steps. This
+mode emits only the PDF; it retains the same input and statistical checks. Review images stay
+private. Publish scientific result data separately; report PDFs, JSON sidecars and QC folders
+are not written to the project bucket unless explicitly requested. Keep only the final PDF in
+the attachment folder. `return_scripts: false` on a task suppresses automatic script ZIPs for
+that task, without changing its owner's preference for ordinary conversations. Omit the field
+to inherit the owner's preference. Already-started tasks retain their saved setting. Before final delivery, the worker validates its thread-memory JSON and lets
 the same bounded model turn correct malformed prose; identity and coverage remain application-owned.
 
 ## Release and smoke checks
