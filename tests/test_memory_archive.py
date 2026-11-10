@@ -148,3 +148,49 @@ async def test_rename_preserves_guide_and_archive_indexes(store):  # noqa: F811
     path = memory_archive.archive_path("PROJECT.md", base.files["PROJECT.md"].text)
     assert after.files[path].text == base.files["PROJECT.md"].text
     assert "archive/INDEX.md" in after.files["INDEX.md"].text
+
+
+@pytest.mark.parametrize("source", ["editor", "worker", "compaction"])
+async def test_active_ambient_recipe_survives_index_pressure_and_deletion(store, source):  # noqa: F811
+    from test_ambient import definition
+
+    from mica.agents.analysis.ambient_config import AmbientTask
+
+    backend, github = store
+    task = AmbientTask(**definition("test-project"))
+    backend.settings.ambient_tasks = [task]
+    backend.settings.memory_index_chars = 300
+    github.seed({f"projects/test-project/{task.recipe}": FACT + "Process new samples"})
+    base = await backend.read("test-project")
+    updates = {f"results/new-{i}.md": FACT + str(i) for i in range(15)}
+    saved = await backend.commit("test-project", base, updates, source=source, event_id="growth")
+    assert saved.commit_oid and not saved.rejected
+    latest = await backend.read("test-project")
+    assert latest.files[task.recipe].text == base.files[task.recipe].text
+    assert task.recipe in latest.files["INDEX.md"].text
+    assert len(latest.files["INDEX.md"].text) <= 300
+    if source == "compaction":
+        with pytest.raises(ValueError, match="Compaction rejected"):
+            await backend.commit(
+                "test-project", latest, {task.recipe: None}, source=source, event_id="delete"
+            )
+    else:
+        rejected = await backend.commit(
+            "test-project", latest, {task.recipe: None}, source=source, event_id="delete"
+        )
+        assert "active_ambient_recipe_cannot_be_deleted" in rejected.rejected[task.recipe]
+    retained = (await backend.read("test-project")).files[task.recipe].text
+    assert retained == base.files[task.recipe].text
+    task.enabled = False
+    deleted = await backend.commit(
+        "test-project", latest, {task.recipe: None}, source=source, event_id="disabled"
+    )
+    assert deleted.commit_oid and not deleted.rejected
+    assert task.recipe not in (await backend.read("test-project")).files
+
+
+def test_required_recipe_index_overflow_rejects_instead_of_archiving():
+    settings = Settings(_env_file=None, memory_index_chars=300)
+    recipes = {f"recipes/{'long-' * 12}{i}.md": FACT for i in range(3)}
+    with pytest.raises(ValueError, match="index_budget_too_small"):
+        memory_archive.prepare(recipes, {}, settings, required_paths=frozenset(recipes))

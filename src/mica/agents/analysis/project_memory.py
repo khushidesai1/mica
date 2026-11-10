@@ -654,7 +654,7 @@ class GitHubMemory:
                         if thread_update
                         else {}
                     )
-                    accepted = self._bounded(latest, proposed, saved)
+                    accepted = self._bounded(latest, proposed, saved, project_id=pid)
                     # Thread persistence is required even when an advisory project edit is rejected.
                     thread_changes = self._thread_bounded(latest, thread_changes, blobs or {})
                     accepted.update(thread_changes)
@@ -798,7 +798,9 @@ class GitHubMemory:
                     return Saved()
                 # Renames also rewrite the guide: preserve its original and rebuild indexes.
                 bounded = Saved()
-                layout = self._bounded(latest, {"PROJECT.md": files["PROJECT.md"]}, bounded)
+                layout = self._bounded(
+                    latest, {"PROJECT.md": files["PROJECT.md"]}, bounded, project_id=pid
+                )
                 if bounded.rejected:
                     raise ValueError("Memory capacity prevents a lossless project rename")
                 for path, text in layout.items():
@@ -935,7 +937,8 @@ class GitHubMemory:
         return changes
 
     def _bounded(
-        self, latest: Snapshot, proposed: dict[str, str | None], saved: Saved
+        self, latest: Snapshot, proposed: dict[str, str | None], saved: Saved,
+        *, project_id: str = "",
     ) -> dict[str, str | None]:
         sizes = {
             p: len(f.text.encode())
@@ -962,7 +965,11 @@ class GitHubMemory:
             return accepted
         try:
             prepared = memory_archive.prepare(
-                {p: f.text for p, f in latest.files.items()}, proposed, self.settings
+                {p: f.text for p, f in latest.files.items()}, proposed, self.settings,
+                required_paths=frozenset(
+                    task.recipe for task in self.settings.ambient_tasks
+                    if task.enabled and task.project == project_id
+                ),
             )
             candidate = dict(sizes)
             for path, value in prepared.items():

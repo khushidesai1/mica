@@ -44,7 +44,8 @@ def line(path: str, *, relative: str = "") -> str:
 
 
 def prepare(
-    before: Mapping[str, str], changes: Mapping[str, str | None], settings: Settings
+    before: Mapping[str, str], changes: Mapping[str, str | None], settings: Settings,
+    *, required_paths: frozenset[str] = frozenset(),
 ) -> dict[str, str | None]:
     """Preserve original bytes and generate bounded indexes as one atomic proposal.
 
@@ -74,6 +75,8 @@ def prepare(
             continue
         if path in CORE and value is None:
             raise ValueError("core_entry_cannot_be_deleted")
+        if path in required_paths and value is None:
+            raise ValueError("active_ambient_recipe_cannot_be_deleted")
         old = before.get(path)
         if old is not None and old != value:
             preserve(path, old)
@@ -86,11 +89,14 @@ def prepare(
     # get priority, then the prior index order, then stable path order for older stores.
     navigation = "- [Archived originals and entries](archive/INDEX.md)\n"
     index = "".join(line(p) for p in CORE if p in files)
+    required = sorted(p for p in required_paths if p in files and p not in CORE)
+    index += "".join(line(p) for p in required)
     if len(index + navigation) > settings.memory_index_chars:
-        raise ValueError("index_budget_too_small_for_core")
+        raise ValueError("index_budget_too_small_for_core_and_active_recipes")
     prior = re.findall(r"\[[^\]]+\]\(([^)]+)\)", before.get("INDEX.md", ""))
     active = sorted(
-        p for p in files if p not in CORE and not is_index(p) and not p.startswith("archive/")
+        p for p in files if p not in CORE and p not in required
+        and not is_index(p) and not p.startswith("archive/")
     )
     order = list(dict.fromkeys([p for p in changes if p in active] + prior + active))
     for path in order:
