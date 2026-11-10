@@ -43,6 +43,15 @@ metadata. Confirm consequential choices such as channels, diameter, scale, and s
 they are not specified; do not treat the API defaults as verified biological parameters.
 Proseg's `um_per_px` must come from verified sample metadata or the user, not its default `1.0`.
 
+For parameter investigations, the custom Python wrapper above has no model-hyperparameter
+arguments. Use the separately pinned native CLI `/opt/proseg/3.1.1/bin/proseg` after checking
+`--version`, `--help` and `/opt/proseg/3.1.1/manifest.json`, and follow the Proseg parameter
+section of `/opt/pistachio/plugin/skills/spatial-analysis/SKILL.md`. It documents input/prior
+preservation and supported controls. Neither `proseg` nor `proseg-py` is a PyPI install target
+at this pin. CLI 3.1.1 has prior reassignment, connectivity and compactness controls, but no
+`--seed`, `--perimeter-bound` or `--perimeter-eta`; never invent or silently substitute them.
+The CLI output layout differs from the SAP wrapper and needs explicit validation/conversion.
+
 ## Data and resource requirements
 
 - CosMx input is one local raw sample directory on the read-only project mount. It needs

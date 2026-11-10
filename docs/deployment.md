@@ -332,6 +332,26 @@ images, credentials, or infrastructure. Run the routing snapshot and complete ap
 before the existing API/worker compatibility release gates.
 
 
+## Native Proseg runtime overlay
+
+The coordinated application overlay also carries native Proseg CLI 3.1.1 at
+`/opt/proseg/3.1.1/bin/proseg`. Its separate Rust builder verifies the crates.io archive checksum
+in `deploy/proseg-cli.json` and builds with the archive's `Cargo.lock`; no compiler or changed
+Python science dependencies enter the final image. The manifest, lockfile and MIT license
+remain beside the executable. `build-proseg-cli` warms the native build cache before the
+API/CPU/GPU overlays; retain that dependency when adding image-cache pulls to the pipeline.
+
+`scripts/check_proseg_release.py` runs in each Claude worker image, offline and as UID 65532.
+It enters the existing bubblewrap compute sandbox, checks isolation, exact version and flags,
+then runs 4,000 synthetic transcripts through nondefault prior/connectivity/compactness controls
+and validates cell metadata, transcript metadata, counts and SpatialData output. The outer
+container permits nested bubblewrap and is capped at 2 CPUs/2 GiB; each subprocess has a
+120-second limit. Temporary data is local and automatically removed. This gate proves native
+runtime availability, not biological quality, convergence, a selected TMA recipe, or equivalence
+to the custom SAP Python wrapper. Legacy perimeter controls and a random-seed flag are absent
+in 3.1.1; they must not be fabricated or silently mapped to other controls. Real runs are neither
+restarted nor reconfigured by deployment.
+
 ## Project memory archive rollout
 
 Use `cloudbuild/build-slack-release.yaml` to build the API, Claude worker, and refreshed shared

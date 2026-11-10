@@ -1,3 +1,4 @@
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -100,6 +101,21 @@ def test_cpu_torch_with_cuda_dependency_is_not_advertised_as_cuda():
     assert not toolkit_catalog.runtime_cuda(
         {"torch": "2.7.1+cpu", "nvidia-cuda-runtime-cu12": "12.6.77"}
     )
+
+
+def test_proseg_native_discovery_matches_pinned_build_for_cpu_and_gpu():
+    root = Path(__file__).resolve().parents[1]
+    manifest = json.loads((root / "deploy/proseg-cli.json").read_text())
+    dockerfile = (root / "docker/Dockerfile.slack-release").read_text()
+    for field in ("builder", "crate_url", "crate_sha256", "executable"):
+        assert manifest[field] in dockerfile
+    assert "cargo build --locked --release --bin proseg" in dockerfile
+    for gpu in (False, True):
+        settings = Settings(_env_file=None, gpu_worker=gpu)
+        sap = next(row for row in toolkit_catalog.environment_view(settings) if row["id"] == "sap")
+        assert not sap["cuda"]
+        assert manifest["executable"] in sap["executables"][0]
+        assert "Proseg CLI " + manifest["version"] in toolkit_catalog.environment_prompt(settings)
 
 
 def test_unavailable_saved_runtime_store_does_not_block_conversation(monkeypatch):
