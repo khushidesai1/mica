@@ -123,6 +123,20 @@ def check(source: Path, mode: str) -> None:
     terminal = activity_blocks([], finished=True, note=commentary)
     assert len(terminal) == 1 and "in_progress" not in str(terminal)
     print("SLACK_COMMENTARY_APPROVAL_AND_TERMINAL_PRESENTATION_VERIFIED")
+    native = activity_blocks(
+        [TaskProgress("done", "Read files", "Reading", "complete"),
+         TaskProgress("current", "Checking counts", "Checking")],
+        native_session=True, note=commentary,
+    )
+    assert native[1]["title"] == "Checking counts"
+    assert [t["task_id"] for t in native[1]["tasks"]] == ["done"]
+    assert "in_progress" not in str(native)
+    first = status_blocks("", "Checking files", detail="4 folders", native_session=True)
+    assert first[0]["tasks"] == [] and "4 folders" in str(activity_fallback(first))
+    assert activity_blocks([], finished=True, native_session=True) == activity_blocks(
+        [], finished=True,
+    )
+    print("NATIVE_SESSION_SINGLE_WORKING_STATE_VERIFIED")
     operation = gcs_operations.Operation(
         action="move", source="gs://release-probe/TMA1/",
         destination="gs://release-probe/TMA1_old/",

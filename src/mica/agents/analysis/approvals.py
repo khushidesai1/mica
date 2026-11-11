@@ -15,6 +15,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from uuid import NAMESPACE_URL, uuid5
 
 from pydantic import BaseModel
 from slack_sdk.web.async_client import AsyncWebClient
@@ -187,12 +188,35 @@ async def card(
     )
 
 
+async def request_card(
+    bridge: BatchBridge, event_id: str, record: dict[str, Any], client: AsyncWebClient,
+    text: str, blocks: list[dict[str, Any]],
+) -> None:
+    """An approval can be the first real content in a native session."""
+    event = record["payload"]["event"]
+    if record.get("notice_ts"):
+        await card(client, event["channel"], record["notice_ts"], text, blocks)
+        return
+    response = await SlackTransport(client).post(
+        channel=event["channel"], thread_ts=event.get("thread_ts") or event["ts"],
+        text=text, blocks=blocks, unfurl_links=False, unfurl_media=False,
+        client_msg_id=str(uuid5(NAMESPACE_URL, f"pistachio-receipt:{event_id}")),
+    )
+    record["notice_ts"] = response["ts"]
+    record.pop("notice_pending_phase", None)
+    await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+
+
 async def resumed_card(
     client: AsyncWebClient, channel: str, ts: str, title: str, detail: str,
+    *, native_session: bool = False,
 ) -> None:
     """The decision and resumption must already be durable; UI failure cannot undo them."""
     try:
-        await card(client, channel, ts, title, state="working", detail=detail)
+        await card(
+            client, channel, ts, title,
+            status_blocks("", title, detail=detail, native_session=native_session),
+        )
     except Exception:
         # The scheduled controller owns subsequent status recovery. Never repeat the operation.
         log.warning("Approved request status could not be delivered", exc_info=True)

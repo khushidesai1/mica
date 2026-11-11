@@ -335,6 +335,15 @@ class BatchBridge:
 
         if phase in {"complete", "failed", "denied", "cancelled"}:
             record["terminal_reply"] = text
+        native_session = agent_session.eligible(self, record)
+        if (native_session and not activity_title
+                and (phase, text) in {
+                    ("received", "Mica is working"), ("replying", "Mica is thinking"),
+                }):
+            # Record receipt/routing without replacing real content or claiming delivery.
+            record["notice_pending_phase"] = phase
+            await self.repository.set_connector_state(f"claude-event:{event_id}", record)
+            return
         if (record.get("notice_text") == text
             and record.get("notice_title", "") == activity_title):
             return
@@ -344,6 +353,7 @@ class BatchBridge:
             {"blocks": status_blocks(
                 self.settings.loading_emoji, activity_title or text,
                 note=text if activity_title and text != activity_title else "",
+                native_session=native_session,
             )}
             if phase in STATUS_PHASES
             else {}
@@ -392,6 +402,7 @@ class BatchBridge:
                     await self.repository.set_connector_state(f"claude-event:{event_id}", record)
             record.update(notice_phase=phase, notice_text=text, notice_title=activity_title)
             record.pop("notice_chunks", None)
+            record.pop("notice_pending_phase", None)
             if record.get("status") not in {"complete", "failed"}:
                 await self.repository.set_connector_state(f"claude-event:{event_id}", record)
         except Exception:
@@ -1220,6 +1231,8 @@ class BatchBridge:
             }
             from . import session_review, session_sources
 
+            if agent_session.eligible(self, record):
+                manifest["native_session"] = True
             sources = await asyncio.to_thread(
                 session_sources.catalog, storage, record["project_id"]
             )

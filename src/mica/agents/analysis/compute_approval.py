@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import access, approvals, surface
+from . import access, agent_session, approvals, surface
 from .storage import Conflict, Storage
 from .tiers import gpu_choices, gpu_estimate, gpu_mode, gpu_seconds, resolve, selected_gpu_choice
 
@@ -205,10 +205,9 @@ async def ready(
     record.update(status="awaiting_approval", gpu_approval=True)
     await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
     if record.get("notice_text") != text:
-        await approvals.card(
+        await approvals.request_card(
+            bridge, event_id, record,
             AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
-            channel=record["payload"]["event"]["channel"],
-            ts=record["notice_ts"],
             text=text,
             blocks=[
                 {"type": "section", "text": {"type": "mrkdwn", "text": text}},
@@ -353,6 +352,7 @@ async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]
                 event["channel"], record["notice_ts"], "Preparing approved GPU run…",
                 f"GPU compute approved for up to {approval.seconds / 3600:g} hours. "
                 "Checking remaining launch requirements.",
+                native_session=agent_session.eligible(bridge, record),
             )
         else:
             await approvals.card(
