@@ -255,7 +255,7 @@ async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]
         if proposal["state"] == "cancelled" and proposal.get("notification_pending"):
             await approvals.card(
                 AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
-                channel, proposal["notice_ts"], "Change cancelled.", [],
+                channel, proposal["notice_ts"], "Change cancelled.", state="cancelled",
             )
             proposal["notification_pending"] = False
             await asyncio.to_thread(approvals.save, storage, path, proposal, generation)
@@ -277,7 +277,7 @@ async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]
             )
             await approvals.card(
                 AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
-                channel, proposal["notice_ts"], "Change cancelled.", [],
+                channel, proposal["notice_ts"], "Change cancelled.", state="cancelled",
             )
             proposal["notification_pending"] = False
             await asyncio.to_thread(approvals.save, storage, path, proposal, generation)

@@ -160,6 +160,12 @@ async def test_gpu_requires_requester_confirmation_and_duplicate_cannot_restart(
     buttons = gpu.test_slack.chat_update.call_args.kwargs["blocks"][-1]["elements"]
     assert buttons[0]["style"] == "primary" and "style" not in buttons[1]
     await compute_approval.handle(gpu, gpu.store, click(event_id, record))
+    accepted = gpu.test_slack.chat_update.call_args.kwargs
+    assert accepted["ts"] == record["notice_ts"]
+    assert accepted["blocks"][0]["type"] == "plan"
+    assert accepted["blocks"][0]["title"] == "Preparing approved GPU run…"
+    assert "remaining launch requirements" in repr(accepted["blocks"])
+    assert all(block["type"] != "actions" for block in accepted["blocks"])
     assert await gpu.process(event_id, record["tick"]) == "running"
     await compute_approval.handle(gpu, gpu.store, click(event_id, record))
     assert gpu.test_client.create_job.call_count == 1

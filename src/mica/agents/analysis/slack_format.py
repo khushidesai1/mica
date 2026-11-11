@@ -2,11 +2,16 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from .progress import TaskProgress, note_headline, public_note
 
 _GENERIC_ACTIVITY = {"Thinking…", "Working on it…", "Mica is thinking", "Mica is working"}
+NoticeState = Literal["working", "waiting", "cancelled", "expired"]
+
+
+def context_block(text: str) -> dict[str, Any]:
+    return {"type": "context", "elements": [{"type": "plain_text", "text": text[:3000]}]}
 
 
 def _rich_text(text: str) -> dict[str, Any]:
@@ -35,25 +40,27 @@ def activity_blocks(
         title = "Mica stopped" if error else "Mica finished"
     else:
         specific = next(
-            (text for text in (summary, headline, active.title if active else "")
+            (text for text in (active.title if active else "", headline,
+                               "" if thinking else summary)
              if text and text not in _GENERIC_ACTIVITY),
             "",
         )
-        title = note_headline(note or specific) or title
+        title = note_headline(specific) or title
     visible = list(tasks[-2:])
     if active is not None and active not in visible:
         visible = [visible[-1], active]
     lines = []
     if error:
         lines.append(f"Stopped: {error[:300]}")
-    if note:
-        lines.append(note)
     if summary and not note and not thinking and not active:
         lines.append(
             ("Last activity: " if finished else "Working: ") + " ".join(summary.split())[:150]
         )
     if check_in and not finished:
         lines.append(check_in[:1500])
+    active_count = sum(task.status == "in_progress" for task in tasks)
+    if active_count > 1 and not finished:
+        lines.append(f"{active_count} steps in progress; showing the most recent activity.")
     cards: list[dict[str, Any]] = []
     for task in visible:
         card: dict[str, Any] = {
@@ -80,7 +87,12 @@ def activity_blocks(
         if details:
             lines.insert(0, details["elements"][0]["elements"][0]["text"])
         cards[-1]["details"] = _rich_text("\n".join(lines))
-    return [{"type": "plan", "title": title, "tasks": cards}]
+    blocks: list[dict[str, Any]] = [{"type": "plan", "title": title, "tasks": cards}]
+    if note:
+        # Public commentary is separate from tool activity and the eventual final answer.
+        # Literal text prevents model-generated mentions, links or formatting from executing.
+        blocks.insert(0, {"type": "section", "text": {"type": "plain_text", "text": note}})
+    return blocks
 
 
 def activity_fallback(blocks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -112,12 +124,19 @@ def activity_fallback(blocks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     return result
 
 
-def status_blocks(_emoji: str, headline: str, steps: Sequence[str] = ()) -> list[dict[str, Any]]:
+def status_blocks(
+    _emoji: str, headline: str, steps: Sequence[str] = (), *,
+    detail: str = "", state: NoticeState = "working", note: str = "",
+) -> list[dict[str, Any]]:
     """Queue, startup and model activity share the same expandable control."""
+    if state != "working":
+        return [context_block("\n".join(part for part in (headline, detail) if part))]
     current = steps[-1] if steps else headline
     if current in _GENERIC_ACTIVITY:
         current = ""
-    return activity_blocks([], headline=headline, summary=current, note=current)
+    if current and note_headline(current) != current:
+        detail = "\n".join(part for part in (current, detail) if part)
+    return activity_blocks([], headline=current or headline, check_in=detail, note=note)
 
 
 def to_mrkdwn(text: str) -> str:

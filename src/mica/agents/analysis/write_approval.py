@@ -341,19 +341,29 @@ async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]
             )
         record["status"] = "pending" if approval.status == "approved" else "failed"
         record["cancel_requested"] = approval.status == "cancelled"
-        text = (
-            "GCS operations approved. Starting…"
-            if approval.status == "approved"
-            else "Cancelled. Nothing started."
-        )
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
         # Keep the existing queued poll as a durable fallback if this immediate enqueue fails.
         if approval.status == "approved":
             await bridge.schedule(event_id, record["tick"])
-        await approvals.card(
-            AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
-            event["channel"], record["notice_ts"], text,
-        )
+            receipt = (
+                "Approved operations:\n" + "\n".join(
+                    op.describe() + f" ({count} inspected objects)"
+                    for op, count in zip(
+                        approval.operations, approval.operation_counts, strict=True
+                    )
+                ) if approval.operations else
+                "Approved replacement targets:\n" + "\n".join(approval.paths)
+            )
+            await approvals.resumed_card(
+                AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
+                event["channel"], record["notice_ts"], "Preparing approved changes…", receipt,
+            )
+        else:
+            await approvals.card(
+                AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
+                event["channel"], record["notice_ts"], "Cancelled. Nothing started.",
+                state="cancelled",
+            )
         return {}
 
 

@@ -726,22 +726,24 @@ async def run(
                 value = MODELS[name].model_validate(args)
                 note = progress_note(blocks, thinking_updates=updates_enabled)
                 has_note = has_note or bool(note)
+                title = {
+                    "request_access": "Requesting owner approval…",
+                    "request_cloud_access": "Preparing the access request…",
+                    "list_folders": "Checking the requested folders…",
+                    "view_files": "Looking at the attached files…",
+                    "read_sources": "Reading the requested sources…",
+                    backchannel.TOOL: "Checking project coordination…",
+                    "start_worker": "Preparing the requested computation…",
+                    "propose_transfer": "Preparing the transfer request…",
+                    "propose_gcs_operations": "Preparing file changes for approval…",
+                    "propose_command": "Checking the requested operation…",
+                }[name]
                 await bridge.notify(
                     event_id,
                     record,
                     "replying",
-                    note or {
-                        "request_access": "Requesting owner approval…",
-                        "request_cloud_access": "Preparing the access request…",
-                        "list_folders": "Checking the requested folders…",
-                        "view_files": "Looking at the attached files…",
-                        "read_sources": "Reading the requested sources…",
-                        backchannel.TOOL: "Checking project coordination…",
-                        "start_worker": "Preparing the requested computation…",
-                        "propose_transfer": "Preparing the transfer request…",
-                        "propose_gcs_operations": "Preparing the GCS operation confirmation…",
-                        "propose_command": "Checking the requested operation…",
-                    }[name],
+                    note or title,
+                    activity_title=title,
                 )
                 result: Any = None
                 terminal: Decision | None = None

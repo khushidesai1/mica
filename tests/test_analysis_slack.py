@@ -517,7 +517,7 @@ async def test_activity_switches_without_repeating_status_or_posting_messages(bo
         "Mica is working",
         "Mica is thinking",
         "Segmenting Cellpose-SAM: tile_02.npy",
-        "Segmenting Cellpose-SAM: tile_02.npy",
+        "Mica is thinking",
     ]
     assert all(len(row["blocks"]) == 1 and row["blocks"][0]["type"] == "plan" for row in active)
     assert "tile_02.npy" in repr(active[2]["blocks"][0]["tasks"])
@@ -641,12 +641,15 @@ async def test_progress_note_survives_tool_updates_and_heartbeat_but_not_complet
     bot.runner.run_turn = compute
     await send(bot, event("check", _notice_ts="9.0"))
     updates = [call.kwargs for call in bot.client.chat_update.call_args_list]
-    assert [call["blocks"][0]["title"] for call in updates] == [
+    assert [call["blocks"][-1]["title"] for call in updates] == [
         "Mica is working",
-        "Found <!channel> & *bold*.",
-        "Found <!channel> & *bold*.",
-        "Counts verified.",
+        "Mica is working",
+        "Read table",
+        "Read table",
         "Mica finished",
+    ]
+    assert [call["blocks"][0]["text"]["text"] for call in updates[1:-1]] == [
+        note, note, next_note,
     ]
     assert "&lt;!channel&gt; &amp; *bold*" in updates[1]["text"]
     assert note not in repr(updates[-1]) and next_note not in repr(updates[-1])

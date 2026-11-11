@@ -20,6 +20,14 @@ EID = "a" * 32
 OWNER = "alice@example.com"
 
 
+@pytest.mark.parametrize("state", ["cancelled", "expired", "preview"])
+def test_waiting_or_cancelled_transfer_never_looks_running_or_successful(state):
+    blocks = transfer_cards.blocks({"id": EID, "state": state}, "No files moved.", ())
+    assert blocks[0]["type"] == "context"
+    assert "No files moved." in repr(blocks)
+    assert "in_progress" not in repr(blocks) and "complete" not in repr(blocks)
+
+
 @pytest.fixture
 async def transfer(bridge, private_record, monkeypatch):
     private_record["payload"]["team_id"] = "T1"
@@ -102,6 +110,9 @@ async def test_progress_approval_and_result_update_one_private_message(transfer)
     blocks = client.chat_update.call_args.kwargs["blocks"]
     assert blocks[0]["type"] == "plan" and blocks[0]["title"] == "Transfer complete"
     assert "Verified 1,234 files." in str(blocks)
+    assert blocks[-1] == {"type": "section", "text": {
+        "type": "plain_text", "text": "Verified 1,234 files.",
+    }}
     assert all(b["type"] != "actions" for b in blocks)
 
 

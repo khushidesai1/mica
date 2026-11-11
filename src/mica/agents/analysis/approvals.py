@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import math
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -18,7 +19,11 @@ from typing import TYPE_CHECKING, Any
 from pydantic import BaseModel
 from slack_sdk.web.async_client import AsyncWebClient
 
+from .slack_format import NoticeState, status_blocks
 from .storage import Storage
+from .transport import SlackTransport
+
+log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from fastapi import BackgroundTasks
@@ -171,18 +176,31 @@ def requester(payload: dict[str, Any], record: dict[str, Any]) -> None:
 async def card(
     client: AsyncWebClient, channel: str, ts: str, text: str,
     blocks: list[dict[str, Any]] | None = None,
+    *, state: NoticeState | None = None, detail: str = "",
 ) -> None:
-    await client.chat_update(
-        channel=channel, ts=ts, text=text,
-        blocks=blocks if blocks is not None else [
+    if blocks is None:
+        blocks = status_blocks("", text, state=state, detail=detail) if state is not None else [
             {"type": "section", "text": {"type": "mrkdwn", "text": text}}
-        ],
+        ]
+    await SlackTransport(client).update(
+        channel=channel, ts=ts, text=text, blocks=blocks,
     )
+
+
+async def resumed_card(
+    client: AsyncWebClient, channel: str, ts: str, title: str, detail: str,
+) -> None:
+    """The decision and resumption must already be durable; UI failure cannot undo them."""
+    try:
+        await card(client, channel, ts, title, state="working", detail=detail)
+    except Exception:
+        # The scheduled controller owns subsequent status recovery. Never repeat the operation.
+        log.warning("Approved request status could not be delivered", exc_info=True)
 
 
 def expiry_blocks(kind: Kind, identifier: str, text: str) -> list[dict[str, Any]]:
     return [
-        {"type": "section", "text": {"type": "mrkdwn", "text": text}},
+        *status_blocks("", text, state="expired"),
         {"type": "actions", "elements": [{
             "type": "button", "text": {"type": "plain_text", "text": "Request again"},
             "action_id": kind.prefixes[0] + "again", "value": identifier,

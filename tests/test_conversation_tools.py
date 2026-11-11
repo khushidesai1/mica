@@ -429,7 +429,8 @@ def test_strict_schema_budget():
     for spec in conversation.tools_for(True):
         assert spec["strict"] is (spec["name"] != "start_worker")
         check(spec["input_schema"])
-    assert len(prompts.CONVERSATION) <= 1502
+    # Budget includes the shared public-commentary and outcome-first response guidance.
+    assert len(prompts.CONVERSATION) <= 2100
     assert sum(len(value) for name, value in conversation.DESCRIPTIONS.items()
                if name != "propose_gcs_operations") <= 4800
     assert len(conversation.DESCRIPTIONS["propose_gcs_operations"]) <= 400
