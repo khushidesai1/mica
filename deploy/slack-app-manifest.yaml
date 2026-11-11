@@ -8,13 +8,8 @@ features:
     agent_description: >-
       Mica is your lab's analysis agent. Ask about project data, run analyses,
       make plots, and manage files. GPU runs and some file changes ask for your approval first.
-    suggested_prompts:
-      - title: What's in my project?
-        message: What datasets are in this project?
-      - title: Make a plot
-        message: Plot my latest dataset colored by cell type
-      - title: Project brief
-        message: Show me this project's brief
+  app_home:
+    home_tab_enabled: true
   bot_user:
     display_name: Mica
     always_online: false
@@ -45,6 +40,7 @@ settings:
   event_subscriptions:
     # Preserve the current /integrations/slack/events request_url in app settings.
     bot_events:
+      - app_home_opened
       # Enable together with AGENT_SLACK_SESSIONS=true after the agent UI cutover checks.
       # - agent_session_stopped
       - message.im

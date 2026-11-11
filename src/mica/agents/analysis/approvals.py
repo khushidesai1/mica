@@ -74,6 +74,7 @@ def kinds() -> tuple[Kind, ...]:
         cloud_access,
         command_approval,
         compute_approval,
+        project_picker,
         request_controls,
         session_import,
         write_approval,
@@ -81,7 +82,7 @@ def kinds() -> tuple[Kind, ...]:
 
     return tuple(module.KIND for module in (
         compute_approval, command_approval, write_approval,
-        access_requests, amendments, cloud_access, session_import, request_controls,
+        access_requests, amendments, cloud_access, session_import, request_controls, project_picker,
     ))
 
 

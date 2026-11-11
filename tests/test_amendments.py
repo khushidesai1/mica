@@ -288,7 +288,8 @@ async def test_follow_up_long_final_reply_uses_normal_chunks_and_clears_buttons(
     ]
     final_parts = [call.kwargs for call in deliveries if "Result line." in call.kwargs["text"]]
     assert len(final_parts) > 1
-    assert all(part["blocks"] == [] for part in final_parts)
+    assert all(part["blocks"] == [{"type": "markdown", "text": part["text"]}]
+               for part in final_parts)
 
 
 async def test_preexisting_amendment_card_survives_router_removal(bridge):  # noqa: F811

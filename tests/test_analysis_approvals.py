@@ -84,7 +84,8 @@ async def test_commentary_is_separate_from_activity_and_terminal_reply(bridge): 
     await bridge.notify("test", record, "complete", "The destination is empty.")
     final = bridge.test_slack.chat_update.call_args.kwargs
     assert final["ts"] == "9.0" and final["text"] == "The destination is empty."
-    assert note not in repr(final) and not final.get("blocks")
+    assert note not in repr(final)
+    assert final["blocks"] == [{"type": "markdown", "text": "The destination is empty."}]
     bridge.test_slack.chat_postMessage.assert_not_called()
 
 

@@ -12,7 +12,7 @@ from test_analysis_direct import chat  # noqa: F401
 from mica.agents.analysis import access, conversation, direct, observability
 from mica.agents.analysis.help_text import COMMAND_HELP
 from mica.agents.analysis.registry import Registry
-from mica.agents.analysis.slack_format import chunks, to_mrkdwn
+from mica.agents.analysis.slack_format import chunks, neutralize
 
 
 async def test_help_is_split_without_truncation_or_a_worker(chat):
@@ -25,7 +25,7 @@ async def test_help_is_split_without_truncation_or_a_worker(chat):
     delivered = [chat.test_slack.chat_update.call_args.kwargs["text"]] + [
         call.kwargs["text"] for call in chat.test_slack.chat_postMessage.call_args_list
     ]
-    assert delivered == list(chunks(COMMAND_HELP))
+    assert delivered == [neutralize(part) for part in chunks(COMMAND_HELP)]
     assert all(len(part) <= 3500 for part in delivered)
     record = await chat.repository.get_connector_state("claude-event:" + event_id)
     assert record["notice_text"] == COMMAND_HELP
@@ -75,7 +75,7 @@ async def test_failed_or_stopped_reply_has_red_flag_without_changing_saved_text(
     assert bridge.test_slack.chat_postMessage.await_count == posts
 
 
-async def test_long_direct_markdown_reply_is_converted_before_chunking(chat):
+async def test_long_direct_markdown_reply_keeps_standard_markdown(chat):
     text = "**QC workflow**\n" + "- Compare counts & genes across slides.\n" * 150
     chat.decision.return_value = conversation.Decision(route="reply", reply=text)
     event_id = await chat.accept(payload(text="Explain the QC workflow"))
@@ -87,9 +87,10 @@ async def test_long_direct_markdown_reply_is_converted_before_chunking(chat):
     delivered = [chat.test_slack.chat_update.call_args.kwargs["text"]] + [
         call.kwargs["text"] for call in chat.test_slack.chat_postMessage.call_args_list
     ]
-    assert delivered == list(chunks(to_mrkdwn(text)))
+    assert delivered == [neutralize(part) for part in chunks(text)]
     assert all(len(part) <= 3500 for part in delivered)
-    assert "**QC workflow**" not in delivered[0]
+    assert "**QC workflow**" in delivered[0]
+    assert chat.test_slack.chat_update.call_args.kwargs["blocks"][0]["type"] == "markdown"
     chat.test_client.create_job.assert_not_called()
 
 

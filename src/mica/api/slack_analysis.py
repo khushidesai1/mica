@@ -40,6 +40,17 @@ log = logging.getLogger(__name__)
 
 async def receive(services: Services, payload: dict[str, Any]) -> dict[str, object]:
     event = payload.get("event", {})
+    if (payload.get("type") == "event_callback" and event.get("type") == "app_home_opened"
+            and not event.get("bot_id")):
+        from mica.agents.analysis import project_picker
+
+        if event.get("tab") in {"home", "messages"}:
+            await project_picker.refresh(
+                BatchBridge(services.settings, services.repository),
+                payload.get("team_id", ""), event.get("user", ""), event.get("channel", ""),
+                tab=event["tab"],
+            )
+        return {"ok": True}
     if (
         payload.get("type") != "event_callback"
         or event.get("bot_id")

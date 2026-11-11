@@ -31,7 +31,7 @@ from .progress import (
 )
 from .runner import Context, Runner, TurnResult
 from .sessions import Sessions
-from .slack_format import activity_blocks, chunks, status_blocks, to_mrkdwn
+from .slack_format import activity_blocks, answer_blocks, chunks, neutralize, status_blocks
 from .storage import Storage
 from .transport import EmailWorkerTransport, SlackTransport, Transport, upload_batches
 from .write_worker import Publication
@@ -583,5 +583,5 @@ class SlackAgent:
                 self.record_delivered, uploads, ctx, turn, published
             )
         else:
-            for chunk in chunks(to_mrkdwn(reply)):
-                await self.say(key, chunk)
+            for chunk in chunks(reply):
+                await self.say(key, neutralize(chunk), answer_blocks(chunk))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Iterator
+from html import unescape
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -11,7 +12,7 @@ from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
 from .outputs import MAX_ATTACHMENT_BYTES
-from .slack_format import activity_fallback
+from .slack_format import activity_fallback, to_mrkdwn
 
 log = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class SlackTransport:
     def __init__(self, client: AsyncWebClient) -> None:
         self.client = client
         self.activity_format = 0
+        self.markdown_fallback = False
 
     async def post(self, **kwargs: Any) -> Any:
         return await self._message("chat_postMessage", kwargs)
@@ -51,15 +53,41 @@ class SlackTransport:
     async def set_status(self, **kwargs: Any) -> Any:
         return await self.client.api_call("agents.sessions.setStatus", json=kwargs)
 
+    async def start_stream(self, **kwargs: Any) -> Any:
+        return await self.client.api_call("chat.startStream", json=kwargs)
+
+    async def append_stream(self, **kwargs: Any) -> Any:
+        return await self.client.api_call("chat.appendStream", json=kwargs)
+
+    async def stop_stream(self, **kwargs: Any) -> Any:
+        return await self.client.api_call("chat.stopStream", json=kwargs)
+
+    async def delete(self, **kwargs: Any) -> Any:
+        return await self.client.chat_delete(**kwargs)
+
+    async def set_prompts(self, **kwargs: Any) -> Any:
+        return await self.client.api_call("assistant.threads.setSuggestedPrompts", json=kwargs)
+
     async def _message(self, method: str, kwargs: dict[str, Any]) -> Any:
         blocks = kwargs.get("blocks") or []
         has_activity = any(b.get("type") == "plan" for b in blocks)
+        has_markdown = any(b.get("type") == "markdown" for b in blocks)
         while True:
             if has_activity and self.activity_format:
                 kwargs["blocks"] = activity_fallback(blocks)
+            if has_markdown and self.markdown_fallback:
+                kwargs["blocks"] = []
+                kwargs["text"] = to_mrkdwn("\n".join(
+                    unescape(b["text"]) for b in blocks if b.get("type") == "markdown"
+                ))
             try:
                 return await getattr(self.client, method)(**kwargs)
             except SlackApiError as exc:
+                if has_markdown and not self.markdown_fallback and (
+                    exc.response.get("error") == "invalid_blocks"
+                ):
+                    self.markdown_fallback = True
+                    continue
                 if not (
                     has_activity
                     and self.activity_format < 1

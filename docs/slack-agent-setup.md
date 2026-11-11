@@ -761,8 +761,9 @@ welcome delivery and guided live checks.
 
 Mica can use Slack's Agent messaging experience with the existing app ID and message endpoints.
 Apply the delta in `deploy/slack-app-manifest.yaml` to the **existing** app, preserving its request
-URLs, interactivity, and other settings. `features.agent_view` supplies the description and
-suggested prompts; adding `assistant:write` requires reinstalling the app. Some agent features
+URLs, interactivity, and other settings. `features.agent_view` supplies the description;
+the API supplies per-user suggested prompts. Adding `assistant:write` requires reinstalling
+the app. Some agent features
 require a paid workspace. Treat the app switch as one-way: Slack explicitly disallows returning
 from `agent_view` to `assistant_view`, and does not promise a reverse path for a plain bot app.
 
@@ -793,6 +794,50 @@ Progress rendering requires a coordinated API and CPU/GPU worker release. Existi
 their saved presentation mode; newly submitted workers use the controller's current decision.
 Rollback this presentation release using the prior API revision and worker pins. No Slack app
 configuration change is needed when native sessions are already enabled.
+
+Final Slack answers use standard Markdown blocks, including small comparison tables. Model
+angle syntax is escaped to prevent mentions and disguised Slack links. Unsupported Markdown
+blocks fall back to the existing `mrkdwn` conversion. Code fences and tables stay together
+within Slack's 12,000-character message limit; larger blocks continue with repeated fences or
+table headers. An individual oversized header or row is delivered in bounded literal pieces.
+Notification text carries the same escaped content. Email retains its existing delivery path.
+
+`AGENT_SLACK_STREAMING=false` controls streaming of conversation answers only. After 300
+characters of public text, an answer may stream; short answers post whole. Thinking blocks
+never stream. A later tool call ends the stream and leaves its public narration in the thread.
+Worker answers continue through their existing final-message delivery. Streams stop at the
+model-call deadline, nine minutes or 10,000 escaped characters, with remaining answer content
+delivered as Markdown messages. Finished activity remains separate from the answer.
+
+Only one stream may be started per request. Its empty creation and returned message ID are
+saved before content is appended. Retried slices use ordinary delivery and remove a partial
+stream. Unattributable empty orphans are left untouched and Slack finalizes them automatically.
+Failed cleanup retries through one tick after terminal completion, then reports through existing
+delivery-failure observability; a partial message may remain. Stream writes recheck project and
+reference access and cancellation. A stream stopping queues the usual derived session status.
+
+The Messages tab shows **Project: &lt;name&gt;** or **No project selected** and up to four
+`AGENT_SUGGESTED_PROMPTS` templates (a JSON array of `{title, message}` objects). `{project}`
+is replaced with the current default project's name; templates needing a project are omitted
+when none is selected. The defaults offer a dataset listing, a plot, the brief and generic help.
+Unchanged prompts are not resent. These updates use no model or compute job.
+
+The Home tab lists usable projects, roles and data folders. Selecting a project updates the
+default for new conversations through the same permission checks and registry operation as
+typing `use`. Existing threads keep their project. The picker shows at most 100 projects,
+ordered by recent usage, including the current selection. A typed project switch refreshes
+Home and Messages too.
+
+For an existing agent app, the owner applies a merge-only manifest delta: remove static
+`agent_view.suggested_prompts`, enable `app_home.home_tab_enabled`, and subscribe to
+`app_home_opened`. This delta adds no scopes. Deploy the coordinated API and workers with
+streaming off, then verify Markdown, mention escaping, prompts, project selection, old-thread
+isolation and an email. Enable streaming only after those checks and test a long answer and
+a one-line answer. Re-adding static prompts disables dynamic suggestions; turning Home off
+removes the picker; turning the streaming flag off restores ordinary answer delivery.
+
+Slack owns the **Stop Mica** label. Custom loading text through Slack's legacy status bridge
+requires a separate owner-observed compatibility check; it is not enabled by these settings.
 
 Session updates run in authenticated Cloud Tasks. Receipt markers preserve updates across
 enqueue failures, process crashes and Slack errors; the existing reconciler retries them.

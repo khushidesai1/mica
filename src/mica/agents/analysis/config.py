@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AliasChoices, Field, SecretStr, model_validator
+from pydantic import AliasChoices, BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from .ambient_config import AmbientTask
@@ -13,6 +13,11 @@ from .transfer_config import TransferProject
 
 CHECKPOINT_PREFIX = "tasks/slack-analysis"
 MAX_MEMORY_TOTAL_KB = 16384
+
+
+class SuggestedPrompt(BaseModel):
+    title: str = Field(min_length=1, max_length=75)
+    message: str = Field(min_length=1, max_length=3000)
 
 
 class Settings(BaseSettings):
@@ -28,6 +33,15 @@ class Settings(BaseSettings):
     )
     slack_app_token: SecretStr = Field(default=SecretStr(""), alias="SLACK_APP_TOKEN")
     slack_sessions: bool = False  # Control-plane rollout; Slack agent UI and native Stop.
+    slack_streaming: bool = False
+    suggested_prompts: list[SuggestedPrompt] = Field(default_factory=lambda: [
+        SuggestedPrompt(title="What's in my project?", message="What datasets are in {project}?"),
+        SuggestedPrompt(
+            title="Make a plot", message="Plot my latest dataset in {project} by cell type",
+        ),
+        SuggestedPrompt(title="Project brief", message="Show me the brief for {project}"),
+        SuggestedPrompt(title="Get started", message="What can you help me do?"),
+    ], max_length=4)
     model: str = "claude-opus-5-5"
     conversation_effort: Literal["low", "medium", "high"] = "medium"
     flexible_harness: bool = False  # Rollout: new requests only; pinned on the receipt.
