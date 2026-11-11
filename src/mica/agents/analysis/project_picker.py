@@ -45,8 +45,13 @@ def home(
             "Choose the project for new conversations. Existing threads keep their project."
         )}},
     ]
-    options = [{"text": {"type": "plain_text", "text": project.name[:75]}, "value": pid}
-               for pid, project in selected]
+    labels = {
+        pid: (project.name if doc.selector(pid, email) == project.name
+              else f"{project.name[:32]} · {pid}")
+        for pid, project in selected
+    }
+    options = [{"text": {"type": "plain_text", "text": labels[pid]}, "value": pid}
+               for pid, _ in selected]
     if options:
         element: dict[str, Any] = {
             "type": "static_select", "action_id": PREFIX + "select", "options": options,
@@ -69,7 +74,7 @@ def home(
     for pid, project in selected:
         role = ("Owner" if project.owner == email else
                 "Co-owner" if doc.owns(pid, email) else "Member")
-        lines.append(f"{project.name} · {role}\n{project.data_uri[:200]}")
+        lines.append(f"{labels[pid]} · {role}\n{project.data_uri[:200]}")
     for start in range(0, len(lines), 8):
         blocks.append({"type": "section", "text": {
             "type": "plain_text", "text": "\n\n".join(lines[start:start + 8]),

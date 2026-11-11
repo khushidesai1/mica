@@ -79,6 +79,21 @@ def test_home_visibility_default_and_most_recent_limit():
     assert "Owner" in str(view) and "gs://lab-data/104/" in str(view)
 
 
+def test_same_named_projects_have_distinct_picker_labels():
+    doc = RegistryDoc()
+    alice, bob = "alice@example.com", "bob@example.com"
+    first = doc.create(alice, "liver", "gs://lab-data/alice/")
+    second = doc.create(bob, "liver", "gs://lab-data/bob/")
+    doc.share(second, bob, alice)
+    view = project_picker.home(doc, alice, first, {})
+    options = view["blocks"][1]["elements"][0]["options"]
+    labels = {option["value"]: option["text"]["text"] for option in options}
+    assert set(labels) == {first, second}
+    assert labels[first] != labels[second]
+    assert all("liver" in label and len(label) <= 75 for label in labels.values())
+    assert second in str(view)
+
+
 @pytest.fixture
 def picker_client(bridge, monkeypatch):
     client = bridge.test_slack
