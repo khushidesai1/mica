@@ -14,7 +14,8 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from .ambient_config import AmbientPerson
 from .config import CHECKPOINT_PREFIX
-from .slack_format import chunks, to_mrkdwn
+from .slack_format import answer_blocks, chunks, neutralize
+from .transport import SlackTransport
 
 if TYPE_CHECKING:
     from .batch import BatchBridge
@@ -37,7 +38,8 @@ async def existing_dm(client: AsyncWebClient, user: str) -> str:
 
 
 async def post_once(
-    bridge: BatchBridge, operation: str, channel: str, text: str, thread_ts: str = ""
+    bridge: BatchBridge, operation: str, channel: str, text: str, thread_ts: str = "",
+    *, blocks: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
     key = "ambient-message:" + hashlib.sha256(operation.encode()).hexdigest()
     claim = await bridge.repository.begin_event(key, lease_seconds=60)
@@ -82,13 +84,14 @@ async def post_once(
             saved["sending"] = True
             await bridge.repository.set_connector_state(key, saved)
             try:
-                response = await client.chat_postMessage(
+                response = await SlackTransport(client).post(
                     channel=saved["channel"],
                     text=text,
                     client_msg_id=saved["client_msg_id"],
                     thread_ts=thread_ts or None,
                     unfurl_links=False,
                     unfurl_media=False,
+                    **({"blocks": blocks} if blocks is not None else {}),
                 )
             except SlackApiError:
                 saved["sending"] = False  # Slack explicitly rejected this request.
@@ -204,13 +207,14 @@ async def terminal(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -
                 state["team"],
                 summary,
             )
-            for index, part in enumerate(chunks(to_mrkdwn(summary))):
+            for index, part in enumerate(chunks(summary)):
                 await post_once(
                     bridge,
                     f"{event_id}:final:{person.slack_user}:{index}",
                     notice["channel"],
-                    part,
+                    neutralize(part),
                     notice["ts"],
+                    blocks=answer_blocks(part),
                 )
             for file in payload.get("files", []):
                 if not await asyncio.to_thread(

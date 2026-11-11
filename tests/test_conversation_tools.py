@@ -168,9 +168,10 @@ async def test_markdown_reply_is_formatted_for_slack_and_retry_preserves_origina
     monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: sdk)
     assert await direct.handle(bridge, event_id, record, bridge.store)
     rendered = bridge.test_slack.chat_update.call_args.kwargs["text"]
-    assert rendered.startswith("*1. Run and slide level*\n- Compare counts &amp; genes.")
-    assert "<https://example.org/qc|source>" in rendered
-    assert "`**literal**` and `<cell>`" in rendered
+    assert rendered.startswith("**1. Run and slide level**\n- Compare counts &amp; genes.")
+    assert "[source](https://example.org/qc)" in rendered
+    assert "`**literal**` and `&lt;cell&gt;`" in rendered
+    assert bridge.test_slack.chat_update.call_args.kwargs["blocks"][0]["type"] == "markdown"
     assert "```python\nvalue = '**literal**'\n```" in rendered
     assert record["direct_decision"]["reply"] == record["memory_reply"] == text
     state = json.loads(bridge.store.get(access.checkpoint_key(record["thread_key"]))[0])

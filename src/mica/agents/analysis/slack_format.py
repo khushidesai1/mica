@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterator, Sequence
+from html import escape
 from typing import Any, Literal
 
 from .progress import TaskProgress, note_headline, public_note
@@ -163,7 +164,19 @@ def to_mrkdwn(text: str) -> str:
     return "".join(parts)
 
 
-def chunks(text: str, limit: int = 3500) -> Iterator[str]:
+def neutralize(text: str) -> str:
+    """Model angle syntax stays literal, including in notification fallbacks."""
+    return escape(text, quote=False)
+
+
+def answer_blocks(text: str) -> list[dict[str, Any]]:
+    value = neutralize(text)
+    if len(value) > 12000:
+        raise ValueError("Markdown answer exceeds Slack's message limit")
+    return [{"type": "markdown", "text": value or " "}]
+
+
+def _plain_chunks(text: str, limit: int) -> Iterator[str]:
     while len(text) > limit:
         end = text.rfind("\n", 0, limit + 1)
         end = end if end > limit // 2 else limit
@@ -171,3 +184,94 @@ def chunks(text: str, limit: int = 3500) -> Iterator[str]:
         text = text[end:].lstrip("\n")
     if text:
         yield text
+
+
+def _table_separator(line: str) -> bool:
+    cells = line.strip().strip("|").split("|")
+    return bool(cells) and all(re.fullmatch(r"\s*:?-{3,}:?\s*", c) for c in cells)
+
+
+def chunks(text: str, limit: int = 3500) -> Iterator[str]:
+    """Keep Markdown units together; oversized units continue with valid syntax.
+
+    `limit` is the target for prose. A whole code block/table may use Slack's 12k budget.
+    Escaping is included in that budget; callers retain the original text for persistence.
+    """
+    if limit < 32:
+        raise ValueError("Chunk limit must allow Markdown delimiters")
+    limit = min(limit, 12000)
+    lines = text.splitlines(keepends=True)
+    units: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        fence = re.match(r"^ {0,3}(`{3,}|~{3,})[^\n]*", line)
+        if fence:
+            start = index
+            delimiter = fence[1]
+            closing = None
+            index += 1
+            while index < len(lines):
+                closing = re.fullmatch(
+                    r" {0,3}" + re.escape(delimiter[0]) + "{" + str(len(delimiter)) + r",}\s*",
+                    lines[index],
+                )
+                index += 1
+                if closing:
+                    break
+            unit = "".join(lines[start:index])
+            if len(neutralize(unit)) <= 12000:
+                units.append(unit)
+            else:
+                # Each continuation is a complete fenced block, with the same language.
+                opening = lines[start].rstrip("\n") + "\n"
+                body = "".join(lines[start + 1:index - 1 if closing else index])
+                budget = min(limit, 12000) - len(neutralize(opening + "\n" + delimiter))
+                if budget < 32:
+                    units.extend(_bounded_plain(unit, limit))
+                else:
+                    for part in _bounded_plain(body, budget):
+                        units.append(opening + part.rstrip("\n") + "\n" + delimiter + "\n")
+        elif index + 1 < len(lines) and "|" in line and _table_separator(lines[index + 1]):
+            header = "".join(lines[index:index + 2])
+            index += 2
+            if len(neutralize(header)) > 12000:
+                units.extend(_bounded_plain(header, limit))
+                continue
+            table = header
+            while index < len(lines) and "|" in lines[index] and lines[index].strip():
+                row = lines[index]
+                if len(neutralize(table + row)) > 12000:
+                    units.append(table)
+                    table = header
+                if len(neutralize(header + row)) > 12000:
+                    # An individual row larger than Slack's ceiling is delivered literally.
+                    units.extend(_bounded_plain(row, limit))
+                else:
+                    table += row
+                index += 1
+            units.append(table)
+        else:
+            units.extend(_bounded_plain(line, limit))
+            index += 1
+    pending = ""
+    for unit in units:
+        if pending and len(neutralize(pending + unit)) > limit:
+            if pending.rstrip("\n"):
+                yield pending.rstrip("\n")
+            pending = ""
+        pending += unit
+    if pending.rstrip("\n"):
+        yield pending.rstrip("\n")
+
+
+def _bounded_plain(text: str, limit: int) -> Iterator[str]:
+    for piece in _plain_chunks(text, limit):
+        while len(neutralize(piece)) > limit:
+            end = limit
+            while len(neutralize(piece[:end])) > limit:
+                end -= 1
+            yield piece[:end]
+            piece = piece[end:]
+        if piece:
+            yield piece

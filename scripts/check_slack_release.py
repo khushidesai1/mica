@@ -35,7 +35,13 @@ from mica.agents.analysis import (
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.progress import TaskProgress, check_in_due
 from mica.agents.analysis.registry import Registry
-from mica.agents.analysis.slack_format import activity_blocks, activity_fallback, status_blocks
+from mica.agents.analysis.slack_format import (
+    activity_blocks,
+    activity_fallback,
+    answer_blocks,
+    chunks,
+    status_blocks,
+)
 from mica.agents.analysis.storage import LocalStorage
 from mica.services.tools import BOOTSTRAP_TOOLS
 from mica.tool_catalog import ATOMX_TRANSFER_ID, SPATIAL_ANALYSIS_ID
@@ -137,6 +143,18 @@ def check(source: Path, mode: str) -> None:
         [], finished=True,
     )
     print("NATIVE_SESSION_SINGLE_WORKING_STATE_VERIFIED")
+    text = "**Results** <!here> [source](https://example.org)"
+    assert answer_blocks(text) == [{"type": "markdown", "text": text.replace(
+        "<!here>", "&lt;!here&gt;",
+    )}]
+    fenced = "```python\n" + "value = 1\n" * 500 + "```"
+    assert fenced in list(chunks("Before\n" + fenced + "\nAfter"))
+    assert not settings.slack_streaming and len(settings.suggested_prompts) == 4
+    from mica.agents.analysis import project_picker
+    from mica.agents.analysis.registry import RegistryDoc
+
+    assert project_picker.home(RegistryDoc(), "nobody@example.com", None, {})["type"] == "home"
+    print("SLACK_NATIVE_CONTENT_AND_DEFAULT_FLAGS_VERIFIED")
     operation = gcs_operations.Operation(
         action="move", source="gs://release-probe/TMA1/",
         destination="gs://release-probe/TMA1_old/",

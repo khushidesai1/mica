@@ -35,7 +35,7 @@ from .gcs_operations import Operation
 from .help_text import PROJECT_HELP
 from .identity import post
 from .registry import Registry
-from .slack_format import chunks, to_mrkdwn
+from .slack_format import answer_blocks, chunks, neutralize
 from .storage import Storage
 from .survey import inventory
 from .transfer_config import TransferRequest
@@ -176,7 +176,7 @@ async def show_context(
             bridge, event_id, record, text if grant.allowed else access.deny_text(grant)
         )
     event = record["payload"]["event"]
-    parts = list(chunks(to_mrkdwn(text)))
+    parts = list(chunks(text))
     sent = int(record.get("context_parts_sent", 0))
     for index, part in enumerate(parts):
         if index < sent:
@@ -195,8 +195,9 @@ async def show_context(
                 bridge.app.slack_bot_token,
                 event["channel"],
                 event.get("thread_ts") or event["ts"],
-                part,
+                neutralize(part),
                 event_id=f"{event_id}:context:{index}",
+                blocks=answer_blocks(part),
             )
         record["context_parts_sent"] = index + 1
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
@@ -277,6 +278,19 @@ async def dispatch_command(
             commands.run, cmd, grant, registry, bridge.app, record, event_id, bridge.settings
         )
         if reply is not None:
+            if cmd.name == "use" and grant.private and not surface.is_email(record):
+                from . import project_picker
+
+                event = record["payload"]["event"]
+                selected = (await asyncio.to_thread(registry.load)).active_for(
+                    grant.email, record["payload"]["team_id"], event["channel"], private=True,
+                )
+                await project_picker.used(
+                    bridge, record["payload"]["team_id"], event["user"], selected or "",
+                )
+                await project_picker.refresh(
+                    bridge, record["payload"]["team_id"], event["user"], event["channel"],
+                )
             if cmd.name == "projects":
                 await command_intent.remember_projects(bridge, record, grant, cmd)
             if cmd.name == "rename" and bridge.settings.memory_repo:
@@ -1023,7 +1037,7 @@ async def handle(
     # Model replies use Markdown, just like worker replies. Convert only at the
     # Slack boundary so saved decisions/history and email retain the original text.
     completed = await finish(
-        bridge, event_id, record, reply if surface.is_email(record) else to_mrkdwn(reply)
+        bridge, event_id, record, reply
     )
     record["memory_reply"] = decision.reply
     return completed

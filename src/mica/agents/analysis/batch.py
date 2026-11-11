@@ -43,7 +43,7 @@ from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
 from .data_links import init_args
 from .identity import IdentityUnavailable
-from .slack_format import chunks, status_blocks
+from .slack_format import answer_blocks, chunks, neutralize, status_blocks
 from .storage import GCSStorage, Storage
 from .tiers import Provisioning, selected_gpu_choice
 
@@ -294,6 +294,7 @@ class BatchBridge:
         """One durable status message per input, independent of slow Spot startup."""
         from slack_sdk.web.async_client import AsyncWebClient
 
+        from . import answer_stream
         from .email_delivery import deliver
         from .transfer_state import is_handoff
         from .transport import SlackTransport
@@ -349,6 +350,33 @@ class BatchBridge:
             return
         event = record["payload"]["event"]
         client = SlackTransport(AsyncWebClient(token=self.app.slack_bot_token, timeout=5))
+        streamed = record.get("stream", {})
+        terminal = phase in {"complete", "failed", "denied", "cancelled"}
+        reuse_stream = (phase == "complete" and streamed.get("state") == "stopped"
+                        and streamed.get("answer_hash") == answer_stream.fingerprint(text))
+        if terminal and streamed and streamed.get("state") != "delivered":
+            if not reuse_stream:
+                await answer_stream.cleanup(self, event_id, record, tick=int(record.get("tick", 0)))
+            if not record.get("stream_activity_finished"):
+                # A streamed answer has its own message. Preserve the activity ending,
+                # including on fallback, rather than turning it into another answer.
+                if record.get("notice_ts") and record["notice_ts"] != streamed.get("ts"):
+                    from .slack_format import activity_blocks
+
+                    await client.update(
+                        channel=event["channel"], ts=record["notice_ts"],
+                        text="Mica finished" if phase == "complete" else "Mica stopped",
+                        blocks=activity_blocks(
+                            [], finished=True, error=None if phase == "complete" else text,
+                            summary=record.get("notice_title", ""),
+                        ),
+                    )
+                    record["activity_ts"] = record.pop("notice_ts")
+                record["stream_activity_finished"] = True
+                await answer_stream.save(self, event_id, record)
+            if reuse_stream:
+                record["notice_ts"] = streamed["ts"]
+                streamed.setdefault("delivery_limit", 10000)
         status: dict[str, Any] = (
             {"blocks": status_blocks(
                 self.settings.loading_emoji, activity_title or text,
@@ -368,39 +396,52 @@ class BatchBridge:
         displayed = f"🚩 {text}" if phase in {"failed", "cancelled"} else text
         if phase in STATUS_PHASES:
             displayed = escape(displayed, quote=False)
-        parts = list(chunks(displayed)) or [""]
+        parts = list(chunks(displayed, limit=int(streamed.get("delivery_limit", 3500)))) or [""]
         delivery_id = digest(f"{phase}:{displayed}")
         progress = record.get("notice_chunks", {})
         sent = int(progress.get("sent", 0)) if progress.get("id") == delivery_id else 0
         try:
             for index, part in enumerate(parts):
-                if index < sent:
+                if index < sent and not (index == 0 and streamed.get("replace_first")):
                     continue
+                presentation = (
+                    {"blocks": answer_blocks(part)}
+                    if phase in {"complete", "failed", "denied", "cancelled"} else status
+                )
+                fallback = (
+                    neutralize(part)
+                    if phase in {"complete", "failed", "denied", "cancelled"} else part
+                )
                 if index == 0 and record.get("notice_ts"):
                     await client.update(
-                        channel=event["channel"], ts=record["notice_ts"], text=part, **status
+                        channel=event["channel"], ts=record["notice_ts"], text=fallback,
+                        **presentation,
                     )
                 else:
                     message_id = (
                         f"pistachio-receipt:{event_id}"
-                        if index == 0
+                        if index == 0 and not streamed
                         else f"mica-reply:{event_id}:{delivery_id}:{index}"
                     )
                     response = await client.post(
                         channel=event["channel"],
                         thread_ts=event.get("thread_ts") or event["ts"],
-                        text=part,
+                        text=fallback,
                         unfurl_links=False,
                         unfurl_media=False,
                         client_msg_id=str(uuid5(NAMESPACE_URL, message_id)),
-                        **status,
+                        **presentation,
                     )
                     if index == 0:
                         record["notice_ts"] = response["ts"]
+                if index == 0:
+                    streamed.pop("replace_first", None)
                 if len(parts) > 1:
-                    record["notice_chunks"] = {"id": delivery_id, "sent": index + 1}
+                    record["notice_chunks"] = {"id": delivery_id, "sent": max(sent, index + 1)}
                     await self.repository.set_connector_state(f"claude-event:{event_id}", record)
             record.update(notice_phase=phase, notice_text=text, notice_title=activity_title)
+            if reuse_stream:
+                streamed["state"] = "delivered"
             record.pop("notice_chunks", None)
             record.pop("notice_pending_phase", None)
             if record.get("status") not in {"complete", "failed"}:
@@ -570,6 +611,9 @@ class BatchBridge:
             record = await self.repository.get_connector_state(key)
             if not record:
                 raise LookupError("Unknown Slack event")
+            from . import answer_stream
+
+            await answer_stream.cleanup(self, event_id, record, tick=tick)
             # Save the presentation outbox before slow work, including unchanged pending turns.
             agent_session.mark(self, record)
             if agent_session.eligible(self, record):
@@ -611,6 +655,13 @@ class BatchBridge:
                 )
                 if observability.capture_project(record, grant):
                     await self.repository.set_connector_state(key, record)
+                    if grant.allowed and not surface.is_email(record) and not record.get("ambient"):
+                        from . import project_picker
+
+                        await project_picker.used(
+                            self, record["payload"]["team_id"],
+                            record["payload"]["event"]["user"], grant.project_id,
+                        )
             if not record.get("notice_ts"):
                 await self.notify(event_id, record, "received", "Mica is working")
             from . import commands, conversation, request_controls
@@ -772,6 +823,10 @@ class BatchBridge:
             await self.repository.release_event(mutex, claim.token)
 
     async def cleanup_terminal(self, event_id: str, record: dict[str, Any]) -> None:
+        if record.get("status") in {"complete", "failed"}:
+            from . import answer_stream
+
+            await answer_stream.cleanup(self, event_id, record, tick=int(record.get("tick", 0)))
         if (
             record.get("retention_version") != 1
             or record.get("temporary_cleaned")

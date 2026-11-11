@@ -21,7 +21,12 @@
       "unfurl_media": false
     },
     {
-      "blocks": null,
+      "blocks": [
+        {
+          "text": "Data: fixture.h5ad",
+          "type": "markdown"
+        }
+      ],
       "channel": "C123",
       "text": "Data: fixture.h5ad",
       "thread_ts": "1.0",

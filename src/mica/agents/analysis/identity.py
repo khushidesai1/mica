@@ -92,16 +92,22 @@ def member_email(
         ) from exc
 
 
-async def post(token: str, channel: str, thread_ts: str, text: str, *, event_id: str) -> None:
+async def post(
+    token: str, channel: str, thread_ts: str, text: str, *, event_id: str,
+    blocks: list[dict[str, Any]] | None = None,
+) -> None:
     from slack_sdk.web.async_client import AsyncWebClient
 
-    await AsyncWebClient(token=token, timeout=5).chat_postMessage(
+    from .transport import SlackTransport
+
+    await SlackTransport(AsyncWebClient(token=token, timeout=5)).post(
         channel=channel,
         thread_ts=thread_ts,
         text=text,
         unfurl_links=False,
         unfurl_media=False,
         client_msg_id=str(uuid5(NAMESPACE_URL, f"pistachio-message:{event_id}")),
+        **({"blocks": blocks} if blocks is not None else {}),
     )
 
 

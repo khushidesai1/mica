@@ -60,6 +60,7 @@ async def test_first_real_native_content_keeps_delivery_identity(bridge, phase, 
     await bridge.notify(event_id, record, "complete", "Final answer")
     assert bridge.test_slack.chat_update.call_args.kwargs == {
         "channel": "D1", "ts": "9.0", "text": "Final answer",
+        "blocks": [{"type": "markdown", "text": "Final answer"}],
     }
 
 

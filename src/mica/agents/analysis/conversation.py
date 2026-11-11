@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from . import (
     access,
+    answer_stream,
     attachments,
     backchannel,
     command_intent,
@@ -531,6 +532,7 @@ async def run(
 
     updates_enabled = not init
     has_note = False
+    streaming = answer_stream.AnswerStream(bridge, event_id, record, grant, init=init)
     try:
         for call in range(bridge.settings.conversation_max_calls + 1):
             now = asyncio.get_running_loop().time()
@@ -643,7 +645,7 @@ async def run(
                 await bridge.notify(event_id, record, "replying", "Mica is thinking")
             async with asyncio.timeout_at(deadline):
                 try:
-                    response = await client.beta.messages.create(**request)
+                    response = await streaming.create(client, request)
                 except BadRequestError as exc:
                     detail = str(exc).lower()
                     if not updates_enabled or not (
@@ -656,7 +658,7 @@ async def run(
                     request["thinking"] = {"type": "adaptive"}
                     request["betas"] = [FALLBACK_BETA]
                     request["timeout"] = max(0.01, deadline - asyncio.get_running_loop().time())
-                    response = await client.beta.messages.create(**request)
+                    response = await streaming.create(client, request)
             if flexible:
                 checkpoint["calls"] += 1
                 record["routing_calls"] = checkpoint["calls"]

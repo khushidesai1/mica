@@ -593,6 +593,7 @@ async def test_notify_status_blocks_are_removed_for_final_reply(bridge):
         "channel": "D1",
         "ts": "9.0",
         "text": "Here's the answer.",
+        "blocks": [{"type": "markdown", "text": "Here's the answer."}],
     }
 
 
