@@ -36,7 +36,8 @@ class EventClaim:
 
 
 FailureProjection = Literal[
-    "outcome_review_due", "stall_check_at", "memory_due", "ambient_due", "import_due"
+    "outcome_review_due", "stall_check_at", "memory_due", "ambient_due", "import_due",
+    "agent_session_due",
 ]
 
 

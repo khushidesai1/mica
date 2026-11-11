@@ -3,12 +3,25 @@
 display_information:
   name: Mica
 features:
+  # Treat this cutover as one-way. Validate on a separate app before updating the live app.
+  agent_view:
+    agent_description: >-
+      Mica is your lab's analysis agent. Ask about project data, run analyses,
+      make plots, and manage files. GPU runs and some file changes ask for your approval first.
+    suggested_prompts:
+      - title: What's in my project?
+        message: What datasets are in this project?
+      - title: Make a plot
+        message: Plot my latest dataset colored by cell type
+      - title: Project brief
+        message: Show me this project's brief
   bot_user:
     display_name: Mica
     always_online: false
 oauth_config:
   scopes:
     bot:
+      - assistant:write
       - chat:write
       - im:history
       - files:read
@@ -32,6 +45,8 @@ settings:
   event_subscriptions:
     # Preserve the current /integrations/slack/events request_url in app settings.
     bot_events:
+      # Enable together with AGENT_SLACK_SESSIONS=true after the agent UI cutover checks.
+      # - agent_session_stopped
       - message.im
       # Required for channel onboarding:
       - app_mention

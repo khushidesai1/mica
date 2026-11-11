@@ -156,6 +156,24 @@ async def process(event_id: str, tick: int, request: Request) -> dict[str, str]:
     return {"status": status}
 
 
+@router.post("/agent-session/{event_id}", include_in_schema=False)
+async def sync_agent_session(event_id: str, request: Request) -> dict[str, str]:
+    from mica.agents.analysis import agent_session
+
+    services = request.app.state.services
+    principal = await get_principal(request)
+    if principal.id != services.settings.cloud_tasks_service_account.lower():
+        raise HTTPException(403, "Untrusted task dispatcher")
+    await admit(request, draining=True)
+    if not re.fullmatch(r"[a-f0-9]{32}", event_id):
+        raise HTTPException(400, "Invalid event")
+    try:
+        await agent_session.sync(BatchBridge(services.settings, services.repository), event_id)
+    except Exception:
+        raise HTTPException(503, "Slack session update pending; retry") from None
+    return {"status": "checked"}
+
+
 @router.post("/approvals/{kind_name}/{identifier}", include_in_schema=False)
 async def expire_approval(kind_name: str, identifier: str, request: Request) -> dict[str, str]:
     from mica.agents.analysis import approvals

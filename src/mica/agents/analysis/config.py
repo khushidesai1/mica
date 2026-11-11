@@ -27,6 +27,7 @@ class Settings(BaseSettings):
         ),
     )
     slack_app_token: SecretStr = Field(default=SecretStr(""), alias="SLACK_APP_TOKEN")
+    slack_sessions: bool = False  # Control-plane rollout; Slack agent UI and native Stop.
     model: str = "claude-opus-5-5"
     conversation_effort: Literal["low", "medium", "high"] = "medium"
     flexible_harness: bool = False  # Rollout: new requests only; pinned on the receipt.
