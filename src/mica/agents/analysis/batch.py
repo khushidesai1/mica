@@ -24,6 +24,7 @@ from mica.storage.base import Repository
 
 from . import (
     access,
+    agent_session,
     amendments,
     compute_approval,
     gpu_capacity,
@@ -526,6 +527,7 @@ class BatchBridge:
                         receipt["write_grant"] = None
                     receipt["deadline_at"] = float(ambient["deadline_at"])
                     receipt["write_control"] = False
+                agent_session.mark(self, receipt)
                 if self.settings.amendments and receipt.get("previous"):
                     previous = await self.repository.get_connector_state(
                         f"claude-event:{receipt['previous']}"
@@ -540,6 +542,7 @@ class BatchBridge:
                     )
                 await self.repository.set_connector_state(receipt_key, receipt)
             if receipt["status"] not in {"complete", "failed"}:
+                await agent_session.enqueue(self, receipt)
                 await self.schedule(event_id, receipt["tick"])
             return event_id
         finally:
@@ -551,10 +554,23 @@ class BatchBridge:
         if claim.status != "claimed":
             raise RuntimeError("Poll already in progress")
         key = f"claude-event:{event_id}"
+        record = None
         try:
             record = await self.repository.get_connector_state(key)
             if not record:
                 raise LookupError("Unknown Slack event")
+            # Save the presentation outbox before slow work, including unchanged pending turns.
+            agent_session.mark(self, record)
+            if agent_session.eligible(self, record):
+                try:
+                    await self.repository.patch_connector_state(
+                        key, {agent_session.DUE: record[agent_session.DUE]}
+                    )
+                except Exception:
+                    # Initial intake already stored a due marker. A presentation refresh
+                    # failure must not prevent the controller from attempting its work.
+                    log.warning("Slack session refresh marker pending event=%s", event_id)
+                await agent_session.enqueue(self, record)
             if record["status"] in {"complete", "failed"} or tick < record["tick"]:
                 from . import request_controls
 
@@ -739,6 +755,8 @@ class BatchBridge:
         finally:
             from . import failure_monitor
 
+            if record:
+                await agent_session.enqueue(self, record)
             await failure_monitor.tick(self.repository, self.app, self.settings, event_id)
             await self.repository.release_event(mutex, claim.token)
 
@@ -1485,6 +1503,11 @@ class BatchBridge:
             ):
                 raise PermissionError("Cancellation crossed a conversation boundary")
             next_cursor = prior.get("previous")
+            if not surface.is_email(record) and agent_session.timestamp(
+                prior["payload"]["event"]["ts"]
+            ) > agent_session.timestamp(record["payload"]["event"]["ts"]):
+                cursor = next_cursor
+                continue  # A delayed Stop cannot cancel work sent after the click.
             if prior.get("control_bypass"):
                 cursor = next_cursor
                 continue

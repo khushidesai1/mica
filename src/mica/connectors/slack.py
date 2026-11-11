@@ -802,6 +802,18 @@ async def slack_events(request: Request) -> dict[str, object]:
     payload = json.loads(body)
     if payload.get("type") == "url_verification":
         return {"challenge": payload.get("challenge", "")}
+    if payload.get("event", {}).get("type") == "agent_session_stopped":
+        from mica.agents.analysis import agent_session
+        from mica.agents.analysis.config import Settings as AgentSettings
+
+        if services.settings.slack_agent_backend != "claude_batch" or not (
+            AgentSettings().slack_sessions
+        ):
+            return {"ok": True}
+        mapped = agent_session.stop_as_message(payload)
+        if mapped is None:
+            return {"ok": True}
+        payload = mapped
     from mica.api.migration import buffer_slack
 
     if await buffer_slack(request, payload):

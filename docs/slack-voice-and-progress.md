@@ -308,6 +308,10 @@ Prompt wording can't be unit-tested well. Check it by hand (section 7).
 
 ## 6. Deliberately not in this change: Slack's native agent streaming
 
+The DM-only/two-minute status discussion below describes the older `assistant.threads` API.
+The optional [Agent experience](slack-agent-setup.md#agent-experience) uses the newer session
+lifecycle API independently of these durable progress messages; streaming remains separate.
+
 Slack now has `chat.startStream` / `chat.appendStream` / `chat.stopStream`, with `task_update`
 chunks and `task_display_mode: "plan"`. They render the collapsible step list closest to Claude.
 `assistant.threads.setStatus` (with `loading_messages`) shows the native "is thinking…" shimmer.

@@ -756,3 +756,53 @@ Email supports the same configured bundles and a narrowly scoped approval reply;
 administrative and project-write operations still require Slack. See
 [cloud-access requests and activation](cloud-access.md) for the settings, role boundary,
 welcome delivery and guided live checks.
+
+## Agent experience
+
+Mica can use Slack's Agent messaging experience with the existing app ID and message endpoints.
+Apply the delta in `deploy/slack-app-manifest.yaml` to the **existing** app, preserving its request
+URLs, interactivity, and other settings. `features.agent_view` supplies the description and
+suggested prompts; adding `assistant:write` requires reinstalling the app. Some agent features
+require a paid workspace. Treat the app switch as one-way: Slack explicitly disallows returning
+from `agent_view` to `assistant_view`, and does not promise a reverse path for a plain bot app.
+
+Native session behavior is separately controlled by `AGENT_SLACK_SESSIONS=false` by default.
+After enabling the `agent_session_stopped` subscription, set it to `true` on the control-plane
+API. Use the existing `runtime_environment` map when recording this nonsecret setting in the
+deployment configuration; no new infrastructure is needed. Workers and their image pins stay
+unchanged.
+
+In DMs, native sessions show working/ready/waiting-for-input status and an initial conversation
+title. Mica retains user-renamed titles. Working status refreshes within thirty-five minutes
+through polling or the existing five-minute reconciler, before Slack's one-hour expiry. Native
+Stop enters the same durable queue as typing `cancel`: it stops earlier running and queued
+requests in that DM thread, subject to existing access checks, without needing a check-in card.
+Delayed cancellation never targets messages sent after the stop timestamp. Shared-channel
+native sessions are not enabled; existing mentions, progress cards and cancellation remain.
+Transfer controllers continue to own their transfer cards and cancellation after handoff.
+
+Session updates run in authenticated Cloud Tasks. Receipt markers preserve updates across
+enqueue failures, process crashes and Slack errors; the existing reconciler retries them.
+These presentation tasks do not execute analyses or alter their outcomes. Email is unchanged.
+
+Roll out in this order:
+
+1. Deploy the API with the flag off, preserving credentials and worker pins.
+2. Validate a separate test app in the lab workspace using Socket Mode. Capture sanitized DM,
+   thread, split-view, file-share and Stop payloads; check old-DM history and replies, suggested
+   prompts, titles, native status, cancellation and what the admin display toggle restores.
+3. The app owner applies the manifest delta and reinstalls. Credential replacement, if required,
+   is a separate operator step. Verify the deployed service can actually reply with its token.
+4. With native sessions still off, verify old/new DM threads, split view, channel mentions and
+   follow-ups, file intake/output, approvals and a labeled email test.
+5. Enable the Stop subscription and flag together. Verify status transitions and cancel only
+   your own small test computation, confirming both the user notice and actual job termination.
+
+For native-session rollback, turn the flag off and remove the Stop subscription. Already queued
+presentation tasks honor the flag; previously accepted cancellation receipts still run. Existing
+working indicators expire within an hour. The admin display toggle is not a guaranteed app
+migration rollback; rely only on behavior observed in the separate test app. Keep cutover pending
+until both live phases pass, and clean up any recorded smoke artifacts.
+
+References: [Slack agent sessions](https://docs.slack.dev/ai/agent-sessions/),
+[app manifest](https://docs.slack.dev/reference/app-manifest/).

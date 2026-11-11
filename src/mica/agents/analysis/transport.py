@@ -48,6 +48,9 @@ class SlackTransport:
     async def update(self, **kwargs: Any) -> Any:
         return await self._message("chat_update", kwargs)
 
+    async def set_status(self, **kwargs: Any) -> Any:
+        return await self.client.api_call("agents.sessions.setStatus", json=kwargs)
+
     async def _message(self, method: str, kwargs: dict[str, Any]) -> Any:
         blocks = kwargs.get("blocks") or []
         has_activity = any(b.get("type") == "plan" for b in blocks)
