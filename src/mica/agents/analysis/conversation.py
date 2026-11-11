@@ -18,6 +18,7 @@ from . import (
     command_intent,
     commands,
     conversation_state,
+    gcs_operations,
     prompts,
     reference_repos,
     request_controls,
@@ -96,7 +97,7 @@ def saved_decision(record: dict[str, Any]) -> dict[str, Any]:
 
 
 class Decision(DecisionFields):
-    route: Literal["reply", "compute", "transfer", "command", "access", "cloud_access"]
+    route: Literal["reply", "compute", "transfer", "storage", "command", "access", "cloud_access"]
     command_proposal: dict[str, Any] | None = None
 
 
@@ -178,6 +179,13 @@ CLOUD_ACCESS_DESCRIPTION = (
     "Never infer a Mica project. Email requires approval; Slack links the form."
 )
 DESCRIPTIONS = {
+    "propose_gcs_operations": (
+        "Propose requested GCS moves/renames or deletes; wait for Slack confirmation. "
+        "Use exact gs:// paths within the write grant, trailing / for folders. "
+        "Resolve paths from context/listings; ask if ambiguous. Moves need an absent "
+        "destination; deletes use an empty destination. Keep folders at folder level. "
+        "No worker needed. Generated replacements use start_worker.write_paths."
+    ),
     backchannel.TOOL: backchannel.DESCRIPTION,
     "request_access": (
         "Request an owner approval card when project work is requested but "
@@ -255,6 +263,7 @@ DESCRIPTIONS = {
     ),
 }
 MODELS: dict[str, type[BaseModel]] = {
+    "propose_gcs_operations": gcs_operations.Request,
     backchannel.TOOL: backchannel.Call,
     "request_cloud_access": CloudAccessProposal,
     "request_access": RequestAccess,
@@ -730,6 +739,7 @@ async def run(
                         backchannel.TOOL: "Checking project coordination…",
                         "start_worker": "Preparing the requested computation…",
                         "propose_transfer": "Preparing the transfer request…",
+                        "propose_gcs_operations": "Preparing the GCS operation confirmation…",
                         "propose_command": "Checking the requested operation…",
                     }[name],
                 )
@@ -809,6 +819,13 @@ async def run(
                         record["information_repos"] = sorted(
                             set(record.get("information_repos", []))
                             | {ref["repo"] for ref in result["references"] if "commit" in ref}
+                        )
+                    elif isinstance(value, gcs_operations.Request):
+                        if surface.is_email(record) or record.get("ambient"):
+                            raise ValueError("GCS moves and deletes require confirmation in Slack.")
+                        terminal = Decision(
+                            route="storage", reply="GCS operations requested",
+                            write_operations=value.operations,
                         )
                     elif isinstance(value, Worker):
                         from .tiers import launch_choice

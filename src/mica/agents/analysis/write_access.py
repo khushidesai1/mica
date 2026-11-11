@@ -206,7 +206,8 @@ def status(storage: Storage, project_id: str, settings: Settings) -> str:
     if grant:
         return (
             description(grant)
-            + " Existing files can be overwritten after confirmation for each run."
+            + " Existing files can be replaced, moved or deleted after confirmation "
+            "of the exact operations."
         )
     previous = load(storage, project_id).grant
     if previous and previous.expires_at and now() >= previous.expires_at:

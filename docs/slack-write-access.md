@@ -1,6 +1,7 @@
 # Scoped GCS writes from Slack
 
-Slack supports project-scoped GCS output grants. The feature is disabled unless
+Slack supports project-scoped GCS write grants for publishing, replacing, moving and deleting
+files and folders. The feature is disabled unless
 an administrator configures the writer identity, approved storage locations and Slack write
 administrators. See [deployment status](slack-agent-deployment.md) for the live configuration.
 
@@ -60,7 +61,10 @@ revised results at a new destination path.
 
 The same grant permits new files and confirmed overwrites. Name the destination when asking
 to replace an existing output. Before starting the worker, Mica probes each requested path once
-and presents the nonempty folders/files in a concise summary with **Approve and run** and **Cancel** buttons.
+and presents the exact operations with **Approve and run** and **Cancel** buttons. For example,
+“Replace file `gs://lab-outputs/liver/results.csv` with this run's output” or “Replace matching
+files within folder `gs://lab-outputs/liver/results/` with this run's outputs.” A folder entry
+does not authorize deleting unmatched files or replacing the complete folder.
 Only the requester can approve it in the original Slack thread. Approval expires after one
 hour if unused; a confirmed run stays bounded by its normal execution limits. There is no
 separate overwrite grant. New destinations start without this confirmation.
@@ -106,6 +110,47 @@ revocation does not delete files that were already uploaded.
 The same project-grant check is reusable for future ambient-task runners. The current
 integration covers the existing Slack Batch worker; it does not add an ambient scheduler.
 
+## Moving, renaming and deleting
+
+Ask in Slack using the source and, for a move or rename, destination. For example:
+
+```text
+Move gs://lab-outputs/liver/TMA1/ to gs://lab-outputs/liver/TMA1_old/
+Delete gs://lab-outputs/liver/obsolete-results/
+Rename gs://lab-outputs/liver/report.csv to gs://lab-outputs/liver/report_old.csv
+```
+
+Mica resolves paths from the request and conversation, inspects the current objects, and asks
+the requester to confirm each exact operation. A batch uses one card with a line per operation,
+such as **Move folder `…/TMA1/` → `…/TMA1_old/`** or **Delete file `…/report.csv`**.
+Folder operations stay at folder level in the card; individual filenames are recorded in the
+protected inventory. Approval is bound to the original requester, Slack message, project,
+grant and inspected object versions. It expires after one hour if not approved. Request again
+creates a fresh inventory and requires a fresh confirmation. A new request can contain up to
+ten operations; folder size has no application-imposed object-count or byte cap.
+
+Both ends of a move must be inside the current write grant. Whole-grant roots, overlapping
+operations, wildcards and ambiguous file/folder names are rejected. Use trailing slashes for
+folders. Existing move destinations are refused, including a file, folder marker or any child:
+Mica never silently creates `TMA1_old/TMA1/` or merges into an occupied destination. Destination
+absence is checked during preparation and again before the batch starts; each copy also has
+an object-absence precondition.
+
+The controller copies directly within GCS, checks the copied size and checksum, then deletes
+only the inspected source generation. Source data or metadata changes stop that operation;
+newly added objects remain. Deletes likewise target only inspected generations. Folder
+operations are not atomic, and concurrent writes can leave source objects behind. Completion
+reports any remaining source paths. Failure or cancellation retains completed changes and
+stops further work; it does not roll back copies or deletions.
+
+Inventories are paged into protected `write-access/operations/<event>/<snapshot>/` shards;
+resumable rewrite tokens, deletion intents and per-object receipts let Cloud Tasks recover
+lost responses without repeating confirmed mutations. No worker or local download is needed.
+Grant revocation, expiry, membership changes and cancellation are checked throughout execution.
+The existing bucket soft-delete, versioning and retention policies still apply. Email and
+background runs cannot use these operations. Workers still receive no writer credentials,
+and input mounts remain read-only.
+
 ## Configuration and cloud permissions
 
 Configure the control service (not the agent sandbox):
@@ -126,7 +171,7 @@ The broker time slice accepts 1–840 seconds and is copied into each run's requ
 
 - A dedicated writer account with `storage.objects.create`, `storage.objects.get`, and
   `storage.objects.delete`, conditioned to approved bucket prefixes. Cloud Storage requires
-  `delete` to overwrite an object; the application exposes no delete operation.
+  `delete` to overwrite an object and to perform confirmed moves/deletions.
   `get` reconciles retries and generation preconditions prevent replacing an unapproved version.
 - Permission for the control account alone to impersonate that writer, plus IAM Credentials
   and Security Token Service API enablement. Workers cannot impersonate it.
@@ -154,6 +199,9 @@ Grant commands update durable application policy; they do **not** edit IAM on ev
 The dedicated writer retains the configured maximum scope. The trusted publisher checks the
 current project grant between rewrite iterations, obtains a short-lived impersonated credential,
 and downscopes it to the exact destination plus read-only access to the exact staged source.
+Confirmed moves use the same copy boundary, followed by a separate exact-source delete
+credential. Source inspection uses the controller's existing read/list access. No broader
+writer IAM role or Terraform apply is needed for move/delete support.
 Tokens and rewrite tokens never leave
 the control service. The worker can stage outputs but cannot mint writer tokens or call the
 publisher from inside the model sandbox. Input mounts remain read-only.
