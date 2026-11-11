@@ -9,7 +9,7 @@ from html import unescape
 from typing import Any
 
 from .progress import TaskProgress
-from .slack_format import activity_blocks
+from .slack_format import activity_blocks, status_blocks
 
 PREFIX = "mica_transfer_"
 TERMINAL = {"done", "failed", "cancelled", "expired"}
@@ -90,7 +90,7 @@ def button(p: dict[str, Any], action: str, label: str) -> dict[str, Any]:
 
 def sections(label: str, value: str) -> list[dict[str, Any]]:
     # Full paths must remain reviewable; never silently truncate the approved destination.
-    text = label + "\n" + value
+    text = (label + "\n" if label else "") + value
     return [
         {"type": "section", "text": {"type": "plain_text", "text": text[i:i + 2900]}}
         for i in range(0, len(text), 2900)
@@ -164,6 +164,11 @@ def blocks(
                 "type": "rich_text_section", "elements": [{"type": "text", "text": unescape(text)}],
             }],
         }
+        if state in {"cancelled", "expired", "preview"}:
+            result = status_blocks("", title, detail=unescape(text), state="waiting")
+        elif state in TERMINAL:
+            # Results and failures must be readable without opening the activity disclosure.
+            result.extend(sections("", unescape(text)))
     if actions:
         result.append({"type": "actions", "elements": actions})
     return result

@@ -73,9 +73,10 @@ built-in Read/Write/Edit/Glob/Grep/Bash tools and the pinned science environment
 A control-service reply acknowledges each accepted input. Direct replies update it in place;
 computation requests update it before any Spot startup. That same
 Slack message reports queue waits, startup elapsed time, worker readiness, and completion/errors.
-The status is one compact native activity disclosure. Its title shows the latest public progress
-note, then a specific queue/startup/tool status, with “Mica is working” or “Mica is thinking” as
-the fallback. Expand it to inspect the full note, latest tool descriptions and long-run check-ins. Cellpose
+Public commentary appears as a short paragraph above one compact native activity disclosure.
+The paragraph explains a useful finding or what Mica is checking next; routine tool details stay
+in the disclosure. Its title names the current task or queue/startup state, with “Mica is working”
+or “Mica is thinking” as the fallback. Expand it to inspect recent tools and long-run check-ins. Cellpose
 entries name the crop being processed; completion is only shown after confirmation. The disclosure
 has no padded container, large heading, duplicate status line or separate “On it…” acknowledgment.
 Slack owns the disclosure animation and hover styling; no custom border, color or rounded wrapper
@@ -83,12 +84,31 @@ is added. Worker notes are top-level text confirmed by a following tool call in 
 message; thinking blocks are never rendered. The conversation API requests public progress
 updates with reasoning omitted, and uses only text notes when a fallback model answers.
 Notes are bounded plain text and stay out of application run logs, history and memory. The final
-answer appears once, and finished/stopped cards discard the note. Email still sends no progress.
+answer appears once, leads with the outcome and deliverables, and keeps important caveats visible.
+Finished/stopped cards discard commentary. Email still sends no progress.
 Phase changes come from SDK lifecycle events. Identical
 states are deduplicated; worker updates are coalesced to at most once per 30 seconds in the same
 message, with terminal states shown immediately. Unsupported
 surfaces fall back to small context text. Status failures do not prevent work, and webhook/poll
 deliveries reuse the stored message timestamp.
+
+Write and GPU approvals return to this same compact activity presentation after a durable
+decision, with the approved scope in the disclosure. Approval does not imply the worker has
+started: remaining prerequisites and queue waits stay explicit. Cancelled or expired requests
+use quiet status text without a running or success icon; request-again controls remain available.
+Transfer results and failures remain readable outside the disclosure. Activity block rejection
+falls back through the same transport for both approval resumption and ordinary progress.
+
+Response patterns (illustrative wording; claims require confirmed results):
+
+| Situation | Presentation |
+| --- | --- |
+| Lookup | “I found the sample table. I’m checking its columns.” above “Reading sources…” |
+| Analysis | “The groups have different sample sizes. I’m checking the comparison.” above the current task |
+| Write approval accepted | “Preparing approved changes…” with the authorized scope in details |
+| Write finished | “Moved 3 files to `archive/`. Copies were verified before source removal.” |
+| Interrupted | State what finished, what remains, and the supported next action; do not imply a retry has started |
+| Partial delivery | Lead with the result, then identify the missing file or delivery failure in visible reply text |
 
 Firestore receipts deduplicate Slack delivery, order accepted messages within a thread, and
 limit active Claude jobs to three. Named polling tasks use the existing queue without depending

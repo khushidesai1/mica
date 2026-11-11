@@ -67,6 +67,27 @@ async def test_timer_uses_existing_authenticated_queue_and_stable_deadline(bridg
     assert args[3] == 61
 
 
+async def test_commentary_is_separate_from_activity_and_terminal_reply(bridge):  # noqa: F811
+    from test_analysis_batch import payload
+
+    record = {"payload": payload(), "notice_ts": "9.0", "status": "pending"}
+    note = "The source exists. I'm checking its destination."
+    await bridge.notify("test", record, "replying", note, activity_title="Checking files…")
+    first = bridge.test_slack.chat_update.call_args.kwargs
+    assert first["blocks"][0]["text"] == {"type": "plain_text", "text": note}
+    assert first["blocks"][1]["title"] == "Checking files…"
+    await bridge.notify("test", record, "replying", note, activity_title="Checking files…")
+    bridge.test_slack.chat_update.assert_awaited_once()
+    # The same commentary can accompany a new truthful task title.
+    await bridge.notify("test", record, "replying", note, activity_title="Checking destination…")
+    assert bridge.test_slack.chat_update.await_count == 2
+    await bridge.notify("test", record, "complete", "The destination is empty.")
+    final = bridge.test_slack.chat_update.call_args.kwargs
+    assert final["ts"] == "9.0" and final["text"] == "The destination is empty."
+    assert note not in repr(final) and not final.get("blocks")
+    bridge.test_slack.chat_postMessage.assert_not_called()
+
+
 @pytest.mark.parametrize("allowed", [False, True])
 async def test_expiry_endpoint_requires_task_dispatcher(bridge, monkeypatch, allowed):  # noqa: F811
     request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(services=SimpleNamespace(

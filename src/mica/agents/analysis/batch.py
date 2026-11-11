@@ -286,7 +286,10 @@ class BatchBridge:
     def storage(self) -> Storage:
         return GCSStorage(self.app.gcs_bucket)
 
-    async def notify(self, event_id: str, record: dict[str, Any], phase: str, text: str) -> None:
+    async def notify(
+        self, event_id: str, record: dict[str, Any], phase: str, text: str,
+        *, activity_title: str = "",
+    ) -> None:
         """One durable status message per input, independent of slow Spot startup."""
         from slack_sdk.web.async_client import AsyncWebClient
 
@@ -331,12 +334,16 @@ class BatchBridge:
 
         if phase in {"complete", "failed", "denied", "cancelled"}:
             record["terminal_reply"] = text
-        if record.get("notice_text") == text:
+        if (record.get("notice_text") == text
+            and record.get("notice_title", "") == activity_title):
             return
         event = record["payload"]["event"]
         client = SlackTransport(AsyncWebClient(token=self.app.slack_bot_token, timeout=5))
         status: dict[str, Any] = (
-            {"blocks": status_blocks(self.settings.loading_emoji, text)}
+            {"blocks": status_blocks(
+                self.settings.loading_emoji, activity_title or text,
+                note=text if activity_title and text != activity_title else "",
+            )}
             if phase in STATUS_PHASES
             else {}
         )
@@ -382,7 +389,7 @@ class BatchBridge:
                 if len(parts) > 1:
                     record["notice_chunks"] = {"id": delivery_id, "sent": index + 1}
                     await self.repository.set_connector_state(f"claude-event:{event_id}", record)
-            record.update(notice_phase=phase, notice_text=text)
+            record.update(notice_phase=phase, notice_text=text, notice_title=activity_title)
             record.pop("notice_chunks", None)
             if record.get("status") not in {"complete", "failed"}:
                 await self.repository.set_connector_state(f"claude-event:{event_id}", record)

@@ -178,15 +178,15 @@ async def ready(
             + fallback
         )
     text = (
-        f"Approve this GPU run on {describe(selected_gpu_choice(record))}? "
+        f"Approve this GPU run on {describe(selected_gpu_choice(record))}?\n\n"
         + fallback
-        + f"Time allowance: {approval.seconds / 3600:g} hours including startup/retries. "
+        + f"\nTime allowance: {approval.seconds / 3600:g} hours including startup/retries.\n"
         f"Estimated compute and disk: ${compute:.2f}; "
         + (f"model usage check-in at ${approval.model_allowance:.2f}; work continues "
            "unless you cancel. " if approval.flexible_harness
            else f"model allowance: ${approval.model_allowance:.2f}. ")
         +
-        "This is an estimate, not a billing cap. Startup can take several minutes. "
+        "\n\nThis is an estimate, not a billing cap. Startup can take several minutes. "
         + (
             "Saved work can continue on replacement Spot workers within this same allowance."
             if mode == "SPOT"
@@ -348,15 +348,18 @@ async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
         if approval.status == "approved":
             await bridge.schedule(event_id, record["tick"])
-        text = (
-            "GPU run approved. Preparing this run…"
-            if approval.status == "approved"
-            else "Cancelled. Nothing started."
-        )
-        await approvals.card(
-            AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
-            event["channel"], record["notice_ts"], text,
-        )
+            await approvals.resumed_card(
+                AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
+                event["channel"], record["notice_ts"], "Preparing approved GPU run…",
+                f"GPU compute approved for up to {approval.seconds / 3600:g} hours. "
+                "Checking remaining launch requirements.",
+            )
+        else:
+            await approvals.card(
+                AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
+                event["channel"], record["notice_ts"], "Cancelled. Nothing started.",
+                state="cancelled",
+            )
         return {}
 
 

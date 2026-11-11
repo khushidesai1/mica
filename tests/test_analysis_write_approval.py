@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import BackgroundTasks
+from slack_sdk.errors import SlackApiError
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_write_flow import allow, writable  # noqa: F401
 
@@ -61,6 +62,13 @@ async def test_exact_requester_approval_starts_once_and_pins_manifest(replacing)
     assert buttons[0]["style"] == "primary" and "style" not in buttons[1]
     action = click(event_id, record)
     await write_approval.handle(replacing, replacing.store, action)
+    accepted = replacing.test_slack.chat_update.call_args.kwargs
+    assert accepted["ts"] == record["notice_ts"]
+    assert accepted["blocks"][0]["type"] == "plan"
+    assert accepted["blocks"][0]["title"] == "Preparing approved changes…"
+    assert "Approved replacement targets" in repr(accepted["blocks"])
+    assert "nested/" in repr(accepted["blocks"])
+    assert all(block["type"] != "actions" for block in accepted["blocks"])
     assert await replacing.process(event_id, record["tick"]) == "running"
     manifest = json.loads(
         replacing.store.get(f"tasks/slack-analysis/events/{event_id}/request.json")[0]
@@ -111,6 +119,28 @@ async def test_no_existing_outputs_starts_without_confirmation(replacing):
     event_id = await replacing.accept(payload("3.0"))
     assert await replacing.process(event_id, 0) == "running"
     assert not write_approval.load(replacing.store, event_id)
+
+
+@pytest.mark.parametrize("slack_error", ["invalid_blocks", "ratelimited"])
+async def test_accepted_write_survives_status_failure_without_repeating_work(
+    replacing, slack_error
+):
+    event_id, record = await start(replacing)
+    replacing.test_slack.chat_update.side_effect = [
+        SlackApiError("Delivery failed", {"error": slack_error}), None,
+    ]
+    await write_approval.handle(replacing, replacing.store, click(event_id, record))
+    assert write_approval.load(replacing.store, event_id)[0].status == "approved"
+    replacing.test_slack.chat_update.side_effect = None
+    if slack_error == "invalid_blocks":
+        fallback = replacing.test_slack.chat_update.call_args.kwargs
+        assert fallback["blocks"][0]["type"] == "context"
+        assert "Approved replacement targets" in repr(fallback)
+    assert await replacing.process(event_id, record["tick"]) == "running"
+    latest = replacing.test_slack.chat_update.call_count
+    await write_approval.handle(replacing, replacing.store, click(event_id, record))
+    assert replacing.test_slack.chat_update.call_count == latest
+    assert replacing.test_client.create_job.call_count == 1
 
 
 @pytest.mark.parametrize(

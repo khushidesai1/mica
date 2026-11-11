@@ -125,7 +125,7 @@ async def test_stable_system_per_turn_hook_and_trusted_skills(tmp_path):
     first = build_options(ctx, settings, memory_context="FIRST FACT", write_access="FIRST GRANT")
     second = build_options(ctx, settings, memory_context="SECOND FACT", write_access="NO GRANT")
     assert first.system_prompt == second.system_prompt
-    assert len(first.system_prompt["append"]) <= 4100
+    assert len(first.system_prompt["append"]) <= 4500
     hook = second.hooks["UserPromptSubmit"][0].hooks[0]
     context = await hook({"hook_event_name": "UserPromptSubmit"}, None, {})
     text = context["hookSpecificOutput"]["additionalContext"]
@@ -169,12 +169,12 @@ async def test_stable_system_per_turn_hook_and_trusted_skills(tmp_path):
 
 
 def test_worker_prompt_budget_includes_all_static_sections():
-    # Measured maximum 3,951 characters, plus 10%; exclude the project guide.
+    # Includes shared commentary guidance; measured maximum 4,772, excluding the guide.
     ctx = Context(Path("/work"), Path("/data"), project_md="")
     for runtimes in (False, True):
         for scripts in (False, True):
             settings = Settings(_env_file=None, runtimes_enabled=runtimes)
-            assert len(prompts.build_system_append(ctx, settings, return_scripts=scripts)) <= 4347
+            assert len(prompts.build_system_append(ctx, settings, return_scripts=scripts)) <= 5000
 
 
 @pytest.mark.parametrize("legacy", [False, True])

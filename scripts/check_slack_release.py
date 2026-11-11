@@ -35,7 +35,7 @@ from mica.agents.analysis import (
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.progress import TaskProgress, check_in_due
 from mica.agents.analysis.registry import Registry
-from mica.agents.analysis.slack_format import activity_blocks
+from mica.agents.analysis.slack_format import activity_blocks, activity_fallback, status_blocks
 from mica.agents.analysis.storage import LocalStorage
 from mica.services.tools import BOOTSTRAP_TOOLS
 from mica.tool_catalog import ATOMX_TRANSFER_ID, SPATIAL_ANALYSIS_ID
@@ -106,6 +106,23 @@ def check(source: Path, mode: str) -> None:
     assert "Run elapsed: 1d 3h 0m" in str(activity["tasks"])
     assert {ATOMX_TRANSFER_ID, SPATIAL_ANALYSIS_ID} <= {t.id for t in BOOTSTRAP_TOOLS}
     print("LONG_RUN_PROGRESS_AND_TOOL_CATALOG_VERIFIED")
+    commentary = "The destination is empty. Preparing the move for approval."
+    presentation = activity_blocks(
+        [TaskProgress("probe", "Checking destination files", "Read")], note=commentary,
+    )
+    assert presentation[0] == {"type": "section", "text": {
+        "type": "plain_text", "text": commentary,
+    }}
+    assert presentation[1]["type"] == "plan"
+    assert presentation[1]["title"] == "Checking destination files"
+    assert activity_fallback(presentation)[0] == presentation[0]
+    resumed = status_blocks("", "Preparing approved changes…", detail="Approved: move 3 files")
+    assert resumed[0]["type"] == "plan" and "Approved: move 3 files" in str(resumed)
+    for state in ("waiting", "cancelled", "expired"):
+        assert status_blocks("", "No work started", state=state)[0]["type"] == "context"
+    terminal = activity_blocks([], finished=True, note=commentary)
+    assert len(terminal) == 1 and "in_progress" not in str(terminal)
+    print("SLACK_COMMENTARY_APPROVAL_AND_TERMINAL_PRESENTATION_VERIFIED")
     operation = gcs_operations.Operation(
         action="move", source="gs://release-probe/TMA1/",
         destination="gs://release-probe/TMA1_old/",
