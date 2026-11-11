@@ -171,6 +171,22 @@ async def test_gpu_requires_requester_confirmation_and_duplicate_cannot_restart(
     assert gpu.test_client.create_job.call_count == 1
 
 
+async def test_native_gpu_approval_posts_without_placeholder_and_resumes_without_spinner(gpu):
+    gpu.settings.slack_sessions = True
+    event_id, record = await start(gpu)
+    gpu.test_client.create_job.assert_not_called()
+    post = gpu.test_slack.chat_postMessage.call_args.kwargs
+    assert post["blocks"][-1]["elements"][0]["text"]["text"] == "Approve GPU run"
+    assert record["notice_ts"] == "9.0"
+    assert gpu.test_slack.chat_postMessage.call_count == 1
+    await compute_approval.handle(gpu, gpu.store, click(event_id, record))
+    accepted = gpu.test_slack.chat_update.call_args.kwargs
+    assert accepted["ts"] == record["notice_ts"]
+    assert "in_progress" not in repr(accepted["blocks"])
+    assert "remaining launch requirements" in repr(accepted["blocks"])
+    assert await gpu.process(event_id, record["tick"]) == "running"
+
+
 @pytest.mark.parametrize("field", ["user", "team", "channel", "message"])
 async def test_gpu_confirmation_is_bound_to_original_requester(gpu, field):
     event_id, record = await start(gpu)

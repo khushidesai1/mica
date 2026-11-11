@@ -79,6 +79,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
     settings = Settings()
     storage = GCSStorage(settings.bucket)
     request = json.loads(storage.get(f"{PREFIX}/events/{event_id}/request.json")[0])
+    native_session = request.get("native_session") is True
     thread_key = request["thread_key"]
     home = settings.work_root.parent
     archive = home / "checkpoint.tar.gz"
@@ -206,7 +207,9 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                 channel=request["payload"]["event"]["channel"],
                 ts=request["notice_ts"],
                 text="Getting set up…",
-                blocks=status_blocks(settings.loading_emoji, "Getting set up…"),
+                blocks=status_blocks(
+                    settings.loading_emoji, "Getting set up…", native_session=native_session,
+                ),
             )
         except Exception:
             logging.warning("Could not update worker startup status", exc_info=True)
@@ -349,7 +352,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
                 channel=payload["event"]["channel"],
                 ts=request["notice_ts"],
                 text=text,
-                blocks=status_blocks(settings.loading_emoji, text),
+                blocks=status_blocks(settings.loading_emoji, text, native_session=native_session),
             )
 
         compute = RecoveryManager(
@@ -557,6 +560,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         write_grant=current_write_grant,
         overwrite_paths=request.get("overwrite_paths", []),
         before_delivery=before_delivery if compute else None,
+        native_session=native_session,
     )
 
     def authorized() -> bool:

@@ -13,7 +13,7 @@ from google.api_core.exceptions import NotFound
 from pydantic import BaseModel, Field
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import access, approvals, gcs_operations, surface, write_access
+from . import access, agent_session, approvals, gcs_operations, surface, write_access
 from .storage import Conflict, Storage
 from .write_broker import relative_path
 
@@ -267,9 +267,10 @@ async def ready(
     await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
     text, content = blocks(approval, grant.uri)
     if record.get("notice_text") != text:
-        await approvals.card(
+        await approvals.request_card(
+            bridge, event_id, record,
             AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
-            record["payload"]["event"]["channel"], record["notice_ts"], text, content,
+            text, content,
         )
         record.update(notice_text=text, notice_phase="overwrite")
     return False
@@ -357,6 +358,7 @@ async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]
             await approvals.resumed_card(
                 AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5),
                 event["channel"], record["notice_ts"], "Preparing approved changes…", receipt,
+                native_session=agent_session.eligible(bridge, record),
             )
         else:
             await approvals.card(

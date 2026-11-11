@@ -60,6 +60,7 @@ class SlackAgent:
         before_delivery: Callable[[TurnResult], Awaitable[None]] | None = None,
         write_grant: write_access.WriteGrant | None = None,
         overwrite_paths: list[str] | None = None,
+        native_session: bool = False,
         terminal_delivery: Callable[
             [str, list[dict[str, str]], str | None], Awaitable[tuple[str, list[str]]]
         ]
@@ -68,6 +69,7 @@ class SlackAgent:
         self.settings, self.storage, self.sessions = settings, storage, sessions
         self.runner, self.client = runner, client
         self.terminal_delivery = terminal_delivery
+        self.native_session = native_session
         self.transport: Transport = (
             EmailWorkerTransport() if terminal_delivery else SlackTransport(client)
         )
@@ -241,19 +243,26 @@ class SlackAgent:
             key[0], ctx, turn, is_init
         )  # Reserve the provenance sequence before running.
         emoji = self.settings.loading_emoji
-        if notice_ts:
-            status: Any = {"ts": notice_ts}
-            try:
+        status: Any = {"ts": notice_ts}
+
+        async def show_status(text: str, blocks: list[dict[str, Any]]) -> None:
+            nonlocal status
+            if status["ts"]:
                 await self.transport.update(
-                    channel=key[0],
-                    ts=notice_ts,
-                    text="Mica is working",
-                    blocks=status_blocks(emoji, "Mica is working"),
+                    channel=key[0], ts=status["ts"], text=text, blocks=blocks,
+                )
+            else:
+                status = await self.say(key, text, blocks)
+
+        if notice_ts and not self.native_session:
+            try:
+                await show_status(
+                    "Mica is working", status_blocks(emoji, "Mica is working"),
                 )
             except Exception:
                 log.warning("Initial status update failed", exc_info=True)
-        else:
-            status = await self.say(key, "Mica is working", status_blocks(emoji, "Mica is working"))
+        elif not self.native_session:
+            await show_status("Mica is working", status_blocks(emoji, "Mica is working"))
         last = time.monotonic()
         started = last_activity = last
         last_check_in: float | None = None
@@ -274,6 +283,9 @@ class SlackAgent:
             error: str | None = None,
             check_in: str = "",
         ) -> None:
+            if (self.native_session and not finished
+                    and not (pending or task_snapshot or note or check_in)):
+                return
             blocks = activity_blocks(
                 task_snapshot,
                 finished=finished,
@@ -282,8 +294,9 @@ class SlackAgent:
                 headline=activity.label,
                 summary=pending[-1] if pending else "",
                 note=note,
+                native_session=self.native_session,
             )
-            await self.transport.update(channel=key[0], ts=status["ts"], text=text, blocks=blocks)
+            await show_status(text, blocks)
 
         async def flush() -> None:
             nonlocal last, shown, last_check_in
@@ -413,11 +426,12 @@ class SlackAgent:
         compute = getattr(self.runner, "compute", None)
         if compute and compute.pending:
             self.continuing = True
-            await self.transport.update(
-                channel=key[0],
-                ts=status["ts"],
-                text="Saving progress before continuing…",
-                blocks=status_blocks(emoji, "Saving progress before continuing…"),
+            await show_status(
+                "Saving progress before continuing…",
+                status_blocks(
+                    emoji, "Saving progress before continuing…",
+                    native_session=self.native_session,
+                ),
             )
             return
         if self.before_delivery:

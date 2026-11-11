@@ -769,8 +769,8 @@ from `agent_view` to `assistant_view`, and does not promise a reverse path for a
 Native session behavior is separately controlled by `AGENT_SLACK_SESSIONS=false` by default.
 After enabling the `agent_session_stopped` subscription, set it to `true` on the control-plane
 API. Use the existing `runtime_environment` map when recording this nonsecret setting in the
-deployment configuration; no new infrastructure is needed. Workers and their image pins stay
-unchanged.
+deployment configuration; no new infrastructure is needed. The controller passes its native
+session decision to each newly submitted worker in the request manifest.
 
 In DMs, native sessions show working/ready/waiting-for-input status and an initial conversation
 title. Mica retains user-renamed titles. Working status refreshes within thirty-five minutes
@@ -780,6 +780,19 @@ requests in that DM thread, subject to existing access checks, without needing a
 Delayed cancellation never targets messages sent after the stop timestamp. Shared-channel
 native sessions are not enabled; existing mentions, progress cards and cancellation remain.
 Transfer controllers continue to own their transfer cards and cancellation after handoff.
+
+In native sessions, Slack owns the working indicator and Stop control. Mica skips content-free
+receipt/thinking messages and posts its first message when it has a step, commentary, queue
+notice, approval or answer. Current activity appears in the plan title; task rows show completed
+or failed steps, with no second spinner. Before any tasks finish, additional details appear as
+plain context. Finished/stopped/error endings retain their existing presentation. Check-ins keep
+**Keep working** and **Report a problem**, while Slack provides Stop. Channels, email and
+sessions-disabled rendering retain their existing behavior.
+
+Progress rendering requires a coordinated API and CPU/GPU worker release. Existing workers keep
+their saved presentation mode; newly submitted workers use the controller's current decision.
+Rollback this presentation release using the prior API revision and worker pins. No Slack app
+configuration change is needed when native sessions are already enabled.
 
 Session updates run in authenticated Cloud Tasks. Receipt markers preserve updates across
 enqueue failures, process crashes and Slack errors; the existing reconciler retries them.

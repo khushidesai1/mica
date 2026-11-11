@@ -14,7 +14,15 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from mica.storage.failures import Observation, digest
 
-from . import access, approvals, job_lifecycle, memory_workspace, observability, surface
+from . import (
+    access,
+    agent_session,
+    approvals,
+    job_lifecycle,
+    memory_workspace,
+    observability,
+    surface,
+)
 from .config import CHECKPOINT_PREFIX
 from .storage import Storage
 
@@ -86,7 +94,9 @@ def reasons(record: dict[str, Any]) -> list[str]:
     return found
 
 
-def blocks(event_id: str, text: str, active: bool) -> list[dict[str, Any]]:
+def blocks(
+    event_id: str, text: str, active: bool, *, native_session: bool = False,
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "plain_text", "text": text}}
     ]
@@ -106,6 +116,7 @@ def blocks(event_id: str, text: str, active: bool) -> list[dict[str, Any]]:
                         ("cancel", "Cancel task"),
                         ("report", "Report a problem"),
                     )
+                    if action != "cancel" or not native_session
                 ],
             }
         )
@@ -157,7 +168,8 @@ async def sync(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> No
             text += " Your problem report is recorded for the Mica operators."
         if state.get("cancel") and active:
             text = "Cancellation requested. Waiting for active work to stop."
-        signature = json.dumps([text, active, state.get("cancel", False)])
+        native_session = agent_session.eligible(bridge, record)
+        signature = json.dumps([text, active, state.get("cancel", False), native_session])
         if signature == state.get("rendered"):
             return
         event = record["payload"]["event"]
@@ -188,7 +200,10 @@ async def sync(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> No
                 channel=event["channel"],
                 ts=state["ts"],
                 text=text,
-                blocks=blocks(event_id, text, active and not state.get("cancel")),
+                blocks=blocks(
+                    event_id, text, active and not state.get("cancel"),
+                    native_session=native_session,
+                ),
             )
         else:
             state["sending"] = True
@@ -200,7 +215,7 @@ async def sync(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> No
                     channel=event["channel"],
                     thread_ts=event.get("thread_ts") or event["ts"],
                     text=text,
-                    blocks=blocks(event_id, text, active),
+                    blocks=blocks(event_id, text, active, native_session=native_session),
                     client_msg_id=message_id,
                     unfurl_links=False,
                     unfurl_media=False,

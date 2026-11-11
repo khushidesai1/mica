@@ -30,6 +30,7 @@ def activity_blocks(
     headline: str = "Mica is working",
     summary: str = "",
     note: str = "",
+    native_session: bool = False,
 ) -> list[dict[str, Any]]:
     """One compact disclosure with native task rows and public activity details."""
     active = next((task for task in reversed(tasks) if task.status == "in_progress"), None)
@@ -49,7 +50,13 @@ def activity_blocks(
     visible = list(tasks[-2:])
     if active is not None and active not in visible:
         visible = [visible[-1], active]
+    if native_session and not finished:
+        visible = [task for task in tasks if task.status != "in_progress"][-2:]
     lines = []
+    if native_session and active and not finished:
+        current = " ".join(active.title.split())[:150]
+        if current != title:
+            lines.append("Current step: " + current)
     if error:
         lines.append(f"Stopped: {error[:300]}")
     if summary and not note and not thinking and not active:
@@ -76,18 +83,20 @@ def activity_blocks(
         cards = cards[-1:] + [
             {"task_id": "mica-terminal-error", "title": "Stopped", "status": "error"}
         ]
-    if not cards:
+    if not cards and (not native_session or finished or error):
         cards.append({
             "task_id": "mica-activity",
             "title": "Stopped" if error else "Finished" if finished else "Preparing your request",
             "status": "error" if error else "complete" if finished else "in_progress",
         })
-    if lines:
+    if lines and cards:
         details = cards[-1].get("details")
         if details:
             lines.insert(0, details["elements"][0]["elements"][0]["text"])
         cards[-1]["details"] = _rich_text("\n".join(lines))
     blocks: list[dict[str, Any]] = [{"type": "plan", "title": title, "tasks": cards}]
+    if lines and not cards:
+        blocks.append(context_block("\n".join(lines)))
     if note:
         # Public commentary is separate from tool activity and the eventual final answer.
         # Literal text prevents model-generated mentions, links or formatting from executing.
@@ -127,6 +136,7 @@ def activity_fallback(blocks: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
 def status_blocks(
     _emoji: str, headline: str, steps: Sequence[str] = (), *,
     detail: str = "", state: NoticeState = "working", note: str = "",
+    native_session: bool = False,
 ) -> list[dict[str, Any]]:
     """Queue, startup and model activity share the same expandable control."""
     if state != "working":
@@ -136,7 +146,10 @@ def status_blocks(
         current = ""
     if current and note_headline(current) != current:
         detail = "\n".join(part for part in (current, detail) if part)
-    return activity_blocks([], headline=current or headline, check_in=detail, note=note)
+    return activity_blocks(
+        [], headline=current or headline, check_in=detail, note=note,
+        native_session=native_session,
+    )
 
 
 def to_mrkdwn(text: str) -> str:

@@ -82,6 +82,26 @@ async def test_exact_requester_approval_starts_once_and_pins_manifest(replacing)
     assert "generations" not in approval.model_dump()
 
 
+async def test_native_write_approval_posts_first_and_resumes_without_spinner(replacing):
+    replacing.settings.slack_sessions = True
+    event_id, record = await start(replacing)
+    replacing.test_client.create_job.assert_not_called()
+    post = replacing.test_slack.chat_postMessage.call_args.kwargs
+    assert post["blocks"][-1]["type"] == "actions"
+    assert "nested/" in post["text"]
+    assert record["notice_ts"] == "9.0"
+    assert sum(
+        call.kwargs.get("thread_ts") == "3.0"
+        for call in replacing.test_slack.chat_postMessage.call_args_list
+    ) == 1
+    await write_approval.handle(replacing, replacing.store, click(event_id, record))
+    accepted = replacing.test_slack.chat_update.call_args.kwargs
+    assert accepted["ts"] == record["notice_ts"]
+    assert "in_progress" not in repr(accepted["blocks"])
+    assert "Approved replacement targets" in repr(accepted["blocks"])
+    assert await replacing.process(event_id, record["tick"]) == "running"
+
+
 @pytest.mark.parametrize("field", ["team", "user", "channel", "message"])
 async def test_wrong_actor_or_message_cannot_confirm(replacing, field):
     event_id, record = await start(replacing)
