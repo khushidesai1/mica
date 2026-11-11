@@ -54,7 +54,11 @@ async def reconcile_cancel(bridge: BatchBridge, event_id: str, record: dict[str,
     record.setdefault("cancel_requested_at", time.time())
     if not record.get("job"):
         record["status"] = "failed"
-        await bridge.notify(event_id, record, "cancelled", "Cancelled before starting.")
+        await bridge.notify(
+            event_id, record, "cancelled",
+            "GCS operations cancelled. Any completed changes are retained."
+            if record.get("route") == "storage" else "Cancelled before starting.",
+        )
     return True
 
 

@@ -22,6 +22,7 @@ from mica.agents.analysis import (
     commands,
     conversation,
     direct,
+    gcs_operations,
     memory_archive,
     memory_workspace,
     project_memory,
@@ -29,6 +30,7 @@ from mica.agents.analysis import (
     reference_repos,
     thread_memory,
     write_access,
+    write_approval,
 )
 from mica.agents.analysis.config import Settings
 from mica.agents.analysis.progress import TaskProgress, check_in_due
@@ -104,6 +106,25 @@ def check(source: Path, mode: str) -> None:
     assert "Run elapsed: 1d 3h 0m" in str(activity["tasks"])
     assert {ATOMX_TRANSFER_ID, SPATIAL_ANALYSIS_ID} <= {t.id for t in BOOTSTRAP_TOOLS}
     print("LONG_RUN_PROGRESS_AND_TOOL_CATALOG_VERIFIED")
+    operation = gcs_operations.Operation(
+        action="move", source="gs://release-probe/TMA1/",
+        destination="gs://release-probe/TMA1_old/",
+    )
+    proposed = conversation.Decision(
+        route="storage", reply="Requested", write_operations=[operation]
+    )
+    assert conversation.Decision.model_validate_json(proposed.model_dump_json()) == proposed
+    approval = write_approval.Approval(
+        event_id="a" * 32, project_id="probe", grant_id="b" * 32, principal="synthetic",
+        access_signature="synthetic", paths=[], inspected_at=1, expires_at=3601,
+        operations=[operation], operation_counts=[2],
+    )
+    confirmation, _ = write_approval.blocks(approval, "gs://release-probe/")
+    assert operation.source in confirmation and operation.destination in confirmation
+    assert "Move folder" in confirmation
+    assert "propose_gcs_operations" in {tool["name"] for tool in conversation.tools_for(True)}
+    assert "propose_gcs_operations" not in {tool["name"] for tool in conversation.tools_for(False)}
+    print("EXACT_GCS_OPERATION_CONFIRMATIONS_VERIFIED")
     with tempfile.TemporaryDirectory() as temporary:
         work = Path(temporary).resolve()
         store = LocalStorage(work / "storage")

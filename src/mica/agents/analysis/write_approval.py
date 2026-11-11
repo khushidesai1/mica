@@ -1,4 +1,4 @@
-"""Run-scoped human confirmation for replacing existing objects under a write grant."""
+"""Requester-bound confirmation for replacements, moves and deletes under a write grant."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from google.api_core.exceptions import NotFound
 from pydantic import BaseModel, Field
 from slack_sdk.web.async_client import AsyncWebClient
 
-from . import access, approvals, write_access
+from . import access, approvals, gcs_operations, surface, write_access
 from .storage import Conflict, Storage
 from .write_broker import relative_path
 
@@ -35,6 +35,10 @@ class Approval(BaseModel):
     expires_at: float
     status: Literal["pending", "approved", "cancelled", "expired"] = "pending"
     approved_at: float = 0
+    operations: list[gcs_operations.Operation] = Field(default_factory=list)
+    snapshot_id: str = ""
+    plan_ready: bool = False
+    operation_counts: list[int] = Field(default_factory=list)
 
 
 def key(event_id: str) -> str:
@@ -125,16 +129,32 @@ def validate(
     )
     if isinstance(grant, write_access.EventWriteGrant):
         raise ValueError("Background runs publish new objects only")
+    if approval.operations:
+        requested = [gcs_operations.Operation.model_validate(op) for op in
+                     record.get("direct_decision", {}).get("write_operations", [])]
+        if (surface.is_email(record) or record.get("route") != "storage"
+                or gcs_operations.normalized(requested, grant) != approval.operations):
+            raise ValueError("The requested GCS operations changed. Send a new request.")
 
 
 def blocks(approval: Approval, grant_uri: str) -> tuple[str, list[dict[str, Any]]]:
-    lines = ["Before I start, approve overwriting matching files in:"]
-    for path in approval.paths:
+    lines = ["Confirm these GCS operations:"]
+    if approval.operations:
+        for operation, count in zip(approval.operations, approval.operation_counts, strict=True):
+            lines.append(operation.describe() + f" ({count} inspected objects)")
         lines.append(
-            f"`{escape(path, quote=False)}` — "
-            + ("folder already has files" if path.endswith("/") else "file already exists")
+            "Moves require an empty destination and delete each source only after its copy is "
+            "verified. Deletes remove the inspected objects. Changed or newly added objects "
+            "are preserved. Folder operations can finish partially if interrupted."
         )
-    lines.append("Other existing files stay unchanged. This approval applies to this run only.")
+    else:
+        for path in approval.paths:
+            target = escape(path, quote=False)
+            lines.append(
+                f"Replace matching files within folder `{target}` with this run's outputs."
+                if path.endswith("/") else f"Replace file `{target}` with this run's output."
+            )
+        lines.append("Other existing files stay unchanged. This approval applies to this run only.")
     content: list[dict[str, Any]] = [
         {"type": "section", "text": {"type": "mrkdwn", "text": line}} for line in lines
     ]
@@ -174,7 +194,8 @@ async def ready(
             raise PermissionError("Background publishing requires its event grant")
         record.update(overwrite_checked=True, overwrite_paths=[])
         return True
-    if record.get("overwrite_checked"):
+    operations = record.get("direct_decision", {}).get("write_operations", [])
+    if record.get("overwrite_checked") and not operations:
         if record.get("overwrite_paths"):
             saved = await asyncio.to_thread(load, storage, event_id)
             if saved is None:
@@ -183,7 +204,7 @@ async def ready(
         return True
     frozen = record.get("write_grant")
     paths = record.get("direct_decision", {}).get("write_paths", [])
-    if not frozen or not paths:
+    if not frozen or (not paths and not operations):
         record["overwrite_checked"] = True
         return True
     grant = write_access.WriteGrant.model_validate(frozen)
@@ -192,10 +213,10 @@ async def ready(
     )
     saved = await asyncio.to_thread(load, storage, event_id)
     if saved is None:
-        normalized = targets(paths, grant)
+        normalized = targets(paths, grant) if not operations else []
         inspected_at = time.time()
-        existing = await asyncio.to_thread(inspect, normalized)
-        if not existing:
+        existing = await asyncio.to_thread(inspect, normalized) if not operations else []
+        if not existing and not operations:
             record["overwrite_checked"] = True
             return True
         approval = Approval(
@@ -207,18 +228,27 @@ async def ready(
             paths=existing,
             inspected_at=inspected_at,
             expires_at=KIND.deadline(),
+            operations=gcs_operations.normalized(
+                [gcs_operations.Operation.model_validate(op) for op in operations], grant
+            ) if operations else [],
+            snapshot_id=gcs_operations.new_snapshot() if operations else "",
         )
         try:
-            await asyncio.to_thread(
+            generation = await asyncio.to_thread(
                 approvals.save, storage, key(event_id), approval, None
             )
         except Conflict:
             saved = await asyncio.to_thread(load, storage, event_id)
             assert saved is not None
-            approval = saved[0]
+            approval, generation = saved
     else:
-        approval = saved[0]
+        approval, generation = saved
     await asyncio.to_thread(validate, bridge, storage, record, approval)
+    if (approval.operations and approval.status == "pending" and not approval.plan_ready
+        and not await gcs_operations.prepare_approval(
+            bridge, storage, record, approval, generation
+        )):
+        return False
     if approval.status == "approved" and 0 < approval.approved_at <= approval.expires_at:
         record.update(status="pending", overwrite_checked=True, overwrite_paths=approval.paths)
         return True
@@ -229,7 +259,7 @@ async def ready(
         record["status"] = "failed"
         record["cancel_requested"] = approval.status == "cancelled"
         await bridge.notify(
-            event_id, record, "failed", "Overwrite request cancelled. Nothing started."
+            event_id, record, "failed", "GCS operation request cancelled. Nothing started."
         )
         return False
     await approvals.watch(bridge, KIND, event_id, approval.expires_at, record)
@@ -275,7 +305,12 @@ async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]
                     await approvals.renew_run(bridge, event_id, record)
                 if approval.status == "expired":
                     approval.inspected_at = time.time()
-                    await asyncio.to_thread(inspect, approval.paths)
+                    if approval.operations:
+                        approval.snapshot_id = gcs_operations.new_snapshot()
+                        approval.plan_ready = False
+                        approval.operation_counts = []
+                    else:
+                        await asyncio.to_thread(inspect, approval.paths)
                     approval.status, approval.expires_at = "pending", KIND.deadline()
                     await asyncio.to_thread(
                         approvals.save, storage, key(event_id), approval, generation
@@ -290,6 +325,8 @@ async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]
         if record["status"] != "awaiting_approval":
             return {}  # A duplicate click must never restart a run.
         if approval.status == "pending":
+            if approval.operations and not approval.plan_ready:
+                raise ValueError("Inspection is not finished. Wait for the operation confirmation.")
             if approvals.expired(approval.expires_at):
                 await expire_record(bridge, storage, event_id, record)
                 raise ValueError(
@@ -305,7 +342,7 @@ async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]
         record["status"] = "pending" if approval.status == "approved" else "failed"
         record["cancel_requested"] = approval.status == "cancelled"
         text = (
-            "Overwrite approved. Starting this run…"
+            "GCS operations approved. Starting…"
             if approval.status == "approved"
             else "Cancelled. Nothing started."
         )

@@ -71,6 +71,16 @@ No Terraform apply or cloud deployment is implied by these source changes.
 
 ## Release validation
 
+GCS operation confirmations and controller-executed moves/deletions are API-only. Use
+`cloudbuild/build-slack-api.yaml`, preserving the deployed CPU, GPU and shared-worker image
+pins and all runtime access settings. The existing scoped writer role supplies get/create/delete;
+no Terraform, IAM or secret change is part of this release. Validate exact-operation cards,
+immutable source inventories, occupied destinations, changed generations, revocation and
+interrupted copy/delete recovery. Run a tiny move and delete in a recorded disposable prefix
+using the actual controller/writer path, verify source removal and unchanged siblings, then
+remove all smoke data. Unit tests alone do not establish live IAM conformance. Never use real
+scientific data as the rollout smoke test.
+
 Project-backchannel changes require coordinated API and Claude CPU/GPU worker application
 sources. The manifest enables live coordination only for newly routed requests; existing
 workers cannot acquire hooks retroactively. `AGENT_BACKCHANNEL=false` disables new conversation

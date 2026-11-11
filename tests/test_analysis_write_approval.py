@@ -54,7 +54,8 @@ async def test_exact_requester_approval_starts_once_and_pins_manifest(replacing)
     replacing.test_client.create_job.assert_not_called()
     assert "slot" not in record
     message = replacing.test_slack.chat_update.call_args.kwargs
-    assert "nested/" in message["text"] and "folder already has files" in message["text"]
+    assert "nested/" in message["text"]
+    assert "Replace matching files within folder" in message["text"]
     assert len(message["blocks"][-1]["elements"]) == 2
     buttons = message["blocks"][-1]["elements"]
     assert buttons[0]["style"] == "primary" and "style" not in buttons[1]

@@ -31,6 +31,7 @@ from . import (
 )
 from .cloud_access_config import CloudAccessProposal
 from .data_links import message_text
+from .gcs_operations import Operation
 from .help_text import PROJECT_HELP
 from .identity import post
 from .registry import Registry
@@ -92,6 +93,7 @@ class DecisionFields(BaseModel):
         max_length=5,
         description="Requested GCS output file/folder URIs, for pre-run overwrite confirmation.",
     )
+    write_operations: list[Operation] = Field(default_factory=list, max_length=10)
     worker: tiers.WorkerChoice | None = None
 
 
@@ -960,6 +962,13 @@ async def handle(
             raise ValueError("Name the AtoMx sample to transfer.")
         reply = await transfer_service.request(current, record, event_id, decision.transfer_request)
         return await finish(bridge, event_id, record, reply)
+    if decision.route == "storage":
+        from . import gcs_operations
+
+        record["route"] = "storage"
+        await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+        await gcs_operations.advance(bridge, event_id, record, storage)
+        return True
     if decision.route == "compute":
         from .tiers import launch_choice
 

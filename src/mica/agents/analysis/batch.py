@@ -834,6 +834,11 @@ class BatchBridge:
         record["terminal_recorded"] = True
 
     async def advance(self, event_id: str, record: dict[str, Any]) -> None:
+        if record.get("route") == "storage":
+            from . import gcs_operations
+
+            await gcs_operations.advance(self, event_id, record, self.storage)
+            return
         if surface.is_email(record):
             record["write_grant"] = None
             record["overwrite_paths"] = []
@@ -1492,7 +1497,10 @@ class BatchBridge:
                         if prior["status"] in {"pending", "awaiting_approval"}:
                             prior["status"] = "failed"
                             await self.notify(
-                                cursor, prior, "cancelled", "Cancelled before starting."
+                                cursor, prior, "cancelled",
+                                "GCS operations cancelled. Any completed changes are retained."
+                                if prior.get("route") == "storage"
+                                else "Cancelled before starting.",
                             )
                         elif prior["status"] not in {"complete", "failed"}:
                             client = batch_v1.BatchServiceClient()

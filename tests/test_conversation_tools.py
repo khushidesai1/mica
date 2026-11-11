@@ -338,6 +338,19 @@ async def test_transfer_is_terminal_and_durable(turn):
     assert turn[2]["conversation_steps"][0]["status"] == "terminal"
 
 
+async def test_gcs_operations_are_terminal_proposals_not_execution(turn):
+    operations = [{"action": "move", "source": "gs://lab-data/TMA1/",
+                   "destination": "gs://lab-data/TMA1_old/"},
+                  {"action": "delete", "source": "gs://lab-data/obsolete.csv",
+                   "destination": ""}]
+    result = await run(turn, Client(tool("propose_gcs_operations", operations=operations)))
+    assert result.route == "storage"
+    assert [operation.model_dump() for operation in result.write_operations] == operations
+    assert turn[2]["conversation_steps"][0]["status"] == "terminal"
+    assert not turn[0].store.keys("write-access/operations")
+    turn[0].test_client.create_job.assert_not_called()
+
+
 async def test_no_project_exposes_only_command(turn):
     bridge, event_id, record, grant = turn
     turn = bridge, event_id, record, replace(grant, allowed=False, project_id="")
@@ -417,7 +430,9 @@ def test_strict_schema_budget():
         assert spec["strict"] is (spec["name"] != "start_worker")
         check(spec["input_schema"])
     assert len(prompts.CONVERSATION) <= 1502
-    assert sum(map(len, conversation.DESCRIPTIONS.values())) <= 4800
+    assert sum(len(value) for name, value in conversation.DESCRIPTIONS.items()
+               if name != "propose_gcs_operations") <= 4800
+    assert len(conversation.DESCRIPTIONS["propose_gcs_operations"]) <= 400
 
 
 async def test_natural_init_uses_structured_guide_without_worker(turn, monkeypatch):
