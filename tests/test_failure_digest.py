@@ -428,6 +428,9 @@ async def test_active_request_updates_same_message_after_recovery_without_repost
         "permalink": "https://example.slack.com/archives/D123/p9992"
     }
     await observability.flush(repository, settings, config)
+    slack.chat_postMessage.assert_not_awaited()  # Allow the transient poll to recover first.
+    clock[0] += 301
+    await observability.flush(repository, settings, config)
     posted = slack.chat_postMessage.call_args.kwargs
     assert "still active or retrying" in posted["text"]
     assert "Open request thread" in str(posted["blocks"])

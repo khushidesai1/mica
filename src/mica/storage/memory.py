@@ -319,6 +319,7 @@ class InMemoryRepository:
         card_version: int = 0,
         investigation: FailureInvestigation | None = None,
         sent_investigation: str = "",
+        reviewed_count: int | None = None,
     ) -> None:
         async with self._lock:
             row = self.failures.get(key)
@@ -336,6 +337,7 @@ class InMemoryRepository:
                     card_version=card_version,
                     investigation=investigation,
                     sent_investigation=sent_investigation,
+                    reviewed_count=reviewed_count,
                 )
                 if row
                 else None

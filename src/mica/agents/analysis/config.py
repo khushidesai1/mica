@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     failure_channel: str = Field(default="", pattern=r"^(?:[CG][A-Z0-9]+)?$")
     outcome_review_enabled: bool = False  # Legacy opt-in; conversation fit is case by case.
     failure_investigation_enabled: bool = True  # Bounded read-only Claude assessments.
+    failure_alert_mode: Literal["actionable", "all"] = "actionable"
     failure_operator_ids: str = ""  # Explicit team:user IDs allowed to resolve incident alerts.
     reference_github_org: Literal["azizilab"] = "azizilab"
     reference_github_app_id: str = Field(default="", pattern=r"^[0-9]*$")

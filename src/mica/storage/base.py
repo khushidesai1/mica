@@ -116,5 +116,6 @@ class Repository(Protocol):
         card_version: int = 0,
         investigation: FailureInvestigation | None = None,
         sent_investigation: str = "",
+        reviewed_count: int | None = None,
     ) -> None: ...
     async def purge_failures(self, now: float, limit: int = 200) -> int: ...

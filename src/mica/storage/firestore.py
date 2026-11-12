@@ -455,6 +455,7 @@ class FirestoreRepository:
         card_version: int = 0,
         investigation: FailureInvestigation | None = None,
         sent_investigation: str = "",
+        reviewed_count: int | None = None,
     ) -> None:
         from google.cloud import firestore
 
@@ -478,6 +479,7 @@ class FirestoreRepository:
                 card_version=card_version,
                 investigation=investigation,
                 sent_investigation=sent_investigation,
+                reviewed_count=reviewed_count,
             )
             if row:
                 transaction.set(reference, failures.document(row))

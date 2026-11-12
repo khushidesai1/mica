@@ -8,7 +8,7 @@ from typing import Any
 
 from mica.storage.failures import BLOCKER_LABELS, PRIORITY_LABELS, Incident, priority
 
-VERSION = 5
+VERSION = 6
 PREFIX = "mica_failure_"
 CATEGORIES = {
     "compute": "Compute",
@@ -45,6 +45,7 @@ def status_label(row: Incident, status: str) -> str:
         "active": "Retrying / still active",
         "complete": "Completed · follow-up needed",
         "recovered": "Recovered automatically",
+        "saved_with_exclusions": "Recovered · memory saved with exclusions",
     }.get(status, "Needs investigation")
     if status == "complete" and "request_blocked" in (row.causes or [row.observation.cause]):
         state = "Couldn't complete requested work"
@@ -93,6 +94,13 @@ def blocks(
         and row.investigation.assessment
     ):
         explanation = row.investigation.assessment.summary
+    if status == "recovered":
+        explanation = "Recovery verified from saved operation state. No action is needed."
+    elif status == "saved_with_exclusions":
+        explanation = (
+            "The request and memory retry completed. Some proposed memory items were excluded "
+            "by validation; their source is retained. See Details."
+        )
     latest = datetime.fromtimestamp(row.last_seen, UTC).strftime("%b %d, %H:%M UTC")
     metadata = f"{level.title()} priority · {category(row)}"
     reports = f"{row.count} {'report' if row.count == 1 else 'reports'}"
@@ -228,7 +236,16 @@ def details_view(row: Incident, explanations: list[str]) -> dict[str, Any]:
     ]
     item = row.investigation
     assessment = item.assessment if item and item.status == "complete" else None
-    if assessment:
+    if status in {"recovered", "saved_with_exclusions"}:
+        blocks.append(paragraph(
+            "Recovery",
+            "Saved operation state confirms recovery. No retry of the user request is needed."
+            if status == "recovered" else (
+                "The memory retry saved and verified its accepted changes. Validation excluded "
+                "some proposed items and retained their source; this is not a failed request."
+            ),
+        ))
+    elif assessment:
         blocks.extend(
             [
                 paragraph("What happened", assessment.summary),
@@ -279,7 +296,11 @@ def details_view(row: Incident, explanations: list[str]) -> dict[str, Any]:
             paragraph(
                 "Request outcome",
                 {
-                    "recovered": "The request completed after the earlier processing errors.",
+                    "recovered": "Recovery was verified from saved operation state.",
+                    "saved_with_exclusions": (
+                        "The request completed and the memory save verified. Some proposed items "
+                        "were excluded by validation; their source is retained."
+                    ),
                     "complete": (
                         "Request handling completed. "
                         "Recovery of the reported operations is not confirmed."
@@ -293,7 +314,11 @@ def details_view(row: Incident, explanations: list[str]) -> dict[str, Any]:
                     status, "The request outcome could not be checked. Recovery is not confirmed."
                 )
                 if row.user_related
-                else "This incident has not been linked to a specific user request.",
+                else (
+                    "Background maintenance completed successfully after the reported failure."
+                    if status == "recovered"
+                    else "This incident has not been linked to a specific user request."
+                ),
             ),
             facts(
                 [

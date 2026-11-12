@@ -610,6 +610,12 @@ unbounded layers to successive application images. Headless API, source/attachme
 and API/worker contract checks must all pass before promotion.
 
 Memory-editor context and retry fixes are API-only releases; preserve all worker image pins.
+Incident recovery and notification-policy changes are also API-only. The default
+`AGENT_FAILURE_ALERT_MODE=actionable` keeps recovered retries in diagnostic storage and posts
+unresolved problems; `all` restores the full stream. Preserve the independent uptime/Scheduler
+alerts. Reconcile historical cards only from verified receipts/log evidence, preserving counts
+and manual-resolution fields. Do not synthesize a failure or send a test Slack message for this
+release. See [failure notification policy](failure-log.md) for grace periods and recovery checks.
 Pending conversational saves without accepted changes upgrade their cached input on the next
 dispatch. For recovery, dispatch affected memory tasks individually and verify both the durable
 thread receipt and `memory_editor_done`; a successful HTTP response alone is insufficient.
