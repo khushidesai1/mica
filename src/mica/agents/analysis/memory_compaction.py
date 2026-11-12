@@ -486,6 +486,9 @@ async def process(bridge: BatchBridge, pid: str, head: str, storage: Storage) ->
             if cache_key and cached:
                 await asyncio.to_thread(storage.put, cache_key, json.dumps(cached).encode())
             state["outcome"] = outcome
+            if outcome in {"committed", "nothing"}:
+                state["last_success_at"] = time.time()
+                state["last_success_head"] = head
             await bridge.repository.set_connector_state(state_key(pid), state)
             project_memory.log_event(
                 logging.WARNING if outcome.startswith(("retry:", "exhausted:")) else logging.INFO,

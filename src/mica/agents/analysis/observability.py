@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 import time
+from contextlib import suppress
 from datetime import UTC, datetime
 from html import escape
 from typing import TYPE_CHECKING, Any, Literal
@@ -15,15 +16,15 @@ from mica.config import Settings as AppSettings
 from mica.storage.base import Repository
 from mica.storage.failure_catalog import CATALOG as CATALOG
 from mica.storage.failures import (
+    NEVER,
     PRIORITY_LABELS,
-    RECOVERABLE_PROCESSING,
     Incident,
     Observation,
     digest,
     priority,
 )
 
-from . import failure_cards, failure_investigation
+from . import failure_cards, failure_health, failure_investigation
 from .config import Settings
 from .project_memory import SECRET
 
@@ -256,7 +257,10 @@ def summarize(row: Incident, *, request_status: str = "unknown") -> str:
             text += "\nSaved diagnostics: " + " · ".join(details)
     if row.observation.api_status:
         text += f"\nCloud API status: {row.observation.api_status}"
-    assessment = failure_investigation.details(row)
+    assessment = (
+        failure_investigation.details(row)
+        if request_status not in failure_health.QUIET_STATUSES else ""
+    )
     if assessment:
         text += "\n\n" + assessment
     if row.resolved:
@@ -294,6 +298,11 @@ def _summary(row: Incident, *, request_status: str = "unknown") -> str:
                 "Request handling completed; recovery of the reported operations is not confirmed."
             ),
             "recovered": "Request completed after the earlier processing errors.",
+            "processing_recovered": "Worker polling recovered; the request is still active.",
+            "saved_with_exclusions": (
+                "Request completed and memory save verified; validation excluded some proposed "
+                "items and retained their source."
+            ),
             "failed": "Request failed or stopped; recovery not confirmed.",
             "active": "Request is still active or retrying; final outcome not yet known.",
             "unknown": "Request outcome could not be checked; recovery not confirmed.",
@@ -321,7 +330,9 @@ def _summary(row: Incident, *, request_status: str = "unknown") -> str:
         f"Latest requester: {escape(who)} · {o.surface}\n"
         f"Occurrences: {row.count} · first {first} · latest {last}\n"
         f"Project: {escape(o.project_id or 'unassigned')} · event: {escape(o.event_id or 'none')}\n"
-        f"Incident: {row.id} · {o.cause} · recovery not confirmed"
+        f"Incident: {row.id} · {o.cause} · "
+        + ("background maintenance recovery verified" if request_status == "recovered"
+           else "recovery not confirmed")
     )
 
 
@@ -422,23 +433,24 @@ async def _flush(
             )
             record = None
             request_status = (row.request_status or "unknown") if row.resolved else "unknown"
-            if row.observation.request_scoped and not row.resolved:
-                try:
-                    record = await repository.get_connector_state(
-                        f"claude-event:{row.observation.event_id}"
-                    )
-                    if record:
-                        status = record.get("status")
-                        request_status = status if status in {"complete", "failed"} else "active"
-                        if request_status == "complete" and set(
-                            row.causes or [row.observation.cause]
-                        ) <= RECOVERABLE_PROCESSING:
-                            request_status = "recovered"
-                except Exception:
-                    pass  # Status lookup must not hide an existing incident.
+            # Missing evidence never establishes recovery.
+            with suppress(Exception):
+                request_status, record = await failure_health.inspect(repository, row)
+            review_after = failure_health.review_after(row, request_status)
+            if (
+                settings.failure_alert_mode == "actionable"
+                and not row.slack_ts
+                and not failure_health.should_notify(row, request_status, record, time.time())
+            ):
+                await repository.finish_failure(
+                    row.id, token, time.time(), reviewed_count=row.count,
+                    request_status=request_status, retry_after=review_after or NEVER,
+                )
+                continue
             enabled = (
                 settings.failure_investigation_enabled
                 and bool(app.anthropic_api_key.get_secret_value())
+                and request_status not in failure_health.QUIET_STATUSES
             )
             if (enabled or row.investigation) and not row.resolved:
                 packet = failure_investigation.evidence(row, request_status, record, CATALOG)
@@ -453,13 +465,6 @@ async def _flush(
                             row.investigation,
                         )
             investigation_changed = previous_investigation != row.investigation
-            review_after = (
-                300
-                if row.observation.request_scoped
-                and not row.resolved
-                and request_status in {"active", "unknown"}
-                else 0
-            )
             if (
                 row.slack_ts
                 and row.sent_count == row.count

@@ -1,8 +1,35 @@
 # Failure log
 
-Mica records detected operational failures in Firestore and publishes one Slack summary per incident.
+Mica records detected operational failures in Firestore and publishes actionable incidents to Slack.
 This is an incident index: Cloud Logging, task state and worker artifacts remain the detailed evidence.
 It does not change job execution, request retries, or users' ability to resend requests.
+
+`AGENT_FAILURE_ALERT_MODE=actionable` is the default. The channel is an intervention queue:
+failed or stalled requests, exhausted maintenance, sustained intake failures, and unresolved saves.
+Every retry remains in Firestore and Cloud Logging even when it does not produce a Slack post.
+Set the mode to `all` only when the full incident stream is wanted temporarily.
+
+Transient worker-control and correlated HTTP errors get five minutes to recover. A successful
+processing tick after the error verifies polling recovery even while the computation continues;
+a watchdog heartbeat alone cannot clear it, because failed retries also refresh that heartbeat.
+The stalled-request monitor still alerts if polling stops. Pending memory saves and compaction
+retries get one hour
+before alerting; exhausted compaction alerts immediately. An isolated platform error or routine
+catalog-refresh failure stays in the log. Repeated intake failures still escalate under the
+existing ten-minute rule. Automatic recovery before notification produces no new Slack message.
+
+Recovery requires saved operation evidence. Request completion alone cannot clear a memory
+failure: the editor must be done, its pending flag cleared, and its verified thread receipt must
+match the event/project and postdate the memory error. A save with validation exclusions is
+explicitly labeled **Recovered · memory saved with exclusions**; it does not claim those excluded
+items were persisted. Partial imports and unrelated delivery/transfer failures remain unresolved.
+Compaction records a success timestamp only after a successful commit or verified no-change pass;
+an old success, superseded task, or exhausted cached proposal cannot clear a newer error.
+
+Already-posted cards update in place when recovery verifies. Memory recovery checks continue
+after the parent request completes. Suppressed incidents do not acquire fake Slack receipts or
+delivered counts, and a new failure wakes them for review. Service-wide failure detection checks
+current request evidence so successful retries do not create a misleading outage alert.
 
 ## Setup
 
@@ -49,7 +76,8 @@ Distinct requests do not collapse into a single project-level failure. The incid
 fixed failure cause; a platform report cannot overwrite the more specific application diagnosis.
 The report count counts distinct observations (including both application and platform evidence),
 not distinct failed requests. Background and uncorrelated infrastructure incidents still aggregate
-by cause and scope.
+by cause and scope. A new background failure after verified recovery starts a fresh episode,
+so it gets its own grace period without reopening an already recovered card.
 
 Request processing saves the authorized working project before its first acknowledgement or command
 reply. Existing thread context takes precedence over a user's default for new threads. An authorized
@@ -63,7 +91,7 @@ Each confirmed part is saved before continuing, so retries resume unfinished del
 confirmed parts. The full response is only marked delivered after every part succeeds; email continues
 to receive its single final response.
 
-The existing five-minute `reconcile-batch` schedule delivers at most five due incident messages per
+The existing five-minute `reconcile-batch` schedule reviews at most five due incidents per
 invocation, independently of the shared task reconciler. High incidents precede Medium incidents;
 one slot is reserved for Low when both queues have backlog. A Low-only cycle sends at most one.
 Single-field impact due-time projections avoid a composite index; bounded legacy queries include

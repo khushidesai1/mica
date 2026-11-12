@@ -788,6 +788,7 @@ class BatchBridge:
             await observability.report_runtime_failure(self, event_id, record)
             await self.cleanup_terminal(event_id, record)
             await self.record_terminal(event_id, record)
+            record["control_poll_succeeded_at"] = time.time()
             await self.repository.set_connector_state(key, record)
             await memory_tasks.enqueue(self, event_id, record)
 

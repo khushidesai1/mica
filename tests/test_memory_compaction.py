@@ -54,6 +54,8 @@ async def test_coalesced_task_merges_one_set_and_preserves_originals(chat, monke
     assert "_unmerged/abc/data/fact.md" not in latest.files
     assert "PROJECT.md" not in model.call_args.args[2]["files"]  # Oversized group not truncated.
     chat.test_slack.chat_postMessage.assert_not_awaited()
+    state = await chat.repository.get_connector_state(compact.state_key(chat.pid))
+    assert state["last_success_at"] > 0 and state["last_success_head"] == base.head_oid
 
 
 @pytest.mark.parametrize(
@@ -92,6 +94,7 @@ async def test_model_parse_and_transport_failures_are_bounded(chat, monkeypatch,
     assert model.await_count == (1 if isinstance(failure, ValueError) else 2)
     state = await chat.repository.get_connector_state(compact.state_key(chat.pid))
     assert state["outcome"] == "already_complete"
+    assert "last_success_at" not in state  # Exhausted cached proposals are not recovery.
     assert chat.github.head == base.head_oid
 
 

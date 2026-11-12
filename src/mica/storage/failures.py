@@ -136,7 +136,9 @@ def priority(row: Incident, status: str | None = None) -> Priority:
     """One impact calculation for persisted queues, cards and assessment evidence."""
     from mica.services.failure_logs import is_intake
 
-    if row.user_related and (status if status is not None else row.request_status) == "recovered":
+    if (status if status is not None else row.request_status) in {
+        "recovered", "processing_recovered", "saved_with_exclusions",
+    }:
         return "low"
     causes = row.causes or [row.observation.cause]
     values: list[Priority] = [CATALOG[c].priority for c in causes if c in CATALOG]
@@ -191,7 +193,10 @@ def resolved(
 
 
 def observed(old: Incident | None, observation: Observation, now: float, episode: str) -> Incident:
-    if old is None or (not observation.request_scoped and now - old.last_seen >= QUIET):
+    if old is None or (
+        not observation.request_scoped
+        and (now - old.last_seen >= QUIET or old.request_status == "recovered")
+    ):
         return Incident(
             id=episode,
             observation=observation,
@@ -237,7 +242,7 @@ def observed(old: Incident | None, observation: Observation, now: float, episode
     row.count += 1
     row.last_seen = max(row.last_seen, now)
     row.expires_at = row.last_seen + RETENTION
-    if row.delivery == "sent":
+    if row.delivery in {"sent", "pending"} and not row.lease_token:
         row.delivery = "pending"
         row.next_attempt = now
     return row
@@ -275,11 +280,19 @@ def finished(
     card_version: int = 0,
     investigation: FailureInvestigation | None = None,
     sent_investigation: str = "",
+    reviewed_count: int | None = None,
 ) -> Incident | None:
     if row.lease_token != token or row.lease_until < now:
         return None
     row = row.model_copy(deep=True)
     row.lease_token, row.lease_until = "", 0
+    if reviewed_count is not None:
+        # A quiet policy decision must not swallow a new failure observed during
+        # the lease. No Slack receipt or delivered count is fabricated here.
+        row.delivery = "pending"
+        row.next_attempt = now + max(60, retry_after) if row.count == reviewed_count else now
+        row.request_status = request_status if row.count == reviewed_count else ""
+        return row
     if investigation is not None:
         row.investigation = investigation
     if uncertain and not row.slack_ts:

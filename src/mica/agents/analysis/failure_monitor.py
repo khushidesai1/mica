@@ -12,7 +12,7 @@ from mica.storage.base import Repository
 from mica.storage.failure_catalog import CATALOG
 from mica.storage.failures import Incident, Observation, digest
 
-from . import outcome_review
+from . import failure_health, outcome_review
 from .config import Settings
 
 log = logging.getLogger("mica.failure_reporter")
@@ -104,6 +104,8 @@ def breadth(rows: list[Incident], scope: str, now: float) -> dict[str, int]:
     groups: dict[str, set[str]] = {}
     for row in rows:
         o = row.observation
+        if row.resolved or row.request_status in failure_health.QUIET_STATUSES:
+            continue
         if not row.user_related or not o.event_id or o.scope != scope:
             continue
         # Legacy incidents have only their latest cause's timestamp. Do not pretend
@@ -120,7 +122,18 @@ async def escalations(repository: Repository, app: AppSettings, now: float) -> d
     from .observability import request_scope
 
     scope = request_scope(app)
-    groups = breadth(await repository.recent_failures(now - BREADTH_SECONDS), scope, now)
+    rows = await repository.recent_failures(now - BREADTH_SECONDS)
+
+    async def actionable(row: Incident) -> bool:
+        try:
+            outcome, record = await failure_health.inspect(repository, row)
+        except Exception:
+            outcome, record = "unknown", None
+        return failure_health.should_notify(row, outcome, record, now)
+
+    checks = await asyncio.gather(*(actionable(row) for row in rows))
+    selected = [row for row, include in zip(rows, checks, strict=True) if include]
+    groups = breadth(selected, scope, now)
     for kind, count in groups.items():
         await repository.record_failure(
             Observation(

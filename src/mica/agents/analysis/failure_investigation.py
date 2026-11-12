@@ -105,10 +105,13 @@ def evidence(
             if type(value) is int and 0 <= value <= 31_536_000:
                 state[field] = HANDOFF if field == "reply_handoff" else value
         for field in ("worker_stopped", "cancel_requested", "flexible_harness",
-                      "worker_effort", "worker_spend"):
+                      "memory_editor_done", "worker_effort", "worker_spend"):
             if type(record.get(field)) is bool:
                 state[field] = record[field]
         packet["saved_request_state"] = state
+        receipt = record.get("memory_receipt")
+        if isinstance(receipt, dict):
+            packet["memory_validation_exclusions"] = min(len(receipt.get("rejected", {})), 1000)
     return packet
 
 
