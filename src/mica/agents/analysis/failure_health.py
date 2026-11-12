@@ -10,7 +10,7 @@ from mica.storage.failures import RECOVERABLE_PROCESSING, Incident, priority
 
 RECHECK_SECONDS = 300
 MEMORY_GRACE_SECONDS = 3600
-QUIET_STATUSES = {"recovered", "saved_with_exclusions"}
+QUIET_STATUSES = {"recovered", "processing_recovered", "saved_with_exclusions"}
 TRANSIENT_PROCESSING = {"compute_control_failed", "infra_http_error"}
 COMPACTION = {"memory_compaction_retry", "memory_compaction_exhausted"}
 
@@ -56,6 +56,11 @@ def status(row: Incident, record: dict[str, Any] | None) -> str:
         return "unknown"
     result = record.get("status")
     if result not in {"complete", "failed"}:
+        if (
+            causes <= TRANSIENT_PROCESSING
+            and record.get("control_poll_succeeded_at", 0) > row.last_seen
+        ):
+            return "processing_recovered"
         return "active"
     if result != "complete":
         return "failed"
@@ -73,6 +78,8 @@ def status(row: Incident, record: dict[str, Any] | None) -> str:
 
 def review_after(row: Incident, outcome: str) -> int:
     causes = set(row.causes or [row.observation.cause])
+    if not row.resolved and outcome == "processing_recovered":
+        return RECHECK_SECONDS
     if row.resolved or outcome in QUIET_STATUSES:
         return 0
     if row.user_related and outcome in {"unknown", "active"}:
@@ -92,11 +99,10 @@ def should_notify(
     if causes == {"smoke_test"}:
         return True
     if row.user_related and causes <= TRANSIENT_PROCESSING and outcome in {"active", "unknown"}:
-        # A healthy polling heartbeat is positive progress evidence. A stopped
-        # chain is independently detected by the existing stalled-request monitor.
-        if record and record.get("stall_check_at", 0) > now:
-            return False
-        return now - row.first_seen >= RECHECK_SECONDS
+        # The watchdog heartbeat also refreshes on errors. Only a successful
+        # process tick can establish recovery; repeated failed polls must alert.
+        since = max(row.first_seen, (record or {}).get("control_poll_succeeded_at", 0))
+        return bool(now - since >= RECHECK_SECONDS)
     if "memory_editor_failed" in causes and causes <= (
         RECOVERABLE_PROCESSING | {"memory_editor_failed"}
     ) and (outcome in {"complete", "unknown"} or causes == {"memory_editor_failed"}):

@@ -298,6 +298,7 @@ def _summary(row: Incident, *, request_status: str = "unknown") -> str:
                 "Request handling completed; recovery of the reported operations is not confirmed."
             ),
             "recovered": "Request completed after the earlier processing errors.",
+            "processing_recovered": "Worker polling recovered; the request is still active.",
             "saved_with_exclusions": (
                 "Request completed and memory save verified; validation excluded some proposed "
                 "items and retained their source."

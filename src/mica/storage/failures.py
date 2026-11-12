@@ -137,7 +137,7 @@ def priority(row: Incident, status: str | None = None) -> Priority:
     from mica.services.failure_logs import is_intake
 
     if (status if status is not None else row.request_status) in {
-        "recovered", "saved_with_exclusions",
+        "recovered", "processing_recovered", "saved_with_exclusions",
     }:
         return "low"
     causes = row.causes or [row.observation.cause]

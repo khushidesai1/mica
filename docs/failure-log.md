@@ -9,9 +9,11 @@ failed or stalled requests, exhausted maintenance, sustained intake failures, an
 Every retry remains in Firestore and Cloud Logging even when it does not produce a Slack post.
 Set the mode to `all` only when the full incident stream is wanted temporarily.
 
-Transient worker-control and correlated HTTP errors get five minutes to recover. While the
-request's polling heartbeat remains healthy, they stay in the log; the stalled-request monitor
-still alerts if that heartbeat stops. Pending memory saves and compaction retries get one hour
+Transient worker-control and correlated HTTP errors get five minutes to recover. A successful
+processing tick after the error verifies polling recovery even while the computation continues;
+a watchdog heartbeat alone cannot clear it, because failed retries also refresh that heartbeat.
+The stalled-request monitor still alerts if polling stops. Pending memory saves and compaction
+retries get one hour
 before alerting; exhausted compaction alerts immediately. An isolated platform error or routine
 catalog-refresh failure stays in the log. Repeated intake failures still escalate under the
 existing ten-minute rule. Automatic recovery before notification produces no new Slack message.

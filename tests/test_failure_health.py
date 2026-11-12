@@ -4,6 +4,8 @@
 from unittest.mock import AsyncMock
 
 import pytest
+from google.api_core.exceptions import DeadlineExceeded
+from test_analysis_batch import bridge, payload  # noqa: F401
 from test_failure_digest import clock, slack  # noqa: F401
 
 from mica.agents.analysis import failure_cards, failure_health, failure_monitor, observability
@@ -198,7 +200,7 @@ async def test_new_background_failure_after_recovery_gets_fresh_grace_period(
 
 async def test_healthy_worker_polling_is_quiet_but_stalls_alert(repository, settings, slack, clock):
     await report(repository, settings, "compute_control_failed", record(
-        status="running", stall_check_at=5000,
+        status="running", stall_check_at=5000, control_poll_succeeded_at=1100,
     ))
     clock[0] = 1400
     await observability.flush(repository, settings, CONFIG)
@@ -208,9 +210,67 @@ async def test_healthy_worker_polling_is_quiet_but_stalls_alert(repository, sett
     slack.chat_postMessage.assert_awaited_once()
 
 
+async def test_repeated_failed_polls_cannot_hide_behind_watchdog_heartbeat(
+    repository, settings, slack, clock,
+):
+    await report(repository, settings, "compute_control_failed", record(
+        status="running", stall_check_at=5000, control_poll_succeeded_at=999,
+    ))
+    clock[0] = 1400
+    await observability.flush(repository, settings, CONFIG)
+    slack.chat_postMessage.assert_awaited_once()
+    assert next(iter(repository.failures.values())).request_status == "active"
+
+
+async def test_later_transient_poll_gets_grace_after_success(repository, settings, slack, clock):
+    row = await report(repository, settings, "compute_control_failed", record(
+        status="running", control_poll_succeeded_at=1100,
+    ))
+    clock[0] = 1200
+    await observability.flush(repository, settings, CONFIG)
+    await repository.set_connector_state("claude-event:event", record(
+        status="running", control_poll_succeeded_at=2000,
+    ))
+    clock[0] = 2010
+    await repository.record_failure(
+        row.observation.model_copy(update={"occurrence": "later"}), 2010,
+    )
+    await observability.flush(repository, settings, CONFIG)
+    slack.chat_postMessage.assert_not_awaited()
+    clock[0] = 2311
+    await observability.flush(repository, settings, CONFIG)
+    slack.chat_postMessage.assert_awaited_once()
+
+
+async def test_real_poll_retry_preserves_worker_and_only_success_verifies_recovery(
+    bridge, clock,
+):
+    event = await bridge.accept(payload())
+    await bridge.process(event, 0)
+    before = await bridge.repository.get_connector_state("claude-event:" + event)
+    succeeded = before["control_poll_succeeded_at"]
+    lookup = bridge.test_client.get_job.side_effect
+    bridge.test_client.get_job.side_effect = DeadlineExceeded("temporary provider timeout")
+    clock[0] = 1100
+    with pytest.raises(DeadlineExceeded):
+        await bridge.process(event, before["tick"])
+    failed = await bridge.repository.get_connector_state("claude-event:" + event)
+    assert failed["control_poll_succeeded_at"] == succeeded
+    assert failed["stall_check_at"] > clock[0]  # This is not proof the poll succeeded.
+    row = next(iter(bridge.repository.failures.values()))
+    assert failure_health.status(row, failed) == "active"
+    bridge.test_client.get_job.side_effect = lookup
+    clock[0] = 1111
+    await bridge.process(event, before["tick"])
+    recovered = await bridge.repository.get_connector_state("claude-event:" + event)
+    assert recovered["control_poll_succeeded_at"] == 1111
+    assert failure_health.status(row, recovered) == "processing_recovered"
+    bridge.test_client.create_job.assert_called_once()  # No replayed computation.
+
+
 async def test_recovered_retries_do_not_escalate_service_outage(repository, settings, clock):
     for event in ("one", "two", "three"):
-        data = record(status="running", stall_check_at=5000)
+        data = record(status="running", stall_check_at=5000, control_poll_succeeded_at=1100)
         await repository.set_connector_state("claude-event:" + event, data)
         await observability.record_failure(
             repository, settings, "compute_control_failed", occurrence=event,

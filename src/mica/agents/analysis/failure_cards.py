@@ -45,6 +45,7 @@ def status_label(row: Incident, status: str) -> str:
         "active": "Retrying / still active",
         "complete": "Completed · follow-up needed",
         "recovered": "Recovered automatically",
+        "processing_recovered": "Polling recovered · request active",
         "saved_with_exclusions": "Recovered · memory saved with exclusions",
     }.get(status, "Needs investigation")
     if status == "complete" and "request_blocked" in (row.causes or [row.observation.cause]):
@@ -96,6 +97,10 @@ def blocks(
         explanation = row.investigation.assessment.summary
     if status == "recovered":
         explanation = "Recovery verified from saved operation state. No action is needed."
+    elif status == "processing_recovered":
+        explanation = (
+            "Worker polling succeeded after the temporary error. The request is continuing."
+        )
     elif status == "saved_with_exclusions":
         explanation = (
             "The request and memory retry completed. Some proposed memory items were excluded "
@@ -236,7 +241,12 @@ def details_view(row: Incident, explanations: list[str]) -> dict[str, Any]:
     ]
     item = row.investigation
     assessment = item.assessment if item and item.status == "complete" else None
-    if status in {"recovered", "saved_with_exclusions"}:
+    if status == "processing_recovered":
+        blocks.append(paragraph(
+            "Recovery", "A successful processing tick followed the reported error. "
+            "The request is still active; its final outcome is not yet known.",
+        ))
+    elif status in {"recovered", "saved_with_exclusions"}:
         blocks.append(paragraph(
             "Recovery",
             "Saved operation state confirms recovery. No retry of the user request is needed."
@@ -297,6 +307,10 @@ def details_view(row: Incident, explanations: list[str]) -> dict[str, Any]:
                 "Request outcome",
                 {
                     "recovered": "Recovery was verified from saved operation state.",
+                    "processing_recovered": (
+                        "Worker polling recovered and the request continues. "
+                        "Its final outcome is not yet known."
+                    ),
                     "saved_with_exclusions": (
                         "The request completed and the memory save verified. Some proposed items "
                         "were excluded by validation; their source is retained."
