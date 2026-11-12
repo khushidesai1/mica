@@ -10,6 +10,9 @@ features:
       make plots, and manage files. GPU runs and some file changes ask for your approval first.
   app_home:
     home_tab_enabled: true
+    # Slack defaults these to false/true when app_home is first added to an agent app.
+    messages_tab_enabled: true
+    messages_tab_read_only_enabled: false
   bot_user:
     display_name: Mica
     always_online: false

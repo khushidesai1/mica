@@ -12,7 +12,7 @@ from test_analysis_batch import bridge  # noqa: F401
 from test_conversation_tools import Block, Client, reply, run, tool, turn  # noqa: F401
 
 from mica.agents.analysis import answer_stream, direct
-from mica.agents.analysis.slack_format import neutralize
+from mica.agents.analysis.slack_format import answer_blocks, neutralize
 from mica.agents.analysis.transport import SlackTransport
 
 
@@ -158,6 +158,26 @@ async def test_split_angle_tokens_and_channel_recipients(turn, streaming, monkey
     appends = calls(slack, "chat.appendStream")
     assert "".join(c["markdown_text"] for c in appends) == neutralize(text)
     assert all(not c["markdown_text"].endswith("&lt;!") for c in appends)
+
+
+@pytest.mark.parametrize("prefix", ["", "prose " * 100 + "\n"], ids=["code-only", "after-prose"])
+@pytest.mark.parametrize("code", ["`<!here> &lt;`", "~~~text\n<!here> &lt;\n~~~"])
+async def test_code_finishes_as_literal_markdown_after_any_streamed_prose(
+    turn, streaming, prefix, code,
+):
+    bridge, event_id, record, _ = turn
+    slack, _ = streaming
+    text = prefix + code + "\n" + "after " * 100
+    decision = await run(turn, StreamClient(reply(text)))
+    assert decision.reply == text.strip()
+    for append in calls(slack, "chat.appendStream"):
+        assert "&lt;" not in append["markdown_text"]
+    await direct.finish(bridge, event_id, record, decision.reply)
+    sent = [call.kwargs["blocks"][0]["text"] for call in (
+        slack.chat_update.call_args_list + slack.chat_postMessage.call_args_list
+    ) if call.kwargs.get("blocks", [{}])[0].get("type") == "markdown"]
+    assert "\n".join(sent) == answer_blocks(decision.reply)[0]["text"]
+    assert code in "\n".join(sent)
 
 
 @pytest.mark.parametrize("state", [

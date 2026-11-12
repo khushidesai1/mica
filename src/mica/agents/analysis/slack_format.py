@@ -169,8 +169,41 @@ def neutralize(text: str) -> str:
     return escape(text, quote=False)
 
 
+def markdown_text(text: str) -> str:
+    """Escape prose while keeping literal code intact in Slack's Markdown parser."""
+    result: list[str] = []
+    cursor = 0
+    token = re.compile(r"^ {0,3}(`{3,}|~{3,})([^\n]*)\n|\\.|`+", re.M)
+    while match := token.search(text, cursor):
+        result.append(neutralize(text[cursor:match.start()]))
+        start, end = match.span()
+        if match[0].startswith("\\"):
+            result.append(neutralize(match[0]))
+        elif match[1] and not (match[1][0] == "`" and "`" in match[2]):
+            delimiter = match[1]
+            closing = re.compile(
+                r"^ {0,3}" + re.escape(delimiter[0]) + "{" + str(len(delimiter))
+                + r",}[ \t]*(?:\n|$)", re.M,
+            ).search(text, end)
+            end = closing.end() if closing else len(text)
+            result.append(text[start:end])
+        elif not match[1]:
+            # Only a same-line, matching backtick run is unambiguously an inline span.
+            closing = re.compile(r"(?<!`)" + re.escape(match[0]) + r"(?!`)").search(text, end)
+            if closing and "\n" not in text[end:closing.start()]:
+                end = closing.end()
+                result.append(text[start:end])
+            else:
+                result.append(neutralize(match[0]))
+        else:
+            result.append(neutralize(match[0]))
+        cursor = end
+    result.append(neutralize(text[cursor:]))
+    return "".join(result)
+
+
 def answer_blocks(text: str) -> list[dict[str, Any]]:
-    value = neutralize(text)
+    value = markdown_text(text)
     if len(value) > 12000:
         raise ValueError("Markdown answer exceeds Slack's message limit")
     return [{"type": "markdown", "text": value or " "}]
