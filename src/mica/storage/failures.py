@@ -193,7 +193,10 @@ def resolved(
 
 
 def observed(old: Incident | None, observation: Observation, now: float, episode: str) -> Incident:
-    if old is None or (not observation.request_scoped and now - old.last_seen >= QUIET):
+    if old is None or (
+        not observation.request_scoped
+        and (now - old.last_seen >= QUIET or old.request_status == "recovered")
+    ):
         return Incident(
             id=episode,
             observation=observation,

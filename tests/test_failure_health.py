@@ -174,6 +174,28 @@ async def test_compaction_exhaustion_alerts_immediately(repository, settings, sl
     slack.chat_postMessage.assert_awaited_once()
 
 
+async def test_new_background_failure_after_recovery_gets_fresh_grace_period(
+    repository, settings, slack, clock,
+):
+    observation = Observation(
+        scope="test", kind="memory", cause="memory_compaction_retry", occurrence="first",
+        project_id="p_test",
+    )
+    first = await repository.record_failure(observation, 1000)
+    await repository.set_connector_state("memory-maintenance:p_test", {"last_success_at": 1100})
+    clock[0] = 1200
+    await observability.flush(repository, settings, CONFIG)
+    assert repository.failures[first.id].request_status == "recovered"
+    clock[0] = 10000
+    second = await repository.record_failure(
+        observation.model_copy(update={"occurrence": "new"}), clock[0],
+    )
+    assert second.id != first.id and second.first_seen == clock[0]
+    await observability.flush(repository, settings, CONFIG)
+    slack.chat_postMessage.assert_not_awaited()
+    assert repository.failures[first.id].request_status == "recovered"
+
+
 async def test_healthy_worker_polling_is_quiet_but_stalls_alert(repository, settings, slack, clock):
     await report(repository, settings, "compute_control_failed", record(
         status="running", stall_check_at=5000,

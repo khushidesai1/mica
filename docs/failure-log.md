@@ -74,7 +74,8 @@ Distinct requests do not collapse into a single project-level failure. The incid
 fixed failure cause; a platform report cannot overwrite the more specific application diagnosis.
 The report count counts distinct observations (including both application and platform evidence),
 not distinct failed requests. Background and uncorrelated infrastructure incidents still aggregate
-by cause and scope.
+by cause and scope. A new background failure after verified recovery starts a fresh episode,
+so it gets its own grace period without reopening an already recovered card.
 
 Request processing saves the authorized working project before its first acknowledgement or command
 reply. Existing thread context takes precedence over a user's default for new threads. An authorized
