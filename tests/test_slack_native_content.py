@@ -26,6 +26,37 @@ def test_markdown_neutralizes_angle_forms_without_rewriting_markdown():
     assert answer_blocks("**Bold**\n| A | B |\n| --- | --- |\n| 1 | 2 |")[0]["type"] == "markdown"
 
 
+@pytest.mark.parametrize("code", [
+    "`<!here> a & b < c &lt;`",
+    "``a ` <!channel> &lt;``",
+    "```python\nvalue = '<@U123> &lt;'\n```",
+    "~~~~text\n~~~\n<!here>\n~~~~",
+    "```text\n<!here> unfinished fence",
+])
+def test_native_markdown_code_stays_literal_while_adjacent_prose_is_escaped(code):
+    text = "<!here> before\n" + code + "\n"
+    assert answer_blocks(text)[0]["text"] == "&lt;!here&gt; before\n" + code + "\n"
+    assert "<!here>" not in neutralize(text)  # Notification text still cannot mention.
+
+
+@pytest.mark.parametrize("text", [
+    r"\`<!here>`", "`unclosed <!here>", "`first\n<!here>`",
+    "```bad`info\n<!here>\n```", "``one` <!here>",
+])
+def test_ambiguous_code_never_exempts_prose_from_mention_escaping(text):
+    assert "<!here>" not in answer_blocks(text)[0]["text"]
+
+
+async def test_markdown_fallback_preserves_entities_inside_code():
+    client = AsyncMock()
+    client.chat_postMessage.side_effect = [
+        SlackApiError("unsupported", {"error": "invalid_blocks"}), {"ts": "1"},
+    ]
+    text = "Literal `&lt; &amp; <!here>` then <!channel>"
+    await SlackTransport(client).post(text=neutralize(text), blocks=answer_blocks(text))
+    assert client.chat_postMessage.call_args.kwargs["text"] == to_mrkdwn(text)
+
+
 @pytest.mark.parametrize("unit", [
     "```python\n" + "print('hello')\n" * 270 + "```",
     "| Name | Value |\n| --- | --- |\n" + "| Sample | 123 |\n" * 250,

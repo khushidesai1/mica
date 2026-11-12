@@ -77,9 +77,12 @@ class SlackTransport:
                 kwargs["blocks"] = activity_fallback(blocks)
             if has_markdown and self.markdown_fallback:
                 kwargs["blocks"] = []
-                kwargs["text"] = to_mrkdwn("\n".join(
-                    unescape(b["text"]) for b in blocks if b.get("type") == "markdown"
-                ))
+                # The notification fallback is uniformly escaped; Markdown blocks keep
+                # code literal, so unescaping those would corrupt literal HTML entities.
+                source = kwargs.get("text") or "\n".join(
+                    b["text"] for b in blocks if b.get("type") == "markdown"
+                )
+                kwargs["text"] = to_mrkdwn(unescape(source))
             try:
                 return await getattr(self.client, method)(**kwargs)
             except SlackApiError as exc:

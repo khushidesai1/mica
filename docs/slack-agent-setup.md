@@ -796,7 +796,8 @@ Rollback this presentation release using the prior API revision and worker pins.
 configuration change is needed when native sessions are already enabled.
 
 Final Slack answers use standard Markdown blocks, including small comparison tables. Model
-angle syntax is escaped to prevent mentions and disguised Slack links. Unsupported Markdown
+angle syntax outside code is escaped to prevent mentions and disguised Slack links. Code stays
+literal, including angle brackets and ampersands. Unsupported Markdown
 blocks fall back to the existing `mrkdwn` conversion. Code fences and tables stay together
 within Slack's 12,000-character message limit; larger blocks continue with repeated fences or
 table headers. An individual oversized header or row is delivered in bounded literal pieces.
@@ -805,7 +806,9 @@ Notification text carries the same escaped content. Email retains its existing d
 `AGENT_SLACK_STREAMING=false` controls streaming of conversation answers only. After 300
 characters of public text, an answer may stream; short answers post whole. Thinking blocks
 never stream. A later tool call ends the stream and leaves its public narration in the thread.
-Worker answers continue through their existing final-message delivery. Streams stop at the
+Worker answers continue through their existing final-message delivery. Answers containing code
+finish through ordinary Markdown delivery so incomplete delimiters cannot corrupt literal text.
+Streams stop at the
 model-call deadline, nine minutes or 10,000 escaped characters, with remaining answer content
 delivered as Markdown messages. Finished activity remains separate from the answer.
 
@@ -829,12 +832,15 @@ ordered by recent usage, including the current selection. A typed project switch
 Home and Messages too.
 
 For an existing agent app, the owner applies a merge-only manifest delta: remove static
-`agent_view.suggested_prompts`, enable `app_home.home_tab_enabled`, and subscribe to
+`agent_view.suggested_prompts`, enable `app_home.home_tab_enabled`, explicitly preserve
+`messages_tab_enabled: true` and `messages_tab_read_only_enabled: false`, and subscribe to
 `app_home_opened`. This delta adds no scopes. Deploy the coordinated API and workers with
 streaming off, then verify Markdown, mention escaping, prompts, project selection, old-thread
 isolation and an email. Enable streaming only after those checks and test a long answer and
 a one-line answer. Re-adding static prompts disables dynamic suggestions; turning Home off
-removes the picker; turning the streaming flag off restores ordinary answer delivery.
+removes the picker; turning the streaming flag off restores ordinary answer delivery. Slack's
+manifest export may normalize dynamic prompts back to an empty `suggested_prompts` array;
+verify that the Agents settings page still selects **Dynamic**.
 
 Slack owns the **Stop Mica** label. Custom loading text through Slack's legacy status bridge
 requires a separate owner-observed compatibility check; it is not enabled by these settings.

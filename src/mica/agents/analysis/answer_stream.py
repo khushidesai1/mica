@@ -136,6 +136,11 @@ class AnswerStream:
     async def append(self, *, final: bool = False) -> None:
         if self.closed or self.tool or (len(self.text) < 300 and not self.sent):
             return
+        # Code needs complete delimiters to preserve literal <, > and & characters.
+        # Finish through ordinary Markdown delivery instead of escaping partial code.
+        if "`" in self.text or "~~~" in self.text:
+            await self.stop()
+            return
         # Flush at useful intervals, not on every token. Hold an incomplete angle token
         # until its closing delimiter arrives (or the model finishes).
         end = len(self.text)
