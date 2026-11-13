@@ -163,13 +163,6 @@ async def deliver(bridge: BatchBridge, kind: str, identifier: str, row: Reminder
     await post_once(
         bridge, f"approval-reminder:{kind}:{identifier}:{stamp}", channel,
         text + f" <{url}|Review approval>",
-        blocks=[
-            {"type": "section", "text": {"type": "mrkdwn", "text": text}},
-            {"type": "actions", "elements": [{
-                "type": "button", "text": {"type": "plain_text", "text": "Review approval"},
-                "url": url, "action_id": "approval_reminder_link",
-            }]},
-        ],
     )
 
 

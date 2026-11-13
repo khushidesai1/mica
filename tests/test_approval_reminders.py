@@ -132,7 +132,8 @@ async def test_pending_approval_posts_one_new_private_message_with_original_link
     assert message["channel"] == recipient
     assert not message.get("thread_ts")
     assert "expires in 20 minutes" in message["text"]
-    assert message["blocks"][-1]["elements"][0]["url"].endswith("/D1/p90")
+    assert "<https://example.slack.com/archives/D1/p90|Review approval>" in message["text"]
+    assert "blocks" not in message  # A plain link needs no approval interaction callback.
     assert "UREQUESTER" not in message["text"]
     slack.chat_update.assert_not_called()
     assert all(bridge.repository.connector_state[k] == v for k, v in before.items())
