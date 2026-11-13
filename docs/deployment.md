@@ -553,6 +553,24 @@ has moved on. Preserve original approval keys/action IDs and legacy overwrite al
 rollback. Use the owner's scratch output path for the optional approve/reject live acceptance;
 no real scientific work is needed to verify this controller change.
 
+Expiring Slack approvals also schedule a private reminder 20 minutes before their saved deadline
+through `/api/v1/internal/slack-analysis/approval-reminders/<kind>/<id>/<deadline>` with the same
+Cloud Tasks identity. Confirmations lasting 20 minutes or less notify immediately. This is a new
+top-level DM with a mention and a link to the original approval; editing the card alone is not
+the reminder. Compute, file operations, project confirmations, request amendments, project/cloud
+access and transfer previews are covered. Access reminders go to the approver, not the requester.
+Slack/device notification preferences still control banners and sounds. Non-expiring controls
+and email-only transfer requests do not acquire Slack reminders.
+
+Delivery rechecks the pending state and exact deadline under the decision lease, skips completed,
+cancelled, renewed or expired requests, and uses the existing durable private-message outbox to
+deduplicate retries and reconcile ambiguous sends. Existing transfer previews acquire timers on
+their next poll; other existing approvals acquire them when their normal lifecycle calls `watch`.
+Dormant approvals from before this release are not bulk-replayed. Worker pins, expiry durations,
+approval permissions, IAM, secrets and queues are unchanged. Validate timer boundaries, all timed
+approval kinds, duplicate/ambiguous delivery and the authenticated endpoint offline; live release
+health/auth checks need no synthetic approval or real transfer.
+
 
 ### Generic transfer receipt compatibility
 
