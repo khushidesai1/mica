@@ -251,12 +251,16 @@ async def expired_card(
 async def watch(
     bridge: BatchBridge, kind: Kind, identifier: str, deadline: float,
     record: dict[str, Any] | None = None,
+    *, remind: bool = True,
 ) -> None:
     """One durable timer per confirmation; old timers cannot expire a renewed request."""
+    from . import approval_reminders
     from .job_lifecycle import enqueue
 
     kind.key(identifier)
     stamp = math.ceil(deadline)
+    if remind and kind.lifetime is not None:
+        await approval_reminders.schedule(bridge, kind.name, identifier, deadline)
     if record is not None and record.get("approval_timers", {}).get(kind.name) == stamp:
         return
     await enqueue(

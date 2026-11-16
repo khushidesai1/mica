@@ -447,7 +447,7 @@ async def request(
             if alias["details"] != source_details:
                 raise ValueError("This request was already submitted with different details.")
             row = await load(bridge, alias["id"])
-            await approvals.watch(bridge, KIND, row.id, time.time() + 30)
+            await approvals.watch(bridge, KIND, row.id, time.time() + 30, remind=False)
             return row
         prior = await bridge.repository.get_connector_state(key(identifier))
         if prior:
@@ -458,7 +458,7 @@ async def request(
                 requester,
             ):
                 raise ValueError("This request was already submitted with different details.")
-            await approvals.watch(bridge, KIND, row.id, time.time() + 30)
+            await approvals.watch(bridge, KIND, row.id, time.time() + 30, remind=False)
             return row
         reservation = await bridge.repository.get_connector_state(index)
         if reservation:
@@ -472,7 +472,7 @@ async def request(
                 await bridge.repository.set_connector_state(
                     source_key, {"id": row.id, "details": source_details}
                 )
-                await approvals.watch(bridge, KIND, row.id, time.time() + 30)
+                await approvals.watch(bridge, KIND, row.id, time.time() + 30, remind=False)
                 return row
         meta = email_meta or {}
         row = Request(
@@ -494,7 +494,7 @@ async def request(
         )
         # Persist the recoverable reservation before the request, avoiding a second pending row
         # if the process dies between writes. No IAM/email side effects run under this lock.
-        await approvals.watch(bridge, KIND, row.id, time.time() + 30)
+        await approvals.watch(bridge, KIND, row.id, time.time() + 30, remind=False)
         await bridge.repository.set_connector_state(
             index, {"id": row.id, "request": row.model_dump(mode="json")}
         )
@@ -624,7 +624,7 @@ async def decide(
         return  # Duplicate authorized decisions do not reverse an earlier decision.
     if approvals.expired(row.expires):
         raise ValueError("This approval expired. Submit a new request.")
-    await approvals.watch(bridge, KIND, row.id, time.time() + 30)
+    await approvals.watch(bridge, KIND, row.id, time.time() + 30, remind=False)
     row.state = "approved" if approved else "denied"
     row.decided_by, row.decided_at = actor, time.time()
     await save(bridge, row)

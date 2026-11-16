@@ -270,6 +270,10 @@ class Transfers:
         return p
 
     async def schedule(self, p: dict[str, Any], delay: int = 0) -> None:
+        from . import approval_reminders
+
+        if p.get("state") == "preview" and p.get("surface") != "email":
+            await approval_reminders.schedule(self.bridge, "transfer", p["id"], p["expires"])
         # Each state change advances the tick; old scheduled deliveries become harmless.
         await job_lifecycle.enqueue(
             self.app,
