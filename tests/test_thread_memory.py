@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import httpx
 import pytest
 
 from mica.agents.analysis import memory_workspace, project_memory
@@ -234,3 +235,28 @@ async def test_deep_asset_metadata_uses_bounded_queries_without_fetching_bytes(s
     assert not any("MemoryBlobs" in r["query"] for r in requests)
     # GraphQL fragments do not add schema depth; each directory adds two fields.
     assert project_memory.TREE.count("entries {") <= 7
+
+
+async def test_snapshot_asset_read_keeps_pin_and_integrity_without_reloading_tree(store):
+    backend, github = store
+    path = "threads/t_one/scripts/run.py"
+    github.seed({"projects/p_test/" + path: "print(7)"})
+    snapshot = await backend.read("p_test")
+    github.seed({"projects/p_test/" + path: "print(8)"})
+    github.requests.clear()
+    assert await backend.read_snapshot_bytes(snapshot, path) == (b"print(7)", snapshot.head_oid)
+    assert len(github.requests) == 1 and github.requests[0].method == "GET"
+    # Reject a corrupt response even when the API repeats the expected blob ID.
+    original = github.client
+
+    def corrupt(request):
+        response = github.handle(request)
+        payload = response.json()
+        payload["content"] = "cHJpbnQoOCk="
+        return httpx.Response(200, json=payload)
+
+    backend.client = httpx.AsyncClient(transport=httpx.MockTransport(corrupt))
+    with pytest.raises(ValueError, match="integrity"):
+        await backend.read_snapshot_bytes(snapshot, path)
+    await backend.client.aclose()
+    backend.client = original

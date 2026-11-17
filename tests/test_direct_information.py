@@ -5,6 +5,7 @@ import hashlib
 import json
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 from test_analysis_batch import CONVERSATION_RUN, bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
@@ -193,6 +194,65 @@ async def test_source_unavailable_is_explicit_without_worker(chat, source, monke
     eid = await chat.accept(payload(text="Explain nympheas"))
     assert await chat.process(eid, 0) == "complete"
     assert result(client)["references"] == [{"repo": "azizilab/nympheas", "unavailable": True}]
+    chat.test_client.create_job.assert_not_called()
+
+
+async def test_memory_sources_reuse_authorized_snapshot_across_reads(chat, monkeypatch):
+    github = chat.store.memory_github
+    root = f"projects/{chat.pid}/"
+    paths = [f"recipes/source_{i}.md" for i in range(4)]
+    text = "type: recipe\nsource: test\nstatus: current\n\nOriginal recipe."
+    github.seed({root + path: text for path in paths})
+    read = AsyncMock(wraps=chat.memory_backend._read)
+    monkeypatch.setattr(chat.memory_backend, "_read", read)
+    client = scripted(
+        monkeypatch,
+        tool("read_sources", memory_paths=paths[:2]),
+        tool("read_sources", memory_paths=paths[2:]),
+        reply("Recipes inspected."),
+    )
+    create = client.create
+
+    async def changing(**kwargs):
+        response = await create(**kwargs)
+        if len(client.calls) == 1:
+            github.seed({root + paths[-1]: text.replace("Original", "Changed")})
+        return response
+
+    client.create = changing
+    eid = await chat.accept(payload(text="Inspect the previous segmentation recipes."))
+    assert await chat.process(eid, 0) == "complete"
+    read.assert_awaited_once()
+    rows = result(client)["memory"] + result(client, 2)["memory"]
+    assert [row["path"] for row in rows] == paths
+    assert all(row["text"] == text for row in rows)
+    assert len({row["commit"] for row in rows}) == 1
+    chat.test_client.create_job.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["timeout", "http", "missing"])
+async def test_memory_source_failure_is_recoverable_and_does_not_launch_worker(
+    chat, monkeypatch, failure
+):
+    request = httpx.Request("GET", "https://api.github.com/git/blobs/test")
+    error = {
+        "timeout": httpx.ReadTimeout("private provider detail", request=request),
+        "http": httpx.HTTPStatusError(
+            "private provider detail", request=request,
+            response=httpx.Response(503, request=request),
+        ),
+        "missing": FileNotFoundError("private provider detail"),
+    }[failure]
+    monkeypatch.setattr(chat.memory_backend, "read_snapshot_bytes", AsyncMock(side_effect=error))
+    path = "threads/other/scripts/run.py"
+    client = scripted(
+        monkeypatch, tool("read_sources", memory_paths=[path]),
+        reply("The previous script is unavailable. Please retry shortly."),
+    )
+    eid = await chat.accept(payload(text="Inspect the previous segmentation script."))
+    assert await chat.process(eid, 0) == "complete"
+    assert result(client)["memory"] == [{"path": path, "unavailable": True}]
+    assert "private provider detail" not in str(client.calls)
     chat.test_client.create_job.assert_not_called()
 
 

@@ -46,6 +46,7 @@ from .transfer_config import TransferRequest
 
 if TYPE_CHECKING:
     from .batch import BatchBridge
+    from .project_memory import Snapshot
 
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 PROGRESS_BETA = "thinking-display-updates-2026-08-18"
@@ -441,6 +442,7 @@ async def run(
     media: Sequence[dict[str, Any]] = (),
     client: Any = None,
     init: bool = False,
+    memory: Snapshot | None = None,
 ) -> Decision:
     """Never execute terminal actions here; persist their validated arguments first."""
     start(record)
@@ -462,6 +464,7 @@ async def run(
                 media=media,
                 client=sdk,
                 init=init,
+                memory=memory,
             )
     started = asyncio.get_running_loop().time()
     flexible = bool(record.get("flexible_harness", False))
@@ -816,6 +819,7 @@ async def run(
                             files,
                             snapshots,
                             max_bytes=read_remaining,
+                            memory=memory,
                         )
                         read_remaining = max(
                             0, read_remaining - len(json.dumps(result, ensure_ascii=False).encode())
