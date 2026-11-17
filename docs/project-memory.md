@@ -12,6 +12,10 @@ on this repository only and give the control service access to the secret. Token
 cached for ten minutes and must never be passed to workers.
 
 The store reads an immutable GitHub snapshot and commits with an expected branch head.
+Conversation source reads reuse the authorized snapshot already loaded for the routing slice,
+including its commit pin. Reading several recipes does not reload the full project for each
+file; binary assets are fetched by their verified blob IDs. Missing or temporarily unavailable
+sources are reported to the conversation as unavailable so it can explain the gap or retry.
 Concurrent changes to different files survive; conflicting updates go under
 `_unmerged/<event>/<path>` for review and compaction. Unavailable reads return no memory;
 failed writes raise so the caller can retry. Logs contain IDs, counts, and outcomes,

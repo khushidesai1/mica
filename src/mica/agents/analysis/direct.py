@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -341,6 +342,7 @@ async def read_information(
     snapshots: dict[str, reference_repos.RepoSnapshot],
     *,
     max_bytes: int = 384 * 1024,
+    memory: project_memory.Snapshot | None = None,
 ) -> dict[str, Any]:
     """Read only authorized source/attachments/history; never run user code."""
     selected = list(
@@ -377,11 +379,15 @@ async def read_information(
         remaining -= sum(len(row.get("text", "").encode()) for row in result["files"])
     if decision.memory_paths:
         backend = project_memory.GitHubMemory(bridge.settings)
+        if memory is None:
+            memory = await backend.read(grant.project_id)
         result["memory"] = []
         for path in dict.fromkeys(decision.memory_paths):
             project_memory.valid_path(path)
             try:
-                data, head = await backend.read_bytes(grant.project_id, path)
+                if memory is None:
+                    raise FileNotFoundError("Project memory is unavailable.")
+                data, head = await backend.read_snapshot_bytes(memory, path)
                 kind, media = attachments.classify(Path(path).name, data[: attachments.HEAD_BYTES])
                 if thread_memory.asset(path) and kind in {"image", "pdf", "other"}:
                     if len(data) > remaining:
@@ -430,7 +436,11 @@ async def read_information(
                 text = data.decode("utf-8")
                 result["memory"].append({"path": path, "text": text, "commit": head})
                 remaining -= len(data)
-            except (ValueError, FileNotFoundError, UnicodeError):
+            except (ValueError, FileNotFoundError, UnicodeError, httpx.HTTPError) as exc:
+                logging.warning(
+                    "memory_source_unavailable event=%s kind=%s",
+                    record["event_id"], type(exc).__name__,
+                )
                 result["memory"].append({"path": path, "unavailable": True})
     if decision.history_query is not None or decision.history_event_id:
         try:
@@ -438,7 +448,7 @@ async def read_information(
                 bridge.settings.thread_memory == "github_only"
             ):
                 backend = project_memory.GitHubMemory(bridge.settings)
-                snapshot = await backend.read(grant.project_id)
+                snapshot = memory if memory is not None else await backend.read(grant.project_id)
                 if snapshot is None:
                     raise FileNotFoundError("Project history is unavailable.")
                 result["history"] = thread_memory.recall(
@@ -895,6 +905,7 @@ async def handle(
             thread_files,
             media=media,
             init=is_init,
+            memory=memory,
         )
         if is_init and (decision.route != "reply" or decision.guide is None):
             raise ValueError("Could not draft the initial brief. Please retry init in this thread.")

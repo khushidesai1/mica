@@ -520,12 +520,18 @@ class GitHubMemory:
         valid_path(path)
         async with self.connection() as client:
             snapshot = await self._read(client, pid, head_oid=head_oid)
-            if path in snapshot.files:
-                item = snapshot.files[path]
-                return item.text.encode(), snapshot.head_oid
-            asset = snapshot.assets.get(path)
-            if asset is None or asset.size > file_limit(path, self.settings):
-                raise FileNotFoundError(path)
+        return await self.read_snapshot_bytes(snapshot, path)
+
+    async def read_snapshot_bytes(self, snapshot: Snapshot, path: str) -> tuple[bytes, str]:
+        """Read from an authorized snapshot without reloading the project for each file."""
+        valid_path(path)
+        if path in snapshot.files:
+            item = snapshot.files[path]
+            return item.text.encode(), snapshot.head_oid
+        asset = snapshot.assets.get(path)
+        if asset is None or asset.size > file_limit(path, self.settings):
+            raise FileNotFoundError(path)
+        async with self.connection() as client:
             response = await client.get(
                 "https://api.github.com/repos/"
                 + self.settings.memory_repo
