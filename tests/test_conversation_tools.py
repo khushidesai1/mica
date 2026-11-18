@@ -428,7 +428,7 @@ def test_strict_schema_budget():
                     check(value)
 
     for spec in conversation.tools_for(True):
-        assert spec["strict"] is (spec["name"] != "start_worker")
+        assert spec["strict"] is (spec["name"] not in {"start_worker", "task_queue"})
         check(spec["input_schema"])
     # Budget includes the shared public-commentary and outcome-first response guidance.
     assert len(prompts.CONVERSATION) <= 2100

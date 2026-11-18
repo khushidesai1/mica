@@ -476,6 +476,119 @@
       "strict": true
     },
     {
+      "name": "task_queue",
+      "description": "Queue dependent runs, or view/cancel queues. See task_queue_guidance.",
+      "input_schema": {
+        "$defs": {
+          "Node": {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "description": "Lowercase task ID: letters, digits, underscores or hyphens; start with a letter.",
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "analysis",
+                  "transfer"
+                ],
+                "type": "string"
+              },
+              "task": {
+                "type": "string"
+              },
+              "depends_on": {
+                "items": {
+                  "description": "Lowercase task ID: letters, digits, underscores or hyphens; start with a letter.",
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "transfer": {
+                "anyOf": [
+                  {
+                    "$ref": "#/$defs/TransferRequest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "kind",
+              "task",
+              "depends_on",
+              "transfer"
+            ],
+            "type": "object"
+          },
+          "TransferRequest": {
+            "properties": {
+              "sample": {
+                "type": "string"
+              },
+              "export_root": {
+                "type": "string"
+              },
+              "as_sample": {
+                "type": "string"
+              },
+              "destination": {
+                "description": "Proposed raw-data gs:// folder inferred from project context. Prefer the parent base; a final folder ending in as_sample or sample is also accepted. The preview appends that sample folder exactly once and requires approval.",
+                "type": "string"
+              },
+              "additional_destination": {
+                "description": "Proposed additional-files gs:// parent base or final sample folder. Infer from the same project layout; it need not be repeated in the user's message.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "sample",
+              "export_root",
+              "as_sample",
+              "destination",
+              "additional_destination"
+            ],
+            "type": "object",
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "enum": [
+              "create",
+              "status",
+              "cancel"
+            ],
+            "type": "string"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/$defs/Node"
+            },
+            "type": "array"
+          },
+          "queue_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "action",
+          "tasks",
+          "queue_id"
+        ],
+        "type": "object"
+      },
+      "strict": false
+    },
+    {
       "name": "propose_command",
       "description": "Perform a supported account/project/control request. Use user-supplied selectors, recipients, channels, exact gs:// paths and durations; never invent them or force a switch. init requires an explicit new name and gs:// location. data-root changes the default location, not a brief. brief and memory only display saved content; use start_worker to edit the guide or save requested durable knowledge and verify it. repos add/remove require an explicitly supplied owner/repo; reading a repo does not authorize adding it. share/unshare changes collaborators; add-owner/remove-owner changes ownership. scripts controls returning code, not executing it. Connection commands open private connection management; never request credentials in chat. Code enforces DM, email, membership and approval policy. Resolve ordinals only against the supplied unexpired pending choices; ask one concise question if required arguments are missing. This terminal proposal never implies an administrative action has been approved.",
       "input_schema": {

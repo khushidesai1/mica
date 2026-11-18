@@ -691,9 +691,15 @@ class Transfers:
                 p, "Transfer cancelled because your personal connection was forgotten."
             )
             return
-        if time.time() > p["expires"] and not (
-            p["state"] == "submitting" and p.get("job_run") and not p.get("job_terminal")
-        ):
+        # Waiting for capacity is not an unanswered approval. Preview/login expiry remains
+        # enforced, and submit still checks access, the login version and destination markers.
+        queued = p["state"] == "prepare" or (
+            p["state"] == "submitting" and (
+                p.get("confirmed_by") == p["requested_by"]
+                or (p.get("job_run") and not p.get("job_terminal"))
+            )
+        )
+        if time.time() > p["expires"] and not queued:
             await self.release(p)
             await self.transition(p, "expired")
             await self.notify(p, "Transfer request expired. No transfer was started.")

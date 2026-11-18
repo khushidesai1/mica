@@ -546,7 +546,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             ),
         ),
         slack,
-        run_prefix=run_root(
+        run_prefix=request.get("run_prefix") or run_root(
             request["private"],
             request["principal"],
             request["project_id"],
