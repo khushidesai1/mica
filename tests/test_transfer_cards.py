@@ -185,6 +185,42 @@ async def test_approved_once_and_current_card_becomes_queued_status(transfer):
     service.schedule.assert_awaited_once()
 
 
+@pytest.mark.parametrize("state", ["prepare", "submitting"])
+async def test_capacity_wait_does_not_expire_transfer_after_two_hours(transfer, state):
+    service, p = transfer
+    p.update(state=state, expires=time.time() - 7200, confirmed_by=OWNER)
+    service.reserve = AsyncMock(return_value=False)
+    service.submit = AsyncMock()
+    await service.advance(p)
+    assert p["state"] == state
+    service.release.assert_not_awaited()
+    service.submit.assert_not_awaited()
+    service.reserve.return_value = True
+    await service.advance(p)
+    service.submit.assert_awaited_once_with(p, "inventory" if state == "prepare" else "pull")
+
+
+async def test_waiting_approval_still_expires_and_forgotten_login_cancels_queue(transfer):
+    service, p = transfer
+    p["expires"] = time.time() - 1
+    await service.advance(p)
+    assert p["state"] == "expired"
+    p.update(state="submitting", confirmed_by=OWNER)
+    service.login.return_value = {"status": "forgotten"}
+    await service.advance(p)
+    assert p["state"] == "cancelled"
+
+
+async def test_queued_confirmation_does_not_accept_a_replaced_login(transfer):
+    service, p = transfer
+    p.update(state="submitting", expires=time.time() - 7200, confirmed_by=OWNER)
+    service.reserve = AsyncMock(return_value=True)
+    service.login.return_value = {"status": "valid", "version": "replacement"}
+    with pytest.raises(ValueError, match="login changed"):
+        await service.advance(p)
+    service.bridge.test_client.create_job.assert_not_called()
+
+
 async def test_ordinary_preview_poll_upgrades_legacy_link_without_reposting(transfer):
     service, p = transfer
     p["preview_text"] = "Review transfer"

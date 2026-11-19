@@ -93,8 +93,22 @@ def check(source: Path, mode: str) -> None:
     print("THREAD_MEMORY_ORDERING_AND_COVERAGE_VERIFIED")
     assert importlib.metadata.version("anthropic") == "2.3.0"
     assert all(
-        tool["strict"] is (tool["name"] != "start_worker") for tool in conversation.tools_for(True)
+        tool["strict"] is (tool["name"] not in {"start_worker", "task_queue"})
+        for tool in conversation.tools_for(True)
     )
+    from mica.agents.analysis.task_graph import Call
+
+    task = {"id": "sample", "title": "Sample", "kind": "analysis", "task": "Analyze sample."}
+    assert Call.model_validate({"action": "create", "tasks": [task]}).tasks[0].id == "sample"
+    for invalid in [[], [task, task], [{**task, "depends_on": ["missing"]}],
+                    [{**task, "depends_on": ["sample"]}]]:
+        try:
+            Call.model_validate({"action": "create", "tasks": invalid})
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Invalid task graph accepted")
+    print("TASK_QUEUE_LOCAL_VALIDATION_VERIFIED")
     assert settings.long_run_threshold_seconds == 600
     assert settings.long_run_update_seconds == 7200
     assert settings.max_run_seconds == 604800

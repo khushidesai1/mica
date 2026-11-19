@@ -35,6 +35,13 @@ slash is optional. If nothing matches, the private notice lists the export and s
 search saw. If several match, it lists them and asks you to name one, for example
 `transfer "Slide 1" from /TMA37_05_11_2026_22_59_07_541 as TMA37`.
 
+In Slack, a request for several transfers can create a durable [task queue](task-queues.md).
+Each sample retains its own source preview, private approval and verification. You can also
+request dependent work, such as segmentation after each transfer and a report after the analyses.
+Waiting for transfer capacity does not expire an unstarted inventory or an already confirmed
+transfer. An unanswered preview still expires after 30 minutes; the controller rechecks the
+connection, project access and destination markers before submission.
+
 Mica inventories the requested sample using your connection, then privately sends a preview
 with the selected source run, file count, size and exact destinations. In Slack, review the
 approval card and choose **Approve transfer** or **Cancel transfer** directly in the conversation.

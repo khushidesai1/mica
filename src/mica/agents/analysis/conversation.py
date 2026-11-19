@@ -24,6 +24,7 @@ from . import (
     reference_repos,
     request_controls,
     surface,
+    task_graph,
     thread_history,
     tiers,
     toolkit_catalog,
@@ -99,7 +100,9 @@ def saved_decision(record: dict[str, Any]) -> dict[str, Any]:
 
 
 class Decision(DecisionFields):
-    route: Literal["reply", "compute", "transfer", "storage", "command", "access", "cloud_access"]
+    route: Literal[
+        "reply", "compute", "transfer", "storage", "command", "access", "cloud_access", "workflow"
+    ]
     command_proposal: dict[str, Any] | None = None
 
 
@@ -246,6 +249,7 @@ DESCRIPTIONS = {
         "or save a guide before proposing. The exact source/destinations need approval. "
         "Never use a compute worker or request secrets for transfers."
     ),
+    "task_queue": "Queue dependent runs, or view/cancel queues. See task_queue_guidance.",
     ("propose_command"): (
         "Perform a supported account/project/control request. Use user-supplied"
         " selectors, recipients, channels, exact gs:// paths and durations; "
@@ -274,6 +278,7 @@ MODELS: dict[str, type[BaseModel]] = {
     "read_sources": Sources,
     "start_worker": Worker,
     "propose_transfer": TransferRequest,
+    "task_queue": task_graph.Call,
     "propose_command": command_intent.Proposal,
 }
 
@@ -323,10 +328,10 @@ def tools_for(allowed: bool, settings: Settings | None = None) -> list[dict[str,
             "name": name,
             "description": DESCRIPTIONS[name],
             "input_schema": strict_schema(model),
-            # The compute schema exceeds the provider's compiled-grammar budget.
-            # Keep its schema; MODELS validation and allocation approvals still
+            # Compute and task graphs exceed the provider's compiled-grammar budget.
+            # Keep their schemas; MODELS validation and allocation approvals still
             # run locally before any worker request can be persisted or executed.
-            "strict": name != "start_worker",
+            "strict": name not in {"start_worker", "task_queue"},
         }
         for name, model in MODELS.items()
         if (allowed and name not in {"request_access", "request_cloud_access"})
@@ -499,6 +504,12 @@ async def run(
         }
     ]
     tool_specs = tools_for(grant.allowed, bridge.settings)
+    if record.get("workflow_parent"):
+        tool_specs = [t for t in tool_specs if t["name"] in {
+            "list_folders", "view_files", "read_sources", "start_worker", "project_backchannel"
+        }]
+    elif surface.is_email(record):
+        tool_specs = [t for t in tool_specs if t["name"] != "task_queue"]
     if surface.is_email(record) or not bridge.settings.access_request_owner_id:
         tool_specs = [tool for tool in tool_specs if tool["name"] != "request_access"]
     snapshots: dict[str, reference_repos.RepoSnapshot] = {}
@@ -740,6 +751,7 @@ async def run(
                     backchannel.TOOL: "Checking project coordination…",
                     "start_worker": "Preparing the requested computation…",
                     "propose_transfer": "Preparing the transfer request…",
+                    "task_queue": "Updating the task queue…",
                     "propose_gcs_operations": "Preparing file changes for approval…",
                     "propose_command": "Checking the requested operation…",
                 }[name]
@@ -879,6 +891,23 @@ async def run(
                         terminal = Decision(
                             route="transfer", reply="Transfer requested", transfer_request=value
                         )
+                    elif isinstance(value, task_graph.Call):
+                        if record.get("workflow_parent") or surface.is_email(record):
+                            raise ValueError("Create task queues from the original Slack request.")
+                        if value.action == "create":
+                            from .transfers import Transfers
+
+                            for node in value.tasks:
+                                if node.transfer:
+                                    await Transfers(bridge, storage).configuration(
+                                        current, record, node.transfer,
+                                        guide=str(data.get("project_md", "")),
+                                    )
+                            terminal = Decision(
+                                route="workflow", reply="Task queue requested", task_queue=value
+                            )
+                        else:
+                            result = await task_graph.control(bridge, record, current, value)
                     elif isinstance(value, command_intent.Proposal):
                         validate_command(
                             value, current, record,

@@ -25,6 +25,7 @@ from . import (
     project_memory,
     reference_repos,
     surface,
+    task_graph,
     thread_history,
     thread_memory,
     tiers,
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
 
 
 class DecisionFields(BaseModel):
+    task_queue: task_graph.Call | None = None
     cloud_access_request: CloudAccessProposal | None = None
     transfer_request: TransferRequest | None = None
     view_ids: list[str] = Field(default_factory=list, max_length=4)
@@ -826,6 +828,8 @@ async def handle(
             )
         model_context = {
             "request": text,
+            "task_queues": await task_graph.context(bridge, record, grant),
+            "task_queue_guidance": task_graph.GUIDANCE,
             "brief": ctx["project_md"],
             "project_md": ctx["project_md"],
             "data_path": ctx["data_path"],
@@ -987,6 +991,11 @@ async def handle(
             raise ValueError("Name the AtoMx sample to transfer.")
         reply = await transfer_service.request(current, record, event_id, decision.transfer_request)
         return await finish(bridge, event_id, record, reply)
+    if decision.route == "workflow":
+        if decision.task_queue is None:
+            raise ValueError("A task queue needs explicit tasks.")
+        await task_graph.start(bridge, record, current, decision.task_queue)
+        return True
     if decision.route == "storage":
         from . import gcs_operations
 

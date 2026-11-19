@@ -60,7 +60,7 @@ async def reconcile_cancel(bridge: BatchBridge, event_id: str, record: dict[str,
         return True
     record.update(cancel_requested=True, stop_reason="cancelled")
     record.setdefault("cancel_requested_at", time.time())
-    if not record.get("job"):
+    if not record.get("job") and record.get("route") != "workflow":
         record["status"] = "failed"
         await bridge.notify(
             event_id, record, "cancelled",

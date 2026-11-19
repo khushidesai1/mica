@@ -671,6 +671,10 @@ class BatchBridge:
             from .direct import RoutingUnavailable, finish
 
             if record.get("flexible_harness"):
+                if record.get("workflow_parent"):
+                    from . import task_graph
+
+                    await task_graph.guard_child(self, record)
                 await request_controls.reconcile_cancel(self, event_id, record)
                 if record["status"] == "failed":
                     await request_controls.sync(self, event_id, record)
@@ -701,7 +705,8 @@ class BatchBridge:
                     grant = await asyncio.to_thread(
                         access.resolve, self.app, self.settings, self.storage, record
                     )
-                    if not cmd and previous and previous["status"] not in {"complete", "failed"}:
+                    if (not cmd and previous and previous["status"] not in {"complete", "failed"}
+                            and previous.get("route") != "workflow"):
                         operation = await conversation.control(self, event_id, record, grant)
                         if operation == "cancel":
                             cmd = commands.Command("cancel")
@@ -758,6 +763,7 @@ class BatchBridge:
             elif (
                 not previous
                 or previous["status"] in {"complete", "failed"}
+                or previous.get("route") == "workflow"
                 or message_text(record["payload"]["event"].get("text", "")).lower()
                 in {"forget context", "forget all"}
                 or record.get("write_control")
@@ -926,6 +932,11 @@ class BatchBridge:
         record["terminal_recorded"] = True
 
     async def advance(self, event_id: str, record: dict[str, Any]) -> None:
+        if record.get("route") == "workflow":
+            from . import task_graph
+
+            await task_graph.advance(self, record)
+            return
         if record.get("route") == "storage":
             from . import gcs_operations
 
@@ -1282,8 +1293,11 @@ class BatchBridge:
                     record["thread_key"],
                     record["payload"]["event"].get("thread_ts") or record["payload"]["event"]["ts"],
                 )
-                if record["private"]
-                else "",
+                if record["private"] else (
+                    f"projects/{record['project_id']}/runs/"
+                    f"{record['thread_key']}/tasks/{event_id}"
+                    if record.get("workflow_parent") else ""
+                ),
             }
             from . import session_review, session_sources
 
@@ -1554,8 +1568,10 @@ class BatchBridge:
 
     async def cancel(self, event_id: str, record: dict[str, Any]) -> None:
         """Cancel earlier queued/running work without submitting a job for the command."""
+        from . import task_graph
+
         cursor = record.get("previous")
-        waiting = False
+        waiting = await task_graph.cancel_active(self, record)
         for _ in range(100):
             if not cursor:
                 break
@@ -1578,6 +1594,11 @@ class BatchBridge:
                 cursor = next_cursor
                 continue  # A delayed Stop cannot cancel work sent after the click.
             if prior.get("control_bypass"):
+                cursor = next_cursor
+                continue
+            if prior.get("route") == "workflow":
+                # Queue cancellation above is requester-scoped, unlike ordinary shared-thread
+                # compute controls. Do not let another member cancel personal transfer approvals.
                 cursor = next_cursor
                 continue
             if prior["status"] in {"complete", "failed"} and prior.get("cancelled_by") != event_id:

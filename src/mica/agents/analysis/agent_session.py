@@ -70,6 +70,7 @@ def eligible(bridge: BatchBridge, record: dict[str, Any]) -> bool:
         and bridge.app.slack_agent_backend == "claude_batch"
         and not surface.is_email(record)
         and not record.get("ambient")
+        and not record.get("workflow_parent")
         and identity.is_private(record.get("payload", {}).get("event", {}))
     )
 
@@ -144,6 +145,10 @@ async def sync(bridge: BatchBridge, event_id: str) -> None:
                 break  # Same completed predecessor boundary as the work queue.
         else:
             raise ValueError("Slack session queue exceeds the safe limit")
+        from . import task_graph
+
+        records.extend(r for r in await task_graph.session_records(bridge, trigger)
+                       if r["event_id"] not in seen)
         if not records or not eligible(bridge, records[0]):
             return
         event = records[0]["payload"]["event"]
