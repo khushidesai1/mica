@@ -37,11 +37,46 @@ async def existing_dm(client: AsyncWebClient, user: str) -> str:
     raise RuntimeError("Cannot resolve an uncertain ambient DM; operator reconciliation needed")
 
 
+def message_key(operation: str) -> str:
+    return "ambient-message:" + hashlib.sha256(operation.encode()).hexdigest()
+
+
+async def resolve_blocked_notice(bridge: BatchBridge, state: dict[str, Any]) -> bool:
+    """Edit a confirmed private block notice; recovery never sends a new message."""
+    from .ambient import person_permitted
+
+    key = message_key(state["key"] + ":blocked")
+    claim = await bridge.repository.begin_event(key, lease_seconds=60)
+    if claim.status != "claimed":
+        return False
+    try:
+        saved = await bridge.repository.get_connector_state(key) or {}
+        if saved.get("resolved") or not saved:
+            return True
+        if not saved.get("sent") or not str(saved.get("channel", "")).startswith("D"):
+            return False  # An uncertain original send must not be replaced or duplicated.
+        owner = AmbientPerson.model_validate(state["owner"])
+        if not await asyncio.to_thread(
+            person_permitted, bridge, owner, state["project"], state["team"], owner=True,
+        ):
+            return False
+        await AsyncWebClient(token=bridge.app.slack_bot_token, timeout=5).chat_update(
+            channel=saved["channel"], ts=saved["ts"],
+            text=(f"Ambient task {state['task']} for {state['sample']} recovered and started. "
+                  "See its run thread for current progress and results."),
+        )
+        saved["resolved"] = True
+        await bridge.repository.set_connector_state(key, saved)
+        return True
+    finally:
+        await bridge.repository.release_event(key, claim.token)
+
+
 async def post_once(
     bridge: BatchBridge, operation: str, channel: str, text: str, thread_ts: str = "",
     *, blocks: list[dict[str, Any]] | None = None,
 ) -> dict[str, str]:
-    key = "ambient-message:" + hashlib.sha256(operation.encode()).hexdigest()
+    key = message_key(operation)
     claim = await bridge.repository.begin_event(key, lease_seconds=60)
     if claim.status != "claimed":
         raise RuntimeError("Ambient notice delivery is busy")
@@ -235,7 +270,8 @@ async def terminal(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -
                         file,
                     )
         state.update(status="done", outcome=record["status"])
-        state.pop("ambient_due", None)
+        if not state.get("recovery_notice_pending"):
+            state.pop("ambient_due", None)
         await bridge.repository.set_connector_state(origin["key"], state)
     finally:
         await bridge.repository.release_event(mutex, claim.token)

@@ -61,6 +61,14 @@ With `enabled: true, dry_run: true`, scans only read and log decisions: no recei
 Slack messages or jobs. Disabled tasks are not scanned. Missing recipes or changed access block
 startup and are rechecked on subsequent scans. A single owner notice reports a block when that
 Slack identity can still be verified; no project detail is sent to an identity mismatch.
+Malformed dependency responses, HTTP/transport failures and unavailable identity checks remain
+retrying, with no policy-block alert. Retries retain the same reservation, event, grant and
+deadline. Successful admission clears the old startup reason. Reconciliation also clears stale
+reasons on already-accepted receipts (including finished runs) and updates a confirmed private
+blocked notice to say the run recovered. The edit rechecks owner identity and project access,
+never posts a replacement,
+and retries delivery without restarting the run. Missing recipes and actual permission or
+marker changes still block admission.
 
 The owner gets a new DM thread explicitly attributed to their configured automation. Other
 configured collaborators get a start notice and the final summary/PDF under that notice.

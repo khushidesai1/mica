@@ -11,6 +11,8 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
+import httpx
+
 from . import access, identity, project_memory, write_access
 from .ambient_config import AmbientPerson, AmbientTask, sample_name
 from .config import Settings
@@ -364,9 +366,49 @@ async def start(
         principal=task.authorized_by.email,
         ambient=origin,
     )
+    if state.pop("reason", None) is not None:
+        state["recovery_notice_pending"] = True
     state.update(status="running", ambient_due=time.time() + 300)
     await bridge.repository.set_connector_state(key, state)
     log.info("ambient_started task=%s sample=%s event=%s", task.id, sample, event_id)
+
+
+async def reconcile_startup_status(bridge: BatchBridge, state: dict[str, Any]) -> None:
+    """Repair recovered receipts without making delivery a condition of execution."""
+    from .ambient_delivery import resolve_blocked_notice
+
+    if "reason" not in state and not state.get("recovery_notice_pending"):
+        return
+    mutex = f"ambient-terminal:{state['event_id']}"
+    claim = await bridge.repository.begin_event(mutex, lease_seconds=60)
+    if claim.status != "claimed":
+        return
+    try:
+        saved = await bridge.repository.get_connector_state(state["key"]) or {}
+        if saved.get("status") not in {"running", "done"}:
+            return
+        saved = dict(saved)
+        state.clear()
+        state.update(saved)  # Re-read under the same lease as terminal delivery.
+        if state.pop("reason", None) is not None:
+            state["recovery_notice_pending"] = True
+        if not state.get("recovery_notice_pending"):
+            return
+        state["ambient_due"] = time.time() + 300
+        await bridge.repository.set_connector_state(state["key"], state)
+        try:
+            if not await resolve_blocked_notice(bridge, state):
+                return
+        except Exception as exc:
+            log.warning("ambient_recovery_notice_pending task=%s sample=%s error=%s",
+                        state["task"], state["sample"], type(exc).__name__)
+            return  # Retain the pending edit; never rerun or downgrade accepted work.
+        state.pop("recovery_notice_pending", None)
+        if state["status"] == "done":
+            state.pop("ambient_due", None)
+        await bridge.repository.set_connector_state(state["key"], state)
+    finally:
+        await bridge.repository.release_event(mutex, claim.token)
 
 
 async def _scan(bridge: BatchBridge, *, team: str = "") -> dict[str, int]:
@@ -374,7 +416,8 @@ async def _scan(bridge: BatchBridge, *, team: str = "") -> dict[str, int]:
 
     from .ambient_delivery import post_once, terminal
 
-    result = {"ambient_queued": 0, "ambient_started": 0, "ambient_blocked": 0, "ambient_dry_run": 0}
+    result = {"ambient_queued": 0, "ambient_started": 0, "ambient_blocked": 0,
+              "ambient_retrying": 0, "ambient_dry_run": 0}
     tasks = {t.id: t for t in bridge.settings.ambient_tasks if t.enabled}
     if not tasks:
         return result
@@ -393,6 +436,8 @@ async def _scan(bridge: BatchBridge, *, team: str = "") -> dict[str, int]:
                 receipt = await bridge.repository.get_connector_state(
                     f"claude-event:{state.get('event_id', '')}"
                 )
+                if receipt and state.get("status") == "running":
+                    await reconcile_startup_status(bridge, state)
                 if receipt and receipt["status"] in {"complete", "failed"}:
                     await terminal(bridge, receipt["event_id"], receipt)
                 elif state.get("status") not in {"done", "blocked", "skipped"}:
@@ -411,8 +456,21 @@ async def _scan(bridge: BatchBridge, *, team: str = "") -> dict[str, int]:
         )
         for sample in samples:
             key = f"ambient:{task.id}:{sample}"
-            if not task.dry_run and await bridge.repository.get_connector_state(key):
-                continue
+            if not task.dry_run:
+                existing = await bridge.repository.get_connector_state(key)
+                if existing:
+                    if (existing.get("status") in {"running", "done"}
+                            and existing.get("event_id")
+                            and ("reason" in existing or (
+                                existing.get("recovery_notice_pending")
+                                and existing.get("ambient_due", 0) <= now
+                            ))):
+                        receipt = await bridge.repository.get_connector_state(
+                            f"claude-event:{existing['event_id']}"
+                        )
+                        if receipt and (receipt.get("ambient") or {}).get("key") == key:
+                            await reconcile_startup_status(bridge, existing)
+                    continue
             markers = [
                 await asyncio.to_thread(bucket.marker, task.render(p, sample)) for p in task.markers
             ]
@@ -450,6 +508,10 @@ async def _scan(bridge: BatchBridge, *, team: str = "") -> dict[str, int]:
         selected_task = tasks.get(state["task"])
         if not selected_task or selected_task.dry_run or state["status"] == "running":
             continue
+        if state["status"] == "done":
+            if state.get("recovery_notice_pending"):
+                await reconcile_startup_status(bridge, state)
+            continue
         task = selected_task
         meta = metas[task.id]
         reserved = key in meta.get("active", [])
@@ -484,6 +546,17 @@ async def _scan(bridge: BatchBridge, *, team: str = "") -> dict[str, int]:
                 await bridge.repository.set_connector_state(f"ambient-task:{task.id}", meta)
             await start(bridge, task, state, team, max(0, len(pending) - 1))
             result["ambient_started"] += int(state["status"] == "running")
+        except (json.JSONDecodeError, httpx.HTTPError, identity.IdentityUnavailable) as exc:
+            state.update(
+                status="retrying",
+                reason="A startup dependency is unavailable; retrying automatically.",
+                ambient_due=now + 300,
+            )
+            await bridge.repository.set_connector_state(key, state)
+            result["ambient_retrying"] += 1
+            # Provider bodies and parser inputs can contain private data; log only the class.
+            log.warning("ambient_start_retry task=%s sample=%s error=%s",
+                        task.id, state["sample"], type(exc).__name__)
         except ValueError as exc:
             state.update(status="blocked", reason=str(exc), ambient_due=now + 300)
             await bridge.repository.set_connector_state(key, state)
