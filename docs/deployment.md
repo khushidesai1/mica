@@ -640,3 +640,19 @@ thread receipt and `memory_editor_done`; a successful HTTP response alone is ins
 Do not delete pending caches, regenerate accepted proposals, or mark incidents resolved merely
 because the new API is healthy. A `context_limit` requires a reviewed writer-budget or memory
 layout adjustment; increasing router context does not change the writer budget.
+
+### Conversation prompt caching
+
+Conversation steps use automatic prompt caching with the default five-minute lifetime, alongside
+the explicit tools/system breakpoint. Resumes append refreshed project coordination snapshots;
+they preserve earlier messages and signed thinking until compaction resets the context.
+Each completed model response logs `conversation_model_usage` with the event, call number,
+`kind=step|compaction`, input/output tokens and cache creation/read tokens. Provider rejections
+without a response have no usage record. Compaction summaries are logged but are not cached.
+
+Deploy through the API-only pipeline, preserving every worker image and runtime setting. Check
+a bounded read-only conversation for cache reads on its second call, then another request from
+the same surface within five minutes for tools/system reuse. Compare reads with the preceding
+request's total input (uncached input plus cache creation and cache read tokens). Resume and
+compaction behavior are covered offline; do not change service-wide limits to induce a yield.
+Rollback uses the prior API revision; no infrastructure, secret or worker changes are needed.

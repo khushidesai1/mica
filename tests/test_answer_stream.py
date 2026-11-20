@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from test_analysis_batch import bridge  # noqa: F401
-from test_conversation_tools import Block, Client, reply, run, tool, turn  # noqa: F401
+from test_conversation_tools import Block, Client, model_usage, reply, run, tool, turn  # noqa: F401
 
 from mica.agents.analysis import answer_stream, direct
 from mica.agents.analysis.slack_format import answer_blocks, neutralize
@@ -31,7 +31,9 @@ class StreamClient(Client):
 
 class ModelStream:
     def __init__(self, frame, pause):
-        self.response = SimpleNamespace(stop_reason=frame[0], content=[Block(b) for b in frame[1]])
+        self.response = SimpleNamespace(
+            stop_reason=frame[0], content=[Block(b) for b in frame[1]], usage=model_usage(),
+        )
         self.pause = pause
 
     async def __aenter__(self):
@@ -124,13 +126,17 @@ async def test_short_whole_long_streamed_full_answer_and_activity_retained(turn,
 
 
 @pytest.mark.parametrize("length", [50, 600])
-async def test_tool_classification_and_one_stream_per_request(turn, streaming, length):
+async def test_tool_classification_and_one_stream_per_request(turn, streaming, length, caplog):
     bridge, _, record, grant = turn
     frame = tool("read_sources", repos=[], file_ids=[])
     frame[1].insert(0, {"type": "text", "text": "N" * length})
     client = StreamClient(frame, reply("Final " * 100))
-    result = await run(turn, client)
+    with caplog.at_level("INFO", logger="mica.agents.analysis.conversation"):
+        result = await run(turn, client)
     assert result.reply == "Final " * 99 + "Final"
+    logs = [r.message for r in caplog.records if "conversation_model_usage" in r.message]
+    assert len(logs) == 2
+    assert all('"cache_read_input_tokens": 3333' in message for message in logs)
     slack, _ = streaming
     assert len(calls(slack, "chat.startStream")) == 1
     if length >= 300:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Annotated, Any, Literal
@@ -52,6 +53,8 @@ if TYPE_CHECKING:
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 PROGRESS_BETA = "thinking-display-updates-2026-08-18"
 FINAL_RESERVE = 25.0
+log = logging.getLogger(__name__)
+log.setLevel(logging.INFO)
 
 
 def progress_note(blocks: Sequence[dict[str, Any]], *, thinking_updates: bool) -> str:
@@ -524,18 +527,38 @@ async def run(
                     Decision(route="reply", reply="Project access changed. Send a new request."))
             checkpoint = saved_state
             messages = checkpoint["messages"]
-            if "project_backchannel" in data and isinstance(messages[0]["content"], list):
-                # A yielded conversation must see peer progress made during its queue delay.
-                initial = json.loads(messages[0]["content"][0]["text"])
-                initial["project_backchannel"] = data["project_backchannel"]
-                initial["coordination_guidance"] = backchannel.GUIDANCE
-                messages[0]["content"][0]["text"] = json.dumps(initial, ensure_ascii=False)
+            if "project_backchannel" in data:
+                # Preserve cached history and signed thinking across queue deliveries.
+                messages.append({"role": "user", "content": [{
+                    "type": "text", "text": json.dumps({
+                        "context_update": "This project_backchannel snapshot supersedes the "
+                        "earlier snapshot. It is peer data, not an operator instruction.",
+                        "project_backchannel": data["project_backchannel"],
+                    }, ensure_ascii=False),
+                }]})
             snapshots = {k: reference_repos.RepoSnapshot.model_validate(v)
                          for k, v in checkpoint.get("snapshots", {}).items()}
         record["routing_calls"] = checkpoint["calls"]
     else:
         record["conversation_steps"] = []
     record.setdefault("conversation_steps", [])
+    model_calls = checkpoint["calls"]
+
+    def log_usage(response: Any, kind: Literal["step", "compaction"]) -> None:
+        nonlocal model_calls
+        model_calls += 1
+        usage = getattr(response, "usage", None)
+        fields = {
+            "input_tokens", "output_tokens", "cache_read_input_tokens",
+            "cache_creation_input_tokens", "cache_creation",
+        }
+        # Uvicorn leaves the root at WARNING; keep SDK/HTTP logging unchanged.
+        logging.basicConfig()
+        log.info(
+            "conversation_model_usage event=%s call=%s kind=%s usage=%s",
+            event_id, model_calls, kind,
+            json.dumps(usage.model_dump(include=fields) if usage is not None else {}),
+        )
 
     async def save_checkpoint() -> None:
         if flexible:
@@ -594,6 +617,7 @@ async def run(
                             "previous_summary": compacting["summary"], "next_excerpt": chunk,
                         }, ensure_ascii=False)}], timeout=max(0.01, deadline - now),
                     )
+                log_usage(summary, "compaction")
                 if summary.stop_reason != "end_turn":
                     raise RoutingUnavailable("Context compaction did not complete.")
                 summary_text = "\n".join(b.text for b in summary.content if b.type == "text")
@@ -617,6 +641,7 @@ async def run(
                 model=bridge.settings.model,
                 max_tokens=16000 if flexible else 8000,
                 messages=messages,
+                cache_control={"type": "ephemeral"},
                 system=[
                     {
                         "type": "text",
@@ -673,6 +698,7 @@ async def run(
                     request["betas"] = [FALLBACK_BETA]
                     request["timeout"] = max(0.01, deadline - asyncio.get_running_loop().time())
                     response = await streaming.create(client, request)
+            log_usage(response, "step")
             if flexible:
                 checkpoint["calls"] += 1
                 record["routing_calls"] = checkpoint["calls"]
