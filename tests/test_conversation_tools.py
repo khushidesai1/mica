@@ -3,11 +3,13 @@
 
 import copy
 import json
+import logging
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from anthropic.types.beta import BetaUsage
 from test_analysis_batch import (  # noqa: F401
     CONVERSATION_CONTROL,
     CONVERSATION_RUN,
@@ -51,7 +53,18 @@ class Client:
         frame = self.frames.pop(0)
         if isinstance(frame, Exception):
             raise frame
-        return SimpleNamespace(stop_reason=frame[0], content=[Block(b) for b in frame[1]])
+        return SimpleNamespace(
+            stop_reason=frame[0], content=[Block(b) for b in frame[1]], usage=model_usage(),
+        )
+
+
+def model_usage():
+    return BetaUsage(
+        input_tokens=11, output_tokens=22, cache_read_input_tokens=3333,
+        cache_creation_input_tokens=444,
+        cache_creation={"ephemeral_5m_input_tokens": 444, "ephemeral_1h_input_tokens": 0},
+        service_tier="standard",
+    )
 
 
 def reply(text="Evidence-backed answer.", *, stop="end_turn"):
@@ -111,6 +124,15 @@ async def test_plain_reply_private_thinking_and_provider_settings(turn):
     assert record["conversation_steps"] == [] and not record["direct_decision_pending"]
     assert "private" not in json.dumps(record["direct_decision"])
     assert record["routing_budget"] <= direct.ROUTING_SECONDS
+
+
+async def test_usage_logs_with_production_root_warning_level(turn, caplog):
+    with caplog.at_level(logging.WARNING):
+        caplog.handler.setLevel(logging.INFO)
+        await run(turn, Client(reply()))
+        assert logging.getLogger().level == logging.WARNING
+    logs = [r.message for r in caplog.records if "conversation_model_usage" in r.message]
+    assert len(logs) == 1 and '"cache_read_input_tokens": 3333' in logs[0]
 
 
 async def test_conversation_catalog_includes_validated_saved_environments(turn):
@@ -666,7 +688,7 @@ def test_conversation_note_never_uses_final_or_post_tool_text():
     )
 
 
-async def test_optional_display_rejection_retries_without_reading_thinking(turn):
+async def test_optional_display_rejection_retries_without_reading_thinking(turn, caplog):
     import httpx
     from anthropic import BadRequestError
 
@@ -682,12 +704,16 @@ async def test_optional_display_rejection_retries_without_reading_thinking(turn)
     )[1]
     client = Client(error, ("tool_use", blocks), reply())
     turn[0].notify = AsyncMock()
-    await run(turn, client)
+    with caplog.at_level("INFO", logger=conversation.__name__):
+        await run(turn, client)
     assert len(client.calls) == 3
     assert client.calls[0]["thinking"]["display"] == "updates"
     assert all(call["thinking"] == {"type": "adaptive"} for call in client.calls[1:])
     assert all(call["betas"] == [conversation.FALLBACK_BETA] for call in client.calls[1:])
     assert client.calls[1]["timeout"] <= client.calls[0]["timeout"]
+    assert all(call["cache_control"] == {"type": "ephemeral"} for call in client.calls)
+    assert client.calls[0]["messages"] == client.calls[1]["messages"]
+    assert len([r for r in caplog.records if "conversation_model_usage" in r.message]) == 2
     assert "PRIVATE" not in repr(turn[0].notify.await_args_list)
 
 

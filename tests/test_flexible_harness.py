@@ -15,6 +15,7 @@ from test_gpu_compute import gpu  # noqa: F401
 
 from mica.agents.analysis import (
     approvals,
+    backchannel,
     compute_approval,
     conversation,
     conversation_state,
@@ -46,9 +47,58 @@ async def test_six_calls_yield_and_restart_with_all_evidence(flexible_turn):
     assert len(saved["messages"]) == 13
     next_client = Client(tool("list_folders", paths=["seventh/"]), reply("Finished."))
     assert (await run(flexible_turn, next_client)).reply == "Finished."
-    assert next_client.calls[0]["messages"] == saved["messages"]
+    assert next_client.calls[0]["messages"][:len(saved["messages"])] == saved["messages"]
     assert next_client.calls[0]["tools"] and record["routing_calls"] == 8
     bridge.test_client.create_job.assert_not_called()
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_cache_preserves_history_and_usage_across_resume(
+    flexible_turn, monkeypatch, caplog, enabled,
+):
+    bridge, event_id, record, _ = flexible_turn
+    bridge.settings.backchannel = enabled
+    board = Mock(side_effect=[{"sequence": 1}, {"sequence": 2}])
+    monkeypatch.setattr(backchannel, "read", board)
+    frames = [tool("list_folders", paths=[f"folder{i}/"]) for i in range(6)]
+    frames[0][1].insert(0, {"type": "thinking", "thinking": "PRIVATE", "signature": "signed"})
+    first, second = Client(*frames), Client(tool("list_folders", paths=["last/"]), reply())
+    with caplog.at_level("INFO", logger=conversation.__name__):
+        with pytest.raises(conversation_state.YieldConversation):
+            await run(flexible_turn, first)
+        saved = await conversation_state.load(bridge.store, event_id)
+        await run(flexible_turn, second)
+
+    calls = first.calls + second.calls
+    for previous, current in zip(calls, calls[1:], strict=False):
+        assert current["messages"][:len(previous["messages"])] == previous["messages"]
+    resumed = second.calls[0]["messages"]
+    assert resumed[:len(saved["messages"])] == saved["messages"]
+    assert resumed[0] == first.calls[0]["messages"][0]
+    if enabled:
+        assert board.call_count == 2 and resumed[-1]["role"] == "user"
+        update = json.loads(resumed[-1]["content"][0]["text"])
+        assert update["project_backchannel"] == {"sequence": 2}
+        assert "supersedes" in update["context_update"]
+        assert "coordination_guidance" not in update
+        assert conversation_state.evidence(resumed)[-1] == resumed[-1]
+    else:
+        board.assert_not_called()
+        assert resumed == saved["messages"]
+    for request in calls:
+        assert request["cache_control"] == {"type": "ephemeral"}
+        assert request["system"][0]["cache_control"] == {"type": "ephemeral"}
+        assert json.dumps(request).count('"cache_control"') == 2
+    logs = [r.message for r in caplog.records if "conversation_model_usage" in r.message]
+    assert len(logs) == len(calls) == record["routing_calls"]
+    for number, message in enumerate(logs, 1):
+        assert f"event={event_id} call={number} kind=step usage=" in message
+        assert json.loads(message.split("usage=", 1)[1]) == {
+            "input_tokens": 11, "output_tokens": 22, "cache_read_input_tokens": 3333,
+            "cache_creation_input_tokens": 444,
+            "cache_creation": {"ephemeral_5m_input_tokens": 444, "ephemeral_1h_input_tokens": 0},
+        }
+    assert "PRIVATE" not in "".join(logs)
 
 
 async def test_timeout_does_not_discard_evidence_or_exhaust_retry(flexible_turn):
@@ -60,7 +110,7 @@ async def test_timeout_does_not_discard_evidence_or_exhaust_retry(flexible_turn)
     assert len(saved["messages"]) == 3 and record["routing_error_kind"] == "timeout"
     second = Client(reply())
     await run(flexible_turn, second)
-    assert second.calls[0]["messages"] == saved["messages"]
+    assert second.calls[0]["messages"][:len(saved["messages"])] == saved["messages"]
     assert second.calls[0]["timeout"] > 80
 
 
@@ -72,7 +122,8 @@ async def test_output_truncation_repairs_without_executing_partial_tool(flexible
     assert (await run(flexible_turn, Client(reply("x" * 16001)))).reply == "x" * 16001
 
 
-async def test_compaction_archives_evidence_and_keeps_request(flexible_turn):
+async def test_compaction_archives_evidence_and_keeps_request(flexible_turn, caplog):
+    caplog.set_level("INFO", logger=conversation.__name__)
     bridge, event_id, record, grant = flexible_turn
     original = {"role": "user", "content": "Original authorized request"}
     saved = {
@@ -95,7 +146,39 @@ async def test_compaction_archives_evidence_and_keeps_request(flexible_turn):
     archived, _ = bridge.store.get(
         conversation_state.key(event_id).replace("state.json", "context-0.json")
     )
-    assert json.loads(archived) == saved
+    archive = json.loads(archived)
+    refreshed = archive["messages"].pop()
+    assert "project_backchannel" in refreshed["content"][0]["text"]
+    assert archive == saved
+    logs = [r.message for r in caplog.records if "conversation_model_usage" in r.message]
+    assert len(logs) == 8
+    assert all(f"call={n} kind=compaction" in msg for n, msg in enumerate(logs[:-1], 9))
+    assert "call=16 kind=step" in logs[-1]
+    assert all('"cache_read_input_tokens": 3333' in msg for msg in logs)
+    assert "cache_control" not in sdk.calls[0]
+    assert sdk.calls[1]["cache_control"] == {"type": "ephemeral"}
+
+
+async def test_resumed_backchannel_reaches_compaction(flexible_turn, monkeypatch):
+    bridge, event_id, _, grant = flexible_turn
+    bridge.settings.backchannel = True
+    monkeypatch.setattr(backchannel, "read", Mock(return_value={"sequence": 2}))
+    original = {"role": "user", "content": [{"type": "text", "text": json.dumps({
+        "request": "Original request", "project_backchannel": {"sequence": 1},
+    })}]}
+    await conversation_state.save(bridge.store, event_id, {
+        "version": 1, "access": grant.signature, "calls": 4, "compactions": 0,
+        "compacting": {"offset": 0, "summary": ""},
+        "messages": [original, {"role": "assistant", "content": "Earlier findings"}],
+    })
+    client = Client(reply("Updated findings from sequence 2."), reply())
+    await run(flexible_turn, client)
+    excerpt = json.loads(client.calls[0]["messages"][0]["content"])["next_excerpt"]
+    evidence = json.loads(excerpt)
+    update = json.loads(evidence[-1]["content"][0]["text"])
+    assert update["project_backchannel"] == {"sequence": 2}
+    assert client.calls[1]["messages"][0] == original
+    assert client.calls[1]["messages"][1]["content"] == "Updated findings from sequence 2."
 
 
 async def test_cancel_during_model_call_prevents_terminal_dispatch(flexible_turn):
