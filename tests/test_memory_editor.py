@@ -315,3 +315,73 @@ async def test_context_limit_preserves_source_without_calling_model(chat, monkey
     editor.assert_not_awaited()
     assert "reason=context_limit" in caplog.text and "PRIVATE" not in caplog.text
     assert "changes" not in json.loads(chat.store.get(key)[0])
+
+
+async def test_oversized_utf8_proposal_repairs_before_any_commit(chat, monkeypatch):
+    event, record, key = await start(chat, monkeypatch)
+    oversized = OPEN + "é" * 9000
+    assert len(oversized) < 16384 < len(oversized.encode())
+    calls = []
+
+    async def edit(_key, _model, context):
+        calls.append(context.copy())
+        assert context["file_limit_bytes"] == 16384
+        if len(calls) == 1:
+            return {**compact_edit(), "open.md": oversized}
+        assert context["editor_feedback"] == {"reason": "file_limit"}
+        return {**compact_edit(), "open.md": OPEN + "Pending request.\n"}
+
+    monkeypatch.setattr(memory_tasks, "edit", edit)
+    commit = AsyncMock(wraps=chat.memory_backend.commit)
+    monkeypatch.setattr(chat.memory_backend, "commit", commit)
+    with pytest.raises(memory_tasks.EditorError, match="file_limit"):
+        await memory_tasks.process(chat, event, chat.store)
+    commit.assert_not_awaited()
+    cached = json.loads(chat.store.get(key)[0])
+    assert "changes" not in cached and cached["editor_feedback"]["reason"] == "file_limit"
+    await memory_tasks.process(chat, event, chat.store)
+    commit.assert_awaited_once()
+    assert (await chat.repository.get_connector_state("claude-event:" + event))[
+        "memory_editor_done"
+    ]
+
+
+async def test_cached_oversized_proposal_rebases_after_partial_thread_save(chat, monkeypatch):
+    event, record, key = await start(chat, monkeypatch)
+    base = await chat.memory_backend.read(chat.pid)
+    await chat.memory_backend.commit(
+        chat.pid, base, {"open.md": OPEN}, source="editor", event_id="other-event",
+    )
+    validate = memory_tasks.validate_changes
+    monkeypatch.setattr(memory_tasks, "validate_changes", lambda *args: None)
+    monkeypatch.setattr(memory_tasks, "edit", AsyncMock(return_value={
+        **compact_edit(), "open.md": OPEN + "x" * 20000,
+    }))
+    # Reproduce the old release: thread persisted, project replacement rejected.
+    with pytest.raises(RuntimeError, match="rejected"):
+        await memory_tasks.process(chat, event, chat.store)
+    original = json.loads(chat.store.get(key)[0])
+    latest = await chat.memory_backend.read(chat.pid)
+    monkeypatch.setattr(memory_tasks, "validate_changes", validate)
+
+    async def edit(_key, _model, context):
+        assert context["files"]["open.md"] == OPEN
+        assert context["user"] == original["context"]["user"]
+        assert context["editor_feedback"] == {"reason": "file_limit"}
+        return {
+            "_thread": thread_memory.Prose(paraphrase="Different model wording").model_dump_json(),
+            "open.md": OPEN + "Original request remains pending.\n",
+        }
+
+    monkeypatch.setattr(memory_tasks, "edit", edit)
+    await memory_tasks.process(chat, event, chat.store)
+    cached = json.loads(chat.store.get(key)[0])
+    assert cached["base"]["head_oid"] == latest.head_oid
+    assert cached["thread_prose"] == original["thread_prose"]
+    saved = await chat.memory_backend.read(chat.pid)
+    assert "Original request remains pending." in saved.files["open.md"].text
+    rows = thread_memory.log_entries(
+        {p: f.text for p, f in saved.files.items()}, record["thread_key"]
+    )
+    assert [r.event_id for r in rows] == [event]
+    assert not any(p.startswith("_unmerged/") for p in saved.files)

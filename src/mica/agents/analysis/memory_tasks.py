@@ -47,6 +47,8 @@ existing_paths. Never invent a fact from the assistant's unsupported claims.
 If editor_feedback is supplied, correct that validation problem. All replacements must still
 preserve unrelated contents. An empty changes object is valid when no project fact changed;
 always provide the thread entry. Do not invent a replacement for an omitted existing file.
+Each replacement must fit file_limit_bytes in UTF-8, including its headers. Condense redundant
+wording while preserving unrelated facts and attributions; never truncate a file to fit.
 For a failed or unfinished request (success=false), edit only open.md: preserve the pending
 request and why it stopped, and store nothing else from that turn. Do not treat partial output
 or a failure notice as a verified result. A pending request is one concise line: date, speaker,
@@ -68,7 +70,7 @@ EDITOR_ATTEMPTS = 3
 EDITOR_RETRY_SECONDS = 3600
 EditorReason = Literal[
     "incomplete_output", "output_limit", "invalid_schema", "missing_thread", "unsupported_path",
-    "unseen_file", "failed_turn_path", "context_limit",
+    "unseen_file", "failed_turn_path", "context_limit", "file_limit", "invalid_file",
 ]
 
 
@@ -120,6 +122,19 @@ def editor_files(
 class Edits(BaseModel):
     thread: thread_memory.Prose | None = None
     changes: dict[str, str] = Field(default_factory=dict, max_length=4)
+
+
+def validate_changes(bridge: BatchBridge, changes: dict[str, str]) -> None:
+    """Reject invalid editor replacements before they become durable commit inputs."""
+    for path, text in changes.items():
+        if path == "_thread":
+            continue
+        if len(text.encode()) > project_memory.file_limit(path, bridge.settings):
+            raise EditorError("file_limit", (path,))
+        try:
+            project_memory.validate(path, text.encode(), bridge.settings)
+        except (ValueError, UnicodeError):
+            raise EditorError("invalid_file", (path,)) from None
 
 
 async def edit(key: str, model: str, context: dict[str, Any]) -> dict[str, str]:
@@ -233,6 +248,7 @@ async def editor_proposal(
             if context.get("success") is False else selected
         )
         context["existing_paths"] = sorted(base.files.keys() | base.invalid.keys())
+        context["file_limit_bytes"] = bridge.settings.memory_file_kb * 1024
         if cached.get("editor_feedback"):
             context["editor_feedback"] = cached["editor_feedback"]
         cached["editor_version"] = EDITOR_VERSION
@@ -242,6 +258,7 @@ async def editor_proposal(
             bridge.app.anthropic_api_key.get_secret_value(),
             bridge.settings.memory_model or bridge.settings.model, context,
         ))
+        validate_changes(bridge, changes)
     except EditorError as exc:
         cached["editor_feedback"] = {"reason": exc.reason}
         if exc.paths:
@@ -254,7 +271,10 @@ async def editor_proposal(
         raise
     prose = changes.pop("_thread", None)
     cached["changes"] = changes
-    cached["thread_prose"] = json.loads(prose) if prose else None
+    # A previous release may already have saved this event's immutable thread entry.
+    # Repair its project replacement without changing the original entry on retry.
+    if "thread_prose" not in cached:
+        cached["thread_prose"] = json.loads(prose) if prose else None
 
 
 def conversation_turn(record: dict[str, Any]) -> bool:
@@ -403,6 +423,18 @@ async def process(bridge: BatchBridge, event_id: str, storage: Storage) -> None:
                         "editor_version": EDITOR_VERSION,
                     }
                 await asyncio.to_thread(storage.put, cache_key, json.dumps(cached).encode())
+            if cached.get("source") == "editor" and "changes" in cached and "saved" not in cached:
+                # Older releases cached invalid replacements, then retried them forever.
+                # Rebase a fresh proposal; never overwrite newer memory from the old base.
+                try:
+                    validate_changes(bridge, cached["changes"])
+                except EditorError as exc:
+                    cached["editor_feedback"] = {"reason": exc.reason}
+                    cached["editor_required"] = sorted(
+                        set(cached.get("editor_required", [])) | set(exc.paths)
+                    )
+                    cached.pop("changes")
+                    await asyncio.to_thread(storage.put, cache_key, json.dumps(cached).encode())
             if "changes" not in cached:
                 stage = "editor"
                 await editor_proposal(
