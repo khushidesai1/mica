@@ -34,6 +34,7 @@ from . import (
     session_review,
     session_sources,
     surface,
+    thread_checkpoint,
     thread_history,
     thread_memory,
     write_access,
@@ -113,8 +114,11 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             response = await client.get(
                 f"{url}/api/v1/internal/slack-analysis/credentials/{event_id}",
                 headers={"Authorization": f"Bearer {token}"},
+                params={"checkpoint_protocol": 2, "attempt": attempt},
             )
-            if response.status_code != 503 or "identity verification" not in response.text:
+            if response.status_code != 503 or not any(
+                reason in response.text for reason in ("identity verification", "confirmation busy")
+            ):
                 response.raise_for_status()
                 keys = response.json()
                 break
@@ -956,6 +960,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         event_id,
         event.get("text", ""),
         agent.last_reply,
+        speaker=event.get("user", ""), seq=request.get("seq", 0),
         files=[f["name"] for f in saved.get("thread_files", []) if f["id"] in current_ids],
         outputs=[f["name"] for f in agent.delivered],
         success=agent.last_error is None,
@@ -966,7 +971,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         keep_summary=not thread_memory.github_reads(settings),
         summary=thread_history.read_summary(state[0].workdir, previous_summary),
     )
-    storage.put(pointer, json.dumps(checkpoint, default=str).encode())
+    thread_checkpoint.merge(storage, pointer, checkpoint)
     storage.put(
         f"{prefix}/attempt-a{attempt}.json",
         json.dumps(

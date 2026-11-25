@@ -10,7 +10,7 @@ from mica.storage.failures import RECOVERABLE_PROCESSING, Incident, priority
 
 RECHECK_SECONDS = 300
 MEMORY_GRACE_SECONDS = 3600
-QUIET_STATUSES = {"recovered", "processing_recovered", "saved_with_exclusions"}
+QUIET_STATUSES = {"recovered", "memory_recovered", "processing_recovered", "saved_with_exclusions"}
 TRANSIENT_PROCESSING = {"compute_control_failed", "infra_http_error"}
 COMPACTION = {"memory_compaction_retry", "memory_compaction_exhausted"}
 
@@ -55,6 +55,9 @@ def status(row: Incident, record: dict[str, Any] | None) -> str:
             return "recovered"
         return "unknown"
     result = record.get("status")
+    if (result == "failed" and causes == {"memory_editor_failed"}
+            and memory_verified(row, record) and not record["memory_receipt"].get("rejected")):
+        return "memory_recovered"
     if result not in {"complete", "failed"}:
         if (
             causes <= TRANSIENT_PROCESSING

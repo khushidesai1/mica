@@ -79,6 +79,7 @@ async def test_recovery_releases_queued_turn_after_success(chat, monkeypatch):
     monkeypatch.setattr(batch.time, "time", lambda: now[0])
     chat.decision.side_effect = [
         direct.RoutingUnavailable(),
+        conversation.Decision(route="reply", reply="Busy decision discarded"),
         conversation.Decision(route="reply", reply="Recovered"),
         conversation.Decision(route="reply", reply="Followup"),
     ]
@@ -86,12 +87,12 @@ async def test_recovery_releases_queued_turn_after_success(chat, monkeypatch):
     assert await chat.process(event, 0) == "pending"
     queued = await chat.accept(payload("2.0", "1.0", "Next question"))
     assert await chat.process(queued, 0) == "pending"
-    assert chat.decision.await_count == 1
+    assert chat.decision.await_count == 2
     now[0] = 130
     assert await chat.process(event, 1) == "complete"
     assert await chat.process(event, 1) == "complete"
     assert await chat.process(queued, 1) == "complete"
-    assert chat.decision.await_count == 3
+    assert chat.decision.await_count == 4
     chat.test_client.create_job.assert_not_called()
 
 

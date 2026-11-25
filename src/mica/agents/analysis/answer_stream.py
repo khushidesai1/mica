@@ -109,6 +109,7 @@ class AnswerStream:
     ) -> None:
         self.bridge, self.event_id, self.record, self.grant = bridge, event_id, record, grant
         self.enabled = (bridge.settings.slack_streaming and grant.allowed and not init
+                        and record.get("addressed", True) and not record.get("active_work")
                         and not surface.is_email(record) and not record.get("ambient"))
         self.client = transport(bridge)
         self.text = ""

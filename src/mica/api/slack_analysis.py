@@ -341,6 +341,20 @@ async def credentials(event_id: str, request: Request, response: Response) -> di
             claim_start, storage, event_id, record.get("attempt", 0), "start"
         ):
             raise HTTPException(403, "This GPU placement is being replaced")
+    if request.query_params.get("checkpoint_protocol") == "2":
+        # Use the same lease as process/recovery, so a later whole-record save cannot
+        # erase this handshake or apply it to a replacement attempt.
+        mutex = f"claude-poll:{event_id}"
+        claim = await bridge.repository.begin_event(mutex, lease_seconds=60)
+        if claim.status != "claimed":
+            raise HTTPException(503, "Worker confirmation busy; retry")
+        try:
+            _, _, current = await worker_context(event_id, request)
+            if request.query_params.get("attempt") == str(current.get("attempt", 0)):
+                current["checkpoint_merge_attempt"] = current.get("attempt", 0)
+                await bridge.repository.set_connector_state(f"claude-event:{event_id}", current)
+        finally:
+            await bridge.repository.release_event(mutex, claim.token)
     services: Services = request.app.state.services
     # Only the trusted worker bootstrap receives these. Never put them in GCS or job metadata.
     response.headers["Cache-Control"] = "no-store"

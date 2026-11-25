@@ -434,6 +434,7 @@ async def test_gpu_credential_endpoint_and_fallback_are_mutually_exclusive(gpu, 
         slack_analysis, "worker_context", AsyncMock(return_value=(gpu, gpu.store, record))
     )
     request = SimpleNamespace(
+        query_params={},
         app=SimpleNamespace(state=SimpleNamespace(services=SimpleNamespace(settings=gpu.app)))
     )
     assert gpu_capacity.claim_start(gpu.store, event_id, 0, first)

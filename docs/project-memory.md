@@ -79,6 +79,11 @@ the current folder when committed. Historical snapshots resolve the mapping at t
 original commit. Deploy the mapping-aware API and drain older writers before migrating
 an existing folder; do not move memory by hand without updating the index.
 
+Project snapshots resolve the project subtree at an exact commit, then read its complete Git
+tree metadata in one request. Truncated, mismatched or oversized listings are rejected; file
+contents retain their existing commit, hash, size and validation checks. This avoids deeply
+nested GraphQL metadata queries timing out as thread history grows.
+
 ## Turns and viewing memory
 
 Each eligible terminal turn has one writer: a forced-tool editor for chat, or the worker's
@@ -111,6 +116,12 @@ editor versions, and rejected inputs being repaired, refresh the project snapsho
 coverage together while preserving the original request, reply, date and speaker. Accepted
 proposals and worker proposals retain their original merge base and are never regenerated.
 This also repairs previously queued conversational saves without deleting their cached evidence.
+
+A conflict remains unresolved across retries even when its preserved copy has not changed.
+Conversational saves reconsider only the conflicting paths against current files, within the same
+three-attempt budget. Already accepted edits and the original thread entry remain intact.
+When a reviewed replacement matches the current snapshot, its conflict copy is archived with
+the update. A verified thread entry alone cannot establish that a conflicting project edit saved.
 
 Attempts are persisted before each model call, with at most three attempts per save per hour.
 Further queue retries during that window keep the save pending without another model call or
