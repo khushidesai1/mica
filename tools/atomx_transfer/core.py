@@ -127,6 +127,11 @@ def marker_path(sample: str, scope: str) -> str:
     return f"raw_outputs/{scope}/{sample}/{MARKER}"
 
 
+def completion_scopes(bucket: Bucket, sample: str) -> list[str]:
+    """Destination markers determine completion; JSON records retain transfer history."""
+    return [scope for scope in SCOPES if bucket.stat(marker_path(sample, scope)) is not None]
+
+
 def destination_objects(bucket: Bucket, sample: str) -> list[Object]:
     return [
         obj
@@ -150,6 +155,19 @@ def recorded_counts(body: dict[str, Any]) -> dict[str, Any]:
     if body.get("provenance", "transfer") != "transfer":
         raise ValueError("Unknown marker provenance")
     return scope_counts([Object(**obj) for obj in body["manifest"]], body["sample"], list(SCOPES))
+
+
+def record_matches(bucket: Bucket, body: dict[str, Any]) -> bool:
+    objects = destination_objects(bucket, body["sample"])
+    if body.get("provenance") == "backfill":
+        # A listing-only record can establish counts, never source checksums.
+        counts = recorded_counts(body)
+        return scope_counts(objects, body["sample"], list(SCOPES)) == {
+            scope: counts.get(scope, {"n_files": 0, "total_bytes": 0}) for scope in SCOPES
+        }
+    return sorted(objects, key=lambda obj: obj.name) == sorted(
+        [Object(**obj) for obj in body["manifest"]], key=lambda obj: obj.name
+    )
 
 
 def render_marker(body: dict[str, Any], scope: str, counts: dict[str, Any]) -> str:
@@ -196,8 +214,14 @@ def render_marker(body: dict[str, Any], scope: str, counts: dict[str, Any]) -> s
 def write_markers(bucket: Bucket, body: dict[str, Any], counts: dict[str, Any]) -> None:
     for scope in counts:
         path = marker_path(body["sample"], scope)
-        if bucket.stat(path) is None:
-            bucket.copy(path, iter([render_marker(body, scope, counts).encode()]))
+        data = render_marker(body, scope, counts).encode()
+        existing = bucket.stat(path)
+        if existing is None:
+            bucket.copy(path, iter([data]))
+        elif existing != Object(
+            path, len(data), base64.b64encode(google_crc32c.Checksum(data).digest()).decode()
+        ):
+            raise Busy("Destination done.txt differs from completion record")
 
 
 def backfill(bucket: Bucket, request: dict[str, Any]) -> dict[str, Any]:
@@ -227,6 +251,9 @@ def backfill(bucket: Bucket, request: dict[str, Any]) -> dict[str, Any]:
             counts = recorded_counts(done[0])
             if all(bucket.stat(marker_path(sample, scope)) for scope in counts):
                 summary["skipped"].append({"sample": sample, "reason": "complete"})
+                continue
+            if not record_matches(bucket, done[0]):
+                summary["skipped"].append({"sample": sample, "reason": "destination_changed"})
                 continue
         elif any(bucket.stat(marker_path(sample, scope)) for scope in scopes):
             summary["skipped"].append({"sample": sample, "reason": "text_without_record"})
@@ -264,6 +291,9 @@ def backfill(bucket: Bucket, request: dict[str, Any]) -> dict[str, Any]:
                 summary["skipped"].append({"sample": sample, "reason": "unfinished_transfer"})
                 continue
             if done:
+                if not record_matches(bucket, done[0]):
+                    summary["skipped"].append({"sample": sample, "reason": "destination_changed"})
+                    continue
                 # Older immutable records may predate resolved destinations. Only the repaired
                 # text uses this operator-supplied layout; the JSON record stays untouched.
                 body = dict(done[0])
@@ -410,7 +440,7 @@ class Transfer:
         self.beat(force=True)
 
     def run(self) -> dict[str, Any]:
-        if self.bucket.read(self.prefix + ".done.json"):
+        if completion_scopes(self.bucket, self.sample):
             raise Busy("Sample already has a done marker; verify it instead")
         prior = self.bucket.read(self.prefix + ".in_progress.json")
         if prior and age(prior[0]["heartbeat"]) <= 3600:
@@ -419,11 +449,12 @@ class Transfer:
             self.prefix + ".in_progress.json", self.marker, prior[1] if prior else None
         )
         # Recheck after claiming to close the race with a preceding transfer's completion.
-        if self.bucket.read(self.prefix + ".done.json"):
+        if completion_scopes(self.bucket, self.sample):
             self.bucket.delete(self.prefix + ".in_progress.json", self.generation)
             raise Busy("Sample already has a done marker; verify it instead")
         step = "sftp_listing"
         try:
+            previous = self.bucket.read(self.prefix + ".done.json")
             run, files = plan(
                 self.remote,
                 self.request["export_root"],
@@ -501,7 +532,11 @@ class Transfer:
                 "source": {"n_files": len(files), "total_bytes": sum(f.size for f in files)},
             }
             step = "markers"
-            self.bucket.write(self.prefix + ".done.json", done, None)
+            if completion_scopes(self.bucket, self.sample):
+                raise Busy("Destination done.txt appeared during transfer")
+            if previous:
+                done["previous_completion"] = {"generation": previous[1], "record": previous[0]}
+            self.bucket.write(self.prefix + ".done.json", done, previous[1] if previous else None)
             write_markers(self.bucket, done, recorded_counts(done))
             self.bucket.delete(self.prefix + ".in_progress.json", self.generation)
             failed = self.bucket.read(self.prefix + ".failed.json")
@@ -601,10 +636,14 @@ def inventory(remote: Remote, bucket: Bucket, request: dict[str, Any]) -> dict[s
                 if marker:
                     status = suffix
                     if suffix == "done":
-                        if marker[0].get("provenance") == "backfill":
+                        if not completion_scopes(bucket, target):
+                            status = "completion_record_only"
+                        elif marker[0].get("provenance") == "backfill":
                             status = "done_backfilled"
                         elif marker[0].get("plan_fingerprint") != fingerprint(run, files):
                             status = "changed_since_done"
+            if status in {"on_atomx_only", "failed"} and completion_scopes(bucket, target):
+                status = "done_text_only"
             entries.append(
                 {
                     **entry,
@@ -616,11 +655,19 @@ def inventory(remote: Remote, bucket: Bucket, request: dict[str, Any]) -> dict[s
                 }
             )
     targets = {e["as_sample"] for e in entries}
-    for obj in bucket.list("transfer_status/"):
-        if not obj.name.endswith(".done.json"):
+    bucket_samples = {
+        folder.removeprefix(f"raw_outputs/{scope}/").removesuffix("/")
+        for scope in SCOPES for folder in bucket.folders(f"raw_outputs/{scope}/")
+    }
+    for sample in sorted(bucket_samples - targets):
+        try:
+            sample_name(sample)
+        except ValueError:
+            continue  # Unrelated folders need not follow the transfer sample naming rules.
+        if not completion_scopes(bucket, sample):
             continue
-        marker = bucket.read(obj.name)
-        if marker and marker[0]["sample"] not in targets:
+        marker = bucket.read(f"transfer_status/{sample}.done.json")
+        if marker:
             body = marker[0]
             entries.append(
                 {
@@ -636,6 +683,10 @@ def inventory(remote: Remote, bucket: Bucket, request: dict[str, Any]) -> dict[s
                     "matched": False,
                 }
             )
+        else:
+            entries.append({
+                "sample": sample, "as_sample": sample, "status": "done_text_only", "matched": False,
+            })
     return {
         "version": 1,
         "generated_at": now(),
