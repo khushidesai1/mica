@@ -101,6 +101,9 @@ async def test_router_cannot_select_a_repo_outside_available_catalog(bridge, mon
 async def test_repos_lists_shared_catalog_without_owner_setup(bridge):  # noqa: F811
     await catalog_repo(bridge)
     eid = await bridge.accept(payload(text="repos"))
+    from analysis_helpers import save_command
+    await save_command(bridge, eid, command_intent.Proposal(
+        operation="repos", selector="this project"))
     assert await bridge.process(eid, 0) == "complete"
     assert "azizilab/nympheas" in bridge.test_slack.chat_update.call_args.kwargs["text"]
     assert "khushidesai1/nympheas-temp" in bridge.test_slack.chat_update.call_args.kwargs["text"]
@@ -394,17 +397,19 @@ def test_natural_repo_command_requires_exact_user_referent(bridge):  # noqa: F81
     assert command_intent.command(
         prop, grant, source_text="add azizilab/code to this project"
     ) == commands.Command("repos add", (bridge.pid, "azizilab/code"))
-    assert commands.parse("repos add azizilab/code") == commands.Command(
-        "repos add", ("", "azizilab/code")
-    )
+
 
 
 async def test_exact_mutation_requires_owner_slack_confirmation(bridge, monkeypatch):  # noqa: F811
     monkeypatch.setattr(command_approval, "AsyncWebClient", lambda **kwargs: bridge.test_slack)
+    from analysis_helpers import save_command
+
     eid = await bridge.accept(payload(text="repos add azizilab/code"))
+    await save_command(bridge, eid, command_intent.Proposal(
+        operation="repos add", selector="this project", target="azizilab/code"))
     assert await bridge.process(eid, 0) == "complete"
     record = await bridge.repository.get_connector_state("claude-event:" + eid)
-    assert "Confirm repos add" in record["notice_text"]
+    assert "Add azizilab/code" in record["notice_text"]
     assert "Project members" in record["notice_text"]
     assert not Registry(bridge.store).load().projects[bridge.pid].reference_repos
     bridge.test_client.create_job.assert_not_called()

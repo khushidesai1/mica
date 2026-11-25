@@ -53,22 +53,18 @@ def test_settings_default_override_cas_and_old_retry(tmp_path, monkeypatch):
     assert not user_settings.effective(store, "b@lab.org")
 
 
-@pytest.mark.parametrize(
-    "value, expected", [("scripts", ()), ("SCRIPTS ON", ("on",)), ("<@U1> scripts off", ("off",))]
-)
-def test_command_parser(value, expected):
-    assert commands.parse(value) == commands.Command("scripts", expected)
-    with pytest.raises(ValueError):
-        commands.parse("scripts maybe")
-
-
 async def test_commands_apply_to_sender_without_starting_worker(bridge):
-    for ts, text in [("2.0", "scripts on"), ("3.0", "scripts"), ("4.0", "scripts off")]:
-        eid = await bridge.accept(payload(ts, text=text))
-        assert await bridge.process(eid, 0) == "complete"
-    assert bridge.test_client.create_job.call_count == 0
+    from mica.agents.analysis import access, command_intent
+
+    for ts, args in [("2.0", ("on",)), ("3.0", ()), ("4.0", ("off",))]:
+        eid = await bridge.accept(payload(ts, text="My script preference"))
+        record = await bridge.repository.get_connector_state("claude-event:" + eid)
+        grant = access.resolve(bridge.app, bridge.settings, bridge.store, record)
+        result = await command_intent.execute(bridge, eid, record, bridge.store,
+                                              commands.Command("scripts", args), grant)
+        assert result["source"] == "your setting"
+    bridge.test_client.create_job.assert_not_called()
     assert not user_settings.effective(bridge.store, "alice@example.com")
-    assert "your setting" in str(bridge.test_slack.chat_update.call_args_list)
 
 
 async def test_request_freezes_on_across_retry(bridge):

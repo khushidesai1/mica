@@ -41,7 +41,6 @@ from . import (
 from .attachments import AttachmentError
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
-from .data_links import init_args
 from .identity import IdentityUnavailable
 from .slack_format import answer_blocks, chunks, neutralize, status_blocks
 from .storage import GCSStorage, Storage
@@ -462,10 +461,6 @@ class BatchBridge:
                 sorted(b.name for b in storage.Client().list_buckets(project=settings.data_project))
             )
         allowed = settings.csv("data_buckets")
-        event = record["payload"]["event"]
-        args = init_args(event.get("text", ""))
-        if uri is None and args:
-            uri = args[1]
         if uri is None:
             store = GCSStorage(self.app.gcs_bucket)
             try:
@@ -566,8 +561,6 @@ class BatchBridge:
                     "created": time.time(),
                     "flexible_harness": self.settings.flexible_harness,
                     "backchannel_enabled": self.settings.backchannel,
-                    "write_control": surface_name == "slack"
-                    and write_access.is_command(event.get("text", "")),
                 }
                 if ambient is not None:
                     if surface_name != "slack" or not principal:
@@ -588,7 +581,7 @@ class BatchBridge:
                         receipt["amendable"] = receipt["previous"]
                 # Write controls bypass running work without replacing its queue tail.
                 # A subsequent analysis must still wait for that active computation.
-                if not receipt["write_control"]:
+                if not receipt.get("write_control"):
                     await self.repository.set_connector_state(
                         tail_key, {"tail": event_id, "receipt": receipt}
                     )
@@ -701,7 +694,9 @@ class BatchBridge:
             cmd = commands.Command("cancel") if record.get("cancel_control") else None
             if record["status"] == "pending" and record.get("route") != "compute":
                 try:
-                    cmd = commands.parse(record["payload"]["event"].get("text", ""))
+                    cmd = (commands.Command("cancel") if commands.cancel_message(
+                        record["payload"]["event"].get("text", "")
+                    ) else None)
                     grant = await asyncio.to_thread(
                         access.resolve, self.app, self.settings, self.storage, record
                     )
@@ -742,8 +737,6 @@ class BatchBridge:
                     await self.notify(event_id, record, "failed", str(exc).splitlines()[0][:250])
                     await self.repository.set_connector_state(key, record)
                     return "failed"
-            from .data_links import message_text
-
             if cmd and cmd.name == "cancel":
                 record["cancel_control"] = True
                 grant = await asyncio.to_thread(
@@ -764,9 +757,6 @@ class BatchBridge:
                 not previous
                 or previous["status"] in {"complete", "failed"}
                 or previous.get("route") == "workflow"
-                or message_text(record["payload"]["event"].get("text", "")).lower()
-                in {"forget context", "forget all"}
-                or record.get("write_control")
                 or record.get("control_bypass")
             ):
                 await self.advance(event_id, record)

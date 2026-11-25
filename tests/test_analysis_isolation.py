@@ -10,6 +10,7 @@ from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
 from mica.agents.analysis import conversation, direct
+from mica.agents.analysis.commands import Command
 from mica.api import slack_analysis
 
 
@@ -66,11 +67,18 @@ async def test_reused_name_never_inherits_other_users_brief(chat, monkeypatch):
 
     chat.decision.side_effect = decide
     chat.github.seed({f"projects/{chat.pid}/PROJECT.md": "ALICE-SECRET"})
-    for body in [
-        payload(text="init brain gs://lab-data/brain/ --force"),
-        payload("2.0", text="init liver gs://lab-data/bob/", channel="D2", user="U2"),
+    from analysis_helpers import save_command
+
+    from mica.agents.analysis.command_intent import Proposal
+
+    for body, proposal in [
+        (payload(text="Create brain at gs://lab-data/brain/"),
+         Proposal(operation="init", selector="brain", scope="gs://lab-data/brain/")),
+        (payload("2.0", text="Create liver at gs://lab-data/bob/", channel="D2", user="U2"),
+         Proposal(operation="init", selector="liver", scope="gs://lab-data/bob/")),
     ]:
         response = await slack_analysis.receive(services(chat), body)
+        await save_command(chat, response["event_id"], proposal)
         await chat.process(response["event_id"], 0)
     assert "ALICE-SECRET" not in str(chat.decision.call_args)
 
@@ -86,55 +94,99 @@ async def test_disabled_dm_is_threaded_and_deduplicated(bridge, user, allowed):
 
 
 async def message(chat, text, ts, *, user="U1", channel="D1", thread=None):
+    cmd = text if isinstance(text, Command) else None
     body = payload(
         ts,
         thread,
-        text,
+        " ".join((cmd.name, *cmd.args)) if cmd else text,
         channel,
         user=user,
         kind="message" if channel.startswith("D") else "app_mention",
         channel_type="im" if channel.startswith("D") else "channel",
     )
     response = await slack_analysis.receive(services(chat), body)
-    await chat.process(response["event_id"], 0)
-    return await chat.repository.get_connector_state("claude-event:" + response["event_id"])
+    event_id = response["event_id"]
+    if cmd is None:
+        await chat.process(event_id, 0)
+    else:
+        # Handler tests invoke explicit operations; intake/real model-loop tests are separate.
+        from dataclasses import asdict
+
+        from mica.agents.analysis import access, command_approval, command_intent, commands
+
+        record = await chat.repository.get_connector_state("claude-event:" + event_id)
+        if record.get("status") == "complete":
+            return record
+        grant = access.resolve(chat.app, chat.settings, chat.store, record)
+        saved = record.get("handler_command")
+        if saved:
+            cmd = Command(saved["name"], tuple(saved["args"]), saved["force"])
+        try:
+            if cmd.name == "init":
+                proposal = command_intent.Proposal(
+                    operation="init", selector=cmd.args[0], scope=cmd.args[1]
+                )
+                record.update(conversation_steps=[], decision_access=grant.signature,
+                    direct_decision=conversation.Decision(
+                        route="command", reply="Create project",
+                        command_proposal=proposal.model_dump(),
+                    ).model_dump())
+                await chat.repository.set_connector_state("claude-event:" + event_id, record)
+                await chat.process(event_id, 0)
+                return await chat.repository.get_connector_state("claude-event:" + event_id)
+            if commands.spec(cmd.name).approval:
+                if not saved:
+                    pid = grant.doc.find(cmd.args[0], grant.email)
+                    cmd = Command(cmd.name, (pid, *cmd.args[1:]), cmd.force)
+                command_approval.authorize(chat, chat.store, cmd, grant, record)
+                record["command_expected_project"] = grant.doc.projects[cmd.args[0]].model_dump()
+            record["handler_command"] = asdict(cmd)
+            if cmd.name == "write revoke":
+                record["control_bypass"] = True
+            await direct.dispatch_command(chat, event_id, record, chat.store, cmd, grant)
+        except ValueError as exc:
+            record["status"] = "failed"
+            await chat.notify(event_id, record, "failed", str(exc))
+        finally:
+            if cmd.name != "init":
+                await chat.repository.set_connector_state("claude-event:" + event_id, record)
+    return await chat.repository.get_connector_state("claude-event:" + event_id)
+
 
 
 @pytest.mark.parametrize("command", ["brief", "save brief", "change the brief", "cancel"])
 async def test_nonmember_channel_commands_never_read_or_compute(chat, command):
-    await message(chat, "publish liver <#C1>", "10.0")
-    await message(chat, "use liver", "11.0", channel="C1")
+    await message(chat, Command('publish', ('liver', '<#C1>',)), "10.0")
+    await message(chat, Command('use', ('liver',)), "11.0", channel="C1")
     await message(chat, "Describe project", "12.0", channel="C1")
     calls = chat.decision.await_count
     result = await message(chat, command, "13.0", user="U2", channel="C1", thread="12.0")
-    assert (
-        "remembers and tidies" if command == "save brief" else "share liver bob@example.com"
-    ) in result["notice_text"]
+    assert "give bob@example.com access" in result["notice_text"]
     assert "Species" not in result["notice_text"]
-    assert chat.decision.await_count == calls + (command == "change the brief")
+    assert chat.decision.await_count == calls + (command != "cancel")
     chat.test_client.delete_job.assert_not_called()
 
 
 async def test_share_use_unshare_and_natural_language_commands(chat):
-    await message(chat, "share liver <@U2>", "10.0")
-    await message(chat, "use liver", "11.0", user="U2", channel="D2")
+    await message(chat, Command('share', ('liver', '<@U2>',)), "10.0")
+    await message(chat, Command('use', ('liver',)), "11.0", user="U2", channel="D2")
     await message(chat, "use log scale", "12.0", user="U2", channel="D2")
     assert chat.decision.call_args.args[5]["request"] == "use log scale"
-    await message(chat, "unshare liver <mailto:bob@example.com|bob@example.com>", "13.0")
+    await message(chat, Command('unshare', ('liver', 'bob@example.com')), "13.0")
     calls = chat.decision.await_count
-    result = await message(chat, "brief", "14.0", user="U2", channel="D2", thread="12.0")
+    result = await message(chat, Command('brief'), "14.0", user="U2", channel="D2", thread="12.0")
     assert "private project" in result["notice_text"]
     assert chat.decision.await_count == calls
 
 
 async def test_channel_publication_is_explicit_and_revocable(chat):
-    result = await message(chat, "use liver", "10.0", channel="C1")
-    assert "publish" in result["notice_text"]
-    await message(chat, "publish liver <#C1>", "11.0")
-    await message(chat, "use liver", "12.0", channel="C1")
+    result = await message(chat, Command('use', ('liver',)), "10.0", channel="C1")
+    assert "authorize" in result["notice_text"]
+    await message(chat, Command('publish', ('liver', '<#C1>',)), "11.0")
+    await message(chat, Command('use', ('liver',)), "12.0", channel="C1")
     await message(chat, "Describe project", "13.0", channel="C1")
     calls = chat.decision.await_count
-    await message(chat, "unpublish liver <#C1>", "14.0")
+    await message(chat, Command('unpublish', ('liver', '<#C1>',)), "14.0")
     result = await message(chat, "Describe project", "15.0", channel="C1", thread="13.0")
     assert "unpublished" in result["notice_text"]
     assert chat.decision.await_count == calls + 1
@@ -148,8 +200,8 @@ async def test_worker_grant_rechecks_membership_and_protocol(chat):
     from mica.agents.analysis.config import CHECKPOINT_PREFIX
     from mica.agents.analysis.registry import Registry
 
-    await message(chat, "share liver <@U2>", "10.0")
-    await message(chat, "use liver", "11.0", user="U2", channel="D2")
+    await message(chat, Command('share', ('liver', '<@U2>',)), "10.0")
+    await message(chat, Command('use', ('liver',)), "11.0", user="U2", channel="D2")
     chat.decision.return_value = conversation.Decision(route="compute", reply="Compute.")
     body = payload("12.0", text="plot", user="U2", channel="D2")
     event_id = (await slack_analysis.receive(services(chat), body))["event_id"]
@@ -172,14 +224,14 @@ async def test_worker_grant_rechecks_membership_and_protocol(chat):
 
 
 async def test_queued_compute_denied_after_unshare(chat):
-    await message(chat, "share liver <@U2>", "10.0")
-    await message(chat, "use liver", "11.0", user="U2", channel="D2")
+    await message(chat, Command('share', ('liver', '<@U2>',)), "10.0")
+    await message(chat, Command('use', ('liver',)), "11.0", user="U2", channel="D2")
     chat.settings.max_concurrent_runs = 1
     await chat.repository.begin_event("claude-slot:0", lease_seconds=10800)
     chat.decision.return_value = conversation.Decision(route="compute", reply="Compute.")
     body = payload("12.0", text="plot", user="U2", channel="D2")
     event_id = (await slack_analysis.receive(services(chat), body))["event_id"]
     assert await chat.process(event_id, 0) == "pending"
-    await message(chat, "unshare liver <@U2>", "13.0")
+    await message(chat, Command('unshare', ('liver', '<@U2>',)), "13.0")
     assert await chat.process(event_id, 1) == "failed"
     chat.test_client.create_job.assert_not_called()

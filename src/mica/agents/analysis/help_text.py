@@ -1,106 +1,27 @@
-"""Short project controls shared by onboarding and chat commands."""
+"""Capability reference fetched on demand, never a canned conversation reply."""
 
-PROJECT_HELP = (
-    "Projects: `init <name> gs://bucket/folder/` to create & select · `switch` to list · "
-    "`switch <name or ID>` to select · `rename <name or ID> <new-name>` in DM.\n"
-    "Switching applies to new threads; existing threads keep their project."
-)
+CAPABILITIES = """Mica helps you explore datasets, inspect code, run analyses, create plots and
+reports, and remember project methods and decisions. Describe the outcome you want in ordinary
+language. Ask to see your projects, select one, or create one with a name and an exact gs:// data
+folder. New messages use your selected project; an established thread keeps its original project
+and workspace. To work in another project, select it and start a new message outside that thread.
 
-WRITE_HELP = (
-    "GCS writes (DM): `write grant <project> gs://bucket/folder/ [duration]` · "
-    "`write status <project>` · `write revoke <project>`.\n"
-    "Use `30m`, `1h`, or `7d`; omit duration for no expiry (until revoked). "
-    "Grants allow new files and confirmed overwrites within approved folders "
-    "in that project's linked bucket. "
-    "You must belong to the project. Only designated write admins can grant or revoke; "
-    "project members can check status."
-)
+Ask about the project guide, saved knowledge, previous work or reference repositories. Tell Mica
+what needs correcting. Project knowledge is shared with project members, even when learned in a
+private conversation. Ask for files or folders you want delivered, and whether to include scripts.
 
-WRITE_DETAILS = (
-    "Example: `write grant liver gs://bucket/liver/outputs/` lasts until revoked; "
-    "add `1h` to expire after an hour.\n"
-    "Each project has one destination; a new grant replaces it. Grants apply to future runs. "
-    "After granting, ask Mica to save the desired results to that GCS folder. "
-    "Confirm overwrites before each run; other files stay unchanged. "
-    "Revoking blocks further uploads; "
-    "an upload already completing may finish."
-)
+Owners manage collaborators, co-owners, project names, data locations and channel publication.
+Ask in your private Slack conversation; changes need a confirmation button. Publishing allows the
+channel audience to see project replies. Binding a channel sets its project for new threads and
+needs confirmation and ownership of both the old and new projects.
 
-COMMAND_HELP = """You can use ordinary language in Slack or email: "What projects can I access?",
-"Use my-project", "Create project my-project at gs://bucket/folder/", "Show the project guide",
-"Include the scripts", or "Stop this analysis". Project creation needs an explicit data URI.
-Access changes require a private Slack confirmation; email offers that handoff.
-Exact commands still work:
+Designated write administrators approve a project’s destination folder and duration. Ask about
+write access or request a grant or revocation in private Slack. Existing-file replacements, moves
+and deletions need separate confirmation. Compute needing approval also waits for your button.
+Email can discuss and analyze projects, but access changes and writes require Slack.
 
-*Projects*
-• `init <name> gs://bucket/folder/` — Create and select a project (DM).
-• `switch` — List your projects (alias: `projects`).
-• `switch <name or ID>` — Select a project for new threads (alias: `use`).
-• `rename <name or ID> <new-name>` — Rename your project (owner, DM).
-• `data-root <project> gs://bucket/folder/` — Change its default data location (owner, Slack DM,
-confirmation required). You can also say "Set this project's default data folder to gs://bucket/folder/".
-Email requests for this setting direct you to private Slack.
-Existing threads keep their project. In channels, add `--force` to replace a selection.
-
-*Sharing — owner, DM*
-• `share <project> @user-or-email` — Give someone project access.
-Email recipients need no Slack account or channel publication; they email from the shared address
-and ask to list/select the project. This does not send an invitation email.
-• `unshare <project> @user` — Remove someone's project access.
-• `owners <project>` — List its owners (private Slack or email).
-• `add-owner <project> @user-or-email` — Add a co-owner, keeping existing owners.
-• `remove-owner <project> @user-or-email` — Remove a co-owner role, keeping collaborator access.
-Owner changes require private Slack confirmation. You can say "Make @Josh a co-owner of this
-project". Co-owners manage project settings and access; the original owner cannot be removed.
-• `publish <project> #channel` — Allow replies visible to that channel.
-• `unpublish <project> #channel` — Stop replies in that channel.
-
-*Project guide and tasks*
-• `brief` — Show the current shared project guide.
-Guide corrections save automatically when you describe them in ordinary chat.
-• `cancel` — Stop queued or running computation.
-When offered in Slack, “Add this to it” adds context to your running task; ignoring the buttons
-keeps your message as a separate follow-up. Email always queues follow-ups.
-
-*Reference repositories*
-Ask “add azizilab/my-repo as a reference for this project” or use
-`repos`, `repos add azizilab/my-repo [project]`, `repos remove azizilab/my-repo [project]`.
-Owners confirm changes in private Slack; project members can read the selected code.
-
-*Script attachments*
-• `scripts` — Show your setting (off by default).
-• `scripts on` / `scripts off` — Attach changed code snapshots, or stop (DM or channel).
-
-*Project memory*
-• `memory` — Show the project index and current work.
-• `memory <file>` — Read an entry, such as `memory conventions.md`.
-• `brief` — Show `PROJECT.md`.
-Mica remembers and tidies project memory automatically. Tell it corrections in plain language.
-Anything said about a project, in a DM or a channel, may be remembered for everyone using that
-project, and repository readers can see it.
-
-*GCS writes — DM*
-• `write grant <project> gs://bucket/folder/ [duration]` — Allow writing files.
-• `write status <project>` — Show the destination and expiry.
-• `write revoke <project>` — Stop future uploads.
-Use `30m`, `1h`, or `7d`; omit duration for no expiry (until revoked).
-New files need no extra confirmation. Confirm overwrites before each run; no separate grant.
-You must belong to the project. Use approved folders in that project's linked bucket.
-Only designated write admins can grant or revoke. Grants apply to future runs.
-
-*AtoMx transfers — personal connections*
-• `transfer <sample> [as <name>] [from <export_root>]` — Preview, then Confirm or Cancel.
-• `transfers` — Show markers and the last published source inventory.
-• `cancel transfer <sample>` — Stop an active transfer.
-• `connect atomx` — Get a private link to enter your existing SFTP login.
-• `atomx login status` — Show your personal connection status.
-• `replace atomx login` / `forget atomx login` — Manage your connection through the private form.
-Enter credentials only through the login button's form, never in chat.
-
-*Help*
-• `help` — Show this command list.
-• `help write` — Show write-access examples and saving instructions."""
-
-COMMAND_HELP += (
-    "\n• `import session` — upload a Claude Code session in an enabled project’s Slack DM."
-)
+Ask to preview a data transfer, list transfers or stop one. Manage personal data connections with
+the private login form; never paste credentials into chat. Ask to import a Claude Code session
+into project memory from your Slack DM. Say stop to cancel work; natural follow-ups can also
+request cancellation. Mica can describe these capabilities without a selected project.
+"""

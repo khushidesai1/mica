@@ -1,21 +1,24 @@
 """Command responses fit Slack and retain their authorized failure context."""
 
 # ruff: noqa: F811
+
 import json
 from unittest.mock import AsyncMock
 
 import pytest
-from analysis_helpers import seed_project
+from analysis_helpers import save_command, seed_project
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
 from mica.agents.analysis import access, conversation, direct, observability
-from mica.agents.analysis.help_text import COMMAND_HELP
+from mica.agents.analysis.command_intent import Proposal
+from mica.agents.analysis.help_text import CAPABILITIES
 from mica.agents.analysis.registry import Registry
 from mica.agents.analysis.slack_format import chunks, neutralize
 
 
 async def test_help_is_split_without_truncation_or_a_worker(chat):
+    chat.decision.return_value = conversation.Decision(route="reply", reply=CAPABILITIES)
     event_id = await chat.accept(payload(text="help"))
     record = await chat.repository.get_connector_state("claude-event:" + event_id)
     record["notice_ts"] = "9.0"
@@ -25,10 +28,10 @@ async def test_help_is_split_without_truncation_or_a_worker(chat):
     delivered = [chat.test_slack.chat_update.call_args.kwargs["text"]] + [
         call.kwargs["text"] for call in chat.test_slack.chat_postMessage.call_args_list
     ]
-    assert delivered == [neutralize(part) for part in chunks(COMMAND_HELP)]
+    assert delivered == [neutralize(part) for part in chunks(CAPABILITIES)]
     assert all(len(part) <= 3500 for part in delivered)
     record = await chat.repository.get_connector_state("claude-event:" + event_id)
-    assert record["notice_text"] == COMMAND_HELP
+    assert record["notice_text"] == CAPABILITIES
     assert record["failure_project_id"] == chat.pid
     assert record["failure_project_name"] == "liver"
     chat.test_client.create_job.assert_not_called()
@@ -104,7 +107,7 @@ async def test_command_delivery_failure_has_active_project_without_changing_repl
     assert observation.project_name == "liver"
     record = await chat.repository.get_connector_state("claude-event:" + event_id)
     assert record["failure_project_id"] == chat.pid
-    assert "project_id" not in record  # Account help does not become a project turn.
+    assert record["project_id"] == chat.pid  # Model context is resolved before its reply.
 
 
 async def test_failure_context_prefers_thread_project_over_new_default(chat):
@@ -177,6 +180,7 @@ async def test_explicit_command_target_overrides_active_project(chat, command):
         access.checkpoint_key(record["thread_key"]),
         json.dumps({"context": {"project_slug": chat.pid}}).encode(),
     )
+    record = await save_command(chat, event_id, Proposal(operation=command, selector="other"))
     # Legacy/direct retries may already carry execution context. The command's
     # explicit authorized target must win in incident metadata without rerouting it.
     record.update(project_id=chat.pid, project_name="liver")

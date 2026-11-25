@@ -133,7 +133,7 @@ async def test_natural_creation_in_bound_conversation_requires_new_conversation(
     )
     before = Registry(mail.store).load()
     classify_creation(monkeypatch)
-    with pytest.raises(ValueError, match="[Nn]ew (thread|conversation)"):
+    with pytest.raises(ValueError, match="[Nn]ew (thread|conversation|message)"):
         await direct.handle(mail, eid, record, mail.store)
     assert Registry(mail.store).load() == before
     conversation.run.assert_awaited_once()

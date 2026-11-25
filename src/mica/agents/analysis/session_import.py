@@ -16,7 +16,6 @@ from . import (
     ambient,
     approvals,
     attachments,
-    commands,
     job_lifecycle,
     project_memory,
     session_render,
@@ -183,11 +182,12 @@ async def start(
     event_id: str,
     record: dict[str, Any],
     grant: access.Grant,
+    *, request: str = "", use_attachment: bool = False,
 ) -> str:
     if surface.is_email(record):
-        return "Session imports work only in Slack. Send `import session` in your DM with Mica."
+        return "Ask me to import the session in your private Slack conversation."
     if not grant.private:
-        return "Session imports start from a DM. Send `import session` in your DM with Mica."
+        return "Ask me to import the session in your private Slack conversation."
     if not grant.allowed:
         return access.deny_text(grant)
     if not enabled(bridge, grant.project_id):
@@ -197,11 +197,12 @@ async def start(
         state = await bridge.repository.get_connector_state(key(identifier))
         if not state:
             event = record["payload"]["event"]
-            files = event.get("files") or []
-            if files and (
+            files = (event.get("files") or []) if use_attachment else []
+            if use_attachment and (
+                not files or
                 len(files) != 1 or not str(files[0].get("name", "")).lower().endswith(".jsonl")
             ):
-                raise ValueError("Attach one .jsonl session file")
+                files = []
             state = {
                 "id": identifier,
                 "project": grant.project_id,
@@ -212,11 +213,7 @@ async def start(
                 "thread_ts": event.get("thread_ts") or event["ts"],
                 "status": "received" if files else "awaiting_upload",
                 "highlights": {},
-                "request": (
-                    event.get("text", "")[:3000]
-                    if files and not commands.parse(event.get("text", ""))
-                    else ""
-                ),
+                "request": request,
                 "file": files[0] if files else None,
                 "created": time.time(),
                 "anchor": session_render.START,

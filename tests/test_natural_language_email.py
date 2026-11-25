@@ -133,7 +133,8 @@ async def test_private_account_list_is_not_sent_to_current_project_collaborator(
     assert len(sent_messages(mail)) == 1
 
 
-async def test_typed_project_list_has_same_sender_only_audience(mail):
+async def test_typed_project_list_has_same_sender_only_audience(mail, monkeypatch):
+    projects_intent(monkeypatch)
     eid, record = await email_record(mail)
     record["payload"]["_email"]["recipients"] = [SENDER, "bob@example.com"]
     Registry(mail.store).update(

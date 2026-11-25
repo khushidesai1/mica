@@ -17,7 +17,6 @@ from test_analysis_batch import bridge, payload  # noqa: F401
 from mica.agents.analysis import (
     access,
     ambient_delivery,
-    commands,
     job_lifecycle,
     memory_checks,
     memory_tasks,
@@ -337,7 +336,12 @@ def importer(background, monkeypatch):
 
 async def open_import(importer):
     incoming = payload(text="import session")
+    from analysis_helpers import save_command
+
+    from mica.agents.analysis.command_intent import Proposal
+
     event = await importer.accept(incoming)
+    await save_command(importer, event, Proposal(operation="import session"))
     await importer.process(event, 0)
     identifier = hashlib.sha256(("session-import:" + event).encode()).hexdigest()[:32]
     return await importer.repository.get_connector_state(session_import.key(identifier))
@@ -371,7 +375,6 @@ def action(state, verb="open"):
 async def test_command_modal_ack_does_not_download_and_duplicate_submit_is_noop(
     importer, monkeypatch
 ):
-    assert commands.parse("import session").name == "import session"
     state = await open_import(importer)
     assert state["status"] == "awaiting_upload"
     bg = BackgroundTasks()
@@ -437,7 +440,7 @@ async def test_import_gates_surface_project_and_actor(importer, global_imports):
     with pytest.raises(PermissionError):
         await session_import.handle(importer, importer.store, wrong, BackgroundTasks())
     record["surface"] = "email"
-    assert "only in Slack" in await session_import.start(importer, "a" * 32, record, grant)
+    assert "private Slack" in await session_import.start(importer, "a" * 32, record, grant)
 
 
 async def test_global_import_still_rechecks_project_access(importer):
@@ -616,10 +619,16 @@ async def test_attachment_intake_rechecks_access_and_bounds_size(importer, tmp_p
     incoming = payload(text="import session")
     incoming["event"]["files"] = [{"id": "F1", "name": "upload.jsonl"}]
     event = await importer.accept(incoming)
+    from analysis_helpers import save_command
+
+    from mica.agents.analysis.command_intent import Proposal
+    await save_command(importer, event, Proposal(
+        operation="import session", request="Compare the results", use_attachment=True))
     assert await importer.process(event, 0) == "complete"
     identifier = hashlib.sha256(("session-import:" + event).encode()).hexdigest()[:32]
     state = await importer.repository.get_connector_state(session_import.key(identifier))
     assert state["status"] == "received"
+    assert state["request"] == "Compare the results"
     importer.settings.session_import_projects = ""
     with pytest.raises(PermissionError, match="enabled"):
         await session_import.intake(importer, state)
@@ -778,3 +787,29 @@ async def test_import_partial_memory_save_finishes_and_receipt_repairs_projectio
     await memory_tasks.enqueue(importer, event, saved)
     repaired = await importer.repository.get_connector_state("claude-event:" + event)
     assert repaired["memory_editor_done"] and repaired["import_review"]["paths"][path] == "saved"
+
+
+@pytest.mark.parametrize('requested, files', [
+    (False, [{'id': 'F1', 'name': 'upload.jsonl'}]),
+    (True, [{'id': 'F1', 'name': 'picture.png'}]),
+    (True, [{'id': 'F1', 'name': 'one.jsonl'}, {'id': 'F2', 'name': 'two.jsonl'}]),
+])
+async def test_unselected_or_unrelated_attachment_opens_form(
+    importer, monkeypatch, requested, files,
+):
+    from mica.agents.analysis import attachments
+
+    incoming = payload(text='Import a session and compare the results')
+    incoming['event']['files'] = files
+    event = await importer.accept(incoming)
+    saved = await importer.repository.get_connector_state('claude-event:' + event)
+    grant = access.resolve(importer.app, importer.settings, importer.store, saved)
+    ingest = Mock(side_effect=AssertionError('Unselected attachment was consumed'))
+    monkeypatch.setattr(attachments, 'ingest', ingest)
+    await session_import.start(importer, event, saved, grant,
+                               request='Compare the results', use_attachment=requested)
+    identifier = hashlib.sha256(('session-import:' + event).encode()).hexdigest()[:32]
+    state = await importer.repository.get_connector_state(session_import.key(identifier))
+    assert state['status'] == 'awaiting_upload' and state['file'] is None
+    assert state['request'] == 'Compare the results'
+    ingest.assert_not_called()

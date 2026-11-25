@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -10,7 +11,9 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from . import access, commands
+from . import access, commands, project_memory, reference_repos, surface, write_access
+from .registry import Registry
+from .storage import Storage
 
 if TYPE_CHECKING:
     from .batch import BatchBridge
@@ -28,6 +31,10 @@ Operation = Literal[
     "transfers",
     "atomx login status",
     "connect atomx",
+    "cancel transfer",
+    "forget atomx login",
+    "replace atomx login",
+    "bind channel",
     "share",
     "unshare",
     "add-owner",
@@ -49,12 +56,20 @@ Operation = Literal[
 class Proposal(BaseModel):
     model_config = ConfigDict(extra="forbid")
     operation: Operation
-    selector: str = Field(default="", max_length=200)
-    target: str = Field(default="", max_length=320)
-    scope: str = Field(default="", max_length=2048)
+    selector: str = Field(default="", max_length=200,
+                         description="Project name/ID or 'this project'; init uses the new name.")
+    target: str = Field(default="", max_length=320,
+                       description="Recipient, channel, repository or new name for rename.")
+    scope: str = Field(default="", max_length=2048,
+                      description="Exact gs:// location for init, data-root or write grant.")
     duration: str = Field(default="", max_length=40)
     path: str = Field(default="", max_length=200)
     preference: Literal["", "on", "off"] = ""
+    request: str = Field(default="", max_length=3000,
+                        description="For import session, what to do after importing.")
+    use_attachment: bool = Field(
+        default=False, description="Import the explicitly selected single .jsonl attachment.",
+    )
 
 
 def visibility(grant: access.Grant) -> str:
@@ -170,10 +185,19 @@ def command(
         exact_uris = {value for token in supplied for value in (token, token.rstrip(".,;)]"))}
         if not proposal.scope.startswith("gs://") or proposal.scope not in exact_uris:
             raise ValueError("Please supply the exact gs:// data location for the new project.")
-        parsed = commands.parse(f"init {proposal.selector} {proposal.scope}")
-        if parsed is None or parsed.force:
-            raise ValueError("Please supply a project name and an explicit gs:// data location.")
-        return parsed
+        from .data_links import data_uri
+
+        if not re.fullmatch(r"[a-z0-9-]{3,40}", proposal.selector):
+            raise ValueError("Choose a name of 3–40 lowercase letters, numbers or hyphens.")
+        return commands.Command(op, (proposal.selector, data_uri(proposal.scope)))
+    if op == "import session":
+        return commands.Command(op, (proposal.request, "attachment" if proposal.use_attachment
+                                     else "form"))
+    if op == "cancel transfer":
+        from .transfer_config import TransferRequest
+
+        sample = TransferRequest(sample=proposal.target or proposal.selector).sample
+        return commands.Command(op, (sample,))
     if op == "projects":
         return commands.Command(op, (proposal.selector,) if proposal.selector else ())
     if op == "memory" and proposal.path:
@@ -226,7 +250,109 @@ def command(
     target = proposal.target.strip()
     if not target:
         raise ValueError("Please include the exact recipient, channel, or new project name.")
-    parsed = commands.parse(f"{op} {pid} {target}")
-    if parsed is None or parsed.name != op:
-        raise ValueError("Please specify an email address, Slack ID, or valid project name.")
-    return parsed
+    if commands.spec(op).recipient and not re.fullmatch(
+        r"<@[A-Z0-9]+(?:\|[^>]+)?>|<mailto:[^>]+>|[^\s@]+@[^\s@]+", target
+    ):
+        raise ValueError("Please give the person's email address or Slack mention.")
+    if commands.spec(op).channel:
+        match = re.fullmatch(r"<#([CG][A-Z0-9]+)(?:\|[^>]+)?>|([CG][A-Z0-9]+)", target)
+        if not match:
+            raise ValueError("Which Slack channel should I use? Please mention it.")
+        target = match[1] or match[2]
+    if op == "rename" and not re.fullmatch(r"[a-z0-9-]{3,40}", target):
+        raise ValueError("Choose a name of 3–40 lowercase letters, numbers or hyphens.")
+    return commands.Command(op, (pid, target))
+
+
+def terminal(cmd: commands.Command, grant: access.Grant, record: dict[str, Any]) -> bool:
+    policy = commands.spec(cmd.name)
+    return (policy.approval or policy.exact_approval or policy.handoff
+            or (cmd.name == "use" and not record.get("project_reentry")
+                and access.unused_context(grant.state, record["event_id"])))
+
+
+def operation_key(event_id: str, cmd: commands.Command) -> str:
+    canonical = json.dumps([cmd.name, cmd.args], separators=(",", ":"), ensure_ascii=False)
+    return event_id + ":" + hashlib.sha256(canonical.encode()).hexdigest()
+
+
+async def execute(
+    bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage,
+    cmd: commands.Command, grant: access.Grant,
+) -> dict[str, Any]:
+    """Run a validated in-turn operation, retaining stable receipts across model replays."""
+    policy = commands.spec(cmd.name)
+    if policy.approval or policy.exact_approval or policy.handoff:
+        raise ValueError("This operation needs its confirmation or private handoff.")
+    if policy.sender_reply:
+        private_reply(record, grant)
+    mutation = policy.mutating and (cmd.name != "scripts" or bool(cmd.args))
+    key = operation_key(event_id, cmd)
+    operations = record.setdefault("operations", {})
+    if mutation:
+        receipt = operations.get(key)
+        if receipt and receipt["status"] == "done":
+            return dict(receipt["result"])
+        operations[key] = {"operation": cmd.name, "args": list(cmd.args), "status": "started"}
+        await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+    result: dict[str, Any]
+    if cmd.name in {"brief", "memory"}:
+        if not grant.allowed:
+            raise ValueError(access.deny_text(grant))
+        snapshot = await project_memory.GitHubMemory(bridge.settings).read(
+            grant.project_id, event_id=event_id
+        )
+        if snapshot is None:
+            raise ValueError("Project memory is unavailable.")
+        paths = ["PROJECT.md"] if cmd.name == "brief" else list(cmd.args) or ["INDEX.md", "open.md"]
+        for path in paths:
+            project_memory.valid_path(path)
+        result = {"project": grant.project_id, "entries": [
+            {"path": path, "text": snapshot.files[path].text}
+            for path in paths if path in snapshot.files
+        ], "paths": sorted(snapshot.files)}
+    elif cmd.name == "transfers":
+        from .transfers import Transfers
+
+        if not grant.allowed:
+            raise ValueError(access.deny_text(grant))
+        result = await Transfers(bridge, storage).context(grant.project_id, grant.email)
+    elif cmd.name == "atomx login status":
+        from .transfers import Transfers
+
+        value = await Transfers(bridge, storage).connections.status(grant.email)
+        # Do not pass connection secrets or private management links through the model.
+        result = {"status": value.get("status") or "not connected"}
+    elif cmd.name == "write status":
+        pid = grant.doc.find(cmd.args[0], grant.email)
+        active = await asyncio.to_thread(write_access.active, storage, pid, bridge.settings)
+        result = {"project": pid, "active": active is not None,
+                  "destination": active.uri if active else None,
+                  "expires_at": active.expires_at.isoformat()
+                  if active and active.expires_at else None}
+    else:
+        if cmd.name == "repos":
+            record["shared_reference_repos"] = sorted(
+                await reference_repos.shared_repos(bridge.repository, bridge.settings)
+            )
+        output = await asyncio.to_thread(
+            commands.run, cmd, grant, Registry(storage), bridge.app, record,
+            key if mutation else event_id, bridge.settings,
+        )
+        if not isinstance(output, dict):
+            raise ValueError("This operation is not available inside the conversation.")
+        result = output
+    if cmd.name == "projects":
+        await remember_projects(bridge, record, grant, cmd)
+    if mutation:
+        operations[key].update(status="done", result=result)
+        await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+    if cmd.name == "use" and grant.private and not surface.is_email(record):
+        from . import project_picker
+
+        event = record["payload"]["event"]
+        await project_picker.used(bridge, record["payload"]["team_id"], event["user"], cmd.args[0])
+        await project_picker.refresh(
+            bridge, record["payload"]["team_id"], event["user"], event["channel"]
+        )
+    return result

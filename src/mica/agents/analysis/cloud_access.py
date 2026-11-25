@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import json
 import re
 import secrets
 import time
@@ -19,6 +18,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 from mica.connectors.gmail_client import request_text
 
 from . import approvals, channel_access, email_delivery, iam_grants, identity, lab, surface
+from .access import detach_thread as detach_thread
 from .cloud_access_config import CloudAccessBundle, CloudAccessProposal
 from .storage import Storage
 
@@ -42,28 +42,6 @@ def scope_reply(record: dict[str, Any]) -> None:
         record.pop(field, None)
 
 
-async def detach_thread(storage: Storage, record: dict[str, Any], event_id: str) -> None:
-    """Unbind only a new, unused context created while routing this access request."""
-    from .access import checkpoint_key
-
-    path = checkpoint_key(record["thread_key"])
-    try:
-        raw, generation = await asyncio.to_thread(storage.get, path)
-    except FileNotFoundError:
-        return
-    state = json.loads(raw)
-    if (
-        state.get("conversation_origin_event") != event_id
-        or state.get("messages")
-        or state.get("turn")
-    ):
-        return  # Preserve an existing analysis conversation, including its binding.
-    for field in (
-        "context", "conversation_origin_event", "thread_memory_origin", "thread_memory_exempt",
-        "is_init", "turn", "messages",
-    ):
-        state.pop(field, None)
-    await asyncio.to_thread(storage.put_if, path, json.dumps(state).encode(), generation)
 
 
 class FormError(ValueError):

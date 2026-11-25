@@ -7,15 +7,16 @@ from test_analysis_batch import bridge  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
 from mica.agents.analysis import conversation, direct, memory_workspace, project_memory
+from mica.agents.analysis.commands import Command
 from mica.agents.analysis.config import Settings
 
 
-async def test_init_saves_guide_and_legacy_commands_explain_autosave(chat, monkeypatch):
+async def test_init_saves_guide_and_old_memory_phrases_reach_model(chat, monkeypatch):
     monkeypatch.setattr(direct, "inventory", lambda *args, **kwargs: {"entries": []})
     chat.decision.return_value = conversation.Decision(
         route="reply", reply="Ready.", guide="# New guide"
     )
-    await message(chat, "init new gs://lab-data/new/ --force", "1.0")
+    await message(chat, Command('init', ('new', 'gs://lab-data/new/',), force=True), "1.0")
     from mica.agents.analysis.registry import Registry
 
     pid = Registry(chat.store).load().bound("T1", "D1")
@@ -27,8 +28,8 @@ async def test_init_saves_guide_and_legacy_commands_explain_autosave(chat, monke
     count = chat.decision.await_count
     for i, cmd in enumerate(("save brief", "clean brief", "remember hi", "knowledge"), 2):
         result = await message(chat, cmd, f"{i}.0", thread="1.0")
-        assert "remembers and tidies project memory itself" in result["notice_text"]
-    assert chat.decision.await_count == count
+        assert result["notice_text"] == "Ready."
+    assert chat.decision.await_count == count + 4
 
 
 def test_pending_worker_guide_keeps_original_head_on_recovery(tmp_path):

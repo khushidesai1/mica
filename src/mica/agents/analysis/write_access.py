@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 from pydantic import AwareDatetime, BaseModel, Field
 
 from .config import Settings
-from .data_links import data_uri, message_text
+from .data_links import data_uri
 from .registry import Registry, RegistryDoc, project_key
 from .storage import Conflict, Storage, update_model
 
@@ -23,23 +23,10 @@ if TYPE_CHECKING:
     from .access import Grant
     from .commands import Command
 
-USAGE = (
-    "In your DM: write grant <project> gs://bucket/folder/ [duration], "
-    "write status <project>, or write revoke <project>. "
-    "Use 30m, 1h, or 7d; omit duration for no expiry (until revoked)."
-)
 
 
 def now() -> datetime:
     return datetime.now(UTC)
-
-
-def is_command(text: str) -> bool:
-    return message_text(text).lower().split()[:2] in [
-        ["write", "grant"],
-        ["write", "status"],
-        ["write", "revoke"],
-    ]
 
 
 class WriteGrant(BaseModel):
@@ -111,7 +98,7 @@ def scope(raw: str) -> str:
 def duration(raw: str) -> timedelta:
     match = re.fullmatch(r"([1-9][0-9]{0,5})([mhd])", raw.lower())
     if not match:
-        raise ValueError(USAGE)
+        raise ValueError("How long should access last? Specify minutes, hours or days.")
     seconds = int(match[1]) * {"m": 60, "h": 3600, "d": 86400}[match[2]]
     if seconds > 365 * 86400:
         raise ValueError("Use a duration up to 365d, or omit it for access until revoked.")
@@ -234,7 +221,7 @@ def command(
         raise ValueError("Only designated write-access administrators can grant or revoke writes.")
     timestamp = event["ts"]
     if not re.fullmatch(r"[0-9]+\.[0-9]+", timestamp):
-        raise ValueError("Invalid command timestamp.")
+        raise ValueError("Invalid request timestamp.")
     uri = scope(cmd.args[1]) if cmd.name == "write grant" else ""
     if uri:
         validate_scope(uri, settings)
@@ -269,7 +256,7 @@ def command(
                 raise ValueError("This write-access command ID was already used.")
             return
         if Decimal(timestamp) <= Decimal(state.last_timestamp):
-            raise ValueError("A newer write-access command already applied. Send a new command.")
+            raise ValueError("A newer write-access command already applied. Please ask again.")
         state.grant = (
             WriteGrant(
                 id=hashlib.sha256(event_id.encode()).hexdigest()[:32],

@@ -7,9 +7,11 @@ import pytest
 from fastapi import HTTPException, Response
 from starlette.requests import Request
 from test_analysis_batch import bridge, payload  # noqa: F401
+from test_analysis_isolation import message
 from test_analysis_slack import bot, event, send  # noqa: F401
 
 from mica.agents.analysis import write_access, write_broker, write_worker
+from mica.agents.analysis.commands import Command
 from mica.agents.analysis.runner import Context, TurnResult
 from mica.agents.analysis.storage import LocalStorage
 from mica.api import slack_analysis
@@ -24,14 +26,13 @@ def writable(bridge):  # noqa: F811
 
 
 async def allow(agent, ts="2.0", thread=None):
-    event_id = await agent.accept(
-        payload(ts, thread, "write grant liver gs://lab-data/liver/output/")
-    )
-    assert await agent.process(event_id, 0) == "complete"
+    record = await message(agent, Command("write grant", ("liver", "gs://lab-data/liver/output/")),
+                           ts, thread=thread)
+    assert record["status"] == "complete"
     return write_access.active(agent.store, agent.pid, agent.settings)
 
 
-async def test_commands_do_not_use_a_model_or_worker_and_revoke_bypasses_queue(writable):
+async def test_write_handlers_and_broker_revocation_preserve_the_queue(writable):
     grant = await allow(writable)
     assert grant.expires_at is None
     writable.test_client.create_job.assert_not_called()
@@ -41,8 +42,8 @@ async def test_commands_do_not_use_a_model_or_worker_and_revoke_bypasses_queue(w
         writable.store.get(f"tasks/slack-analysis/events/{compute}/request.json")[0]
     )
     assert manifest["write_grant"]["id"] == grant.id
-    revoke = await writable.accept(payload("4.0", "3.0", "write revoke liver"))
-    assert await writable.process(revoke, 0) == "complete"
+    record = await message(writable, Command("write revoke", ("liver",)), "4.0", thread="3.0")
+    assert record["status"] == "complete"
     assert write_access.active(writable.store, writable.pid, writable.settings) is None
     queued = await writable.accept(payload("5.0", "3.0", "Make another plot"))
     assert await writable.process(queued, 0) == "pending"
@@ -56,10 +57,8 @@ async def test_command_in_thread_targets_explicit_project_without_rebinding(writ
     await writable.process(compute, 0)
     # A later selection changes the user's default but cannot move this pinned thread.
     other = seed_project(writable.store, name="other", channel="D2")
-    command = await writable.accept(
-        payload("2.0", "1.0", f"write grant {other} gs://lab-data/liver/output/")
-    )
-    await writable.process(command, 0)
+    await message(writable, Command("write grant", (other, "gs://lab-data/liver/output/")),
+                  "2.0", thread="1.0")
     assert write_access.active(writable.store, other, writable.settings)
     assert write_access.active(writable.store, writable.pid, writable.settings) is None
     record = await writable.repository.get_connector_state("claude-event:" + compute)
@@ -109,8 +108,7 @@ async def test_broker_endpoint_checks_worker_event_and_current_grant(writable, m
         await slack_analysis.write_output(compute, body, request, Response())
     assert error.value.status_code == 403
     verify.return_value["email"] = writable.app.batch_service_account
-    revoke = await writable.accept(payload("4.0", "3.0", "write revoke liver"))
-    await writable.process(revoke, 0)
+    await message(writable, Command("write revoke", ("liver",)), "4.0", thread="3.0")
     denied = await slack_analysis.write_output(compute, body, request, Response())
     assert denied["results"][0]["status"] == "denied"
 

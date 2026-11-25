@@ -12,6 +12,7 @@ from google.api_core.exceptions import NotFound, PreconditionFailed
 from test_analysis_write_access import STAMP, grants, run  # noqa: F401
 
 from mica.agents.analysis import write_access, write_approval, write_broker
+from mica.agents.analysis.commands import Command
 
 
 class Blob:
@@ -63,7 +64,7 @@ class Blob:
 @pytest.fixture
 def transfer(grants, monkeypatch):  # noqa: F811
     store, pid, settings = grants
-    run(grants, "write grant liver gs://lab-data/liver/output/")
+    run(grants, Command('write grant', ('liver', 'gs://lab-data/liver/output/',)))
     event = "a" * 32
     grant = write_access.active(store, pid, settings)
     source = Blob(write_broker.staged_key(event, "nested/result.csv"), b"some-result-data")
@@ -172,9 +173,10 @@ def test_rechecks_authority_between_rewrite_iterations(transfer, change):
 
     def update():
         if change == "revoke":
-            run(transfer.grants, "write revoke liver", ts=STAMP + 1)
+            run(transfer.grants, Command('write revoke', ('liver',)), ts=STAMP + 1)
         elif change == "replace":
-            run(transfer.grants, "write grant liver gs://lab-data/liver/output/new/", ts=STAMP + 1)
+            run(transfer.grants,
+                Command('write grant', ('liver', 'gs://lab-data/liver/output/new/')), ts=STAMP + 1)
         elif change == "expire":
             state = write_access.load(transfer.store, transfer.pid)
             state.grant.expires_at = write_access.now()
@@ -190,7 +192,7 @@ def test_rechecks_authority_between_rewrite_iterations(transfer, change):
 
 
 def test_rejected_before_credentials_are_minted(transfer):
-    run(transfer.grants, "write revoke liver", ts=STAMP + 1)
+    run(transfer.grants, Command('write revoke', ('liver',)), ts=STAMP + 1)
     with pytest.raises(PermissionError):
         transfer.upload()
     transfer.factory.assert_not_called()

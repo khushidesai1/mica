@@ -39,6 +39,14 @@ async def save(storage: Storage, event_id: str, value: dict[str, Any]) -> None:
     await asyncio.to_thread(storage.put, key(event_id), json.dumps(value).encode())
 
 
+async def discard(storage: Storage, event_id: str) -> None:
+    try:
+        _, generation = await asyncio.to_thread(storage.get, key(event_id))
+    except FileNotFoundError:
+        return
+    await asyncio.to_thread(storage.delete_if, key(event_id), generation)
+
+
 async def archive(storage: Storage, event_id: str, value: dict[str, Any]) -> None:
     path = key(event_id).removesuffix("state.json") + f"context-{value['compactions']}.json"
     await asyncio.to_thread(storage.put, path, json.dumps(value).encode())

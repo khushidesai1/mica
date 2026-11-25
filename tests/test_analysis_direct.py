@@ -51,7 +51,7 @@ async def test_direct_edits_save_and_followups_never_create_workers(chat, monkey
         event = await chat.accept(payload(f"{i}.0", "1.0", command))
         assert await chat.process(event, 0) == "complete"
     assert "human" in (await chat.memory_backend.read(chat.pid)).files["PROJECT.md"].text
-    assert chat.decision.await_count == 1
+    assert chat.decision.await_count == 4
     chat.test_client.create_job.assert_not_called()
     assert not any(k.startswith("claude-slot") for k in chat.repository.event_claims)
 
@@ -90,11 +90,19 @@ async def test_direct_init_and_invalid_bucket(chat, monkeypatch):
     monkeypatch.setattr(
         direct, "inventory", lambda *a, **kw: {"entries": [], "content_inspected": False}
     )
-    init = await chat.accept(payload(text="init liver gs://lab-data/liver/"))
+    from analysis_helpers import save_command
+
+    from mica.agents.analysis.command_intent import Proposal
+
+    init = await chat.accept(payload(text="Create liver at gs://lab-data/liver/"))
+    await save_command(chat, init, Proposal(operation="init", selector="liver",
+                                            scope="gs://lab-data/liver/"))
     assert await chat.process(init, 0) == "complete"
     assert "init_inventory" in chat.decision.call_args.args[5]
     chat.test_client.create_job.assert_not_called()
-    bad = await chat.accept(payload("2.0", text="init other gs://outside-project/"))
+    bad = await chat.accept(payload("2.0", text="Create other at gs://outside-project/"))
+    await save_command(chat, bad, Proposal(operation="init", selector="other",
+                                           scope="gs://outside-project/"))
     assert await chat.process(bad, 0) == "failed"
     assert chat.decision.await_count == 1
     chat.test_client.create_job.assert_not_called()
@@ -147,13 +155,18 @@ async def test_cancel_bypasses_queue_and_releases_slot_only_after_job_ends(chat)
     assert not any(k.startswith("claude-slot") for k in chat.repository.event_claims)
 
 
-async def test_read_only_brief_ignores_attachment_without_download(chat):
+async def test_brief_handler_does_not_download_attachments(chat):
     body = payload(text="brief")
     body["event"]["files"] = [
         {"name": "PROJECT.md", "url_private_download": "https://evil.example/x"}
     ]
     event = await chat.accept(body)
-    assert await chat.process(event, 0) == "complete"
+    from mica.agents.analysis import access, commands
+
+    record = await chat.repository.get_connector_state("claude-event:" + event)
+    grant = access.resolve(chat.app, chat.settings, chat.store, record)
+    assert await direct.dispatch_command(chat, event, record, chat.store,
+                                         commands.Command("brief"), grant)
     chat.decision.assert_not_awaited()
     chat.test_client.create_job.assert_not_called()
 
@@ -276,10 +289,11 @@ async def test_denied_user_files_never_downloaded(chat, upload_http):
 
 
 @pytest.mark.parametrize("command", ["init new gs://lab-data/new/", "save brief", "brief"])
-async def test_attachment_command_rejections(chat, upload_http, command):
+async def test_command_shaped_text_with_attachments_reaches_model(chat, upload_http, command):
     event = await attachment_message(chat, [attached()], command)
-    assert await chat.process(event, 0) == ("failed" if command.startswith("init") else "complete")
-    assert not upload_http
+    assert await chat.process(event, 0) == "complete"
+    assert len(upload_http) == 1
+    assert chat.decision.call_args.args[5]["request"] == command
     chat.test_client.create_job.assert_not_called()
 
 
@@ -288,8 +302,8 @@ async def test_brief_is_read_only_even_with_uploaded_guide(chat, upload_http):
     event = await attachment_message(chat, [attached("PROJECT.md")], "brief")
     assert await chat.process(event, 0) == "complete"
     assert await chat.memory_backend.read(chat.pid) == before
-    assert not upload_http
-    chat.decision.assert_not_awaited()
+    assert len(upload_http) == 1
+    chat.decision.assert_awaited_once()
 
 
 @pytest.mark.parametrize("queued_retry", [False, True])

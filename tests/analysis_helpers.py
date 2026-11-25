@@ -73,3 +73,16 @@ def memory_edits(changes=None):
         paraphrase="Reviewed the analysis and next steps.",
         summary="Discussed the analysis and its outstanding work.",
     ).model_dump_json()}
+
+
+async def save_command(bridge, event_id, proposal):
+    """Seed a validated terminal proposal for focused handler/rolling-retry tests."""
+    from mica.agents.analysis import access, conversation
+
+    record = await bridge.repository.get_connector_state("claude-event:" + event_id)
+    grant = access.resolve(bridge.app, bridge.settings, bridge.store, record)
+    record.update(conversation_steps=[], decision_access=grant.signature,
+        direct_decision=conversation.Decision(route="command", reply="Operation requested",
+                                             command_proposal=proposal.model_dump()).model_dump())
+    await bridge.repository.set_connector_state("claude-event:" + event_id, record)
+    return record

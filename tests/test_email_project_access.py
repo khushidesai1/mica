@@ -5,6 +5,7 @@ import hashlib
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from analysis_helpers import save_command
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.slack_response import SlackResponse
 from test_analysis_batch import bridge, payload  # noqa: F401
@@ -20,6 +21,7 @@ from mica.agents.analysis import (
     conversation,
     direct,
 )
+from mica.agents.analysis.command_intent import Proposal
 from mica.agents.analysis.identity import IdentityUnavailable, member_email, recipient_email
 from mica.agents.analysis.registry import Registry
 from mica.connectors import gmail
@@ -93,10 +95,14 @@ def test_slack_missing_recipient_is_not_an_outage(raised):
     assert channel_access.lookup(fetch) is None
 
 
-async def test_exact_external_share_completes_instead_of_staying_on_it(bridge):
+async def test_exact_external_share_completes_instead_of_staying_on_it(bridge, monkeypatch):
+    monkeypatch.setattr(command_approval, "AsyncWebClient", lambda **kw: bridge.test_slack)
     text = f"share liver <mailto:{EXTERNAL}|{EXTERNAL}>"
     eid = await bridge.accept(payload(text=text))
+    await save_command(bridge, eid, Proposal(operation="share", selector="liver", target=EXTERNAL))
     assert await bridge.process(eid, 0) == "complete"
+    assert not Registry(bridge.store).load().can_use(bridge.pid, EXTERNAL)
+    await command_approval.handle(bridge, bridge.store, action(eid))
     assert await bridge.process(eid, 0) == "complete"
     doc = Registry(bridge.store).load()
     assert doc.can_use(bridge.pid, EXTERNAL)
@@ -109,7 +115,10 @@ async def test_exact_external_share_completes_instead_of_staying_on_it(bridge):
     assert not record.get("identity_unavailable_since")
     bridge.test_client.create_job.assert_not_called()
     revoke = await bridge.accept(payload("2.0", text=f"unshare liver {EXTERNAL}"))
+    await save_command(bridge, revoke, Proposal(
+        operation="unshare", selector="liver", target=EXTERNAL))
     assert await bridge.process(revoke, 0) == "complete"
+    await command_approval.handle(bridge, bridge.store, action(revoke))
     assert not Registry(bridge.store).load().can_use(bridge.pid, EXTERNAL)
     # Replaying the old successful share cannot restore later-revoked membership.
     assert await bridge.process(eid, 0) == "complete"
@@ -148,6 +157,7 @@ async def test_slack_recipient_outage_finishes_without_false_actor_outage(bridge
         channel_access, "target_email", Mock(side_effect=IdentityUnavailable("http_503"))
     )
     eid = await bridge.accept(payload(text="share liver <@U2>"))
+    await save_command(bridge, eid, Proposal(operation="share", selector="liver", target="<@U2>"))
     assert await bridge.process(eid, 0) == "failed"
     record = await bridge.repository.get_connector_state("claude-event:" + eid)
     assert "No access was changed" in record["notice_text"]
@@ -161,6 +171,7 @@ async def test_nonowner_cannot_share_even_to_an_explicit_address(bridge):
         "member", SENDER, "share", lambda d: d.share(bridge.pid, SENDER, "bob@example.com")
     )
     eid = await bridge.accept(payload(text=f"share liver {EXTERNAL}", user="U2", channel="D2"))
+    await save_command(bridge, eid, Proposal(operation="share", selector="liver", target=EXTERNAL))
     assert await bridge.process(eid, 0) == "failed"
     assert not Registry(bridge.store).load().can_use(bridge.pid, EXTERNAL)
 
@@ -190,9 +201,11 @@ async def test_owner_and_email_only_member_use_unpublished_project(mail, monkeyp
     assert access.resolve(mail.app, mail.settings, mail.store, record).allowed
     # A member with no Slack profile can discover and select it in email.
     eid, record = await intake(mail, "list", EXTERNAL, "projects")
+    record = await save_command(mail, eid, Proposal(operation="projects"))
     assert await direct.handle(mail, eid, record, mail.store)
     assert "liver" in record["notice_text"]
     eid, record = await intake(mail, "choose", EXTERNAL, "use liver")
+    record = await save_command(mail, eid, Proposal(operation="use", selector="liver"))
     assert await direct.handle(mail, eid, record, mail.store)
     eid, record = await intake(mail, "question", EXTERNAL, "Tell me about this project")
     assert await direct.handle(mail, eid, record, mail.store)
@@ -229,16 +242,17 @@ async def test_legacy_member_without_selection_gets_email_instructions(mail):
     Registry(mail.store).update("legacy-grant", SENDER, "share", legacy_invite)
     eid, record = await intake(mail, "unselected", EXTERNAL, "Tell me about my project")
     assert await direct.handle(mail, eid, record, mail.store)
-    assert "List my projects" in record["notice_text"]
-    assert "Use <project name>" in record["notice_text"]
-    assert "publishing to a Slack channel" in record["notice_text"]
+    assert "Which project is this for?" in record["notice_text"]
+    assert "Name one of yours" in record["notice_text"]
 
 
 async def test_unshared_verified_sender_cannot_read_unpublished_project(mail):
     eid, record = await intake(mail, "outsider", EXTERNAL, "projects")
+    record = await save_command(mail, eid, Proposal(operation="projects"))
     assert await direct.handle(mail, eid, record, mail.store)
     assert "liver" not in record["notice_text"]
     eid, record = await intake(mail, "unauthorized", EXTERNAL, "use liver")
-    with pytest.raises(ValueError, match="unavailable"):
-        await direct.handle(mail, eid, record, mail.store)
+    record = await save_command(mail, eid, Proposal(operation="use", selector="liver"))
+    assert await direct.handle(mail, eid, record, mail.store)
+    assert "unavailable" in record["notice_text"]
     conversation.run.assert_not_awaited()

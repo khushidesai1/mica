@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, StrictBool
 
@@ -52,19 +52,12 @@ def set_scripts(storage: Storage, email: str, enabled: bool, event_id: str) -> N
 
 def command(
     storage: Storage, email: str, args: tuple[str, ...], default: bool, event_id: str
-) -> str:
+) -> dict[str, Any]:
     if args:
         enabled = args[0] == "on"
         set_scripts(storage, email, enabled, event_id)
-        return (
-            "I'll attach one ZIP of scripts changed during each request. Say `scripts off` to stop."
-            if enabled
-            else "I'll stop attaching scripts."
-        )
+        return {"return_scripts": enabled, "source": "your setting"}
     prefs, _ = load(storage, email)
     value = default if prefs.return_scripts is None else prefs.return_scripts
     source = "deployment default" if prefs.return_scripts is None else "your setting"
-    return (
-        f"Script attachments are {'on' if value else 'off'} ({source}). "
-        "Use `scripts on` or `scripts off`."
-    )
+    return {"return_scripts": value, "source": source}

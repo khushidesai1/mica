@@ -662,3 +662,12 @@ the same surface within five minutes for tools/system reuse. Compare reads with 
 request's total input (uncached input plus cache creation and cache read tokens). Resume and
 compaction behavior are covered offline; do not change service-wide limits to induce a yield.
 Rollback uses the prior API revision; no infrastructure, secret or worker changes are needed.
+
+
+### Natural-language account operations
+
+This controller release uses the API-only pipeline and retains all worker image pins and runtime
+settings. Saved terminal operations finish through their existing handlers; old registry receipts
+remain readable. Verify compound selection with two different test projects, established-thread
+isolation, interrupted-operation replay, and requester-bound channel confirmations. Prompt/schema
+budgets and worker compatibility gates remain required. The worker session contract is unchanged.

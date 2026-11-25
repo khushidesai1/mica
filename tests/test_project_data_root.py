@@ -14,7 +14,6 @@ from mica.agents.analysis import (
     access,
     command_approval,
     command_intent,
-    commands,
     conversation,
     direct,
 )
@@ -69,11 +68,11 @@ async def test_owner_confirms_actual_registry_change_and_replay(bridge, monkeypa
     expected = before.projects[bridge.pid].model_copy(update={"data_uri": URI})
     assert after.projects[bridge.pid] == expected
     assert after.defaults == before.defaults and after.bindings == before.bindings
-    assert eid in after.applied_events
+    assert any(key.startswith(eid + ":") for key in after.applied_events)
     await command_approval.handle(bridge, bridge.store, action(eid))
     assert Registry(bridge.store).load() == after
     bridge.test_client.create_job.assert_not_called()
-    assert conversation.run.await_count == int(natural)
+    assert conversation.run.await_count == 1
 
 
 async def test_member_cannot_change_project_data_root(bridge, monkeypatch):
@@ -94,13 +93,9 @@ async def test_member_cannot_change_project_data_root(bridge, monkeypatch):
 async def test_shared_channel_never_discloses_or_mutates(bridge, monkeypatch, natural):
     eid, record = await propose(bridge, monkeypatch, shared=True, natural=natural)
     before = Registry(bridge.store).load()
-    if natural:
-        assert await direct.handle(bridge, eid, record, bridge.store)
-        assert "private" in record["notice_text"]
-        assert URI not in record["notice_text"]
-    else:
-        with pytest.raises(ValueError, match="private"):
-            await direct.handle(bridge, eid, record, bridge.store)
+    assert await direct.handle(bridge, eid, record, bridge.store)
+    assert "private" in record["notice_text"]
+    assert URI not in record["notice_text"]
     assert Registry(bridge.store).load() == before
 
 
@@ -168,7 +163,7 @@ async def test_email_handoff_is_sender_only_without_mutation(mail, monkeypatch, 
     assert "Slack" in record["notice_text"]
     assert len(sent_messages(mail)) == 1
     assert str(sent_messages(mail)[0]["To"]) == SENDER
-    assert conversation.run.await_count == int(natural)
+    assert conversation.run.await_count == 1
 
 
 async def test_existing_conversation_uses_new_root_and_preserves_history(bridge):
@@ -212,6 +207,9 @@ async def test_existing_conversation_uses_new_root_and_preserves_history(bridge)
 
 
 @pytest.mark.parametrize("uri", ["gs://lab-data/../private", "gs://lab-data/path?secret=x"])
-def test_invalid_data_root_rejected(uri):
+def test_invalid_data_root_rejected(bridge, uri):
     with pytest.raises(ValueError):
-        commands.parse(f"data-root liver {uri}")
+        command_intent.command(command_intent.Proposal(
+            operation="data-root", selector="liver", scope=uri),
+            access.Grant("alice@example.com", True, {}, Registry(bridge.store).load(),
+                         bridge.pid, True, "T1:D1"), source_text=uri)

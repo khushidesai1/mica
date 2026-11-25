@@ -256,7 +256,7 @@ DESCRIPTIONS = {
     ("propose_command"): (
         "Perform a supported account/project/control request. Use user-supplied"
         " selectors, recipients, channels, exact gs:// paths and durations; "
-        "never invent them or force a switch. init requires an explicit new "
+        "never invent them. init requires an explicit new "
         "name and gs:// location. data-root changes the default location, not a"
         " brief. brief and memory only display saved content; use start_worker "
         "to edit the guide or save requested durable knowledge and verify it. "
@@ -267,8 +267,9 @@ DESCRIPTIONS = {
         " connection management; never request credentials in chat. Code "
         "enforces DM, email, membership and approval policy. Resolve ordinals "
         "only against the supplied unexpired pending choices; ask one concise "
-        "question if required arguments are missing. This terminal proposal "
-        "never implies an administrative action has been approved."
+        "question if required arguments are missing. Reads and preferences return results; "
+        "handoffs end the turn. "
+        "Approval always requires the button."
     ),
 }
 MODELS: dict[str, type[BaseModel]] = {
@@ -387,7 +388,7 @@ async def pending_context(
 def validate_command(
     proposal: command_intent.Proposal, grant: access.Grant, record: dict[str, Any],
     *, input_text: str = "",
-) -> None:
+) -> commands.Command:
     policy = commands.spec(proposal.operation)
     if surface.is_email(record) and policy.email_read_only:
         raise ValueError(surface.EMAIL_READ_ONLY)
@@ -404,7 +405,7 @@ def validate_command(
         raise ValueError(
             "Those project choices changed or expired. Ask for the current list again."
         )
-    command_intent.command(
+    return command_intent.command(
         proposal,
         grant,
         source_text=record["payload"]["event"].get("text", "")
@@ -491,6 +492,10 @@ async def run(
         "has_accessible_projects": bool(grant.doc.visible(grant.email)),
         "channel_authorization_required": not grant.private and not grant.allowed,
     }
+    data["operations"] = record.get("operations", {})
+    if record.get("project_reentry"):
+        data["project_selection"] = "Selection already completed for this request. " \
+            "Continue the original request in this project; do not select it again."
     data.pop("brief", None)
     if grant.allowed and bridge.settings.backchannel and not init:
         try:
@@ -527,6 +532,15 @@ async def run(
                     Decision(route="reply", reply="Project access changed. Send a new request."))
             checkpoint = saved_state
             messages = checkpoint["messages"]
+            if data["operations"]:
+                messages.append({"role": "user", "content": [{
+                    "type": "text", "text": json.dumps({
+                        "context_update": "Current operation receipts for this request. "
+                        "Completed operations already took effect, even if their tool result "
+                        "was not delivered. Continue the request without repeating them.",
+                        "operations": data["operations"],
+                    }, ensure_ascii=False),
+                }]})
             if "project_backchannel" in data:
                 # Preserve cached history and signed thinking across queue deliveries.
                 messages.append({"role": "user", "content": [{
@@ -935,17 +949,22 @@ async def run(
                         else:
                             result = await task_graph.control(bridge, record, current, value)
                     elif isinstance(value, command_intent.Proposal):
-                        validate_command(
+                        cmd = validate_command(
                             value, current, record,
                             input_text=await thread_history.supplied_inputs(
                                 bridge.repository, current, record
                             ),
                         )
-                        terminal = Decision(
-                            route="command",
-                            reply="Command requested",
-                            command_proposal=value.model_dump(),
-                        )
+                        if command_intent.terminal(cmd, current, record):
+                            record["command_protocol"] = 2
+                            terminal = Decision(
+                                route="command", reply="Operation requested",
+                                command_proposal=value.model_dump(),
+                            )
+                        else:
+                            result = await command_intent.execute(
+                                bridge, event_id, record, storage, cmd, current
+                            )
                 step["status"] = "terminal" if terminal else "ok"
                 if terminal:
                     return await persist(bridge, event_id, record, grant, terminal)
