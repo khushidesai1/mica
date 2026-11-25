@@ -4,30 +4,22 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-import json
-import secrets
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import Response
 
 from mica.agents.analysis import atomx_connections
 from mica.agents.analysis.batch import BatchBridge
 from mica.agents.analysis.storage import GCSStorage
 from mica.agents.analysis.transfers import Transfers
+from mica.api.connection_forms import body, origin, page_response, response
 from mica.api.dependencies import Services
 from mica.api.migration import require
 
 router = APIRouter(prefix="/integrations/atomx", include_in_schema=False)
 COOKIE = "mica_atomx_session"
-HEADERS = {
-    "Cache-Control": "no-store",
-    "Referrer-Policy": "no-referrer",
-    "X-Content-Type-Options": "nosniff",
-    "X-Frame-Options": "DENY",
-}
 PAGE = Path(__file__).with_name("atomx_form.html").read_text()
 
 
@@ -40,43 +32,9 @@ def service(request: Request) -> tuple[Transfers, atomx_connections.Connections]
     )
 
 
-def response(data: dict[str, Any], status: int = 200) -> JSONResponse:
-    return JSONResponse(data, status_code=status, headers=HEADERS)
-
-
-def origin(request: Request, control_url: str) -> None:
-    parts = urlsplit(control_url)
-    if request.headers.get("origin") != f"{parts.scheme}://{parts.netloc}":
-        raise ValueError("Open the private form on Mica's configured address.")
-
-
-async def body(request: Request, maximum: int = 8192) -> dict[str, Any]:
-    raw = bytearray()
-    async for chunk in request.stream():
-        raw.extend(chunk)
-        if len(raw) > maximum:
-            raise ValueError("Form submission is too large.")
-    value = json.loads(raw)
-    if not isinstance(value, dict):
-        raise ValueError("Invalid form submission.")
-    return value
-
-
 @router.get("")
 async def page() -> Response:
-    nonce = secrets.token_urlsafe(24)
-    return HTMLResponse(
-        PAGE.replace("NONCE", nonce),
-        headers={
-            **HEADERS,
-            "Content-Security-Policy": (
-                f"default-src 'none'; script-src 'nonce-{nonce}'; style-src "
-                f"'nonce-{nonce}'; connect-src 'self'; form-action 'self'; base-uri"
-                f" 'none'; frame-ancestors 'none'"
-            ),
-        },
-    )
-
+    return page_response(PAGE)
 
 @router.post("/exchange")
 async def exchange(request: Request) -> Response:

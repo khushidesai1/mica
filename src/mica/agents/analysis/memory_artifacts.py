@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
-from . import access, project_memory, thread_memory
+from . import access, contribution_privacy, project_memory, thread_memory
 from .config import Settings
 from .storage import Conflict, GCSStorage, LocalStorage, Storage
 
@@ -141,6 +141,8 @@ async def coverage(
     verified: list[str] = []
     snapshots: dict[str, project_memory.Snapshot] = {}
     for key in await asyncio.to_thread(checkpoints, storage):
+        if await asyncio.to_thread(contribution_privacy.owner, storage, key.split("/")[2]):
+            continue
         state_raw, state_generation = await asyncio.to_thread(checkpoint_state, storage, key)
         state = json.loads(state_raw)
         thread = key.split("/")[2]
@@ -656,6 +658,8 @@ async def verify_archive(
     now: float,
 ) -> dict[str, Any]:
     """An archive expires only when every retained script/output has a verified GitHub copy."""
+    if await asyncio.to_thread(contribution_privacy.owner, storage, thread):
+        raise ArchiveLimit("Private contribution archives are retained locally")
     expected = f"projects/_threads/{thread}/archives/"
     if not source.startswith(expected) or "/" in source.removeprefix(expected):
         raise ValueError("Only completed thread archives can expire")

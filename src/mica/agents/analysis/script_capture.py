@@ -22,7 +22,7 @@ from .project_memory import SECRET
 MAX_BYTES = 1_000_000
 MAX_SCRIPTS = 10
 SUFFIXES = {".py", ".R", ".r", ".sh", ".jl"}
-EXCLUDED = {"inputs", ".previews", "outputs", "scratch", ".mica", ".pistachio"}
+EXCLUDED = {"contrib", "inputs", ".previews", "outputs", "scratch", ".mica", ".pistachio"}
 CACHE = Path(".mica/scripts")
 LEGACY_CACHE = Path(".pistachio/scripts")
 

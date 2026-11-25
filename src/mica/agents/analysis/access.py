@@ -141,6 +141,11 @@ def resolve(app: Any, settings: Settings, storage: Storage, record: dict[str, An
         return Grant("", private, {}, RegistryDoc(), "", False, channel_key)
     if record.get("reply_scope") == "cloud_access":
         return Grant(email, private, {}, RegistryDoc(), "", False, channel_key)
+    from . import contribution_privacy
+
+    private_owner = contribution_privacy.owner(storage, record["thread_key"])
+    if private_owner and (not private or private_owner != email):
+        return Grant(email, private, {}, RegistryDoc(), "", False, channel_key)
     doc = Registry(storage).load()
     try:
         # Only the trusted resolver sees routing metadata until membership is established.

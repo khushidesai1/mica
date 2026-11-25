@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from . import memory_artifacts, memory_tasks, project_memory, thread_memory
+from . import contribution_privacy, memory_artifacts, memory_tasks, project_memory, thread_memory
 from .config import Settings
 from .registry import Registry
 from .storage import Storage
@@ -149,6 +149,8 @@ async def import_threads(
     registry = await asyncio.to_thread(Registry(storage).load)
     for checkpoint in await asyncio.to_thread(memory_artifacts.checkpoints, storage):
         tid = checkpoint.split("/")[2]
+        if await asyncio.to_thread(contribution_privacy.owner, storage, tid):
+            continue
         if thread and tid != thread:
             continue
         raw, generation = await asyncio.to_thread(

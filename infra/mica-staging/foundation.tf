@@ -6,6 +6,7 @@ locals {
   secret_names = toset([
     "openai-api-key", "oauth-client-secret", "slack-bot-token", "slack-signing-secret",
     "github-app-token", "signed-link-secret", "anthropic-api-key", "memory-token",
+    "github-pr-client-secret",
   ])
   project_grants = merge([for identity, roles in var.project_roles : {
     for role in roles : "${identity}:${role}" => { identity = identity, role = role }

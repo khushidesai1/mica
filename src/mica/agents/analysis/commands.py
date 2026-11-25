@@ -29,7 +29,7 @@ class Spec:
     channel: bool = False
     natural: bool = False
     registry: bool = False
-    connection: bool = False
+    connection: str = ""
     transfer: bool = False
     exact_approval: bool = False
     arguments: str = "custom"
@@ -55,16 +55,22 @@ COMMANDS: dict[str, Spec] = {
     "atomx login status": Spec(
         sender_reply=True,
         natural=True,
-        connection=True,
+        connection="atomx",
         transfer=True,
         arguments="none",
         dm_only=True,
     ),
+    "connect github": Spec(sender_reply=True, natural=True, connection="github",
+        arguments="none", dm_only=True, handoff=True),
+    "github status": Spec(sender_reply=True, natural=True, connection="github",
+        arguments="none", dm_only=True),
+    "disconnect github": Spec(sender_reply=True, natural=True, connection="github",
+        arguments="none", dm_only=True, handoff=True),
     "brief": Spec(natural=True, arguments="none"),
     "cancel": Spec(natural=True, arguments="none", handoff=True),
     "cancel transfer": Spec(transfer=True, natural=True, handoff=True),
     "connect atomx": Spec(
-        sender_reply=True, natural=True, connection=True, arguments="none", dm_only=True,
+        sender_reply=True, natural=True, connection="atomx", arguments="none", dm_only=True,
         handoff=True
     ),
     "data-root": Spec(
@@ -77,7 +83,7 @@ COMMANDS: dict[str, Spec] = {
         exact_approval=True,
         dm_only=True,
     ),
-    "forget atomx login": Spec(sender_reply=True, connection=True, transfer=True, natural=True,
+    "forget atomx login": Spec(sender_reply=True, connection="atomx", transfer=True, natural=True,
         dm_only=True, handoff=True, arguments="none"),
     "help": Spec(sender_reply=True, natural=True, arguments="none"),
     "init": Spec(natural=True, dm_only=True, handoff=True),
@@ -129,7 +135,7 @@ COMMANDS: dict[str, Spec] = {
         registry=True,
         dm_only=True,
     ),
-    "replace atomx login": Spec(sender_reply=True, connection=True, transfer=True, natural=True,
+    "replace atomx login": Spec(sender_reply=True, connection="atomx", transfer=True, natural=True,
         dm_only=True, handoff=True, arguments="none"),
     "repos": Spec(exact_dm_only=True, natural=True, registry=True),
     "repos add": Spec(

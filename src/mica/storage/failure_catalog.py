@@ -50,6 +50,12 @@ CATALOG: dict[str, CauseInfo] = {
         "A requested Python package runtime could not be installed; the worker can continue.",
         "medium",
     ),
+    "connection_delivery_failed": CauseInfo(
+        "reference", "A private connection receipt could not be delivered; it can retry.", "medium"
+    ),
+    "pull_request_failed": CauseInfo(
+        "reference", "A GitHub draft PR could not be confirmed; check its approval card.", "medium"
+    ),
     "reference_repo_failed": CauseInfo(
         "reference",
         "A project reference repository could not be loaded; the request continues without it.",

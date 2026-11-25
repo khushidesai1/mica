@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 
 
 class DecisionFields(BaseModel):
+    pull_request_repo: str | None = Field(default=None, max_length=150)
     task_queue: task_graph.Call | None = None
     cloud_access_request: CloudAccessProposal | None = None
     transfer_request: TransferRequest | None = None
@@ -243,7 +244,11 @@ async def dispatch_command(
         if not grant.email:
             return await finish(bridge, event_id, record, access.deny_text(grant))
         command_intent.private_reply(record, grant)
-        connection_reply = await Transfers(bridge, storage).command(cmd, grant, record, event_id)
+        from . import connection_providers
+
+        connection_reply = await connection_providers.command(
+            commands.spec(cmd.name).connection, bridge, storage, cmd, grant, record, event_id
+        )
         return await finish(bridge, event_id, record, connection_reply)
     if cmd.name == "cancel":
         record["cancel_control"] = True
@@ -456,8 +461,9 @@ async def read_information(
                 result["memory"].append({"path": path, "unavailable": True})
     if decision.history_query is not None or decision.history_event_id:
         try:
-            if thread_memory.github_reads(bridge.settings) or (
-                bridge.settings.thread_memory == "github_only"
+            if not record.get("private_contribution") and (
+                thread_memory.github_reads(bridge.settings)
+                or bridge.settings.thread_memory == "github_only"
             ):
                 backend = project_memory.GitHubMemory(bridge.settings)
                 snapshot = memory if memory is not None else await backend.read(grant.project_id)
@@ -1011,10 +1017,17 @@ async def handle(
             thread_memory.context(
                 {p: f.text for p, f in memory.files.items()}, record["thread_key"]
             )
-            if memory and thread_memory.github_reads(bridge.settings)
+            if (memory and thread_memory.github_reads(bridge.settings)
+                and not record.get("private_contribution"))
             else handoff
         )
         model_context["recent_messages"] = messages
+        if record.get("private_contribution"):
+            model_context["privacy"] = (
+                "This thread contains a personal repository and is retained for this requester. "
+                "Shared memory, coordination, transfers, and project publishing are disabled. "
+                "Use a separate Slack thread for shared project operations."
+            )
         from .calibration import history
 
         worker_history = await asyncio.to_thread(history, storage, grant.project_id)
@@ -1134,9 +1147,10 @@ async def handle(
                 speaker=event.get("user", ""), seq=record.get("seq", 0),
                 files=[f["name"] for f in record.get("attachments", [])],
                 history=thread_history.History(storage, record["thread_key"], grant.project_id)
-                if thread_memory.legacy(bridge.settings)
+                if thread_memory.legacy(bridge.settings) or record.get("private_contribution")
                 else None,
-                keep_summary=not thread_memory.github_reads(bridge.settings),
+                keep_summary=(not thread_memory.github_reads(bridge.settings)
+                              or bool(record.get("private_contribution"))),
             )
         else:
             state["direct_version"] = 1
@@ -1174,6 +1188,12 @@ async def handle(
         if not selected <= available:
             raise ValueError(
                 "The requested repository is not in Mica's available reference catalog."
+            )
+        if decision.pull_request_repo:
+            from . import pull_requests
+
+            record["pull_request_repo"] = await pull_requests.admission(
+                bridge, storage, event_id, record, decision.pull_request_repo
             )
         record["reference_repos"] = sorted(selected)
         try:

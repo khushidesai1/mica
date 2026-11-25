@@ -43,6 +43,7 @@ from .deliverables import send_tool
 from .limits import MAX_VISUAL_READS, PREVIEW_MAX_BYTES, SDK_MAX_BUFFER_BYTES
 from .outputs import MAX_ATTACHMENT_BYTES, changed_files, retain_tool_outputs, snapshot_outputs
 from .progress import ActivityState, ProgressNote, ProgressUpdate, TaskProgress, public_note
+from .pull_request_worker import Proposer
 from .recovery_tools import RecoveryManager, restored_cost
 from .recovery_tools import run_query as recovery_query
 from .runtime_tools import TOOL_NAME, RuntimeEvent, RuntimeManager, create_server
@@ -118,6 +119,7 @@ def build_options(
     runtime_manager: RuntimeManager | None = None,
     compute_manager: RecoveryManager | None = None,
     gcs_publisher: write_worker.Publisher | None = None,
+    pr_proposer: Proposer | None = None,
     history: History | None = None,
     thread_key: str = "",
     thread_context: str = "",
@@ -163,6 +165,8 @@ def build_options(
         )
     if gcs_publisher and gcs_publisher.grant and not ctx.survey_only:
         compute_tools.append(gcs_publisher.tool(ctx))
+    if pr_proposer and not ctx.survey_only:
+        compute_tools.append(pr_proposer.tool(ctx.workdir))
     if history and not ctx.survey_only:
         compute_tools.append(history.tool())
     tools.extend(f"mcp__pistachio__{t.name}" for t in compute_tools)
@@ -381,6 +385,8 @@ def build_options(
                 "Other thread files are read-only. Scripts are collected from code/.\n"
                 + thread_context
             )
+        if pr_proposer and not ctx.survey_only:
+            sections.append(pr_proposer.prompt())
         if compute:
             sections.append(compute.prompt())
             if compute.backchannel:
@@ -635,6 +641,7 @@ class Runner:
         runtime_manager: RuntimeManager | None = None,
         compute_manager: RecoveryManager | None = None,
         gcs_publisher: write_worker.Publisher | None = None,
+        pr_proposer: Proposer | None = None,
         history: History | None = None,
         thread_key: str = "",
         thread_context: str = "",
@@ -655,6 +662,7 @@ class Runner:
         self.write_access = write_access
         self.compute = compute_manager
         self.gcs_publisher = gcs_publisher
+        self.pr_proposer = pr_proposer
         self.history = history
         self.thread_key = thread_key
         self.thread_context = thread_context
@@ -766,6 +774,7 @@ class Runner:
                         runtime_manager=manager,
                         compute_manager=self.compute,
                         gcs_publisher=self.gcs_publisher,
+                        pr_proposer=self.pr_proposer,
                         history=self.history,
                         thread_key=self.thread_key,
                         thread_context=self.thread_context,

@@ -57,6 +57,17 @@ class Settings(BaseSettings):
     failure_investigation_enabled: bool = True  # Bounded read-only Claude assessments.
     failure_alert_mode: Literal["actionable", "all"] = "actionable"
     failure_operator_ids: str = ""  # Explicit team:user IDs allowed to resolve incident alerts.
+    pull_requests: bool = False
+    pull_request_user_ids: str = ""
+    github_pr_client_id: str = ""
+    github_pr_client_secret_secret: str = ""
+    github_pr_app_slug: str = ""
+    github_token_refresh_margin_seconds: int = Field(default=300, ge=0, le=28800)
+    pr_checkout_bytes: int = Field(default=32 * 1024**2, ge=1, le=128 * 1024**2)
+    pr_expanded_bytes: int = Field(default=128 * 1024**2, ge=1, le=512 * 1024**2)
+    pr_files: int = Field(default=50, ge=1, le=100)
+    pr_file_bytes: int = Field(default=256 * 1024, ge=1, le=1024**2)
+    pr_total_bytes: int = Field(default=1024**2, ge=1, le=4 * 1024**2)
     reference_github_org: Literal["azizilab"] = "azizilab"
     reference_github_app_id: str = Field(default="", pattern=r"^[0-9]*$")
     reference_github_installation_id: str = Field(default="", pattern=r"^[0-9]*$")

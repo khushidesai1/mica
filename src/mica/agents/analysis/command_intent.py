@@ -31,6 +31,9 @@ Operation = Literal[
     "transfers",
     "atomx login status",
     "connect atomx",
+    "connect github",
+    "github status",
+    "disconnect github",
     "cancel transfer",
     "forget atomx login",
     "replace atomx login",
@@ -319,12 +322,12 @@ async def execute(
         if not grant.allowed:
             raise ValueError(access.deny_text(grant))
         result = await Transfers(bridge, storage).context(grant.project_id, grant.email)
-    elif cmd.name == "atomx login status":
-        from .transfers import Transfers
+    elif commands.spec(cmd.name).connection:
+        from . import connection_providers
 
-        value = await Transfers(bridge, storage).connections.status(grant.email)
-        # Do not pass connection secrets or private management links through the model.
-        result = {"status": value.get("status") or "not connected"}
+        result = await connection_providers.status(
+            commands.spec(cmd.name).connection, bridge, storage, grant, record
+        )
     elif cmd.name == "write status":
         pid = grant.doc.find(cmd.args[0], grant.email)
         active = await asyncio.to_thread(write_access.active, storage, pid, bridge.settings)

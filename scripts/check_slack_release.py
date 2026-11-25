@@ -56,6 +56,35 @@ def check(source: Path, mode: str) -> None:
             file.read_bytes() == (installed / file.relative_to(source / "src/mica")).read_bytes()
         ), file
     print(f"SOURCE_VERIFIED: {len(files)} application files")
+    from mica.agents.analysis import contribution_privacy, pull_request_files
+    from mica.agents.analysis.github_connections import Connections as GitHubConnections
+    from mica.config import Settings as AppSettings
+    from mica.storage.memory import InMemoryRepository
+
+    assert not Settings(_env_file=None).pull_requests
+    assert commands.COMMANDS["connect github"].connection == "github"
+    assert commands.COMMANDS["connect atomx"].connection == "atomx"
+    assert (installed / "api/github_form.html").read_bytes() == (
+        source / "src/mica/api/github_form.html"
+    ).read_bytes()
+    connection = GitHubConnections(
+        AppSettings(_env_file=None, signed_link_secret="release-synthetic-key-0123456789-abcdef",
+                    control_plane_url="https://mica.invalid"),
+        Settings(_env_file=None, github_pr_client_id="release-client"), InMemoryRepository(),
+    )
+    encrypted = connection.seal("release@example.com", "revision", {"access_token": "synthetic"})
+    assert connection.unseal("release@example.com", {**encrypted, "revision": "revision"}) == {
+        "access_token": "synthetic"
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        store = LocalStorage(Path(directory))
+        record = {"thread_key": "release-private"}
+        contribution_privacy.protect(store, record, "release@example.com")
+        assert record["private_contribution"] and not record["backchannel_enabled"]
+        assert not record["write_grant"]
+    assert pull_request_files.blob_sha(b"") == "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"
+    print("GITHUB_CONNECTION_ENVELOPE_AND_PRIVATE_RETENTION_VERIFIED (offline)")
+
     from mica.agents.analysis.email_delivery import TerminalResult
     from mica.connectors.gmail_client import verified_message
 

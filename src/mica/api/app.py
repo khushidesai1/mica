@@ -14,6 +14,7 @@ from mica.agents.memory import MemoryManager, ProjectCompactor
 from mica.api.atomx import router as atomx_router
 from mica.api.dependencies import Services
 from mica.api.errors import install_error_handlers
+from mica.api.github import router as github_router
 from mica.api.migration import mode
 from mica.api.routes import router as api_router
 from mica.api.slack_analysis import router as slack_analysis_router
@@ -77,6 +78,10 @@ def create_app(
         from mica.agents.analysis.config import Settings as AnalysisSettings
 
         analysis = AnalysisSettings()
+        if analysis.pull_requests:
+            from mica.agents.analysis.github_connections import Connections as GitHubConnections
+
+            GitHubConnections(config, analysis, store).validate_runtime()
         if analysis.transfers_enabled:
             Connections(config, analysis, store).validate_runtime()
         try:
@@ -97,6 +102,7 @@ def create_app(
     app.state.services = services
     app.include_router(api_router)
     app.include_router(atomx_router)
+    app.include_router(github_router)
     app.include_router(slack_router)
     app.include_router(slack_analysis_router)
     app.include_router(gmail_router)
