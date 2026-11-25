@@ -381,15 +381,17 @@ async def test_no_project_exposes_only_command(turn):
 
 
 async def test_command_policies_and_stale_choices(turn):
-    _, _, record, grant = turn
+    bridge, _, record, grant = turn
     proposal = command_intent.Proposal(
         operation="share", selector="this project", target="bob@example.com"
     )
-    with pytest.raises(ValueError, match="private conversation"):
-        conversation.validate_command(proposal, replace(grant, private=False), record)
+    with pytest.raises(ValueError, match="dm_only"):
+        conversation.validate_command(
+            proposal, replace(grant, private=False), record, settings=bridge.settings
+        )
     record["intent_referents"] = {"expires": 0, "visibility": command_intent.visibility(grant)}
     with pytest.raises(ValueError, match="expired"):
-        conversation.validate_command(proposal, grant, record)
+        conversation.validate_command(proposal, grant, record, settings=bridge.settings)
 
 
 async def test_request_skips_control_check_without_active_predecessor(turn, monkeypatch):

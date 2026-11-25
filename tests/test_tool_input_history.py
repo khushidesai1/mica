@@ -84,9 +84,13 @@ async def test_old_repo_parameter_is_reusable_without_old_ownership_intent(turn)
     assert command_intent.command(
         share, grant, source_text="Share with Bob", input_text=inputs
     ).name == "share"
+    assert command_intent.command(
+        share, grant, source_text="Share with Bob, not as an owner", input_text=inputs
+    ).name == "share"
     with pytest.raises(ValueError, match="ownership"):
         command_intent.command(
-            share, grant, source_text="Make Bob an owner", input_text=inputs
+            share.model_copy(update={"scope": "owner"}), grant,
+            source_text="Make Bob an owner", input_text=inputs,
         )
 
 
