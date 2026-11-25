@@ -121,7 +121,7 @@ async def test_failed_user_message_is_not_truncated_and_working_window_retains_f
     assert len(messages) == 4 and all(m["id"] != first for m in messages)
 
 
-@pytest.mark.parametrize("text", ["help", "cancel", "write grant", "memory"])
+@pytest.mark.parametrize("text", ["help", "cancel", "memory"])
 async def test_commands_never_add_history_or_memory_task(chat, monkeypatch, text):
     chat.settings.memory_auto_edit = True
     queued = AsyncMock()
@@ -130,6 +130,12 @@ async def test_commands_never_add_history_or_memory_task(chat, monkeypatch, text
     before = (await checkpoint(chat, initial))[1]["messages"]
     queued.reset_mock()
     event = await chat.accept(payload("2.0", "1.0", text))
+    if text != "cancel":
+        from analysis_helpers import save_command
+
+        from mica.agents.analysis.command_intent import Proposal
+
+        await save_command(chat, event, Proposal(operation=text))
     await chat.process(event, 0)
     assert (await checkpoint(chat, event))[1]["messages"] == before
     queued.assert_not_awaited()

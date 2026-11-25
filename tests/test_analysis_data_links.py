@@ -1,6 +1,6 @@
 import pytest
 
-from mica.agents.analysis.data_links import data_uri, init_args
+from mica.agents.analysis.data_links import data_uri
 
 
 @pytest.mark.parametrize(
@@ -15,11 +15,7 @@ from mica.agents.analysis.data_links import data_uri, init_args
 )
 def test_google_storage_links(link):
     assert data_uri(link) == "gs://lab-data/folder/"
-    assert init_args(f"<@BOT> init liver {link} --force") == (
-        "liver",
-        "gs://lab-data/folder/",
-        True,
-    )
+
 
 
 @pytest.mark.parametrize(

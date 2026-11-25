@@ -9,13 +9,14 @@ from test_analysis_batch import bridge  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
 from mica.agents.analysis import access, conversation, recovery
+from mica.agents.analysis.commands import Command
 from mica.agents.analysis.registry import Registry
 
 
 @pytest.mark.parametrize("memory_bytes", [300_000, 3_000_000])
 async def test_large_project_snapshot_does_not_revoke_worker_access(chat, memory_bytes):
-    await message(chat, "share liver <@U2>", "10.0")
-    await message(chat, "use liver", "11.0", user="U2", channel="D2")
+    await message(chat, Command('share', ('liver', '<@U2>',)), "10.0")
+    await message(chat, Command('use', ('liver',)), "11.0", user="U2", channel="D2")
     chat.decision.return_value = conversation.Decision(route="compute", reply="Reading source.")
     record = await message(chat, "Read source", "12.0", user="U2", channel="D2")
     event = record["job"].rsplit("claude-", 1)[-1]

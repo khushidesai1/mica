@@ -19,7 +19,7 @@ inspecting authorized repository source, reading registered text attachments, an
 thread records. CSV/TSV/JSON text can be inspected directly; computing new counts still needs a worker.
 Incomplete listings report their coverage or ask for a narrower folder instead of starting a worker.
 Conversation routing is always enabled. Ordinary questions, planning, brief reads,
-`help`, `brief`, `cancel`, and bounded initial setup run in the control service.
+Help, guide reading, cancellation and bounded initial setup run in the control service.
 The direct Claude call has no shell, filesystem, or network tools. It can answer, draft an initial guide,
 request a project-scoped metadata listing, request bounded information reads, or request isolated
 computation. Source inspection/README requests use the existing GitHub App to read commit-pinned
@@ -50,14 +50,14 @@ Tool inputs can reuse the requester's earlier messages in the same project and t
 controller checks original event receipts rather than treating assistant replies or memory
 paraphrases as user-supplied values. Destination validation runs inside the conversation loop
 so a proposal can recover missing context and correct itself before dispatch. Access checks and
-private transfer confirmation still apply. `brief` and `memory` display saved content; explicit
+private transfer confirmation still apply. Guide and memory requests display saved content; explicit
 guide or memory edits use a worker and must verify the save before claiming completion.
 Unselected principals retain the legacy fixed-stage router during this rollout. Cancellation
 bypasses queued work and stops the active job without starting another. Only active predecessors
 need a pre-queue natural-language control check.
 
 A verified user who lacks membership in a project published to the current channel gets a message
-naming its owner and the exact `share` command to run in the owner's DM with Mica. Unpublished
+naming its owner and asking them to grant access in their private conversation with Mica. Unpublished
 channels and private conversations keep a generic denial that does not disclose project details.
 
 The new worker calls the Claude Agent SDK directly. It does not invoke Mica's shared task planners,
@@ -192,7 +192,7 @@ Keep this flag false by default and rerun the isolation gate before changing the
    bootstrap while its job is active; neither is stored in job metadata or GCS.
 2. Set `AGENT_DATA_PROJECT=azizilab-aml` to accept any bucket owned by that project. The control
    service needs `roles/storage.bucketViewer` there to discover bucket ownership; each job mounts
-   only its selected bucket read-only. No per-bucket deployment or data copy is needed. `init`
+   only its selected bucket read-only. No per-bucket deployment or data copy is needed. project creation
    accepts `gs://` links and Google Cloud Console/Storage URLs, including Slack link markup.
    `AGENT_DATA_BUCKETS` remains an explicit-list fallback when no project is configured.
 3. Build the worker using the existing deployed science digest:
@@ -222,11 +222,10 @@ Keep this flag false by default and rerun the isolation gate before changing the
 7. Run the Linux isolation and live fixture checks in `docs/acceptance.md` with the pinned worker
    image and real private data mounts. Then cut over Slack only using
    `MICA_SLACK_AGENT_BACKEND=claude_batch` (Terraform: `slack_agent_enabled=true`).
-8. In the existing bot DM, send `init project-slug gs://bucket/prefix/` and review the saved guide. A mention is unnecessary in the DM. New top-level messages start threads;
+8. In the existing bot DM, ask Mica to create a project named project-slug using gs://bucket/prefix/ and review the saved guide. A mention is unnecessary in the DM. New top-level messages start threads;
    reply in the bot's thread to continue an analysis. In a channel, mention the bot on the initial
-   message and commands. Reply with missing details or corrections in ordinary language to revise
-   the shared guide; corrections save automatically and apply on the next turn in every thread. Uploading a UTF-8 `.md` file
-   under 100 KB with `brief` remains an optional way to replace the shared brief.
+   message. Reply with missing details or corrections in ordinary language to revise
+   the shared guide; corrections save automatically and apply on the next turn in every thread. You can attach a Markdown guide and ask Mica to update the saved guide from it.
 
 The local implementation was followed by the user-authorized deployment recorded in
 `slack-agent-deployment.md`. That record is the source of truth for current deployment status.
@@ -250,19 +249,16 @@ There is no infrastructure pricing or spending-approval flow.
 File caching uses at most 400,000 MiB across mounted buckets, with range-read caching enabled. Validate the
 Batch image's gcsfuse flags and available disk space during the canary.
 
-Scoped GCS output writes are available through `write grant`, `write status`, and `write revoke`
+Ask Mica to grant, check or revoke scoped GCS output writes
 in DMs after administrator configuration. Omit the grant duration for no expiry (until revoked).
 See [Slack write access](slack-write-access.md) for examples, limits, and the cloud configuration.
 
-Project controls: `init <slug> gs://bucket/prefix/` creates and selects a project, `switch` lists
-your projects in a DM with copyable commands, and `switch <name or ID>` selects one for new
-threads. The compact `init`/`switch` guide appears in unlinked chats and after initialization.
-`help` shows every command in a grouped bullet list (`help all` is an alias). Init automatically
-changes the DM's selection and
-includes a command to switch back to the previous project. `use <project>` and `projects` remain
-aliases.
+Ask Mica to create, list, select or rename projects in plain language. Creating a project needs
+its name and exact data location. A selection in a new message can continue with a dataset lookup
+in one reply; selections in established threads only change the default for new messages.
 
-`brief` shows the current project guide. Guide edits save automatically to shared knowledge,
+
+Ask Mica to show the current project guide. Guide edits save automatically to shared knowledge,
 with history and concurrent-edit protection; `undo knowledge` reverts the most recent save. Omit unknown guide details rather than adding
 guesses or TODO lists. Rebinding does not
 change existing thread data/briefs. Each turn writes changed outputs,
@@ -295,7 +291,7 @@ and [gcsfuse flags](https://docs.cloud.google.com/storage/docs/cloud-storage-fus
 
 ## Initialization and file listings
 
-`init` lists the data folder's immediate visible children through the trusted Google Cloud
+Project creation lists the data folder's immediate visible children through the trusted Google Cloud
 Storage API. Pagination follows every page within a shared 20-second budget, without retries
 or descending into subfolders. Zarr/N5 stores remain opaque; hidden/output paths are excluded.
 Each folder reports `complete`; a timeout or listing error makes it false. No file contents,
@@ -316,7 +312,7 @@ The initial guide is generated without a worker even if the listing is unavailab
 
 Retrying the same project/folder binding preserves its identity and saved brief. Init automatically
 selects the project in your DM; no `--force` is needed. The flag remains accepted for compatibility.
-Both init and `switch` change the default for new threads and preserve existing thread contexts.
+Project creation and selection change the default for new threads and preserve existing thread contexts.
 Spot provisioning latency applies only to subsequent computation.
 
 
@@ -349,8 +345,8 @@ at 3.75 MB each and 2 PDFs at 5 MB each, plus at most 8 KiB of each current text
 Larger or unsupported visuals need a sandbox preview. No OCR, HEIC, SVG rendering, audio, or video
 is provided. For SVG, create a PNG twin. Full-size output files retain their existing retention.
 
-`brief` with one UTF-8 `.md` still replaces the shared brief byte for byte. `brief` with another
-file type is rejected. Send attachments separately from `init` and `save brief`.
+Create the project before sending attachments. To update the guide, attach the source material
+and describe the changes. Mica saves and verifies requested guide edits through its worker.
 
 ## Figures and visual checks
 
@@ -414,7 +410,7 @@ The live bot uses `AGENT_ACCESS_MODE=workspace`: active human members of its Sla
 can use their own private agent DM without joining an access channel. Slack must expose a valid
 email for the member. Projects and personal memory stay private; adding Mica to a channel
 does not publish any DM content. Invite the bot, explicitly `publish <project> #channel` from
-the owner's DM, then mention it with `switch <project>` in that channel. Other people need
+the owner's DM, then ask there to make it the channel's default project and confirm the card. Other people need
 explicit project sharing to invoke it; channel viewers can read replies posted there.
 
 The optional default `AGENT_ACCESS_MODE=channel` admits members of **any enabled access channel** in the
@@ -518,29 +514,29 @@ Slack API references: [channel members](https://docs.slack.dev/reference/methods
 
 
 Projects are private by default. Their opaque IDs are independent of display names: Alice’s
-`liver` and Bob’s `liver` are separate projects with separate `PROJECT.md` files. Repeating init
+`liver` and Bob’s `liver` are separate projects with separate `PROJECT.md` files. Repeating a creation request
 with the same owner, name, and data URI reuses that project; changing the URI requires a new name.
-Each thread retains its selected project even after `switch` changes the default. Send a new
+Each thread retains its selected project even after another project is selected as the default. Send a new
 message outside the existing thread to start with the selected project. Existing threads
 refresh their shared guide on each turn. Guide edits are visible to project members and
 authorized channels. Concurrent conflicting edits are retained in `_unmerged/` for reconciliation.
 
-| Command | Where and effect |
+| Example request | Where and effect |
 | --- | --- |
-| `init liver gs://bucket/folder/` | DM: create/reuse and select your project, save its initial guide, and offer a command to switch back. |
-| `help` / `help all` | Show the same complete, grouped command list. |
-| `switch` (alias: `projects`) | DM: list owned and explicitly shared projects with copyable switch commands; mark the default for new threads. |
-| `switch liver` or `switch p_…` (alias: `use`) | Select a project for new threads. Ambiguous shared names require an ID. |
-| `rename liver liver-atlas` | Owner in DM: change the project name. An ID can replace the old name. Use 3–40 lowercase letters, digits, or hyphens; the new name must not belong to another project you own. |
-| `share liver @user` / `unshare liver @user` | Owner in DM: grant an enabled user or revoke a former member; email links also work. |
-| `publish liver #channel` / `unpublish liver #channel` | Owner in DM: authorize/withdraw replies visible to the entire channel audience. |
-| `switch p_… [--force]` in a channel | Owner selects an explicitly published project; replacing a binding requires its current owner too. |
-| `brief` | View the current shared guide, after an access check. |
-| `cancel` | Cancel queued/active computation after an access check. |
-| `memory [path]` | Show the shared project index or an allowed project-memory file. |
+| Create a liver project using gs://bucket/folder/ | DM: create/reuse and select the project and save its initial guide. |
+| What can you do? | Explain the relevant capabilities in a natural reply. |
+| Which projects can I access? | DM: list owned and shared projects and the current default. |
+| Switch to liver and list its datasets | A new message selects liver and reads its datasets; an established thread keeps its original project. |
+| Rename liver to liver-atlas | Owner in DM: confirm the new name; names use 3–40 lowercase letters, digits or hyphens. |
+| Give Bob access to liver | Owner in DM: confirm collaborator access for the specified email or Slack user. |
+| Allow liver replies in #research | Owner in DM: confirm publication to the channel audience. |
+| Make liver the default project for #research | Owner in DM: confirm binding an already published project; changing it requires ownership of both projects. |
+| Show the project guide or saved memory | Read the current project's saved content after an access check. |
+| Stop | Cancel queued or active computation after an access check. |
+
 
 Renaming preserves the project ID, data location, briefs, saved outputs, sharing, channel
-bindings, and existing threads. Use the new name or unchanged ID in later commands; a legacy
+bindings, and existing threads. Use the new name or unchanged ID in later requests; a legacy
 project whose ID is its original name still accepts that original ID. Renaming does not edit
 old Slack messages or rewrite project names in saved brief text.
 
@@ -551,8 +547,8 @@ can read posted content. Removing membership does not retract previously posted 
 Queued workers recheck access before restoring context and delivering results.
 
 Project memory saves automatically after conversational turns. Correct remembered facts in
-plain language. `memory` shows the project index and `brief` shows its guide. Legacy `remember`,
-`forget`, `memory context` and `forget context` workflows are retired. Memory is advisory data,
+plain language. Ask to see the project index or its guide, or describe what should be remembered
+or corrected. Memory is advisory data,
 never authorization or proof that a scientific claim is verified. See
 [project memory](project-memory.md) for budgets, ordering, migration and retention.
 
@@ -613,7 +609,7 @@ memory are in GCP; the laptop does not need to remain running.
 
 `knowledge/PROJECT.md` records project purpose, data locations, file/folder uses and verified
 metadata. Guide updates save automatically. Preferences, observations, results and pending work
-use the corresponding project-memory entries. `brief` displays the guide.
+use the corresponding project-memory entries. Ask Mica to show the guide.
 
 The router reads project memory, the current thread's compact summary and uncovered log entries,
 then the last four verbatim exchanges from its working checkpoint. `THREADS.md` lists project
@@ -710,7 +706,7 @@ verified messages are accepted. DKIM must align exactly with the sender's domain
 unsigned and unaligned mail is silently dropped. Gmail aliases and sent messages cannot trigger
 reply loops. The Slack email allowlist is not an email membership gate.
 
-Send `projects` to list your projects, or `switch <project>` to select the default for new threads
+Ask Mica to list your projects or select the default for new threads
 in both email and Slack DMs. Existing conversations keep their project. A single legacy DM default
 is inherited; conflicting defaults require an explicit switch. Private email history belongs to
 one sender in one Gmail thread; adding another sender does not grant access to that history.
@@ -727,7 +723,7 @@ checkpoints and project knowledge continue to work normally.
 
 ### Session upload cards
 
-`import session` opens a project-scoped workflow in a Slack DM. Natural-language import
+Ask Mica to import a Claude Code session in a Slack DM. This opens a project-scoped workflow. Import
 requests use the same command. The modal accepts one Claude Code JSONL file, optional
 highlights, and an optional request to perform after the verified import review.
 Slack's [file input element](https://docs.slack.dev/reference/block-kit/block-elements/file-input-element/)

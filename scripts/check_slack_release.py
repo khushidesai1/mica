@@ -19,6 +19,7 @@ from mica.agents.analysis import (
     access,
     amendments,
     attachments,
+    command_intent,
     commands,
     conversation,
     direct,
@@ -330,34 +331,31 @@ def check(source: Path, mode: str) -> None:
         assert path in proposal.rejected and path not in proposal.changes
         print("MEMORY_ARCHIVE_PAGES_AND_WORKER_COMPATIBILITY_VERIFIED")
         print("GITHUB_MEMORY_SNAPSHOT_AND_GUIDE_POLICY_VERIFIED")
-        for text in ("help", "help all", "help write", "write help"):
-            cmd = commands.parse(text)
-            assert cmd is not None
-            reply = commands.run(
-                cmd,
-                grant,
-                Registry(store),
-                None,
-                {"payload": {"team_id": "T", "event": {"channel": "D"}}},
-                "help",
-                settings,
-            )
-            assert all(
-                word in reply
-                for word in (
-                    "write grant",
-                    "write status",
-                    "write revoke",
-                    "until revoked",
-                    "overwrites",
-                    "project's linked bucket",
-                )
-            )
-            assert "new files only" not in reply
-        assert commands.parse("write grant test gs://test/exports/").args == (
-            "test",
-            "gs://test/exports/",
+        assert not hasattr(commands, "parse")
+        cmd = command_intent.command(command_intent.Proposal(operation="help"), grant)
+        reply = commands.run(
+            cmd, grant, Registry(store), None,
+            {"payload": {"team_id": "T", "event": {"channel": "D"}}}, "help", settings,
         )
+        assert isinstance(reply, dict)
+        assert all(word in reply["guide"] for word in (
+            "write administrators", "duration", "Existing-file replacements",
+            "separate confirmation",
+        ))
+        assert "write grant" not in reply["guide"]
+        write = command_intent.command(command_intent.Proposal(
+            operation="write grant", selector="test", scope="gs://test/exports/", duration="1h",
+        ), grant)
+        assert write.args == (pid, "gs://test/exports/", "1h")
+        assert commands.spec(write.name).approval
+        assert command_intent.terminal(write, grant, {"event_id": "image-gate"})
+        write_access.validate_project(write.args[1], doc, pid, grant.email)
+        try:
+            write_access.validate_project("gs://other/exports/", doc, pid, grant.email)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Write scope escaped the linked bucket")
         assert "no expiry" in write_access.description(
             write_access.WriteGrant(
                 id="a" * 32,
@@ -367,7 +365,7 @@ def check(source: Path, mode: str) -> None:
                 created_at=write_access.now(),
             )
         )
-        print("WRITE_COMMANDS_AND_HELP_VERIFIED")
+        print("NATURAL_OPERATIONS_HELP_AND_WRITE_POLICY_VERIFIED")
         if mode == "worker":
             check_worker(work, source, settings)
 

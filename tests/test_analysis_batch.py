@@ -605,14 +605,13 @@ async def test_dynamic_project_buckets_and_outside_project_rejection(bridge, mon
     )
     monkeypatch.setattr(storage, "Client", lambda: SimpleNamespace(list_buckets=catalog))
     bridge.settings.data_project = "existing-project"
-    first = await bridge.accept(
-        payload(
-            text=(
-                "init new-project <https://console.cloud.google.com/storage/browser/"
-                "new-data/folder?project=existing-project|data> --force"
-            )
-        )
-    )
+    from analysis_helpers import save_command
+
+    from mica.agents.analysis.command_intent import Proposal
+
+    first = await bridge.accept(payload(text="Create new-project at gs://new-data/folder"))
+    await save_command(bridge, first, Proposal(operation="init", selector="new-project",
+                                              scope="gs://new-data/folder"))
 
     conversation.run.return_value = conversation.Decision(
         route="reply", reply="Draft.", guide="New brief"
@@ -630,6 +629,8 @@ async def test_dynamic_project_buckets_and_outside_project_rejection(bridge, mon
         == "new-data"
     )
     other = await bridge.accept(payload("2.0", text="init other-project gs://outside-project/"))
+    await save_command(bridge, other, Proposal(
+        operation="init", selector="other-project", scope="gs://outside-project/"))
     assert await bridge.process(other, 0) == "failed"
     assert bridge.test_client.create_job.call_count == 1
     assert "outside-project" in bridge.test_slack.chat_update.call_args.kwargs["text"]

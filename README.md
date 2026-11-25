@@ -11,10 +11,11 @@ Mica is a **Slack agent with a headless backend**. The Slack agent follows the
 HTTP webhook, Cloud Run service, connections, and GCP Batch Spot jobs. See
 [Slack setup and rollout](docs/slack-agent-setup.md) for configuration.
 
-In the agent DM: `init <name> gs://bucket/folder/` creates and selects a project, with a command
-to switch back to the previous one; `switch` lists your
-projects; `switch <name or ID>` selects one for new threads. Existing threads keep their project.
-Send `help` for this quick guide or `help all` for every command.
+In Mica's DM, describe what you want: “Create a liver project using gs://bucket/folder/”,
+“Which projects can I access?”, or “Switch to liver and show its datasets”. A new message can
+select a project and continue the request in one reply. Existing threads keep their original
+project and workspace; selecting another project there changes the default for new messages.
+Project access changes need a confirmation button in your private Slack conversation.
 
 Attach images, PDFs, tables, or text directly in a project thread. Mica can answer visual
 questions about supported images/PDFs in chat and use a compute worker for analysis or editing.

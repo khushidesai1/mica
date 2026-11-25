@@ -148,7 +148,12 @@ async def test_account_connection_completes_instead_of_leaving_on_it(bridge):
     bridge.app.signed_link_secret = KEY
     bridge.settings.transfers_enabled = True
     bridge.test_slack.conversations_open.side_effect = refusal()
+    from analysis_helpers import save_command
+
+    from mica.agents.analysis.command_intent import Proposal
+
     event_id = await bridge.accept(payload(text="connect atomx"), principal=A)
+    await save_command(bridge, event_id, Proposal(operation="connect atomx"))
     connection = atomx_connections.Connections(bridge.app, bridge.settings, bridge.repository)
     old = await connection.issue(A, "connection", event_id)
     key = "atomx-link:" + old.split("#")[1].split(".")[0]

@@ -56,6 +56,7 @@ class Binding(BaseModel):
 
 
 class Operation(BaseModel):
+    principal: str = ""
     fingerprint: str
     result: str
 
@@ -222,13 +223,16 @@ class RegistryDoc(BaseModel):
             if not self.owns(project_id, email):
                 raise ValueError("Only the project owner can bind a channel.")
             if key not in self.projects[project_id].published_channels:
-                raise ValueError("First authorize this channel's audience with publish in a DM.")
+                raise ValueError("First ask me in your DM to authorize this channel’s audience.")
             if old and old in self.projects and not self.owns(old, email):
                 raise ValueError("Only the current project's owner can change this binding.")
         if old == project_id:
             return
         if old and not force and not private:
-            raise ValueError("This channel is already linked. Use --force to change it.")
+            raise ValueError(
+                "This channel already has a project. "
+                "Ask me in your DM to change it with confirmation."
+            )
         self.bindings[key] = Binding(project_id=project_id, bound_by=email)
 
     def create_and_bind(
@@ -322,6 +326,12 @@ class RegistryDoc(BaseModel):
         return project_id
 
 
+def applied(doc: RegistryDoc, event_id: str, email: str, operation: str) -> bool:
+    fingerprint = hashlib.sha256((email + "\0" + operation).encode()).hexdigest()
+    prior = doc.applied_events.get(f"{event_id}:{fingerprint}") or doc.applied_events.get(event_id)
+    return bool(prior and prior.fingerprint == fingerprint)
+
+
 class Registry:
     def __init__(self, storage: Storage) -> None:
         self.storage = storage
@@ -339,15 +349,23 @@ class Registry:
     ) -> str:
         fingerprint = hashlib.sha256((email + "\0" + operation).encode()).hexdigest()
 
+        receipt = f"{event_id}:{fingerprint}"
+
         def apply(doc: RegistryDoc) -> None:
             doc._all_projects = lab.load(self.storage).all_projects
-            prior = doc.applied_events.get(event_id)
-            if prior:
-                if prior.fingerprint != fingerprint:
-                    raise ValueError("Event identity was reused for a different operation.")
+            legacy = doc.applied_events.get(event_id)
+            if legacy and legacy.fingerprint != fingerprint:
+                raise ValueError("Event identity was reused for a different operation.")
+            if any(row.principal and row.principal != email
+                   for key, row in doc.applied_events.items() if key.startswith(event_id + ":")):
+                raise ValueError("Event identity was reused by a different requester.")
+            prior = doc.applied_events.get(receipt) or legacy
+            if prior and prior.fingerprint == fingerprint:
                 return
             result = change(doc)
-            doc.applied_events[event_id] = Operation(fingerprint=fingerprint, result=result)
+            doc.applied_events[receipt] = Operation(
+                principal=email, fingerprint=fingerprint, result=result,
+            )
 
         updated = update_model(self.storage, REGISTRY_KEY, RegistryDoc, apply)
-        return updated.applied_events[event_id].result
+        return (updated.applied_events.get(receipt) or updated.applied_events[event_id]).result

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 import pytest
 from test_analysis_batch import bridge, payload  # noqa: F401
 
-from mica.agents.analysis import command_approval, commands, conversation
+from mica.agents.analysis import command_approval, conversation
 from mica.agents.analysis.command_intent import Proposal
 from mica.agents.analysis.registry import Registry
 
@@ -31,36 +31,8 @@ def chat(bridge, monkeypatch):  # noqa: F811
     return bridge
 
 
-@pytest.mark.parametrize(
-    ("text", "name"),
-    [
-        ("projects", "projects"),
-        ("switch", "projects"),
-        ("brief", "brief"),
-        ("memory notes/findings.md", "memory"),
-        ("scripts on", "scripts"),
-        ("share liver bob@example.com", "share"),
-        ("share liver <@U2>", "share"),
-        ("publish liver <#C123|research>", "publish"),
-        ("rename liver liver-new", "rename"),
-        ("write revoke liver", "write revoke"),
-        ("share the figure", None),
-        ("unshare the plot", None),
-        ("publish these results", None),
-        ("rename this project", None),
-        ("scripts please", None),
-        ("transfer the samples when you get a chance", None),
-        ("write a script", None),
-    ],
-)
-def test_exact_grammar_declines_prose(text, name):
-    result = commands.parse(text)
-    assert (result.name if result else None) == name
 
 
-def test_near_command_typo_still_has_usage_error():
-    with pytest.raises(ValueError, match="scripts on"):
-        commands.parse("scripts onn")
 
 
 async def test_projects_before_project_admission_and_memory_and_replay(chat):
@@ -190,7 +162,7 @@ async def test_mutation_requires_confirmation_pins_target_and_replays_once(chat)
     await command_approval.handle(chat, chat.store, action(eid))
     doc = Registry(chat.store).load()
     assert doc.projects[chat.pid].name == "liver-renamed"
-    assert eid in doc.applied_events
+    assert any(key.startswith(eid + ":") for key in doc.applied_events)
     await command_approval.handle(chat, chat.store, action(eid))
     assert Registry(chat.store).load().projects[chat.pid].name_revision == 1
 
@@ -232,12 +204,15 @@ async def test_target_change_invalidates_preview_even_when_active_project_unchan
 
 
 async def test_project_list_records_numbered_choices_for_followups(chat):
+    chat.intent.return_value = conversation.Decision(
+        route="command", reply="List projects",
+        command_proposal=Proposal(operation="projects").model_dump())
     eid = await chat.accept(payload(text="projects"))
     await chat.process(eid, 0)
     record = await chat.repository.get_connector_state("claude-event:" + eid)
     pending = await chat.repository.get_connector_state("command-context:" + record["thread_key"])
     assert pending["context"]["choices"][0] == {"id": chat.pid, "name": "liver"}
-    assert "1. liver" in record["notice_text"]
+    assert "liver" in record["notice_text"]
 
 
 async def test_confirmation_button_failure_retries_presentation_before_completion(chat):

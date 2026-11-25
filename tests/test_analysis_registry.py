@@ -108,7 +108,7 @@ def test_binding_requires_explicit_audience_publication_and_owner():
     a, b = doc.create(A, "liver", "gs://data/"), doc.create(B, "brain", "gs://data/")
     doc.share(a, A, B)
     doc.bind("T1", "D2", B, a, private=True)
-    with pytest.raises(ValueError, match="publish"):
+    with pytest.raises(ValueError, match="authorize"):
         doc.bind("T1", "C1", A, a, private=False)
     doc.publish(a, A, "T1", "C1")
     doc.bind("T1", "C1", A, a, private=False)

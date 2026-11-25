@@ -1,7 +1,6 @@
 """Normalize supported Google Cloud Storage links, including Slack's link markup."""
 
 import re
-import shlex
 from urllib.parse import unquote, urlsplit
 
 
@@ -39,17 +38,3 @@ def data_uri(link: str) -> str:
     ):
         raise ValueError("Invalid bucket or folder path.")
     return f"gs://{bucket}{path or '/'}"
-
-
-def init_args(text: str) -> tuple[str, str, bool] | None:
-    text = message_text(text)
-    if text.lower().split(maxsplit=1)[:1] != ["init"]:
-        return None
-    args = shlex.split(text)
-    force = "--force" in args
-    args = [x for x in args if x != "--force"]
-    if len(args) != 3:
-        raise ValueError("Usage: init <project-slug> gs://bucket/prefix/")
-    if not re.fullmatch(r"[a-z0-9-]{3,40}", args[1]):
-        raise ValueError("Use a project name of 3–40 lowercase letters, numbers or hyphens.")
-    return args[1], data_uri(args[2]), force

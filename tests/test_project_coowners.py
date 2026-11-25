@@ -1,13 +1,16 @@
 """Project role changes preserve ownership and use the existing approval boundary."""
 
 # ruff: noqa: F811
+
 import pytest
+from analysis_helpers import save_command
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_email_project_access import intake
 from test_gmail_intake import SENDER, mail, signing  # noqa: F401
 from test_natural_language_commands import action, chat  # noqa: F401
 
 from mica.agents.analysis import access, command_approval, command_intent, conversation, direct
+from mica.agents.analysis.command_intent import Proposal
 from mica.agents.analysis.registry import Registry, RegistryDoc
 
 A, B, C = "alice@example.com", "bob@example.com", "carol@example.com"
@@ -75,12 +78,12 @@ async def test_owner_change_requires_confirmation_and_replay_cannot_repromote(ch
     text = "add-owner liver <@U2>"
     if natural:
         text = "Make <@U2> an owner of this project"
-        chat.intent.return_value = conversation.Decision(reply="Request received.",
-            route="command",
-            command_proposal=command_intent.Proposal(
-                operation="add-owner", selector="this project", target="<@U2>"
-            ).model_dump(),
-        )
+    chat.intent.return_value = conversation.Decision(reply="Request received.",
+        route="command",
+        command_proposal=command_intent.Proposal(
+            operation="add-owner", selector="this project", target="<@U2>"
+        ).model_dump(),
+    )
     eid = await chat.accept(payload(text=text))
     assert await chat.process(eid, 0) == "complete"
     registry = Registry(chat.store)
@@ -115,27 +118,35 @@ async def test_member_cannot_promote_and_role_listing_is_private(chat):
     registry = Registry(chat.store)
     registry.update("share", A, "share", lambda d: d.share(chat.pid, A, B))
     eid = await chat.accept(payload(text=f"add-owner liver {C}", user="U2", channel="D2"))
+    await save_command(chat, eid, Proposal(operation="add-owner", selector="liver", target=C))
     assert await chat.process(eid, 0) == "failed"
     assert not registry.load().owns(chat.pid, C)
     eid = await chat.accept(payload("2.0", text="owners liver"))
+    await save_command(chat, eid, Proposal(operation="owners", selector="liver"))
     assert await chat.process(eid, 0) == "complete"
     record = await chat.repository.get_connector_state("claude-event:" + eid)
     assert A in record["notice_text"] and record["reply_scope"] == "account"
     eid = await chat.accept(
         payload("3.0", text="owners liver", channel="C1", channel_type="channel")
     )
-    assert await chat.process(eid, 0) == "failed"
+    await save_command(chat, eid, Proposal(operation="owners", selector="liver"))
+    assert await chat.process(eid, 0) == "complete"
+    record = await chat.repository.get_connector_state("claude-event:" + eid)
+    assert "private" in record["notice_text"] and A not in record["notice_text"]
 
 
 async def test_email_lists_owners_but_cannot_change_roles(mail):
     registry = Registry(mail.store)
     registry.update("coowner", SENDER, "add-owner", lambda d: d.set_co_owner(mail.pid, SENDER, B))
     eid, record = await intake(mail, "owners", B, "owners liver")
+    record = await save_command(mail, eid, Proposal(operation="owners", selector="liver"))
     assert await direct.handle(mail, eid, record, mail.store)
     assert B in record["notice_text"] and SENDER in record["notice_text"]
     assert record["reply_scope"] == "account"
     assert access.resolve(mail.app, mail.settings, mail.store, record).allowed
     eid, record = await intake(mail, "owner-change", B, f"add-owner liver {C}")
+    record = await save_command(mail, eid, Proposal(
+        operation="add-owner", selector="liver", target=C))
     assert await direct.handle(mail, eid, record, mail.store)
     assert "Slack DM" in record["notice_text"]
     assert not registry.load().owns(mail.pid, C)

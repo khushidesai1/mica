@@ -1,6 +1,7 @@
 """Email outbox, semantic worker result, authorization and MIME delivery tests."""
 
 # ruff: noqa: F811
+
 import base64
 import hashlib
 import json
@@ -10,6 +11,7 @@ from email.parser import BytesParser
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from analysis_helpers import save_command
 from fastapi import HTTPException, Response
 from starlette.requests import Request
 from test_analysis_batch import bridge, payload  # noqa: F401
@@ -17,6 +19,7 @@ from test_analysis_slack import bot, event, send  # noqa: F401
 from test_gmail_intake import SENDER, email_record, mail, signing  # noqa: F401
 
 from mica.agents.analysis import access, conversation, direct, email_delivery, surface
+from mica.agents.analysis.command_intent import Proposal
 from mica.agents.analysis.email_delivery import Artifact, TerminalResult, artifact_prefix, deliver
 from mica.agents.analysis.registry import Registry
 from mica.agents.analysis.transport import EmailWorkerTransport
@@ -86,6 +89,7 @@ async def test_only_final_reply_with_membership_and_threading(mail):
 
 async def test_email_process_ignores_unconfirmed_old_ack_and_retries_only_final(mail):
     eid, record = await email_record(mail)
+    await save_command(mail, eid, Proposal(operation="projects"))
     # An acknowledgement lost during an older deployment must not hold up the answer.
     mail.store.put(
         f"projects/_gmail/outbox/{eid}/ack.json", b'{"status":"sending"}'

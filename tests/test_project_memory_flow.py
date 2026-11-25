@@ -10,6 +10,7 @@ from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
 from mica.agents.analysis import conversation, direct, job_lifecycle, memory_tasks, project_memory
+from mica.agents.analysis.commands import Command
 
 CONVENTION = (
     "type: user\nsource: alice@example.com, 2026-10-10\nstatus: current\n\n"
@@ -119,8 +120,8 @@ async def test_dm_fact_is_shared_with_channel_but_not_another_project(memory_cha
     )
     await message(chat, "We always use viridis for heatmaps", "1.0")
     monkeypatch.setattr(memory_tasks, "edit", AsyncMock(return_value=memory_edits({})))
-    await message(chat, "publish liver <#C1>", "2.0")
-    await message(chat, "use liver", "3.0", channel="C1")
+    await message(chat, Command('publish', ('liver', '<#C1>',)), "2.0")
+    await message(chat, Command('use', ('liver',)), "3.0", channel="C1")
     await message(chat, "What colormap?", "4.0", channel="C1")
     assert "viridis" in chat.decision.call_args.args[5]["project_memory"]
     from analysis_helpers import seed_project
@@ -153,8 +154,8 @@ async def test_edits_other_init_and_share_keep_older_thread_state(memory_chat, m
     chat.decision.return_value = conversation.Decision(
         route="reply", reply="Ready.", guide="# Other guide"
     )
-    await message(chat, "init other gs://lab-data/other/ --force", "2.0")
-    await message(chat, "share other <@U2>", "3.0")
+    await message(chat, Command('init', ('other', 'gs://lab-data/other/',), force=True), "2.0")
+    await message(chat, Command('share', ('other', '<@U2>',)), "3.0")
     chat.decision.return_value = conversation.Decision(route="reply", reply="We use viridis.")
     await message(chat, "Which colormap?", "4.0", thread="1.0")
     after = json.loads(chat.store.get(key)[0])
@@ -222,7 +223,7 @@ async def test_memory_lists_saved_convention_before_first_index(memory_chat, mon
         memory_tasks, "edit", AsyncMock(return_value=memory_edits({"conventions.md": CONVENTION}))
     )
     await message(chat, "We use viridis for heatmaps", "1.0")
-    shown = await message(chat, "memory", "2.0")
+    shown = await message(chat, Command('memory'), "2.0")
     assert "conventions.md" in shown["notice_text"]
-    shown = await message(chat, "memory conventions.md", "3.0")
+    shown = await message(chat, Command('memory', ('conventions.md',)), "3.0")
     assert "viridis" in shown["notice_text"] and "alice@example.com" in shown["notice_text"]

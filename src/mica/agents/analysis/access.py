@@ -16,7 +16,6 @@ from urllib.parse import urlsplit
 
 from . import surface
 from .config import Settings
-from .help_text import PROJECT_HELP
 from .identity import NOT_ENABLED, IdentityUnavailable, is_private, resolve_email, user_key
 from .registry import ProjectEntry, Registry, RegistryDoc
 from .storage import Storage
@@ -64,6 +63,28 @@ class AccessMonitor:
 
 def checkpoint_key(thread_key: str) -> str:
     return f"projects/_threads/{thread_key}/checkpoint.json"
+
+
+def unused_context(state: dict[str, Any], event_id: str) -> bool:
+    if state.get("messages") or state.get("turn"):
+        return False
+    origin = state.get("conversation_origin_event")
+    return origin == event_id or (not state.get("context") and not origin)
+
+
+async def detach_thread(storage: Storage, record: dict[str, Any], event_id: str) -> None:
+    """Discard only the unused project context created by this event, using its generation."""
+    path = checkpoint_key(record["thread_key"])
+    try:
+        raw, generation = await asyncio.to_thread(storage.get, path)
+    except FileNotFoundError:
+        return
+    state = json.loads(raw)
+    if not unused_context(state, event_id):
+        return
+    # Thread attachments, SDK and memory metadata belong to the discarded project too.
+    identity = {"private_owner": state["private_owner"]} if state.get("private_owner") else {}
+    await asyncio.to_thread(storage.put_if, path, json.dumps(identity).encode(), generation)
 
 
 def run_root(private: bool, email: str, project_id: str, thread_key: str, thread_ts: str) -> str:
@@ -128,7 +149,9 @@ def resolve(app: Any, settings: Settings, storage: Storage, record: dict[str, An
         state = {}
     if surface.is_email(record) and state and state.get("private_owner") != email:
         return Grant("", True, {}, doc, "", False, channel_key)
-    project_id = state.get("context", {}).get("project_slug") or doc.active_for(
+    selection = record.get("project_reentry") or {}
+    project_id = (state.get("context", {}).get("project_slug")
+                  or selection.get("project_id")) or doc.active_for(
         email, team, event["channel"], private=private
     )
     project_id = str(project_id or "")
@@ -154,14 +177,9 @@ def resolve(app: Any, settings: Settings, storage: Storage, record: dict[str, An
 def deny_text(grant: Grant) -> str:
     if not grant.email:
         return NOT_ENABLED
-    if not grant.project_id and grant.identity_policy == surface.EMAIL_POLICY:
-        return (
-            "This email conversation has no project selected. Reply with “List my projects”, "
-            "then “Use <project name>”. Project owners and members can use email without "
-            "publishing to a Slack channel."
-        )
     if not grant.project_id:
-        return "This chat isn't linked to a project. In your DM with Mica:\n" + PROJECT_HELP
+        return ("Which project is this for? Name one of yours, or point me at the data folder "
+                "and I'll set one up.")
     if grant.project_id not in grant.doc.projects:
         return "This thread's project is unavailable."
     project = grant.project
@@ -170,11 +188,10 @@ def deny_text(grant: Grant) -> str:
         and grant.channel_key in project.published_channels
         and not grant.doc.can_use(grant.project_id, grant.email)
     ):
-        selector = grant.doc.selector(grant.project_id, project.owner)
         return (
             f"You don't have access to `{project.name}` yet. "
-            f"Ask {escape(project.owner, quote=False)} to run "
-            f"`share {selector} {escape(grant.email, quote=False)}` in their DM with Mica."
+            f"Ask {escape(project.owner, quote=False)} to give {escape(grant.email, quote=False)} "
+            "access in their private conversation with Mica."
         )
     return (
         "This conversation uses a private project or an unpublished channel. "

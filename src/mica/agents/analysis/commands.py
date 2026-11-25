@@ -1,4 +1,4 @@
-"""Exact command grammar and owner-controlled account operations."""
+"""Trusted account operations and their execution/approval policy."""
 
 from __future__ import annotations
 
@@ -9,19 +9,14 @@ from typing import Any
 from . import observability, surface
 from .access import Grant
 from .config import Settings
-from .data_links import data_uri, init_args, message_text
-from .help_text import COMMAND_HELP, PROJECT_HELP, WRITE_DETAILS, WRITE_HELP
+from .help_text import CAPABILITIES
 from .identity import member_email
 from .registry import ProjectEntry, Registry, RegistryDoc
 
 
 @dataclass(frozen=True)
 class Spec:
-    """Command policy. Grammar and handlers remain explicit below.
-
-    dm_only is natural-language selection policy; exact_dm_only preserves the
-    existing exact-command channel binding behavior for `use`.
-    """
+    """Policy shared by structured proposals, execution and confirmation cards."""
 
     approval: bool = False
     dm_only: bool = False
@@ -29,22 +24,20 @@ class Spec:
     email_read_only: bool = False
     sender_reply: bool = False
     recipient: bool = False
+    channel: bool = False
     natural: bool = False
-    bare: bool = False
     registry: bool = False
     connection: bool = False
     transfer: bool = False
     exact_approval: bool = False
     arguments: str = "custom"
-    removed: str = ""
+    handoff: bool = False
+    mutating: bool = False
 
-
-MEMORY_CHANGED = (
-    "Mica now remembers and tidies project memory itself. Use `memory` to see it, "
-    "or just tell me what's wrong."
-)
 
 COMMANDS: dict[str, Spec] = {
+    "bind channel": Spec(channel=True, approval=True, dm_only=True, exact_dm_only=True,
+        email_read_only=True, natural=True, registry=True),
     "add-owner": Spec(
         approval=True,
         exact_dm_only=True,
@@ -58,18 +51,17 @@ COMMANDS: dict[str, Spec] = {
     "atomx login status": Spec(
         sender_reply=True,
         natural=True,
-        bare=True,
         connection=True,
         transfer=True,
         arguments="none",
         dm_only=True,
     ),
-    "brief": Spec(natural=True, bare=True, arguments="none"),
-    "cancel": Spec(natural=True, bare=True, arguments="none"),
-    "cancel transfer": Spec(transfer=True),
-    "clean brief": Spec(bare=True, removed=MEMORY_CHANGED),
+    "brief": Spec(natural=True, arguments="none"),
+    "cancel": Spec(natural=True, arguments="none", handoff=True),
+    "cancel transfer": Spec(transfer=True, natural=True, handoff=True),
     "connect atomx": Spec(
-        sender_reply=True, natural=True, bare=True, connection=True, arguments="none", dm_only=True
+        sender_reply=True, natural=True, connection=True, arguments="none", dm_only=True,
+        handoff=True
     ),
     "data-root": Spec(
         approval=True,
@@ -80,20 +72,12 @@ COMMANDS: dict[str, Spec] = {
         exact_approval=True,
         dm_only=True,
     ),
-    "forget": Spec(removed=MEMORY_CHANGED),
-    "forget atomx login": Spec(sender_reply=True, bare=True, connection=True, transfer=True),
-    "forget context": Spec(bare=True, removed=MEMORY_CHANGED),
-    "forget knowledge": Spec(removed=MEMORY_CHANGED),
-    "help": Spec(sender_reply=True, natural=True, bare=True, arguments="none"),
-    "help all": Spec(sender_reply=True, bare=True),
-    "help write": Spec(email_read_only=True, bare=True),
-    "init": Spec(natural=True, dm_only=True),
-    "import session": Spec(natural=True, dm_only=True, bare=True, arguments="none"),
-    "knowledge": Spec(bare=True, removed=MEMORY_CHANGED),
-    "knowledge github": Spec(removed=MEMORY_CHANGED),
-    "knowledge show": Spec(removed=MEMORY_CHANGED),
-    "memory": Spec(natural=True, bare=True, arguments="none"),
-    "memory context": Spec(bare=True, removed=MEMORY_CHANGED),
+    "forget atomx login": Spec(sender_reply=True, connection=True, transfer=True, natural=True,
+        dm_only=True, handoff=True, arguments="none"),
+    "help": Spec(sender_reply=True, natural=True, arguments="none"),
+    "init": Spec(natural=True, dm_only=True, handoff=True),
+    "import session": Spec(natural=True, dm_only=True, handoff=True, arguments="none"),
+    "memory": Spec(natural=True, arguments="none"),
     "owners": Spec(
         exact_dm_only=True,
         sender_reply=True,
@@ -106,12 +90,12 @@ COMMANDS: dict[str, Spec] = {
         exact_dm_only=True,
         sender_reply=True,
         natural=True,
-        bare=True,
         registry=True,
         arguments="none",
         dm_only=True,
     ),
     "publish": Spec(
+        channel=True,
         approval=True,
         exact_dm_only=True,
         email_read_only=True,
@@ -119,7 +103,6 @@ COMMANDS: dict[str, Spec] = {
         registry=True,
         dm_only=True,
     ),
-    "remember": Spec(removed=MEMORY_CHANGED),
     "remove-owner": Spec(
         approval=True,
         exact_dm_only=True,
@@ -138,7 +121,8 @@ COMMANDS: dict[str, Spec] = {
         registry=True,
         dm_only=True,
     ),
-    "replace atomx login": Spec(sender_reply=True, bare=True, connection=True, transfer=True),
+    "replace atomx login": Spec(sender_reply=True, connection=True, transfer=True, natural=True,
+        dm_only=True, handoff=True, arguments="none"),
     "repos": Spec(exact_dm_only=True, natural=True, registry=True),
     "repos add": Spec(
         approval=True,
@@ -158,8 +142,7 @@ COMMANDS: dict[str, Spec] = {
         exact_approval=True,
         dm_only=True,
     ),
-    "save brief": Spec(bare=True, removed=MEMORY_CHANGED),
-    "scripts": Spec(sender_reply=True, natural=True),
+    "scripts": Spec(sender_reply=True, natural=True, mutating=True),
     "share": Spec(
         approval=True,
         exact_dm_only=True,
@@ -170,9 +153,9 @@ COMMANDS: dict[str, Spec] = {
         dm_only=True,
     ),
     "transfer": Spec(transfer=True),
-    "transfers": Spec(natural=True, bare=True, transfer=True, arguments="none"),
-    "undo knowledge": Spec(bare=True, removed=MEMORY_CHANGED),
+    "transfers": Spec(natural=True, transfer=True, arguments="none"),
     "unpublish": Spec(
+        channel=True,
         approval=True,
         exact_dm_only=True,
         email_read_only=True,
@@ -189,7 +172,8 @@ COMMANDS: dict[str, Spec] = {
         registry=True,
         dm_only=True,
     ),
-    "use": Spec(sender_reply=True, natural=True, registry=True, arguments="project", dm_only=True),
+    "use": Spec(sender_reply=True, natural=True, registry=True, arguments="project",
+        dm_only=True, mutating=True),
     "write grant": Spec(approval=True, email_read_only=True, natural=True, dm_only=True),
     "write revoke": Spec(
         approval=True, email_read_only=True, natural=True, arguments="project", dm_only=True
@@ -209,129 +193,54 @@ class Command:
     force: bool = False
 
 
-def parse(raw: str) -> Command | None:
+def cancel_message(raw: str) -> bool:
+    """The sole text shortcut, also used by Slack's native Stop control."""
     text = re.sub(r"^(?:\s*<@[A-Z0-9]+>\s*)+", "", raw).strip()
-    lower = text.lower()
-    if spec(lower).bare:
-        return Command(lower)
-    if lower == "switch":
-        return Command("projects")
-    if lower.split(maxsplit=1)[:1] == ["init"]:
-        args = init_args(text)
-        assert args is not None
-        return Command("init", (args[0], args[1]), args[2])
-    words = text.split()
-    if not words:
-        return None
-    action = words[0].lower()
-    if action == "repos":
-        if len(words) == 1 or (len(words) == 2 and words[1].lower() not in {"add", "remove"}):
-            return Command("repos", tuple(words[1:]))
-        if len(words) in {3, 4} and words[1].lower() in {"add", "remove"}:
-            from .reference_repos import valid_repo
-
-            return Command(
-                "repos " + words[1].lower(),
-                (words[3] if len(words) == 4 else "", valid_repo(words[2])),
-            )
-        raise ValueError(
-            "Use repos [project], repos add azizilab/repo [project], "
-            "or repos remove azizilab/repo [project]."
-        )
-    if action == "data-root":
-        words = message_text(text).split()
-        if len(words) != 3:
-            raise ValueError("Use data-root <project name or ID> gs://bucket/folder/.")
-        return Command("data-root", (words[1], data_uri(words[2])))
-    if action == "memory" and len(words) == 2:
-        return Command("memory", (words[1],))
-    if action == "scripts":
-        if len(words) == 1:
-            return Command("scripts")
-        if len(words) == 2 and words[1].lower() in {"on", "off"}:
-            return Command("scripts", (words[1].lower(),))
-        if len(words) == 2 and words[1].lower() in {"onn", "of", "ofv", "maybe"}:
-            raise ValueError("Use scripts, scripts on or scripts off.")
-        return None
-    if action == "knowledge" and len(words) == 3 and words[1].lower() == "show":
-        return Command("knowledge show", (words[2],))
-    if action == "knowledge" and len(words) == 3 and words[1].lower() == "github":
-        if words[2].lower() not in {"on", "off"}:
-            raise ValueError("Use knowledge github on or knowledge github off.")
-        return Command("knowledge github", (words[2].lower(),))
-    if action == "forget" and len(words) == 3 and words[1].lower() == "knowledge":
-        return Command("forget knowledge", (words[2],))
-    if action == "cancel" and len(words) == 3 and words[1].lower() == "transfer":
-        return Command("cancel transfer", (words[2],))
-    if action == "transfer":
-        import shlex
-
-        from .transfer_config import TransferRequest
-
-        words = shlex.split(message_text(text))
-        if len(words) not in {2, 4, 6}:
-            return None
-        transfer_args = {"sample": words[1]}
-        for i in range(2, len(words), 2):
-            field = {"as": "as_sample", "from": "export_root"}.get(words[i].lower())
-            if not field or field in transfer_args:
-                return None
-            transfer_args[field] = words[i + 1]
-        request = TransferRequest(**transfer_args)
-        return Command("transfer", (request.sample, request.export_root, request.as_sample))
-    if action == "write":
-        from .write_access import USAGE, duration, scope
-
-        words = message_text(text).split()
-        subcommand = words[1].lower() if len(words) > 1 else ""
-        if subcommand == "help" and len(words) == 2:
-            return Command("help write")
-        if subcommand and subcommand not in {"grant", "status", "revoke", "help"}:
-            return None  # Preserve ordinary requests such as "write a script".
-        if subcommand in {"status", "revoke"} and len(words) == 3:
-            return Command(f"write {subcommand}", (words[2],))
-        if subcommand == "grant" and len(words) in {4, 5}:
-            uri = scope(words[3])
-            if len(words) == 5:
-                duration(words[4])  # Invalid durations never become indefinite grants.
-            return Command("write grant", (words[2], uri, *words[4:]))
-        raise ValueError(USAGE)
-    if (
-        action in {"use", "switch"}
-        and len(words) in {2, 3}
-        and (len(words) == 2 or words[2] == "--force")
-    ):
-        return Command("use", (words[1],), len(words) == 3)
-    if action == "owners" and len(words) == 2:
-        return Command("owners", (words[1],))
-    if spec(action).recipient and len(words) == 3:
-        if re.fullmatch(r"<@[A-Z0-9]+(?:\|[^>]+)?>|<mailto:[^>]+>|[^\s@]+@[^\s@]+", words[2]):
-            return Command(action, tuple(words[1:]))
-        return None
-    if action in {"publish", "unpublish"} and len(words) == 3:
-        if re.fullmatch(r"<#([CG][A-Z0-9]+)(?:\|[^>]+)?>|[CG][A-Z0-9]+", words[2]):
-            return Command(action, tuple(words[1:]))
-        return None
-    if action == "rename":
-        if len(words) <= 2:
-            raise ValueError("In your DM, use rename <name or ID> <new-name>.")
-        if len(words) != 3 or words[1].lower() in {"this", "the", "my"}:
-            return None
-        return Command(action, tuple(words[1:]))
-    if action == "remember" and len(words) > 1:
-        content = text.split(maxsplit=1)[1]
-        return Command(action, (content,))
-    if (
-        action == "forget"
-        and len(words) == 2
-        and (words[1].isdigit() or words[1].lower() in {"profile", "preferences", "all"})
-    ):
-        return Command(action, (words[1].lower(),))
-    return None
+    return re.fullmatch(r"[^\w]*(?:cancel|stop)[^\w]*", text, re.I) is not None
 
 
-def removed_memory(cmd: Command) -> bool:
-    return bool(spec(cmd.name).removed)
+def registry_operation(cmd: Command, record: dict[str, Any]) -> str:
+    event = record["payload"]["event"]
+    return f"{cmd.name}:{cmd.args}:{cmd.force}:{record['payload']['team_id']}:{event['channel']}"
+
+
+def legacy_reply(result: dict[str, Any] | str) -> str:
+    """Previously persisted terminal commands still finish without another model turn."""
+    if isinstance(result, str):
+        return result
+    if "message" in result:
+        return str(result["message"])
+    if "guide" in result:
+        return str(result["guide"])
+    if "projects" in result:
+        rows = result["projects"]
+        text = "Your projects:\n" + ("\n".join(
+            row["name"] + (" (new threads)" if row["default"] else "")
+            + " (" + row["id"] + ") · shared by " + row["owner"] for row in rows
+        ) or "No matching projects.")
+        if result["this_thread"] and result["this_thread"] != result["new_threads"]:
+            thread = next((row["name"] for row in rows if row["id"] == result["this_thread"]), "")
+            if thread:
+                text += f"\nThis thread uses {thread}."
+        return text
+    if "new_threads" in result:
+        return (f"New threads will use {result['new_threads']['name']}. "
+                "Send a new message outside this thread to work there; "
+                "existing threads keep their project.")
+    if "return_scripts" in result:
+        return ("I'll attach one ZIP of scripts changed during each request."
+                if result["return_scripts"] else "I'll stop attaching scripts.")
+    if "shared_references" in result:
+        selected = ", ".join(result["references"]) or "none selected"
+        shared = ", ".join(result["shared_references"]) or "none"
+        return (f"Reference repositories for {result['project']['name']}: {selected}. "
+                f"Repositories available across projects: {shared}.")
+    if "co_owners" in result:
+        co_owners = ", ".join(result["co_owners"]) or "none"
+        return f"Project owner: {result['owner']}. Co-owners: {co_owners}."
+    import json
+
+    return json.dumps(result, ensure_ascii=False)
 
 
 def run(
@@ -342,16 +251,14 @@ def run(
     record: dict[str, Any],
     event_id: str,
     settings: Settings,
-) -> str | None:
+) -> dict[str, Any] | str | None:
     event = record["payload"]["event"]
     team, channel = record["payload"]["team_id"], event["channel"]
     email, doc = grant.email, grant.doc
     if surface.is_email(record) and (spec(cmd.name).email_read_only):
         return surface.EMAIL_READ_ONLY
-    if cmd.name in {"help", "help all"}:
-        return COMMAND_HELP
-    if cmd.name == "help write":
-        return WRITE_HELP + "\n\n" + WRITE_DETAILS
+    if cmd.name == "help":
+        return {"guide": CAPABILITIES}
     if cmd.name == "scripts":
         from . import user_settings
 
@@ -365,7 +272,7 @@ def run(
     if not spec(cmd.name).registry:
         return None
     if spec(cmd.name).exact_dm_only and not grant.private:
-        raise ValueError("Use that command in your DM with Mica.")
+        raise ValueError("Please ask me in your private conversation.")
     if cmd.name == "projects":
         active = doc.active_for(email, team, channel, private=grant.private)
         rows = []
@@ -378,40 +285,12 @@ def run(
             ),
             key=lambda item: (item[1].name, item[0]),
         )
-        for number, (pid, project) in enumerate(matches[:50], 1):
-            selector = doc.selector(pid, email)
-            label = " (new threads)" if pid == active else ""
-            owner = (
-                " · co-owner"
-                if email in project.co_owners
-                else f" · shared by {project.owner}"
-                if project.owner != email
-                else ""
-            )
-            rows.append(f"{number}. {project.name}{label}{owner} — `switch {selector}`")
-        thread = (
-            f"\nThis thread uses {grant.project.name}."
-            if grant.allowed and grant.has_context and grant.project_id != active
-            else ""
-        )
-        return (
-            "Your projects:\n"
-            + (
-                "\n".join(rows) or "No matching projects."
-                if query
-                else "\n".join(rows) or "No projects yet."
-            )
-            + (
-                f"\nShowing 50 of {len(matches)} projects. "
-                "Ask me to find projects by name to narrow the list."
-                if len(matches) > 50
-                else ""
-            )
-            + thread
-            + "\n\n"
-            + PROJECT_HELP
-        )
-    operation = f"{cmd.name}:{cmd.args}:{cmd.force}:{team}:{channel}"
+        for pid, project in matches[:50]:
+            rows.append({"id": pid, "name": project.name, "owner": project.owner,
+                         "co_owners": sorted(project.co_owners), "default": pid == active})
+        return {"projects": rows, "total": len(matches), "new_threads": active,
+                "this_thread": grant.project_id if grant.allowed and grant.has_context else None}
+    operation = registry_operation(cmd, record)
 
     def checked(current: RegistryDoc) -> RegistryDoc:
         expected = record.get("command_expected_project")
@@ -426,16 +305,8 @@ def run(
         if cmd.name == "repos":
             names = sorted(doc.projects[pid].reference_repos)
             shared = record.get("shared_reference_repos", [])
-            if shared:
-                return (
-                    "Shared reference repositories (available across projects):\n"
-                    + "\n".join(shared)
-                    + f"\n\nProject defaults for {doc.projects[pid].name}:\n"
-                    + ("\n".join(names) or "None needed; request any shared repository by name.")
-                )
-            return f"Reference repositories for {doc.projects[pid].name}:\n" + (
-                "\n".join(names) or "None. An owner can add one in a private Slack conversation."
-            )
+            return {"project": {"id": pid, "name": doc.projects[pid].name},
+                    "references": names, "shared_references": shared}
         if not record.get("command_expected_project"):
             raise ValueError("Reference repository changes require a private Slack confirmation.")
         registry.update(
@@ -493,10 +364,8 @@ def run(
     observability.capture_project(record, grant, target=pid)
     if cmd.name == "owners":
         entry = doc.projects[pid]
-        return f"Owners of {entry.name}:\n" + "\n".join(
-            [f"• {entry.owner} (original owner)"]
-            + [f"• {target} (co-owner)" for target in sorted(entry.co_owners)]
-        )
+        return {"project": {"id": pid, "name": entry.name}, "owner": entry.owner,
+                "co_owners": sorted(entry.co_owners)}
     if cmd.name in {"add-owner", "remove-owner"}:
         if not record.get("command_expected_project"):
             raise ValueError("Ownership changes require a private Slack confirmation.")
@@ -529,12 +398,29 @@ def run(
             return pid
 
         registry.update(event_id, email, operation, bind)
-        return f"New threads will use {doc.projects[pid].name}. " + (
-            "Start a new email thread to use it. This email thread keeps its project."
-            if surface.is_email(record)
-            else "Send a new message outside this thread to start. "
-            "Existing threads keep their project."
-        )
+        return {"new_threads": {"id": pid, "name": doc.projects[pid].name},
+                "this_thread": ({"id": grant.project_id, "name": grant.project.name}
+                                if grant.allowed and grant.has_context else None),
+                "instruction": "Existing threads keep their project. Start a new message "
+                               "outside this thread to work in the selected project."}
+    if cmd.name == "bind channel":
+        target_channel = cmd.args[1]
+
+        def rebind(current: RegistryDoc) -> str:
+            checked(current)
+            if "command_expected_binding" not in record:
+                raise ValueError("Changing a channel's project needs confirmation first.")
+            binding = current.bindings.get(f"{team}:{target_channel}")
+            value = binding.model_dump(mode="json") if binding else None
+            if value != record["command_expected_binding"]:
+                raise ValueError(
+                    "The channel’s project changed. Please request confirmation again."
+                )
+            current.bind(team, target_channel, email, pid, private=False, force=True)
+            return pid
+
+        registry.update(event_id, email, operation, rebind)
+        return f"New threads in <#{target_channel}> will use {doc.projects[pid].name}."
     if cmd.name in {"share", "unshare"}:
         if not doc.owns(pid, email):
             raise ValueError("Only the project owner can change sharing.")
@@ -560,7 +446,7 @@ def run(
         )
     match = re.fullmatch(r"<#([CG][A-Z0-9]+)(?:\|[^>]+)?>|([CG][A-Z0-9]+)", cmd.args[1])
     if not match:
-        raise ValueError("Mention a Slack channel, for example publish liver #research.")
+        raise ValueError("Which Slack channel should I use? Please mention it.")
     target_channel = match[1] or match[2]
     registry.update(
         event_id,
@@ -577,5 +463,5 @@ def run(
     return (
         "Project publication authorized for everyone who can view that channel, including future "
         "channel members. DM histories and outputs remain private; project memory is shared. "
-        f"In the channel, send `switch {pid}` to select the project."
+        "Ask me here to make it the channel’s default project."
     )

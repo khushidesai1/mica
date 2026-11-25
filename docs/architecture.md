@@ -117,10 +117,10 @@ to five repositories needed by a compute request. App-backed content fetches che
 installation access with a scoped token; approved public references recheck public visibility.
 
 Project owners and co-owners can also set default references through a private Slack confirmation
-(`repos add azizilab/repo [project]` or “add azizilab/repo as a reference for this project”).
-`repos [project]` lists shared repositories and project defaults;
-`repos remove azizilab/repo [project]` removes a default, not the shared catalog entry.
-Both exact and natural-language changes require the same owner authorization and confirmation;
+(“add azizilab/repo as a reference for this project”).
+Ask Mica to list shared repositories and project defaults or remove a project default.
+Removing a default leaves the shared catalog entry available.
+All changes require the same owner authorization and confirmation;
 email can read selections but changes happen in private Slack. Adding a repository exposes its
 selected content to authorized project members and published channel audiences; it never changes
 project membership or grants GitHub write permissions.
@@ -255,3 +255,19 @@ request leases, target reservations, expiry/resumption timers and the existing G
 separate approval, granting and notification. Bundles are snapshotted; settings changes cannot
 broaden a pending request. Ambiguous emails are held, not resent. See
 [cloud access](cloud-access.md) for the permission boundary and operator rollout.
+
+
+### Natural-language account operations
+
+Every message reaches the conversation model, except a standalone stop or cancel request.
+Read-only account operations and preferences return structured tool results so the conversation
+can finish a compound request. Confirmation cards and private connection/import forms retain
+their separate handoffs. Operation receipts use canonical arguments rather than provider tool IDs;
+registry mutations retain compatibility with older event receipts.
+
+A project selection in a new, unused thread discards that event's provisional project context
+and restarts the conversation once with the selected project's authorized sources. Established
+threads keep their project, history and worker workspace; selection there changes only the
+future default. No cross-project source context is carried across the restart. Channel binding
+is an owner-confirmed request from DM, with publication, both-project ownership and the saved
+binding checked again at execution. Help is an on-demand capability reference.

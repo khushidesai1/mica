@@ -34,9 +34,8 @@ from . import (
 from .cloud_access_config import CloudAccessProposal
 from .data_links import message_text
 from .gcs_operations import Operation
-from .help_text import PROJECT_HELP
 from .identity import post
-from .registry import Registry
+from .registry import Registry, applied
 from .slack_format import answer_blocks, chunks, neutralize
 from .storage import Storage
 from .survey import inventory
@@ -216,7 +215,7 @@ async def dispatch_command(
     cmd: commands.Command,
     grant: access.Grant,
 ) -> bool | None:
-    """One execution path for exact commands and validated natural-language proposals."""
+    """Execute approved changes and private handoffs, including saved legacy decisions."""
     from . import command_intent
     from .transfers import Transfers
 
@@ -225,7 +224,11 @@ async def dispatch_command(
         from . import session_import
 
         return await finish(bridge, event_id, record,
-                            await session_import.start(bridge, event_id, record, grant))
+                            await session_import.start(
+                                bridge, event_id, record, grant,
+                                request=cmd.args[0] if cmd.args else "",
+                                use_attachment=len(cmd.args) > 1 and cmd.args[1] == "attachment",
+                            ))
     if commands.spec(cmd.name).sender_reply:
         command_intent.private_reply(record, grant)
     if commands.spec(cmd.name).connection:
@@ -239,8 +242,6 @@ async def dispatch_command(
             return await finish(bridge, event_id, record, access.deny_text(grant))
         await bridge.cancel(event_id, record)
         return True
-    if commands.removed_memory(cmd):
-        return await finish(bridge, event_id, record, commands.MEMORY_CHANGED)
     if cmd.name in {"memory", "brief"}:
         if not grant.allowed:
             return await finish(bridge, event_id, record, access.deny_text(grant))
@@ -316,7 +317,7 @@ async def dispatch_command(
                     # Preserve the receipt for Cloud Tasks retry instead of marking a
                     # registry-only rename complete/failed in the generic HTTP handler.
                     raise RuntimeError("Project memory synchronization needs retry") from exc
-            return await finish(bridge, event_id, record, reply)
+            return await finish(bridge, event_id, record, commands.legacy_reply(reply))
     if commands.spec(cmd.name).transfer:
         if not grant.allowed:
             return await finish(bridge, event_id, record, access.deny_text(grant))
@@ -501,6 +502,49 @@ async def cloud_request(
     return await finish(bridge, event_id, record, reply)
 
 
+async def reenter_project(
+    bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage,
+) -> None:
+    """Resume the durable selection/detach/reset handoff without replaying its mutation."""
+    from . import command_intent, conversation_state
+
+    selection = record["project_reentry"]
+    if selection["status"] == "ready":
+        return
+    grant = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
+    if grant.email != selection["principal"] or not grant.private:
+        raise ValueError("Project access changed. Please send a new request.")
+    pid = selection["project_id"]
+    cmd = commands.Command("use", (pid,))
+    event = record["payload"]["event"]
+
+    def bind(doc: Any) -> str:
+        doc.bind(record["payload"]["team_id"], event["channel"], grant.email, pid, private=True)
+        return str(pid)
+
+    await asyncio.to_thread(
+        Registry(storage).update, command_intent.operation_key(event_id, cmd), grant.email,
+        commands.registry_operation(cmd, record), bind,
+    )
+    await access.detach_thread(storage, record, event_id)
+    # A new model transcript must never contain the discarded project's sources or thinking.
+    await conversation_state.discard(storage, event_id)
+    for field in (
+        "direct_decision", "direct_decision_pending", "decision_access", "conversation_steps",
+        "intent_referents", "intent_prior_request", "information_repos", "attachments",
+        "attachments_access", "memory_project_id", "memory_reply", "reply_scope",
+        "reply_audience", "account_visibility", "project_id", "project_name", "principal",
+        "routing_budget", "routing_calls", "routing_failures", "routing_retry_at",
+        "shared_reference_repos", "history_reads",
+    ):
+        record.pop(field, None)
+    # Prior project-derived tool results may not be offered to B's conversation.
+    record.pop("operations", None)
+    record["conversation_steps"] = []
+    selection["status"] = "ready"
+    await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+
+
 async def handle(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage
 ) -> bool:
@@ -517,6 +561,8 @@ async def handle(
         if reply is not None:
             cloud_access.scope_reply(record)
             return await finish(bridge, event_id, record, reply)
+    if record.get("project_reentry", {}).get("status") == "selecting":
+        await reenter_project(bridge, event_id, record, storage)
     conversation.start(record)
     saved = conversation.saved_decision(record)
     if saved.get("route") == "cloud_access":
@@ -528,7 +574,8 @@ async def handle(
         return await finish(bridge, event_id, record, access.deny_text(grant))
     if record.get("ambient") and not grant.allowed:
         return await finish(bridge, event_id, record, access.deny_text(grant))
-    cmd = None if record.get("ambient") else commands.parse(event.get("text", ""))
+    cmd = (commands.Command("init", tuple(record["direct_init_command"]))
+           if record.get("direct_init_command") else None)
     if (
         not grant.allowed
         and cmd is None
@@ -542,12 +589,12 @@ async def handle(
             bridge, event_id, record, await access_requests.propose(bridge, record, grant)
         )
     files = event.get("files") or []
-    if files and cmd and cmd.name == "init":
-        raise ValueError("Send files in their own message, not with init.")
     registry = Registry(storage)
     if cmd is None:
         if saved:
-            if record.get("decision_access") != grant.signature:
+            init_applied = ((saved.get("command_proposal") or {}).get("operation") == "init"
+                            and applied(grant.doc, event_id, grant.email, text))
+            if record.get("decision_access") != grant.signature and not init_applied:
                 return await finish(
                     bridge, event_id, record, "Project access changed. Send a new request."
                 )
@@ -609,7 +656,15 @@ async def handle(
                     bridge, record, grant, str(exc), proposal
                 )
                 return await finish(bridge, event_id, record, question)
-            if commands.spec(cmd.name).approval:
+            if (cmd.name == "use" and record.get("command_protocol") == 2
+                    and not record.get("project_reentry")
+                    and access.unused_context(grant.state, event_id)):
+                record["project_reentry"] = {"project_id": cmd.args[0], "status": "selecting",
+                                           "principal": grant.email}
+                await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+                await reenter_project(bridge, event_id, record, storage)
+                return await handle(bridge, event_id, record, storage)
+            if commands.spec(cmd.name).approval or commands.spec(cmd.name).exact_approval:
                 from . import command_approval
 
                 return await command_approval.propose(bridge, event_id, record, storage, cmd, grant)
@@ -638,7 +693,7 @@ async def handle(
         # Keep project admission checks while limiting this mixed response to its sender.
         record["reply_audience"] = "sender_only"
     if is_init and files:
-        raise ValueError("Send files in their own message, not with init.")
+        raise ValueError("Please send files after the project has been created.")
     if is_init:
         assert cmd
         own_empty_context = (
@@ -647,7 +702,7 @@ async def handle(
             and not grant.state.get("turn")
         )
         if grant.has_context and not record.get("direct_init") and not own_empty_context:
-            raise ValueError("Start init in a new thread.")
+            raise ValueError("Please start a new message to create the project.")
         await asyncio.to_thread(bridge.resolve_data, record, uri=cmd.args[1])
         if "init_previous_project_id" not in record:
             record["init_previous_project_id"] = grant.doc.active_for(
@@ -671,8 +726,15 @@ async def handle(
             ),
         )
         if record.get("direct_decision", {}).get("route") == "command":
+            from . import conversation_state
+
+            # Setup has its own guide turn. Never resume the selecting project's transcript.
+            await conversation_state.discard(storage, event_id)
             record.pop("direct_decision", None)
+            record.pop("decision_access", None)
+            record.pop("operations", None)
         record["direct_init"] = True
+        record["direct_init_command"] = list(cmd.args)
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
         doc = await asyncio.to_thread(registry.load)
         grant = access.Grant(
@@ -912,7 +974,9 @@ async def handle(
             memory=memory,
         )
         if is_init and (decision.route != "reply" or decision.guide is None):
-            raise ValueError("Could not draft the initial brief. Please retry init in this thread.")
+            raise ValueError(
+                "I couldn’t draft the initial guide. Please ask me to try again in this thread."
+            )
         record["direct_decision"] = decision.model_dump()
         record["direct_decision_pending"] = False
         if decision.route == "cloud_access":
@@ -1041,16 +1105,17 @@ async def handle(
                 and current.doc.can_use(previous, grant.email)
             ):
                 selector = current.doc.selector(previous, grant.email)
-                selection += f" Switch back: `switch {selector}`."
+                selection += f" You can ask me to select {selector} again."
         else:
             selector = current.doc.selector(grant.project_id, grant.email)
-            selection = f"Project ready: {grant.project.name}. Select it with `switch {selector}`."
+            selection = (f"Project ready: {grant.project.name}. "
+                         f"Ask me to select {selector} to use it.")
         reply = (
             selection
             + "\n\n"
             + decision.reply
             + "\n\n"
-            + PROJECT_HELP
+            + "Existing threads keep their project. New messages use your selected project."
             + "\n\n"
             + project_memory.PRIVACY
         )

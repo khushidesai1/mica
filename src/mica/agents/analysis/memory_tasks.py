@@ -17,7 +17,6 @@ from pydantic import BaseModel, Field, ValidationError
 
 from . import (
     access,
-    commands,
     job_lifecycle,
     memory_compaction,
     memory_workspace,
@@ -280,12 +279,11 @@ async def editor_proposal(
 def conversation_turn(record: dict[str, Any]) -> bool:
     if record.get("reply_scope") == "cloud_access":
         return False
-    if record.get("cancel_requested") or record.get("cancelled_by"):
+    if (record.get("cancel_control") or record.get("cancel_requested")
+            or record.get("cancelled_by")):
         return False
-    try:
-        return not commands.parse(record["payload"]["event"].get("text", ""))
-    except ValueError:
-        return False  # Malformed commands are still commands.
+    return (record.get("reply_scope") != "account"
+            and record.get("direct_decision", {}).get("route") != "command")
 
 
 def eligible(bridge: BatchBridge, record: dict[str, Any]) -> bool:

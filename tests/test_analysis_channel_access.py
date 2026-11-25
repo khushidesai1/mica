@@ -110,7 +110,7 @@ async def test_published_project_denial_identifies_owner_and_action(channels):
     assert not grant.allowed and not grant.state
     text = access.deny_text(grant)
     assert "don't have access to `liver`" in text
-    assert "Ask alice@example.com" in text and "share liver bob@example.com" in text
+    assert "Ask alice@example.com" in text and "give bob@example.com access" in text
     channels.decision.assert_not_awaited()
 
 

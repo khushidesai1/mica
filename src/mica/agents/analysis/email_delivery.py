@@ -309,7 +309,7 @@ async def _deliver(
                 from . import commands
                 from .registry import Registry
 
-                text = (
+                text = commands.legacy_reply(
                     commands.run(
                         commands.Command(
                             "projects", (intent["selector"],) if intent.get("selector") else ()

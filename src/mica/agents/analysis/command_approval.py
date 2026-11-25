@@ -11,7 +11,7 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from . import access, approvals, commands, observability, surface, write_access
 from .identity import member_email, resolve_email
-from .registry import ProjectEntry
+from .registry import ProjectEntry, applied
 from .storage import Conflict, Storage
 
 if TYPE_CHECKING:
@@ -56,6 +56,12 @@ def authorize(
             write_access.validate_project(cmd.args[1], grant.doc, pid, grant.email)
     elif not grant.doc.owns(pid, grant.email):
         raise ValueError("Only the project owner can change this setting.")
+    if cmd.name == "bind channel":
+        grant.doc.model_copy(deep=True).bind(
+            record["payload"]["team_id"], cmd.args[1], grant.email, pid,
+            private=False, force=True,
+        )
+
 
 
 async def propose(
@@ -113,6 +119,11 @@ async def propose(
         "expires": KIND.deadline(),
         "state": "pending",
     }
+    if cmd.name == "bind channel":
+        binding = grant.doc.bindings.get(f"{team}:{cmd.args[1]}")
+        proposal["binding"] = binding.model_dump(mode="json") if binding else None
+        proposal["bound_name"] = (grant.doc.projects[binding.project_id].name
+                                  if binding else "no project")
     try:
         generation = await asyncio.to_thread(
             approvals.save, storage, key(event_id), proposal, None
@@ -131,12 +142,28 @@ async def propose(
             bridge, event_id, record, "This confirmation has ended. Send a new request."
         )
     saved = proposal["command"]
-    text = (
-        f"Confirm {saved['name']} for {proposal['project']['name']} "
-        f"({saved['args'][0]})"
-        + (": " + " · ".join(saved["args"][1:]) if len(saved["args"]) > 1 else "")
-        + ". This request expires in 10 minutes."
-    )
+    name = proposal["project"]["name"]
+    target = saved["args"][1] if len(saved["args"]) > 1 else ""
+    descriptions = {
+        "share": f"Give {target} collaborator access to {name}?",
+        "unshare": f"Remove {target}'s access to {name}?",
+        "add-owner": f"Make {target} a co-owner of {name}?",
+        "remove-owner": f"Remove {target}'s co-owner role in {name}?",
+        "publish": f"Allow replies about {name} in {target}?",
+        "unpublish": f"Stop replies about {name} in {target}?",
+        "rename": f"Rename {name} to {target}?",
+        "data-root": f"Change {name}'s default data folder to {target}?",
+        "repos add": f"Add {target} to {name}'s reference repositories?",
+        "repos remove": f"Remove {target} from {name}'s reference repositories?",
+        "write grant": f"Allow {name} to save files in {target}?",
+        "write revoke": f"Revoke {name}'s write access?",
+        "bind channel": f"This channel <#{target}> uses {proposal.get('bound_name')}. "
+                        f"Switch new threads to {name}?",
+    }
+    text = descriptions[saved["name"]] + " This request expires in 10 minutes."
+    if saved["name"] == "write grant":
+        text += (" Duration: " + saved["args"][2] + "." if len(saved["args"]) > 2
+                 else " Access lasts until revoked.")
     if saved["name"] == "repos add":
         text += (
             " Project members and published channel audiences may receive content from this "
@@ -295,10 +322,13 @@ async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]
         pid = cmd.args[0]
         # An already-applied operation must be able to finish memory synchronization and
         # delivery after a crash. Its durable receipt prevents repeating its mutation.
-        applied = proposal["operation_id"] in grant.doc.applied_events
+        was_applied = applied(
+            grant.doc, proposal["operation_id"], grant.email,
+            commands.registry_operation(cmd, record),
+        )
         if cmd.name.startswith("write "):
-            applied = proposal["operation_id"] in write_access.load(storage, pid).events
-        if not applied and grant.doc.projects[pid] != ProjectEntry.model_validate(
+            was_applied = proposal["operation_id"] in write_access.load(storage, pid).events
+        if not was_applied and grant.doc.projects[pid] != ProjectEntry.model_validate(
             proposal["project"]
         ):
             raise ValueError("Project settings changed. Request a fresh confirmation.")
@@ -308,6 +338,8 @@ async def _handle(bridge: BatchBridge, storage: Storage, payload: dict[str, Any]
                 approvals.save, storage, path, proposal, generation
             )
         record["command_expected_project"] = proposal["project"]
+        if cmd.name == "bind channel":
+            record["command_expected_binding"] = proposal["binding"]
         try:
             await dispatch_command(bridge, proposal["operation_id"], record, storage, cmd, grant)
         finally:

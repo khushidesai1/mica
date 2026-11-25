@@ -1,9 +1,11 @@
 """Lab grants stay live, surface-independent and separate from project ownership."""
 
 # ruff: noqa: F811
+
 import json
 
 import pytest
+from analysis_helpers import save_command
 from pydantic import ValidationError
 from test_analysis_channel_access import (  # noqa: F401
     bridge,
@@ -15,6 +17,7 @@ from test_analysis_channel_access import (  # noqa: F401
 )
 
 from mica.agents.analysis import access, conversation, identity, lab
+from mica.agents.analysis.command_intent import Proposal
 from mica.agents.analysis.registry import REGISTRY_KEY, Registry, RegistryDoc
 from mica.agents.analysis.storage import Conflict, LocalStorage
 from scripts.lab_members import main, replace
@@ -90,9 +93,10 @@ async def test_lab_member_without_project_membership_lists_no_projects(channels)
     doc = Registry(channels.store).load()
     assert not doc.visible(C) and not doc.can_use(channels.pid, C)
     event = await receive(channels, payload(user="U3", channel="D3", text="projects"))
+    await save_command(channels, event["event_id"], Proposal(operation="projects"))
     assert await channels.process(event["event_id"], 0) == "complete"
     saved = await channels.repository.get_connector_state("claude-event:" + event["event_id"])
-    assert "No projects yet." in saved["notice_text"]
+    assert "No matching projects." in saved["notice_text"]
     assert "liver" not in saved["notice_text"]
 
 
