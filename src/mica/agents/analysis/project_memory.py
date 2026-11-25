@@ -678,7 +678,9 @@ class GitHubMemory:
                             accepted["THREADS.md"] = overview
                     if source == "compaction" and saved.rejected:
                         raise ValueError("Compaction rejected; nothing was committed")
-                    saved.unmerged = [p for p in unmerged if p in accepted]
+                    # An existing conflict copy is still unresolved even when the
+                    # archive planner omits its unchanged bytes on a retry.
+                    saved.unmerged = unmerged
                     if not accepted and not blobs:
                         saved.commit_oid = latest.head_oid if thread_update else ""
                         outcome = "nothing"
@@ -883,13 +885,15 @@ class GitHubMemory:
         unmerged: list[str] = []
         for path, value in updates.items():
             before, current = base.files.get(path), latest.files.get(path)
+            original = path.split("/", 2)[-1] if path.startswith("_unmerged/") else path
+            target = f"_unmerged/{hashlib.sha256(event_id.encode()).hexdigest()[:8]}/{original}"
             if value == (current.text if current else None) and path not in latest.invalid:
+                if target in latest.files and memory_archive.ready(self.settings):
+                    proposed[target] = None  # Archive the reconciled proposal, preserving evidence.
                 continue
             if (before.oid if before else None) != (current.oid if current else None) or (
                 path in latest.invalid and path not in base.invalid
             ):
-                original = path.split("/", 2)[-1] if path.startswith("_unmerged/") else path
-                target = f"_unmerged/{hashlib.sha256(event_id.encode()).hexdigest()[:8]}/{original}"
                 proposed[target] = (
                     value
                     if value is not None
@@ -901,6 +905,8 @@ class GitHubMemory:
                 unmerged.append(target)
             else:
                 proposed[path] = value
+                if target in latest.files and memory_archive.ready(self.settings):
+                    proposed[target] = None
         return proposed, unmerged
 
     def _thread_bounded(

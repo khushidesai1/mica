@@ -8,7 +8,7 @@ from typing import Any
 
 from mica.storage.failures import BLOCKER_LABELS, PRIORITY_LABELS, Incident, priority
 
-VERSION = 6
+VERSION = 7
 PREFIX = "mica_failure_"
 CATEGORIES = {
     "compute": "Compute",
@@ -45,6 +45,7 @@ def status_label(row: Incident, status: str) -> str:
         "active": "Retrying / still active",
         "complete": "Completed · follow-up needed",
         "recovered": "Recovered automatically",
+        "memory_recovered": "Memory saved · request failed",
         "processing_recovered": "Polling recovered · request active",
         "saved_with_exclusions": "Recovered · memory saved with exclusions",
     }.get(status, "Needs investigation")
@@ -97,6 +98,8 @@ def blocks(
         explanation = row.investigation.assessment.summary
     if status == "recovered":
         explanation = "Recovery verified from saved operation state. No action is needed."
+    elif status == "memory_recovered":
+        explanation = "The background memory save recovered. The original request remains failed."
     elif status == "processing_recovered":
         explanation = (
             "Worker polling succeeded after the temporary error. The request is continuing."
@@ -246,6 +249,11 @@ def details_view(row: Incident, explanations: list[str]) -> dict[str, Any]:
             "Recovery", "A successful processing tick followed the reported error. "
             "The request is still active; its final outcome is not yet known.",
         ))
+    elif status == "memory_recovered":
+        blocks.append(paragraph(
+            "Recovery", "The background memory save was verified. The original request remains "
+            "failed or stopped; memory recovery did not retry or complete it.",
+        ))
     elif status in {"recovered", "saved_with_exclusions"}:
         blocks.append(paragraph(
             "Recovery",
@@ -307,6 +315,10 @@ def details_view(row: Incident, explanations: list[str]) -> dict[str, Any]:
                 "Request outcome",
                 {
                     "recovered": "Recovery was verified from saved operation state.",
+                    "memory_recovered": (
+                        "The request failed or stopped. Its background memory save recovered; "
+                        "the request was not retried."
+                    ),
                     "processing_recovered": (
                         "Worker polling recovered and the request continues. "
                         "Its final outcome is not yet known."

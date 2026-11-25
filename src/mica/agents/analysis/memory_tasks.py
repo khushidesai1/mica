@@ -46,6 +46,9 @@ existing_paths. Never invent a fact from the assistant's unsupported claims.
 If editor_feedback is supplied, correct that validation problem. All replacements must still
 preserve unrelated contents. An empty changes object is valid when no project fact changed;
 always provide the thread entry. Do not invent a replacement for an omitted existing file.
+If repair_paths is supplied, reconcile only those unsaved edits against the current files.
+Other proposed edits already saved and must not be repeated. Omit an edit if the original
+request is already represented or superseded by newer work.
 Each replacement must fit file_limit_bytes in UTF-8, including its headers. Condense redundant
 wording while preserving unrelated facts and attributions; never truncate a file to fit.
 For a failed or unfinished request (success=false), edit only open.md: preserve the pending
@@ -70,6 +73,7 @@ EDITOR_RETRY_SECONDS = 3600
 EditorReason = Literal[
     "incomplete_output", "output_limit", "invalid_schema", "missing_thread", "unsupported_path",
     "unseen_file", "failed_turn_path", "context_limit", "file_limit", "invalid_file",
+    "conflict",
 ]
 
 
@@ -143,6 +147,8 @@ async def edit(key: str, model: str, context: dict[str, Any]) -> dict[str, str]:
         schema["properties"]["thread"] = {"$ref": "#/$defs/Prose"}
     if context.get("success") is False:
         schema["properties"]["changes"]["propertyNames"] = {"enum": ["open.md"]}
+    if context.get("repair_paths"):
+        schema["properties"]["changes"]["propertyNames"] = {"enum": context["repair_paths"]}
     # Full-file replacements must fit alongside thread prose. The writer can see
     # 32,000 characters of editable files; 8,192 output tokens can truncate valid
     # replacements. Leave commit/verification time within the 300-second task.
@@ -188,6 +194,8 @@ async def edit(key: str, model: str, context: dict[str, Any]) -> dict[str, str]:
         if context.get("thread") and edits.thread is None:
             raise EditorError("missing_thread")
         if any(not EDIT_PATH.fullmatch(path) for path in changes):
+            raise EditorError("unsupported_path")
+        if context.get("repair_paths") and set(changes) - set(context["repair_paths"]):
             raise EditorError("unsupported_path")
         if context.get("success") is False and any(p != "open.md" for p in changes):
             raise EditorError("failed_turn_path")
@@ -248,6 +256,8 @@ async def editor_proposal(
         )
         context["existing_paths"] = sorted(base.files.keys() | base.invalid.keys())
         context["file_limit_bytes"] = bridge.settings.memory_file_kb * 1024
+        if cached.get("editor_repair_paths"):
+            context["repair_paths"] = cached["editor_repair_paths"]
         if cached.get("editor_feedback"):
             context["editor_feedback"] = cached["editor_feedback"]
         cached["editor_version"] = EDITOR_VERSION
@@ -258,6 +268,12 @@ async def editor_proposal(
             bridge.settings.memory_model or bridge.settings.model, context,
         ))
         validate_changes(bridge, changes)
+        # An omitted repair means the latest file already covers (or supersedes)
+        # this turn. Include its unchanged bytes to archive this event's conflict
+        # only if that exact snapshot still matches at commit time.
+        for path in cached.get("editor_repair_paths", []):
+            if path in base.files:
+                changes.setdefault(path, base.files[path].text)
     except EditorError as exc:
         cached["editor_feedback"] = {"reason": exc.reason}
         if exc.paths:
@@ -496,6 +512,15 @@ async def process(bridge: BatchBridge, event_id: str, storage: Storage) -> None:
             import_origin = session_review.origin(record)
             if (saved.rejected or saved.unmerged) and not import_origin:
                 cached.pop("saved", None)
+                if saved.unmerged and not saved.rejected and cached["source"] == "editor":
+                    paths = sorted({p.split("/", 2)[-1] for p in saved.unmerged})
+                    cached["editor_conflicts"] = {
+                        p: cached["changes"][p] for p in paths if p in cached["changes"]
+                    }
+                    cached["editor_repair_paths"] = paths
+                    cached["editor_required"] = paths
+                    cached["editor_feedback"] = {"reason": "conflict"}
+                    cached.pop("changes")
                 await asyncio.to_thread(storage.put, cache_key, json.dumps(cached).encode())
                 raise RuntimeError("Memory save rejected or conflicted; source retained")
             stage = "verify"

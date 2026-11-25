@@ -385,3 +385,76 @@ async def test_cached_oversized_proposal_rebases_after_partial_thread_save(chat,
     )
     assert [r.event_id for r in rows] == [event]
     assert not any(p.startswith("_unmerged/") for p in saved.files)
+
+
+@pytest.mark.parametrize("already_covered", [False, True])
+async def test_conflict_repairs_only_unsaved_edits_preserving_thread(
+    chat, monkeypatch, already_covered,
+):
+    from mica.agents.analysis import memory_archive
+
+    event, record, key = await start(chat, monkeypatch)
+    base = await chat.memory_backend.read(chat.pid)
+    await chat.memory_backend.commit(
+        chat.pid, base, {"open.md": OPEN}, source="editor", event_id="setup",
+    )
+    lesson = "type: lesson\nsource: Alice\nstatus: current\n\nAccepted separate lesson.\n"
+    pending = "Original request remains pending.\n"
+    newer = OPEN + "Newer unrelated work.\n" + (pending if already_covered else "")
+
+    async def first_edit(*args):
+        latest = await chat.memory_backend.read(chat.pid)
+        await chat.memory_backend.commit(
+            chat.pid, latest, {"open.md": newer}, source="editor", event_id="concurrent",
+        )
+        return {**compact_edit(), "open.md": OPEN + pending, "lessons.md": lesson}
+
+    monkeypatch.setattr(memory_tasks, "edit", first_edit)
+    with pytest.raises(RuntimeError, match="conflicted"):
+        await memory_tasks.process(chat, event, chat.store)
+    cached = json.loads(chat.store.get(key)[0])
+    assert cached["editor_repair_paths"] == ["open.md"]
+    assert cached["editor_conflicts"] == {"open.md": OPEN + pending}
+    assert "changes" not in cached and "saved" not in cached
+    original_thread = cached["thread_prose"]
+    prior = await chat.memory_backend.read(chat.pid)
+    lesson_oid = prior.files["lessons.md"].oid
+    conflict = next(p for p in prior.files if p.startswith("_unmerged/"))
+    original_entry = thread_memory.log_entries(
+        {p: f.text for p, f in prior.files.items()}, record["thread_key"],
+    )[0].digest()
+
+    async def repair(_key, _model, context):
+        assert context["files"]["open.md"] == newer
+        assert context["repair_paths"] == ["open.md"]
+        assert context["editor_feedback"] == {"reason": "conflict"}
+        return {
+            "_thread": thread_memory.Prose(paraphrase="Changed wording").model_dump_json(),
+            **({} if already_covered else {"open.md": newer + pending}),
+        }
+
+    editor = AsyncMock(side_effect=repair)
+    monkeypatch.setattr(memory_tasks, "edit", editor)
+    await memory_tasks.process(chat, event, chat.store)
+    await memory_tasks.process(chat, event, chat.store)
+    editor.assert_awaited_once()
+    saved = await chat.memory_backend.read(chat.pid)
+    assert saved.files["open.md"].text == newer + ("" if already_covered else pending)
+    assert saved.files["lessons.md"].oid == lesson_oid
+    assert conflict not in saved.files
+    assert memory_archive.archive_path(conflict, OPEN + pending) in saved.files
+    assert json.loads(chat.store.get(key)[0])["thread_prose"] == original_thread
+    done = await chat.repository.get_connector_state("claude-event:" + event)
+    assert done["memory_editor_done"] and "memory_pending" not in done
+    assert done["memory_receipt"]["entry_sha256"] == original_entry
+
+
+async def test_conflict_repair_cannot_rewrite_already_accepted_files(monkeypatch):
+    requests = []
+    mock_model(monkeypatch, model_response({"lessons.md": OPEN}), requests)
+    with pytest.raises(memory_tasks.EditorError, match="unsupported_path"):
+        await memory_tasks.edit("test", "test", {
+            "files": {"open.md": OPEN, "lessons.md": OPEN}, "repair_paths": ["open.md"],
+        })
+    schema = requests[0]["tools"][0]["input_schema"]
+    assert schema["properties"]["changes"]["propertyNames"] == {"enum": ["open.md"]}

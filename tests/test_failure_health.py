@@ -82,6 +82,48 @@ async def test_failed_turn_memory_still_alerts_if_save_stays_pending(
     slack.chat_postMessage.assert_awaited_once()
 
 
+async def test_failed_turn_memory_recovers_without_claiming_request_succeeded(
+    repository, settings, slack, clock,
+):
+    row = await report(repository, settings, data=record(status="failed", memory_pending=1000))
+    clock[0] = 4601
+    await observability.flush(repository, settings, CONFIG)
+    slack.chat_postMessage.assert_awaited_once()
+    data = record(
+        status="failed", memory_editor_done=True, memory_receipt=receipt(verified_at=4700),
+    )
+    await repository.set_connector_state("claude-event:event", data)
+    clock[0] = 4902
+    await observability.flush(repository, settings, CONFIG)
+    saved = repository.failures[row.id]
+    assert saved.request_status == "memory_recovered" and saved.next_attempt >= NEVER
+    assert (await repository.get_connector_state("claude-event:event"))["status"] == "failed"
+    assert saved.count == 1 and not saved.resolved_at
+    assert "Memory saved · request failed" in str(slack.chat_update.call_args.kwargs["blocks"])
+    assert "request was not retried" in str(failure_cards.details_view(saved, []))
+
+
+@pytest.mark.parametrize("extra", ["slack_delivery_failed", "request_blocked", "infra_http_error"])
+async def test_failed_request_with_other_causes_is_not_cleared_by_memory(
+    repository, settings, clock, extra,
+):
+    data = record(status="failed", memory_editor_done=True, memory_receipt=receipt())
+    await report(repository, settings, data=data)
+    row = await report(repository, settings, extra, data)
+    assert failure_health.status(row, data) == "failed"
+
+
+@pytest.mark.parametrize("update", [
+    {"event_id": "wrong"}, {"verified_at": 999}, {"rejected": {"open.md": "limit"}},
+])
+async def test_failed_turn_memory_requires_clean_verified_receipt(
+    repository, settings, clock, update,
+):
+    data = record(status="failed", memory_editor_done=True, memory_receipt=receipt(**update))
+    row = await report(repository, settings, data=data)
+    assert failure_health.status(row, data) == "failed"
+
+
 @pytest.mark.parametrize("changes", [
     {"memory_editor_done": False},
     {"memory_pending": 1000},

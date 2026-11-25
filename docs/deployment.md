@@ -673,6 +673,12 @@ Do not delete pending caches, regenerate accepted proposals, or mark incidents r
 because the new API is healthy. A `context_limit` requires a reviewed writer-budget or memory
 layout adjustment; increasing router context does not change the writer budget.
 
+Memory conflict recovery is also API-only. Preserve worker pins and use the normal memory task
+endpoint for affected pending saves. Verify the matching durable receipt, unchanged original
+thread-entry digest, and reconciliation of the project edit; an older receipt may predate conflict
+repair. Conflict copies are archived, not discarded. Memory-only alerts for failed requests show
+memory recovery separately from the original failure, without rerunning user work.
+
 ### Conversation prompt caching
 
 Conversation steps use automatic prompt caching with the default five-minute lifetime, alongside
