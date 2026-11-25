@@ -112,6 +112,12 @@ coverage together while preserving the original request, reply, date and speaker
 proposals and worker proposals retain their original merge base and are never regenerated.
 This also repairs previously queued conversational saves without deleting their cached evidence.
 
+A conflict remains unresolved across retries even when its preserved copy has not changed.
+Conversational saves reconsider only the conflicting paths against current files, within the same
+three-attempt budget. Already accepted edits and the original thread entry remain intact.
+When a reviewed replacement matches the current snapshot, its conflict copy is archived with
+the update. A verified thread entry alone cannot establish that a conflicting project edit saved.
+
 Attempts are persisted before each model call, with at most three attempts per save per hour.
 Further queue retries during that window keep the save pending without another model call or
 duplicate application failure report. The existing maintenance redispatch recovers exhausted

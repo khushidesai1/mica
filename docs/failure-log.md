@@ -109,6 +109,11 @@ incident resolved. Operators can discuss a failure in its thread;
 replies and reactions do not change application state. Only the guarded Mark resolved action
 records manual resolution.
 
+A memory-only incident can recover independently of a failed parent request. A matching,
+verified memory receipt with no exclusions clears the background alert and displays
+**Memory saved · request failed**; it does not retry the request or change its outcome.
+Other failure causes and partial memory saves continue to require their own recovery evidence.
+
 ## Claude assessments
 
 After confirming delivery of the selected alerts, maintenance asks Claude for a short assessment
