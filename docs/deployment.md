@@ -69,6 +69,32 @@ Manager resource remains tracked to avoid deleting existing credentials as part 
 Keep the separate signed-link secret for signed upload operations.
 No Terraform apply or cloud deployment is implied by these source changes.
 
+## Thread reply rollout
+
+Build the Claude CPU and GPU workers from the same source with
+`cloudbuild/build-slack-agent.yaml`, preserving their pinned scientific runtimes, and update the
+API's worker image pins. Deploy the API through `cloudbuild/build-slack-api.yaml` with
+`AGENT_SIDE_REPLIES=false`. Checkpoint merges and silent unaddressed-turn handling are active at
+this stage; busy replies still queue. After traffic is entirely on that revision, enable
+`AGENT_SIDE_REPLIES=true`.
+
+Workers report `checkpoint_protocol=2` and their attempt number on the authenticated startup
+credentials request. Confirmation is serialized with the request controller and applies only to
+that attempt. A compute request awaiting approval/capacity, an old worker, or an unconfirmed
+recovery attempt retains queue behavior. Existing jobs finish naturally on their pinned image.
+A later reply can pass a queued follow-up only when its underlying active worker is merge-safe.
+
+Validate a tiny CPU job in the owner's test DM: a status question answers within a minute while
+the job continues, a new work request waits and reuses its decision, cancellation still works,
+and both exchanges survive the worker's final checkpoint. Verify unaddressed conversation and
+speaker recall with local fakes; a dedicated test channel with a second account requires owner
+acceptance. Do not post smoke traffic in shared project channels. Record event IDs and remove
+synthetic messages and exact smoke storage prefixes. No GPU live run is needed when only these
+application sources change and scientific runtime validation is reused.
+
+Rollback side replies immediately with `AGENT_SIDE_REPLIES=false`; a full rollback can restore
+the prior API revision. New workers' merges remain compatible with that API.
+
 ## Release validation
 
 The post-turn memory editor validates full replacements against the configured UTF-8 file

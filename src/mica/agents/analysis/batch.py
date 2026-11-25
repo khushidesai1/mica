@@ -41,7 +41,7 @@ from . import (
 from .attachments import AttachmentError
 from .config import CHECKPOINT_PREFIX as PREFIX
 from .config import Settings
-from .identity import IdentityUnavailable
+from .identity import IdentityUnavailable, is_private
 from .slack_format import answer_blocks, chunks, neutralize, status_blocks
 from .storage import GCSStorage, Storage
 from .tiers import Provisioning, selected_gpu_choice
@@ -298,6 +298,9 @@ class BatchBridge:
         from .transfer_state import is_handoff
         from .transport import SlackTransport
 
+        if (not record.get("addressed", True) and phase in {"received", "replying", "waiting"}
+                and not record.get("direct_decision")):
+            return
         if phase == "failed" and not record.get("cancel_requested"):
             cause = record.get("failure_cause")
             if record.get("stop_reason") == "access_unverifiable":
@@ -549,6 +552,8 @@ class BatchBridge:
                 receipt = {
                     "event_id": event_id,
                     "surface": surface_name,
+                    "addressed": (surface_name == "email" or is_private(event)
+                                  or event.get("type") == "app_mention"),
                     "payload": payload,
                     "intake_principal": principal,
                     "thread_key": thread_key,
@@ -630,6 +635,9 @@ class BatchBridge:
                 await observability.report_runtime_failure(self, event_id, record)
                 await self.cleanup_terminal(event_id, record)
                 await self.record_terminal(event_id, record)
+                if record.get("terminal_history_waiting"):
+                    record["tick"] = tick + 1
+                    await self.schedule(event_id, tick + 1)
                 await self.repository.set_connector_state(key, record)
                 await memory_tasks.enqueue(self, event_id, record)
 
@@ -661,7 +669,7 @@ class BatchBridge:
 
             if record["status"] == "pending":
                 conversation.start(record)
-            from .direct import RoutingUnavailable, finish
+            from .direct import finish
 
             if record.get("flexible_harness"):
                 if record.get("workflow_parent"):
@@ -692,51 +700,49 @@ class BatchBridge:
             else:
                 raise RuntimeError("Control predecessor chain exceeds the safe limit")
             cmd = commands.Command("cancel") if record.get("cancel_control") else None
+            busy = bool(previous and previous["status"] not in {"complete", "failed"}
+                        and previous.get("route") != "workflow")
             if record["status"] == "pending" and record.get("route") != "compute":
-                try:
-                    cmd = (commands.Command("cancel") if commands.cancel_message(
-                        record["payload"]["event"].get("text", "")
-                    ) else None)
-                    grant = await asyncio.to_thread(
-                        access.resolve, self.app, self.settings, self.storage, record
-                    )
-                    if (not cmd and previous and previous["status"] not in {"complete", "failed"}
-                            and previous.get("route") != "workflow"):
-                        operation = await conversation.control(self, event_id, record, grant)
-                        if operation == "cancel":
-                            cmd = commands.Command("cancel")
-                        elif operation == "write revoke" and not surface.is_email(record):
-                            record["control_bypass"] = True
-                            await self.repository.set_connector_state(key, record)
-                except RoutingUnavailable:
-                    record["routing_failures"] = int(record.get("routing_failures", 0)) + 1
-                    if record["routing_failures"] >= 3 and not record.get("flexible_harness"):
-                        record.update(status="failed", failure_cause="routing_exhausted")
-                        await self.notify(
-                            event_id,
-                            record,
-                            "failed",
-                            "I couldn't determine this request after several attempts. "
-                            "Please try again.",
-                        )
+                if record.get("addressed", True) and commands.cancel_message(
+                    record["payload"]["event"].get("text", "")
+                ):
+                    cmd = commands.Command("cancel")
+                if busy and previous:
+                    # A queued follow-up can sit between this turn and its running worker.
+                    # Find the oldest active owner, never treating that queue entry as safe.
+                    active = previous
+                    for _ in range(100):
+                        cursor = active.get("previous")
+                        if not cursor:
+                            break
+                        parent = await self.repository.get_connector_state(f"claude-event:{cursor}")
+                        if not parent or (parent["status"] in {"complete", "failed"}
+                                          and not parent.get("control_bypass")):
+                            break
+                        active = parent
                     else:
-                        await self.notify(
-                            event_id,
-                            record,
-                            "replying",
-                            "I'm retrying a temporary routing issue. No need to resend.",
-                        )
-                    record["tick"] = tick + 1
-                    await request_controls.sync(self, event_id, record)
-                    await self.repository.set_connector_state(key, record)
-                    if record["status"] == "pending":
-                        await self.schedule(event_id, tick + 1)
-                    return str(record["status"])
-                except ValueError as exc:
-                    record["status"] = "failed"
-                    await self.notify(event_id, record, "failed", str(exc).splitlines()[0][:250])
-                    await self.repository.set_connector_state(key, record)
-                    return "failed"
+                        raise RuntimeError("Active predecessor chain exceeds the safe limit")
+                    previous_work = active if not active.get("control_bypass") else previous
+                    safe = self.settings.side_replies and (
+                        previous_work.get("route") != "compute"
+                        or ("attempt" in previous_work
+                            and previous_work.get("checkpoint_merge_attempt")
+                            == previous_work["attempt"])
+                    )
+                    record["active_work"] = {
+                        "identity": [previous_work["event_id"], previous_work.get("attempt"), safe],
+                        "request": previous_work["payload"]["event"].get("text", "")[:6000],
+                        "route": previous_work.get("route", "conversation"),
+                        "status": previous_work["status"],
+                        "elapsed_seconds": max(0, time.time() - previous_work.get(
+                            "started", previous_work.get("created", time.time()))),
+                        "progress_title": previous_work.get("notice_title", "")[:250],
+                    }
+                    record["side_replies_allowed"] = safe
+                else:
+                    for field in ("active_work", "side_replies_allowed", "busy_checked",
+                                  "busy_waiting"):
+                        record.pop(field, None)
             if cmd and cmd.name == "cancel":
                 record["cancel_control"] = True
                 grant = await asyncio.to_thread(
@@ -753,25 +759,21 @@ class BatchBridge:
                     from .direct import finish
 
                     await finish(self, event_id, record, access.deny_text(grant))
-            elif (
-                not previous
-                or previous["status"] in {"complete", "failed"}
-                or previous.get("route") == "workflow"
-                or record.get("control_bypass")
-            ):
-                await self.advance(event_id, record)
             else:
-                await self.notify(
-                    event_id,
-                    record,
-                    "waiting",
-                    amendments.WAITING
-                    if self.settings.amendments
-                    and record.get("amendable")
-                    and not record.get("amendment_choice")
-                    and record.get("conversation_amendable") is True
-                    else "Got it, I'll start once the earlier request here finishes…",
-                )
+                if (not busy or record.get("control_bypass")
+                        or (record["status"] == "pending" and record.get("route") != "compute"
+                            and record.get("busy_checked") != record.get("active_work", {}).get(
+                                "identity"))):
+                    await self.advance(event_id, record)
+                if busy and record["status"] == "pending" and not record.get("control_bypass"):
+                    await self.notify(
+                        event_id, record, "waiting",
+                        amendments.WAITING
+                        if self.settings.amendments and record.get("amendable")
+                        and not record.get("amendment_choice")
+                        and record.get("conversation_amendable") is True
+                        else "Got it, I'll start once the earlier request here finishes…",
+                    )
             if record["status"] not in {"complete", "failed"}:
                 await self.schedule(event_id, tick + 1)
                 record["tick"] = tick + 1
@@ -784,6 +786,9 @@ class BatchBridge:
             await observability.report_runtime_failure(self, event_id, record)
             await self.cleanup_terminal(event_id, record)
             await self.record_terminal(event_id, record)
+            if record.get("terminal_history_waiting"):
+                record["tick"] = tick + 1
+                await self.schedule(event_id, tick + 1)
             record["control_poll_succeeded_at"] = time.time()
             await self.repository.set_connector_state(key, record)
             await memory_tasks.enqueue(self, event_id, record)
@@ -839,7 +844,7 @@ class BatchBridge:
 
     async def record_terminal(self, event_id: str, record: dict[str, Any]) -> None:
         """Fill missing history before a terminal event releases the next turn."""
-        from . import recovery
+        from . import recovery, thread_checkpoint
         from .direct import record_exchange
 
         if record.get("ambient") and record["status"] in {"complete", "failed"}:
@@ -859,6 +864,21 @@ class BatchBridge:
             or record.get("approval_expired")
         ):
             return
+        if record.get("active_work"):
+            record["control_bypass"] = True
+            active = await self.repository.get_connector_state(
+                "claude-event:" + record["active_work"]["identity"][0]
+            )
+            if (memory_tasks.conversation_turn(record) and active
+                    and active["status"] not in {"complete", "failed"}
+                    and active.get("route") == "compute"
+                    and ("attempt" not in active
+                         or active.get("checkpoint_merge_attempt") != active["attempt"])):
+                # A routing failure may finish beside an old worker too. Keep its queue
+                # bypass, but defer its history until that worker can no longer overwrite it.
+                record["terminal_history_waiting"] = True
+                return
+        record.pop("terminal_history_waiting", None)
         if memory_tasks.conversation_turn(record):
             storage = self.storage
             grant = await asyncio.to_thread(
@@ -891,6 +911,8 @@ class BatchBridge:
                         event_id,
                         record["payload"]["event"].get("text", ""),
                         reply,
+                        speaker=record["payload"]["event"].get("user", ""),
+                        seq=record.get("seq", 0),
                         success=record["status"] == "complete",
                         history=thread_history.History(
                             storage, record["thread_key"], grant.project_id
@@ -900,9 +922,10 @@ class BatchBridge:
                         keep_summary=not thread_memory.github_reads(self.settings),
                     )
                     await asyncio.to_thread(
-                        storage.put,
-                        access.checkpoint_key(record["thread_key"]),
-                        json.dumps(state).encode(),
+                        thread_checkpoint.merge, storage,
+                        access.checkpoint_key(record["thread_key"]), state,
+                        messages_only=bool(record.get("control_bypass")
+                                           or record.get("active_work")),
                     )
                 if record["status"] == "failed" and record.get("direct_decision"):
                     record["memory_reply"] = reply

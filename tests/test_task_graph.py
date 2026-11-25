@@ -282,7 +282,8 @@ async def test_shared_member_cannot_stop_another_requesters_queue(chat):
     )
     eid = await chat.accept(payload(channel="C1", channel_type="channel"))
     await chat.process(eid, 0)
-    message = payload("2.0", "1.0", "cancel", channel="C1", channel_type="channel")
+    message = payload("2.0", "1.0", "cancel", channel="C1",
+                      channel_type="channel", kind="app_mention")
     message["event"]["user"] = "U2"
     other = await chat.accept(message)
     assert await chat.process(other, 0) == "complete"

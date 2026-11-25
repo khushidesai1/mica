@@ -11,7 +11,6 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from anthropic.types.beta import BetaUsage
 from test_analysis_batch import (  # noqa: F401
-    CONVERSATION_CONTROL,
     CONVERSATION_RUN,
     bridge,
     payload,
@@ -78,7 +77,6 @@ def tool(name, **args):
 @pytest.fixture
 async def turn(bridge, monkeypatch):  # noqa: F811
     monkeypatch.setattr(conversation, "run", CONVERSATION_RUN)
-    monkeypatch.setattr(conversation, "control", CONVERSATION_CONTROL)
     event_id = await bridge.accept(payload(text="Please inspect the source"))
     record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
     grant = access.resolve(bridge.app, bridge.settings, bridge.store, record)
@@ -398,10 +396,7 @@ async def test_request_skips_control_check_without_active_predecessor(turn, monk
     bridge, event_id, _, _ = turn
     sdk = Client(reply())
     monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: sdk)
-    control = AsyncMock()
-    monkeypatch.setattr(conversation, "control", control)
     assert await bridge.process(event_id, 0) == "complete"
-    control.assert_not_awaited()
     assert len(sdk.calls) == 1
 
 
@@ -410,10 +405,10 @@ async def test_active_predecessor_cancel_bypasses_queue(turn, monkeypatch):
     record["status"] = "running"
     await bridge.repository.set_connector_state(f"claude-event:{previous}", record)
     next_id = await bridge.accept(payload("2.0", "1.0", "stop this"))
-    check = AsyncMock(return_value="cancel")
-    monkeypatch.setattr(conversation, "control", check)
+    client = Client(tool("propose_command", operation="cancel"))
+    monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: client)
     await bridge.process(next_id, 0)
-    check.assert_awaited_once()
+    assert len(client.calls) == 1
     stored = await bridge.repository.get_connector_state(f"claude-event:{next_id}")
     assert stored["cancel_control"] is True
 
@@ -599,27 +594,6 @@ def test_legacy_running_worker_keeps_its_approved_launch(job):
     before = copy.deepcopy(record)
     conversation.start(record)
     assert record == before
-
-
-@pytest.mark.parametrize(
-    "operation,amendable",
-    [
-        ("cancel", False),
-        ("write revoke", False),
-        ("none", False),
-        ("none", True),
-    ],
-)
-async def test_control_result_keeps_commands_out_of_amendments(
-    turn, monkeypatch, operation, amendable
-):
-    bridge, event_id, record, grant = turn
-    client = Client(reply(json.dumps({"operation": operation, "amendable": amendable})))
-    monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: client)
-    assert await conversation.control(bridge, event_id, record, grant) == operation
-    assert record["conversation_amendable"] is (operation == "none" and amendable)
-    assert await conversation.control(bridge, event_id, record, grant) == operation
-    assert len(client.calls) == 1
 
 
 @pytest.mark.parametrize(
