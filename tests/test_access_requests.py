@@ -10,7 +10,7 @@ from urllib.parse import urlencode
 import pytest
 from fastapi import BackgroundTasks, HTTPException
 from test_analysis_batch import CONVERSATION_RUN, bridge, payload  # noqa: F401
-from test_conversation_tools import Client, tool
+from test_conversation_tools import Client, reply, tool
 
 from mica.agents.analysis import access, conversation, direct
 from mica.agents.analysis import access_requests as requests
@@ -92,17 +92,17 @@ async def review(bridge, row):
     }
 
 
-async def test_member_unpublished_channel_goes_to_owner_before_model_or_worker(
+async def test_member_unpublished_channel_uses_model_to_request_owner_card(
     approvals, monkeypatch
 ):
     bridge = approvals
     event_id, record, grant, row, answer = await request(bridge, member=True)
     assert not grant.allowed and grant.doc.can_use(bridge.pid, grant.email)
     assert "owner an approval card" in answer
-    router = AsyncMock(side_effect=AssertionError("No model for denied channel"))
-    monkeypatch.setattr(conversation, "run", router)
+    sdk = Client(tool("request_access"))
+    monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: sdk)
     assert await direct.handle(bridge, event_id, record, bridge.store)
-    router.assert_not_called()
+    assert len(sdk.calls) == 1
     bridge.test_client.create_job.assert_not_called()
     assert bridge.approval_client.chat_postMessage.await_count == 1
     assert bridge.approval_client.chat_postMessage.call_args.kwargs["channel"] == "U1"
@@ -379,3 +379,32 @@ async def test_busy_access_proposal_remains_retryable(approvals, monkeypatch):
     with pytest.raises(RuntimeError, match="being updated"):
         await requests.propose(bridge, record, grant)
     bridge.approval_client.chat_postMessage.assert_not_called()
+
+
+@pytest.mark.parametrize("request_work", [False, True])
+async def test_nonmember_published_channel_only_posts_requested_access_card(
+    approvals, monkeypatch, request_work,
+):
+    bridge = approvals
+
+    def publish(doc):
+        doc.publish(bridge.pid, "alice@example.com", "T1", "C1")
+        doc.bind("T1", "C1", "alice@example.com", bridge.pid, private=False)
+        return bridge.pid
+
+    Registry(bridge.store).update("publish", "alice@example.com", "publish", publish)
+    sdk = Client(tool("request_access") if request_work else reply("I can help with analysis."))
+    monkeypatch.setattr(conversation, "AsyncAnthropic", lambda **kw: sdk)
+    event_id = await bridge.accept(payload(
+        text="I need access to analyze this project's data" if request_work else "hi",
+        user="U2", channel="C1", channel_type="channel", kind="app_mention",
+    ))
+    record = await bridge.repository.get_connector_state("claude-event:" + event_id)
+    assert await direct.handle(bridge, event_id, record, bridge.store)
+    assert len(sdk.calls) == 1
+    context = json.loads(sdk.calls[0]["messages"][0]["content"][0]["text"])
+    assert not context["permissions"]["project_access"]["allowed"]
+    assert "project_md" not in context and "project_access" not in context
+    assert bool(record.get("access_request_id")) == request_work
+    assert bridge.approval_client.chat_postMessage.await_count == int(request_work)
+    bridge.test_client.create_job.assert_not_called()

@@ -173,7 +173,16 @@ Adaptive thinking uses `AGENT_CONVERSATION_EFFORT=medium`. A bounded loop can ca
 compute worker. Each tool rechecks access; terminal decisions are persisted before existing
 idempotent handlers and approval controls run. Signed thinking stays in the private provider
 transcript. Stored step logs contain tool names, argument sizes and status, never source text.
-Exact command grammar and handlers share the policy table in `agents/analysis/commands.py`.
+Structured command proposals and handlers share the policy table in `agents/analysis/commands.py`.
+Its surface restrictions and owner/write-administrator requirements also produce the compact
+`permissions` conversation context: current project role, blocked operations grouped by reason,
+and the gateway for each. Project names and owners stay hidden outside authorized private
+conversations or published channels. Policy failures return the operation, reason and gateway
+for the model to explain; confirmation cards and execution checks remain authoritative.
+Messages without project access use the reduced conversation tools. The model can answer a
+question or request the existing owner approval card when access is needed for project work.
+Sharing proposals validate the collaborator scope and require confirmation, including when a
+request explicitly says the recipient should not become an owner.
 Every thread message uses the conversation step, including while work is active. Its bounded
 `active_work` context describes the running request, route, status, elapsed time and progress title.
 With `AGENT_SIDE_REPLIES`, replies and in-turn operations can run immediately; computation,
