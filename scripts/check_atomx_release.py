@@ -129,7 +129,9 @@ def check_layout_free_job():
     artifact = SimpleNamespace(
         read=lambda name: (deepcopy(values[name]), "1") if name in values else None, write=write
     )
-    data = SimpleNamespace(read=lambda _: None, list=lambda _: [])
+    data = SimpleNamespace(
+        read=lambda _: None, list=lambda _: [], stat=lambda _: None, folders=lambda _: []
+    )
     folders = {
         "/Export": ["DecodedFiles", "flatFiles"],
         "/Export/DecodedFiles": ["sample"],

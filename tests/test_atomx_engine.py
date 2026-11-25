@@ -274,8 +274,8 @@ def test_backfill_raw_only_snapshot_is_idempotent_and_stays_listing_only():
     bucket.delete(RAW + "done.txt", bucket.generations[RAW + "done.txt"])
     bucket.put(RAW + "late.csv", b"late")
     bucket.put(ADDITIONAL + "later.csv", b"later")
-    assert backfill(bucket)["repaired"] == ["TMA37"]
-    assert bucket.data[RAW + "done.txt"].decode() == text
+    assert backfill(bucket)["skipped"] == [{"sample": "TMA37", "reason": "destination_changed"}]
+    assert RAW + "done.txt" not in bucket.data
     assert ADDITIONAL + "done.txt" not in bucket.data
 
 
@@ -466,6 +466,148 @@ def test_extra_destination_object_prevents_completion(setup):
     assert DONE not in bucket.data
     assert RAW + "done.txt" not in bucket.data
     jsonschema.validate(bucket.read(FAILED)[0], SCHEMA)
+
+
+def move_sample(bucket, scopes=core.SCOPES):
+    for scope in scopes:
+        prefix = f"raw_outputs/{scope}/TMA37/"
+        for name in list(bucket.data):
+            if name.startswith(prefix):
+                target = name.replace("/TMA37/", "/TMA37_defective/", 1)
+                bucket.put(target, bucket.data[name])
+                bucket.delete(name, bucket.generations[name])
+
+
+def test_reexport_after_moving_defective_folders_preserves_history(setup):
+    remote, bucket, request = setup
+    original = core.Transfer(remote, bucket, request).run()
+    generation = bucket.generations[DONE]
+    move_sample(bucket)
+    archived = {k: v for k, v in bucket.data.items() if "/TMA37_defective/" in k}
+    rows = core.inventory(remote, bucket, request)["samples"]
+    assert rows[0]["status"] == "completion_record_only"
+    assert rows[1] == {
+        "sample": "TMA37_defective", "as_sample": "TMA37_defective",
+        "status": "done_text_only", "matched": False,
+    }
+    remote.data[f"{ROOT}/flatFiles/tma37/cells.csv"] = b"new export"
+    run, files = core.plan(remote, ROOT, "tma37", "TMA37")
+    request.update(run_id="replacement", plan_fingerprint=core.fingerprint(run, files))
+    done = core.Transfer(remote, bucket, request).run()
+    assert done["previous_completion"] == {"generation": generation, "record": original}
+    assert bucket.read(DONE)[0] == done
+    assert bucket.data[RAW + "cells.csv"] == b"new export"
+    assert all(bucket.data[k] == v for k, v in archived.items())
+    assert core.inventory(remote, bucket, request)["samples"][0]["status"] == "done"
+    for scope in core.SCOPES:
+        assert "run_id: replacement\n" in bucket.data[core.marker_path("TMA37", scope)].decode()
+    jsonschema.validate(done, SCHEMA)
+
+
+@pytest.mark.parametrize("scope", core.SCOPES)
+def test_one_remaining_marker_blocks_even_without_json(setup, scope):
+    remote, bucket, request = setup
+    core.Transfer(remote, bucket, request).run()
+    move_sample(bucket, [scope])
+    bucket.delete(DONE, bucket.generations[DONE])
+    assert core.inventory(remote, bucket, request)["samples"][0]["status"] == "done_text_only"
+    with pytest.raises(core.Busy, match="done marker"):
+        core.Transfer(remote, bucket, request).run()
+    assert LEASE not in bucket.data
+
+
+def test_record_only_retry_never_overwrites_conflicting_payload(setup):
+    remote, bucket, request = setup
+    core.Transfer(remote, bucket, request).run()
+    original = bucket.data[DONE], bucket.generations[DONE]
+    for scope in core.SCOPES:
+        path = core.marker_path("TMA37", scope)
+        bucket.delete(path, bucket.generations[path])
+    remote.data[f"{ROOT}/flatFiles/tma37/cells.csv"] = b"edits"
+    with pytest.raises(RuntimeError, match="upload"):
+        core.Transfer(remote, bucket, request).run()
+    assert (bucket.data[DONE], bucket.generations[DONE]) == original
+    assert bucket.data[RAW + "cells.csv"] == b"cells"
+    assert not core.completion_scopes(bucket, "TMA37")
+
+
+def test_reexport_retry_after_partial_upload_keeps_previous_record(setup):
+    remote, bucket, request = setup
+    old = core.Transfer(remote, bucket, request).run()
+    move_sample(bucket)
+    bucket.fail_copy = RAW + "cells.csv"
+    with pytest.raises(RuntimeError, match="upload"):
+        core.Transfer(remote, bucket, request).run()
+    assert bucket.read(DONE)[0] == old
+    bucket.fail_copy = None
+    done = core.Transfer(remote, bucket, {**request, "run_id": "retry"}).run()
+    assert done["previous_completion"]["record"] == old
+    assert FAILED not in bucket.data
+
+
+@pytest.mark.parametrize("when", ["lease", "upload"])
+def test_done_text_race_prevents_publication(setup, monkeypatch, when):
+    remote, bucket, request = setup
+    if when == "lease":
+        original = bucket.write
+
+        def write(name, body, generation):
+            result = original(name, body, generation)
+            if name == LEASE:
+                bucket.put(RAW + "done.txt", b"other writer")
+            return result
+
+        monkeypatch.setattr(bucket, "write", write)
+        with pytest.raises(core.Busy, match="done marker"):
+            core.Transfer(remote, bucket, request).run()
+    else:
+        original = bucket.copy
+
+        def copy(name, chunks):
+            original(name, chunks)
+            bucket.put(RAW + "done.txt", b"other writer")
+
+        monkeypatch.setattr(bucket, "copy", copy)
+        with pytest.raises(RuntimeError, match="markers"):
+            core.Transfer(remote, bucket, request).run()
+    assert bucket.data[RAW + "done.txt"] == b"other writer"
+    assert DONE not in bucket.data
+    assert LEASE not in bucket.data
+
+
+def test_concurrent_completion_record_cannot_be_replaced(setup, monkeypatch):
+    remote, bucket, request = setup
+    old = core.Transfer(remote, bucket, request).run()
+    move_sample(bucket)
+    original = bucket.copy
+
+    def copy(name, chunks):
+        original(name, chunks)
+        bucket.put(DONE, json.dumps({**old, "run_id": "concurrent"}).encode())
+
+    monkeypatch.setattr(bucket, "copy", copy)
+    with pytest.raises(RuntimeError, match="markers"):
+        core.Transfer(remote, bucket, request).run()
+    assert bucket.read(DONE)[0]["run_id"] == "concurrent"
+    assert not core.completion_scopes(bucket, "TMA37")
+
+
+def test_backfill_cannot_restore_old_done_into_changed_destination(setup):
+    remote, bucket, request = setup
+    core.Transfer(remote, bucket, request).run()
+    move_sample(bucket)
+    bucket.put(RAW + "cells.csv", b"new partial export")
+    original = deepcopy(bucket.data)
+    assert {"sample": "TMA37", "reason": "destination_changed"} in backfill(bucket)["skipped"]
+    assert bucket.data == original
+
+
+def test_repair_does_not_accept_conflicting_text(setup):
+    remote, bucket, request = setup
+    body = core.Transfer(remote, bucket, request).run()
+    bucket.put(RAW + "done.txt", b"another completion")
+    with pytest.raises(core.Busy, match="differs from completion record"):
+        core.write_markers(bucket, body, core.recorded_counts(body))
 
 
 def test_gcs_folders_consumes_all_pages():

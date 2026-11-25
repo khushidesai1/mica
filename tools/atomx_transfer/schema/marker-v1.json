@@ -17,6 +17,15 @@
     "run_id"
   ],
   "properties": {
+    "previous_completion": {
+      "type": "object",
+      "required": ["generation", "record"],
+      "properties": {
+        "generation": {"type": "string"},
+        "record": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
     "provenance": {
       "enum": ["transfer", "backfill"]
     },
