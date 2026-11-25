@@ -7,6 +7,7 @@ import base64
 import difflib
 import hashlib
 import re
+import secrets
 import time
 from html import escape
 from typing import TYPE_CHECKING, Any, Literal
@@ -36,6 +37,10 @@ if TYPE_CHECKING:
 ACTION = "mica_pull_request_"
 
 
+class PublicationConflict(ValueError):
+    """A fresh branch and approval are required; preserve any prior GitHub writes."""
+
+
 def key(event_id: str) -> str:
     files.prefix(event_id)
     # Workers have no access to write-access/. Never approve a worker-writable document.
@@ -48,6 +53,7 @@ class Approval(BaseModel):
     pin: files.Pin
     tree: str = Field(pattern=files.SHA)
     branch: str
+    branch_attempted: bool = False
     patch: str
     summary: list[str]
     expires_at: float
@@ -423,7 +429,7 @@ async def propose(
             proposal=proposal,
             pin=pin,
             tree=files.tree_sha(index, proposal.changes),
-            branch=f"mica/{slug}-{proposal.id[:8]}",
+            branch=f"mica/{slug}-{secrets.token_hex(8)}",
             patch=patch,
             summary=summary,
             expires_at=KIND.deadline(),
@@ -473,7 +479,10 @@ async def publish(
         await connection.repositories(row.principal, row.connection_revision, row.pin.repo)
 
     await check()
-    if not re.fullmatch(r"mica/[a-z0-9-]+-[a-f0-9]{8}", row.branch) or row.branch == row.pin.branch:
+    if (
+        not re.fullmatch(r"mica/[a-z0-9-]+-[a-f0-9]{16}", row.branch)
+        or row.branch == row.pin.branch
+    ):
         raise ValueError("Invalid contribution branch")
     api = "https://api.github.com/repos/" + row.pin.repo
     message = row.proposal.title + "\n\nMica-Proposal: " + row.proposal.id
@@ -484,7 +493,14 @@ async def publish(
         ref_url = api + "/git/ref/heads/" + quote(row.branch, safe="/")
         response = await client.get(ref_url)
         if response.status_code == 404:
+            if row.commit:
+                raise ValueError(
+                    "The approved contribution branch was deleted; start a new request"
+                )
             await check()
+            # Persist creation intent before the request so a lost response is reconcilable.
+            row.branch_attempted = True
+            await save()
             response = await client.post(
                 api + "/git/refs",
                 json={
@@ -492,9 +508,16 @@ async def publish(
                     "sha": row.pin.commit,
                 },
             )
-            if response.status_code != 422:
-                response.raise_for_status()
+            if response.status_code == 422:
+                row.branch_attempted = False
+                await save()
+                raise PublicationConflict(
+                    "Contribution branch creation was refused; start a new request"
+                )
+            response.raise_for_status()
             response = await client.get(ref_url)
+        elif not row.branch_attempted:
+            raise PublicationConflict("Contribution branch already exists; start a new request")
         response.raise_for_status()
         head = response.json()["object"]["sha"]
         if head == row.pin.commit:
@@ -656,6 +679,8 @@ async def decide(
                         "GitHub authorization changed. Reconnect, then submit a new PR request "
                         "for fresh approval."
                     )
+                if isinstance(exc, PublicationConflict):
+                    row.status, row.failure_detail = "blocked", str(exc)
                 await asyncio.to_thread(approvals.save, storage, key(event_id), row, generation)
                 await observability.record_failure(
                     bridge.repository,

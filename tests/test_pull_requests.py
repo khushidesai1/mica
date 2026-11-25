@@ -319,3 +319,25 @@ async def test_requester_without_connection_gets_private_link_and_no_worker(prep
     with pytest.raises(Reconnect):
         await pull_requests.admission(bridge, bridge.store, eid, record, gh.pin.repo)
     assert deliver.await_count == 1
+
+
+async def test_existing_branch_at_base_is_never_treated_as_a_retry(prepared):
+    bridge, eid, record, gh, action = prepared
+    gh.head = gh.pin.commit
+    assert not gh.row.branch_attempted
+    assert len(gh.row.branch.rsplit("-", 1)[1]) == 16
+    await pull_requests.decide(bridge, bridge.store, action, None)
+    await pull_requests.decide(bridge, bridge.store, action, None)
+    assert not gh.mutations and not gh.pulls
+    assert not pull_requests.load(bridge.store, eid)[0].branch_attempted
+
+
+async def test_deleted_approved_branch_is_not_recreated(prepared):
+    bridge, eid, record, gh, action = prepared
+    gh.lose = "pr"
+    await pull_requests.decide(bridge, bridge.store, action, None)
+    assert pull_requests.load(bridge.store, eid)[0].commit
+    gh.head = ""
+    count = len(gh.mutations)
+    await pull_requests.decide(bridge, bridge.store, action, None)
+    assert len(gh.mutations) == count and gh.head == ""
