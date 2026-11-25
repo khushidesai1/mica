@@ -111,7 +111,7 @@ async def test_two_threads_survive_and_scripts_are_explicitly_loaded(store):
     loaded = await backend.with_scripts("p_test", snapshot, "t_one")
     assert loaded.files["threads/t_one/scripts/analysis.py"].text == "print(42)\n"
     assert "threads/t_two/scripts/analysis.py" not in loaded.files
-    assert "oid text byteSize" not in project_memory.TREE
+    assert len([r for r in github.requests if "/git/blobs/" in r.url.path]) == 1
     assert all("projects/p_test" in p for p in github.trees[github.head])
 
 
@@ -231,10 +231,10 @@ async def test_deep_asset_metadata_uses_bounded_queries_without_fetching_bytes(s
     snapshot = await backend.read("p_test")
     assert path in snapshot.assets and path not in snapshot.files
     requests = [json.loads(r.content) for r in github.requests if r.method == "POST"]
-    assert any("MemoryTree" in r["query"] for r in requests)
     assert not any("MemoryBlobs" in r["query"] for r in requests)
-    # GraphQL fragments do not add schema depth; each directory adds two fields.
-    assert project_memory.TREE.count("entries {") <= 7
+    metadata = [r for r in github.requests if "/git/trees/" in r.url.path]
+    assert len(metadata) == 1 and metadata[0].url.params["recursive"] == "1"
+    assert len(github.requests) == 2  # Commit metadata and tree metadata; no asset bytes.
 
 
 async def test_snapshot_asset_read_keeps_pin_and_integrity_without_reloading_tree(store):

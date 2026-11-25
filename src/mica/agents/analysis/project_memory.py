@@ -262,23 +262,10 @@ def client_for(value: str) -> httpx.AsyncClient:
     )
 
 
-def _tree_fields(depth: int) -> str:
-    blob = "... on Blob { oid byteSize }"
-    subtree = "... on Tree { " + _tree_fields(depth - 1) + " }" if depth else ""
-    return "entries { name type object { " + blob + " " + subtree + " } }"
-
-
-TREE = _tree_fields(6)  # Stay below GitHub's depth limit; descend explicitly at the boundary.
-READ_TREE = """query MemoryTree($owner: String!, $repo: String!, $head: GitObjectID!,
-  $path: String!) {
-  repository(owner: $owner, name: $repo) {
-    object(oid: $head) { ... on Commit { file(path: $path) { object { ... on Tree { TREE } } } } }
-  }
-}""".replace("TREE", TREE)
-NODE = """oid file(path: $path) { object { ... on Tree { TREE } } }
+NODE = """oid file(path: $path) { object { ... on Tree { oid } } }
 history(first: 1, path: $path) { totalCount }
 names: file(path: ".mica/projects.json") { object { ... on Blob { text byteSize isTruncated } } }
-""".replace("TREE", TREE)
+"""
 READ = """query MemoryRead($owner: String!, $repo: String!, $branch: String!, $path: String!) {
   repository(owner: $owner, name: $repo) { isPrivate
     ref(qualifiedName: $branch) { target { ... on Commit { NODE } } }
@@ -414,57 +401,50 @@ class GitHubMemory:
         snapshot._root, snapshot._names = variables["path"], names
 
         totals = {"project": 0, "thread": 0}
-        entries_seen = 0
         pending: dict[str, tuple[str, int]] = {}
-
-        async def walk(tree: dict[str, Any], parent: str = "") -> None:
-            nonlocal entries_seen
-            for entry in tree.get("entries", []):
-                entries_seen += 1
-                if entries_seen > 4 * (
-                    self.settings.memory_max_files + self.settings.thread_max_files
-                ):
-                    raise ValueError("Memory tree metadata exceeds its limit")
-                path, obj = parent + entry["name"], entry["object"]
-                if entry["type"] == "tree":
-                    if not obj or "entries" not in obj:
-                        subtree = await self.graphql(
-                            client,
-                            READ_TREE,
-                            {
-                                "owner": variables["owner"],
-                                "repo": variables["repo"],
-                                "head": snapshot.head_oid,
-                                "path": snapshot._root + "/" + path,
-                            },
-                        )
-                        obj = subtree["repository"]["object"]["file"]["object"]
-                    await walk(obj, path + "/")
-                    continue
-                size = obj.get("byteSize", 0)
-                try:
-                    valid_path(path)
-                    if entry["type"] != "blob" or size > file_limit(path, self.settings):
-                        raise ValueError("Invalid blob size/type")
-                    if thread_memory.asset(path):
-                        snapshot.assets[path] = Blob(oid=obj["oid"], size=size)
-                        continue
-                    group = "thread" if path.startswith("threads/") else "project"
-                    totals[group] += size
-                    budget = (
-                        self.settings.thread_text_kb
-                        if group == "thread"
-                        else self.settings.memory_total_kb
-                    ) * 1024
-                    if totals[group] > budget:
-                        raise RuntimeError("Memory text snapshot exceeds its transport budget")
-                    pending[path] = (obj["oid"], size)
-                except (ValueError, UnicodeError):
-                    snapshot.invalid[path] = size
-                    logging.warning("memory_invalid pid=%s path=%s", pid, path)
-
+        entries: list[dict[str, Any]] = []
         if node.get("file"):
-            await walk(node["file"]["object"])
+            # Nested GraphQL tree resolvers time out on large projects. Fetch the
+            # exact subtree from the selected commit in one bounded metadata request.
+            tree_oid = node["file"]["object"]["oid"]
+            response = await client.get(
+                f"https://api.github.com/repos/{self.settings.memory_repo}/git/trees/{tree_oid}",
+                params={"recursive": "1"},
+            )
+            response.raise_for_status()
+            tree = response.json()
+            if tree.get("truncated") is not False or tree.get("sha") != tree_oid:
+                raise ValueError("Incomplete or mismatched memory tree")
+            entries = tree["tree"]
+            if len(entries) > 4 * (
+                self.settings.memory_max_files + self.settings.thread_max_files
+            ):
+                raise ValueError("Memory tree metadata exceeds its limit")
+        for entry in entries:
+            if entry["type"] == "tree":
+                continue
+            path, size = entry["path"], entry.get("size", 0)
+            try:
+                valid_path(path)
+                if entry["type"] != "blob" or size > file_limit(path, self.settings):
+                    raise ValueError("Invalid blob size/type")
+                if thread_memory.asset(path):
+                    snapshot.assets[path] = Blob(oid=entry["sha"], size=size)
+                    continue
+                group = "thread" if path.startswith("threads/") else "project"
+                totals[group] += size
+                budget = (
+                    self.settings.thread_text_kb
+                    if group == "thread"
+                    else self.settings.memory_total_kb
+                ) * 1024
+                if totals[group] > budget:
+                    raise RuntimeError("Memory text snapshot exceeds its transport budget")
+                pending[path] = (entry["sha"], size)
+            except (ValueError, UnicodeError):
+                snapshot.invalid[path] = size
+                logging.warning("memory_invalid pid=%s path=%s", pid, path)
+
         paths = list(pending)
         for offset in range(0, len(paths), 24):
             batch = paths[offset : offset + 24]
@@ -640,14 +620,15 @@ class GitHubMemory:
             async with self.connection() as client:
                 for _ in range(3):
                     latest = await self._read(client, pid)
-                    prior = await self._prior_commit(
-                        client, pid, latest.head_oid, base.head_oid, message
-                    )
-                    if prior and thread_update is None and not blobs:
-                        prior.rejected.update(saved.rejected)
-                        saved = prior
-                        outcome = "committed"
-                        return saved
+                    if thread_update is None and not blobs:
+                        prior = await self._prior_commit(
+                            client, pid, latest.head_oid, base.head_oid, message
+                        )
+                        if prior:
+                            prior.rejected.update(saved.rejected)
+                            saved = prior
+                            outcome = "committed"
+                            return saved
                     if source == "compaction" and latest.head_oid != base.head_oid:
                         raise HeadMoved("Compaction snapshot changed")
                     proposed, unmerged = self._merge(base, latest, updates, event_id)

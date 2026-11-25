@@ -23,6 +23,7 @@ class FakeGitHub:
         self.fail = 0
         self.timeout = False
         self.truncated = set()
+        self.git_trees = {}
         self.client = httpx.AsyncClient(transport=httpx.MockTransport(self.handle))
 
     def seed(self, changes, headline="External edit"):
@@ -77,6 +78,17 @@ class FakeGitHub:
         if self.fail:
             return httpx.Response(self.fail)
         if request.method == "GET":
+            if "/git/trees/" in request.url.path:
+                oid = request.url.path.rsplit("/", 1)[1]
+                files, prefix = self.git_trees[oid]
+                return httpx.Response(200, json={
+                    "sha": oid, "truncated": False,
+                    "tree": [
+                        {"path": p[len(prefix):], "type": "blob", "sha": blob_oid(t),
+                         "size": len(t.encode() if isinstance(t, str) else t)}
+                        for p, t in files.items() if p.startswith(prefix)
+                    ],
+                })
             if "/git/blobs/" in request.url.path:
                 oid = request.url.path.rsplit("/", 1)[1]
                 text = next(
@@ -138,6 +150,8 @@ class FakeGitHub:
                     )
             return httpx.Response(200, json={"data": {"repository": {"object": selected}}})
         prefix = variables.get("path", "") + "/"
+        tree_oid = hashlib.sha1((head + prefix).encode()).hexdigest()
+        self.git_trees[tree_oid] = files, prefix
         names = files.get(".mica/projects.json")
         node = {
             "names": {
@@ -146,7 +160,7 @@ class FakeGitHub:
             if names is not None
             else None,
             "oid": head,
-            "file": {"object": self.tree(files, prefix)}
+            "file": {"object": {"oid": tree_oid}}
             if any(p.startswith(prefix) for p in files)
             else None,
             "history": {

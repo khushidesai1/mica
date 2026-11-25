@@ -79,6 +79,11 @@ the current folder when committed. Historical snapshots resolve the mapping at t
 original commit. Deploy the mapping-aware API and drain older writers before migrating
 an existing folder; do not move memory by hand without updating the index.
 
+Project snapshots resolve the project subtree at an exact commit, then read its complete Git
+tree metadata in one request. Truncated, mismatched or oversized listings are rejected; file
+contents retain their existing commit, hash, size and validation checks. This avoids deeply
+nested GraphQL metadata queries timing out as thread history grows.
+
 ## Turns and viewing memory
 
 Each eligible terminal turn has one writer: a forced-tool editor for chat, or the worker's

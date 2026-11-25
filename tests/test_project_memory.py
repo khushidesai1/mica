@@ -160,6 +160,42 @@ async def test_unavailable_reads_fail_open_and_writes_raise(store, timeout, capl
     assert "outcome=failed:" in caplog.text
 
 
+@pytest.mark.parametrize("damage", ["truncated", "wrong_tree", "metadata_limit"])
+async def test_incomplete_tree_cannot_be_used_as_a_memory_snapshot(store, damage):
+    backend, github = store
+    github.seed({"projects/p_test/conventions.md": FACT})
+
+    def handle(request):
+        response = github.handle(request)
+        if "/git/trees/" in request.url.path:
+            body = response.json()
+            if damage == "truncated":
+                body["truncated"] = True
+            elif damage == "wrong_tree":
+                body["sha"] = "wrong"
+            else:
+                body["tree"] *= 4 * (
+                    backend.settings.memory_max_files + backend.settings.thread_max_files
+                ) + 1
+            return httpx.Response(200, json=body)
+        return response
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        backend.client = client
+        assert await backend.read("p_test") is None
+
+
+async def test_tree_metadata_and_nested_files_use_the_selected_commit(store):
+    backend, github = store
+    path = "archive/" + "a" * 64 + "/_unmerged/review/results/topic.md"
+    old = github.seed({"projects/p_test/" + path: FACT})
+    github.seed({"projects/p_test/" + path: FACT + "Newer content"})
+    snapshot = await backend.read("p_test", head_oid=old)
+    assert snapshot.files[path].text == FACT
+    tree_requests = [r for r in github.requests if "/git/trees/" in r.url.path]
+    assert len(tree_requests) == 1 and tree_requests[0].url.params["recursive"] == "1"
+
+
 async def test_aggregate_limit_rejects_new_files_without_losing_existing(store):
     backend, github = store
     backend.settings.memory_max_files = 3
