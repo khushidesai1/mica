@@ -124,7 +124,9 @@ def blocks(
 
 
 async def sync(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> None:
-    if not record.get("addressed", True) and not record.get("direct_decision"):
+    if not record.get("addressed", True) and (
+        not record.get("direct_decision") or record["direct_decision"].get("route") == "no_reply"
+    ):
         return
     if not record.get("flexible_harness") or surface.is_email(record) or record.get("ambient"):
         return

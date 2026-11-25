@@ -268,3 +268,13 @@ async def test_busy_routing_failure_defers_history_until_old_worker_finishes(bri
     record = await bridge.repository.get_connector_state("claude-event:" + second)
     assert record["terminal_recorded"] and not record.get("terminal_history_waiting")
     assert json.loads(bridge.store.get(path)[0])["messages"][0]["id"] == second
+
+
+async def test_saved_no_reply_stays_silent_when_delivery_retries(bridge):
+    record = {"addressed": False, "direct_decision": {"route": "no_reply"},
+              "payload": payload(channel="C1", channel_type="channel")}
+    for phase in ("received", "replying", "waiting"):
+        await bridge.notify("silent-retry", record, phase, "Must remain silent")
+    bridge.test_slack.chat_postMessage.assert_not_called()
+    bridge.test_slack.chat_update.assert_not_called()
+    assert "notice_phase" not in record

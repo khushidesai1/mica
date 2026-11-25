@@ -299,7 +299,8 @@ class BatchBridge:
         from .transport import SlackTransport
 
         if (not record.get("addressed", True) and phase in {"received", "replying", "waiting"}
-                and not record.get("direct_decision")):
+                and (not record.get("direct_decision")
+                     or record["direct_decision"].get("route") == "no_reply")):
             return
         if phase == "failed" and not record.get("cancel_requested"):
             cause = record.get("failure_cause")
