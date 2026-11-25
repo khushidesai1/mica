@@ -71,6 +71,12 @@ No Terraform apply or cloud deployment is implied by these source changes.
 
 ## Release validation
 
+The post-turn memory editor validates full replacements against the configured UTF-8 file
+limits before committing. Invalid proposals receive bounded repair feedback. Previously cached
+invalid editor proposals are regenerated from current project memory while preserving any
+already-written immutable thread entry. Recovery requires a verified receipt and
+`memory_editor_done`; a partial thread commit alone does not establish completion.
+
 GCS operation confirmations and controller-executed moves/deletions are API-only. Use
 `cloudbuild/build-slack-api.yaml`, preserving the deployed CPU, GPU and shared-worker image
 pins and all runtime access settings. The existing scoped writer role supplies get/create/delete;
