@@ -116,6 +116,30 @@ async def test_direct_failure_does_not_fall_back_to_compute(chat):
     assert "TODO" in (await chat.memory_backend.read(chat.pid)).files["PROJECT.md"].text
 
 
+@pytest.mark.parametrize("route", ["reply", "compute"])
+async def test_password_redaction_preserves_request_through_model_and_storage(chat, route):
+    chat.decision.return_value = conversation.Decision(route=route, reply="Config advice.")
+    body = payload(text="Why won't this config load?\nmy config has pwd=synthetic-secret\nHelp me.")
+    body["event"]["blocks"] = [{"text": "my config has pwd=synthetic-secret"}]
+    event = await chat.accept(body)
+    receipt = await chat.repository.get_connector_state("claude-event:" + event)
+    assert receipt["payload"]["event"]["text"] == (
+        "Why won't this config load?\nmy config has pwd: [removed]\nHelp me."
+    )
+    assert "blocks" not in receipt["payload"]["event"]
+    assert await chat.process(event, 0) == ("running" if route == "compute" else "complete")
+    chat.decision.assert_awaited_once()
+    context = chat.decision.call_args.args[5]
+    assert context["credential_removed"] is True
+    assert "Help me." in context["request"]
+    assert "private AtoMx connection" in context["credential_guidance"]
+    assert "changing the pasted password" in context["credential_guidance"]
+    stored = json.dumps(chat.repository.connector_state) + json.dumps(context)
+    for key in chat.store.keys(""):
+        stored += chat.store.get(key)[0].decode(errors="replace")
+    assert "synthetic-secret" not in stored
+
+
 async def test_retry_after_state_write_reuses_decision(chat, monkeypatch):
     original = chat.store.put
     failed = False

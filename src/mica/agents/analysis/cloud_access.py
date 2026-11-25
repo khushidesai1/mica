@@ -732,7 +732,7 @@ async def email_decision(
     first = next(
         (
             line.strip()
-            for line in request_text(record["payload"]["event"].get("text", "")).splitlines()
+            for line in request_text(record["payload"]["event"].get("text", "")).text.splitlines()
             if line.strip()
         ),
         "",

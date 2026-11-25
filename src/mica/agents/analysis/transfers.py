@@ -1079,16 +1079,29 @@ class Transfers:
         return "\n".join(rows)[:2900] or "No transfer markers or published AtoMx inventory yet."
 
 
+def redact_passwords(text: str) -> tuple[str, bool]:
+    """Remove each password assignment through the end of its line, retaining context."""
+    pattern = re.compile(r"(?i)\b(password|passwd|pwd)[^\S\r\n]*[:=][^\r\n]*")
+    redacted, count = pattern.subn(
+        lambda match: f"{match[1].lower()}: [removed]",
+        text,
+    )
+    return redacted, bool(count)
+
+
 async def scrub_password_paste(bridge: BatchBridge, payload: dict[str, Any]) -> dict[str, Any]:
-    """Discard recognizable password pastes before receipts, request files, or model context."""
-    event = payload["event"]
-    if not re.search(r"(?i)\b(?:password|passwd|pwd)\s*[:=]", event.get("text", "")):
+    """Scrub message copies before receipts, request files, or model context."""
+    event = dict(payload["event"])
+    event["text"], removed = redact_passwords(event.get("text", ""))
+    email = dict(payload.get("_email", {}))
+    for field in ("original_text", "trailing_text", "quoted_text"):
+        if field in email:
+            email[field], found = redact_passwords(email[field])
+            removed |= found
+    if not removed:
         return payload
-    return {
-        **payload,
-        "event": {
-            **event,
-            "text": "[AtoMx password paste removed]",
-            "atomx_password_removed": True,
-        },
-    }
+    event["atomx_password_removed"] = True
+    # Slack rich-text blocks can duplicate or split a password across text nodes.
+    # All downstream message consumers use the scrubbed canonical text instead.
+    event.pop("blocks", None)
+    return {**payload, "event": event, **({"_email": email} if email else {})}
