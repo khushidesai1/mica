@@ -45,3 +45,15 @@ def test_import_keeps_metadata_literal_and_uses_one_exported_filesystem():
         "/tmp/rootfs.tar",
         "flat-runtime",
     ]
+
+
+def test_api_ports_survive_flattening_and_cannot_inject_dockerfile_instructions():
+    before = {"Config": {"ExposedPorts": {"8080/tcp": {}, "53/udp": {}}},
+              "Architecture": "amd64", "Os": "linux"}
+    args = shlex.split(import_script(before, "/tmp/rootfs.tar", "flat-api"))
+    assert "EXPOSE 8080/tcp" in args and "EXPOSE 53/udp" in args
+    verify(before, {**before, "RootFS": {"Layers": ["single"]}})
+    with pytest.raises(AssertionError, match="ExposedPorts"):
+        verify(before, {**before, "Config": {}, "RootFS": {"Layers": ["single"]}})
+    with pytest.raises(ValueError, match="exposed port"):
+        dockerfile({"Config": {"ExposedPorts": {"8080/tcp\nUSER root": {}}}})

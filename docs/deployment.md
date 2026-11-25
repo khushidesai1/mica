@@ -713,3 +713,8 @@ the operator has registered the Mica GitHub App, provisioned its numeric client-
 and completed the private sandbox acceptance checks. Routine deployment does not apply Terraform
 or change secrets. See [GitHub PR connections](github-pull-requests.md) for permissions, connection
 commands, private thread retention, supported changes and pilot settings.
+
+The coordinated pipeline prepares the pinned API and shared-worker bases before overlaying new
+code. At 100 layers it uses the existing filesystem-flattening helper, verifies the same runtime
+environment, user, entrypoint, command, labels and exposed ports, and retains every release gate.
+This prevents repeated application overlays from exceeding Docker's layer-depth limit.

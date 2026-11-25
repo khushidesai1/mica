@@ -8,12 +8,12 @@ import re
 import shlex
 from pathlib import Path
 
-FIELDS = ("Env", "User", "WorkingDir", "Entrypoint", "Cmd", "Labels")
+FIELDS = ("Env", "User", "WorkingDir", "Entrypoint", "Cmd", "Labels", "ExposedPorts")
 
 
 def dockerfile(image: dict) -> str:
     config = image["Config"]
-    for field in ("Volumes", "ExposedPorts", "Healthcheck", "OnBuild", "Shell", "StopSignal"):
+    for field in ("Volumes", "Healthcheck", "OnBuild", "Shell", "StopSignal"):
         if config.get(field):
             raise ValueError(f"Runtime has unsupported configuration: {field}")
     lines = [
@@ -22,6 +22,10 @@ def dockerfile(image: dict) -> str:
         "FROM scratch",
         "COPY --from=runtime / /",
     ]
+    for port in sorted(config.get("ExposedPorts") or {}):
+        if not re.fullmatch(r"[0-9]{1,5}/(?:tcp|udp)", port):
+            raise ValueError("Unsupported exposed port")
+        lines.append("EXPOSE " + port)
     for item in config.get("Env") or []:
         key, value = item.split("=", 1)
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key) or "\n" in value:
