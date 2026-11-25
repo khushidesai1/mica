@@ -140,22 +140,45 @@ def read(storage: Storage, key: str) -> dict[str, Any] | None:
         return None
 
 
-def markers(storage: Storage, sample: str) -> dict[str, Any]:
-    return {
+def markers(
+    storage: Storage, sample: str, *, raw_prefix: str = "raw_outputs/raw/",
+    additional_prefix: str = "raw_outputs/additional_files/",
+    status_prefix: str = "transfer_status/",
+) -> dict[str, Any]:
+    values = {
         state: value
         for state in ("in_progress", "done", "failed")
-        if (value := read(storage, f"transfer_status/{sample}.{state}.json"))
+        if (value := read(storage, f"{status_prefix}{sample}.{state}.json"))
     }
+    record = values.pop("done", None)
+    scopes = []
+    for scope, prefix in (("raw", raw_prefix), ("additional_files", additional_prefix)):
+        try:
+            storage.read_prefix(f"{prefix}{sample}/done.txt", 1)
+        except FileNotFoundError:
+            continue
+        scopes.append(scope)
+    if scopes:
+        values["done"] = {"provenance": "bucket_marker", "scopes": scopes}
+    if record is not None:
+        values["completion_record"] = record
+    return values
 
 
 def marker_state(values: dict[str, Any]) -> str:
     if "in_progress" in values:
         return "stuck" if age(values["in_progress"].get("heartbeat")) > 3600 else "in_progress"
     if "done" in values:
+        if values["done"].get("provenance") == "bucket_marker":
+            return "done.txt present in destination (contents not verified here)"
         if values["done"].get("provenance") == "backfill":
             return "done (backfilled; listing-only, not verified)"
         return "done (marker; manifest not rechecked here)"
-    return "failed" if "failed" in values else "on_atomx_only"
+    if "failed" in values:
+        return "failed"
+    if "completion_record" in values:
+        return "historical completion record only; destination needs verification"
+    return "on_atomx_only"
 
 
 class Transfers:
@@ -458,18 +481,19 @@ class Transfers:
 
     def destination_markers(self, p: dict[str, Any], sample: str) -> dict[str, Any]:
         store = GCSStorage(p["config"]["bucket"])
-        return {
-            state: value
-            for state in ("in_progress", "done", "failed")
-            if (value := read(store, p["config"]["status_prefix"] + sample + "." + state + ".json"))
-        }
+        return markers(
+            store, sample, raw_prefix=p["config"]["raw_prefix"],
+            additional_prefix=p["config"]["additional_prefix"],
+            status_prefix=p["config"]["status_prefix"],
+        )
 
     async def available(self, p: dict[str, Any]) -> dict[str, Any]:
         sample = p["request"]["as_sample"] or p["request"]["sample"]
         values = await asyncio.to_thread(self.destination_markers, p, sample)
         if "done" in values:
             raise ValueError(
-                "This sample already has a done marker. Verify it before any new transfer."
+                "This destination still has a done.txt marker in at least one sample folder. "
+                "Verify it or move both completed sample folders before a new transfer."
             )
         if "in_progress" in values and age(values["in_progress"].get("heartbeat")) <= 3600:
             raise ValueError("This sample has a live transfer already.")
@@ -993,6 +1017,7 @@ class Transfers:
                         "sample": pending["request"]["as_sample"]
                         or pending["request"]["sample"],
                         "status": pending["state"],
+                        "status_basis": "request_history; not current destination contents",
                         "pending_id": pid,
                     }
                     # Private, requester/project-scoped context survives a new conversation.
@@ -1079,16 +1104,29 @@ class Transfers:
         return "\n".join(rows)[:2900] or "No transfer markers or published AtoMx inventory yet."
 
 
+def redact_passwords(text: str) -> tuple[str, bool]:
+    """Remove each password assignment through the end of its line, retaining context."""
+    pattern = re.compile(r"(?i)\b(password|passwd|pwd)[^\S\r\n]*[:=][^\r\n]*")
+    redacted, count = pattern.subn(
+        lambda match: f"{match[1].lower()}: [removed]",
+        text,
+    )
+    return redacted, bool(count)
+
+
 async def scrub_password_paste(bridge: BatchBridge, payload: dict[str, Any]) -> dict[str, Any]:
-    """Discard recognizable password pastes before receipts, request files, or model context."""
-    event = payload["event"]
-    if not re.search(r"(?i)\b(?:password|passwd|pwd)\s*[:=]", event.get("text", "")):
+    """Scrub message copies before receipts, request files, or model context."""
+    event = dict(payload["event"])
+    event["text"], removed = redact_passwords(event.get("text", ""))
+    email = dict(payload.get("_email", {}))
+    for field in ("original_text", "trailing_text", "quoted_text"):
+        if field in email:
+            email[field], found = redact_passwords(email[field])
+            removed |= found
+    if not removed:
         return payload
-    return {
-        **payload,
-        "event": {
-            **event,
-            "text": "[AtoMx password paste removed]",
-            "atomx_password_removed": True,
-        },
-    }
+    event["atomx_password_removed"] = True
+    # Slack rich-text blocks can duplicate or split a password across text nodes.
+    # All downstream message consumers use the scrubbed canonical text instead.
+    event.pop("blocks", None)
+    return {**payload, "event": event, **({"_email": email} if email else {})}

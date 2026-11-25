@@ -711,6 +711,17 @@ in both email and Slack DMs. Existing conversations keep their project. A single
 is inherited; conflicting defaults require an explicit switch. Private email history belongs to
 one sender in one Gmail thread; adding another sender does not grant access to that history.
 
+The main email request keeps its existing sign-off and quoted-reply boundaries. The model also
+receives text after the sign-off and the quoted reply as separately labeled context, each capped
+at 4,000 characters, so a P.S. or path is available without treating old commands as authorization.
+An empty body is labeled "(No message text.)" alongside the attachment list. Stored attachment
+MIME contains only attachment parts, without a second copy of the email body.
+
+At intake, `password`, `passwd`, and `pwd` assignments followed by `:` or `=` are redacted through
+the end of that line. Text before the keyword and on other lines is retained. Email context copies
+are scrubbed too. The model handles the remaining request and advises using the private AtoMx
+connection and changing a pasted password. This applies to message text, not attachment contents.
+
 Each request receives an acknowledgement and one final email containing its answer and supported
 attachments. Progress updates are suppressed. Final replies include only current project members
 from the original To/Cc list, and name recipients omitted for lack of membership. Project access

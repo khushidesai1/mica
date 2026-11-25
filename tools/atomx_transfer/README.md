@@ -49,17 +49,27 @@ byte counter reaches 100%.
 
 ## Completion markers
 
-`transfer_status/<sample>.done.json` is the authoritative completion record. After verifying all
+`done.txt` in the destination sample folders determines whether a new pull is blocked.
+`transfer_status/<sample>.done.json` retains detailed completion evidence. After verifying all
 data, a transfer creates `done.txt` in both `raw_outputs/raw/<sample>/` and
 `raw_outputs/additional_files/<sample>/`. Each text marker describes completion of the entire
 sample, with per-folder and sample counts. JSON is written first; a missing text marker can be
-repaired with `backfill`. All completion markers are create-only and never overwritten.
+repaired with `backfill`. Text markers are create-only and never overwritten. Existing text that
+differs from the completion record is rejected, including during repair.
+
+After moving both defective sample folders, a new approved pull may reuse the original name.
+An old JSON record without destination text markers is historical evidence, not a transfer lock.
+The new pull rechecks source size/CRC32C and the exact destination manifest before replacing the
+JSON with a generation precondition. Its `previous_completion` retains the prior generation and
+full record (including earlier history). The new text markers identify the new run. Moved text
+markers can be associated with that history by `run_id`; moving folders does not rewrite history.
+Either remaining text marker blocks a pull, and active leases still take precedence.
 
 Text markers start with `# AtoMx transfer marker v1`, followed by `key: value` lines. A blank line
 ends the metadata; the remaining prose is not machine-readable. Keys include `sample`,
 `remote_sample`, `scope`, `status`, `verified`, `export_root`, `run_folder`, `scope_files`,
 `scope_bytes`, `sample_files`, `sample_bytes`, `finished`, `tool_version`, `run_id`, `requested_by`,
-and `record` (the authoritative JSON path). `verified: crc32c` records source comparison at
+and `record` (the JSON evidence path). `verified: crc32c` records source comparison at
 transfer completion. It is not a claim that the source or destination has remained unchanged.
 
 The basename `done.txt` is reserved anywhere in either destination tree. Source files with this
@@ -81,17 +91,22 @@ text only in the folders present at that time. Text reports `verified: listing-o
 Run this only after the old shell copy jobs have stopped; they do not honor the engine's lease.
 
 Repairs use the existing JSON's original counts and verification level. A later-arriving folder
-does not silently extend a backfilled snapshot. Re-running skips fully marked samples without
+does not silently extend a backfilled snapshot. Before restoring missing text, repair checks the
+current manifest (or listing-only counts) and skips changed destinations as `destination_changed`.
+Re-running skips fully marked samples without
 changing object generations. Backfill respects the per-sample lease and skips unfinished or
 failed transfers without a done record, and text-only markers with no authoritative JSON.
 For a completed record, a stale lease can be reclaimed after one hour to repair missing text.
 
-Inventory labels backfilled samples `done_backfilled`; Slack calls them listing-only and not
-verified. `verify` exits nonzero for these records unless `--allow-backfilled` is supplied; that
+Inventory labels backfilled samples `done_backfilled`, text without a matching-name JSON record
+`done_text_only`, and source samples with only a historical record `completion_record_only`.
+Bucket-only discovery follows the actual sample folders, including renamed folders.
+Slack reports destination marker presence without claiming current content verification.
+`verify` exits nonzero for backfilled records unless `--allow-backfilled` is supplied; that
 option acknowledges the listing-only record and performs no checksum verification. A real pull
-still refuses an existing done record. To upgrade, an administrator must first remove that
-sample's completion JSON and text markers, then run a verified pull. Review any incomplete
-transfer or late-arriving folder before removing its markers.
+refuses either existing destination text marker. To upgrade, an administrator must first review
+the data and remove both text markers, then run a verified pull. Keep the JSON for history.
+Review any incomplete transfer or late-arriving folder before removing its markers.
 
 The marker schema is in `schema/marker-v1.json`; synthetic offline tests are in
 Mica's `tests/test_atomx_engine.py` and `tests/test_analysis_transfers.py`. No test fixture is a

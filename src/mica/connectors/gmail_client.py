@@ -6,7 +6,7 @@ import re
 from email import policy
 from email.message import EmailMessage
 from email.parser import BytesParser
-from typing import Any
+from typing import Any, NamedTuple
 
 import dkim
 import dns.exception
@@ -18,9 +18,16 @@ SCOPES = [f"https://www.googleapis.com/auth/gmail.{s}" for s in ("readonly", "se
 MAX_MESSAGE_BYTES = 35_000_000
 
 
-def request_text(text: str) -> str:
+class MessageText(NamedTuple):
+    text: str
+    trailing_text: str = ""
+    quoted_text: str = ""
+
+
+def request_text(text: str) -> MessageText:
     """Extract a top-posted request without treating old replies as new instructions."""
     lines = text.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+    trailing_text = quoted_text = ""
     # Only remove a quoted suffix. Inline replies below a quotation remain intact.
     for index, line in enumerate(lines):
         if (
@@ -30,6 +37,7 @@ def request_text(text: str) -> str:
                 not value.strip() or value.lstrip().startswith(">") for value in lines[index + 1 :]
             )
         ):
+            quoted_text = "\n".join(lines[index:]).strip()[:4000]
             lines = lines[:index]
             break
     # Retained quotations/forwarded mail and fenced examples can contain signature
@@ -39,7 +47,7 @@ def request_text(text: str) -> str:
         or re.search(r"forwarded message|original message|^On .+wrote:", line, re.IGNORECASE)
         for line in lines
     ):
-        return "\n".join(lines).strip()
+        return MessageText("\n".join(lines).strip(), quoted_text=quoted_text)
     # Conventional signature boundaries, on their own paragraph. Require actual
     # request content before the boundary so a greeting is never the whole request.
     closings = {"sincerely,", "best,", "best regards,", "kind regards,", "regards,"}
@@ -53,9 +61,10 @@ def request_text(text: str) -> str:
                 or (not lines[index - 1].strip() and line.strip().lower() in closings)
             )
         ):
+            trailing_text = "\n".join(lines[index:]).strip()[:4000]
             lines = lines[:index]
             break
-    return "\n".join(lines).strip()
+    return MessageText("\n".join(lines).strip(), trailing_text, quoted_text)
 
 
 def enabled(settings: Settings) -> bool:

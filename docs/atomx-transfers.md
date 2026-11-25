@@ -50,6 +50,14 @@ or source requires a new preview. Completion means source
 sizes and CRC32C matched the uploaded objects and the destination manifest was checked.
 Existing different objects are never overwritten. `done.txt` in both sample folders points
 to the detailed completion record. Ask for transfer status or cancellation in either interface.
+Transfer eligibility follows those destination `done.txt` files. Either folder's marker blocks
+a new pull, even if there is no JSON record. After moving both defective sample folders to new
+names, the original name is available for a fresh preview and approval; its historical
+`.done.json` does not reserve that name. A new pull still checks every source/destination file
+and refuses conflicting or extra data. Only after verification does it replace the JSON using
+the previously read generation, retaining that full record under `previous_completion` with
+its generation. Newly written text markers refer to the new run; moved markers' `run_id` can
+be matched to the retained history. Historical request status is not current bucket status.
 Connection links and transfer notices go only to the requesting user, including email threads
 with multiple recipients. Separate durable outbox stages leave the normal email reply intact.
 In an existing Slack DM, the transfer takes over its request's activity message. File checks,
@@ -154,6 +162,9 @@ previews listing-only completion records; add `--yes` to write them. A backfille
 source verification and `verify` only accepts it with `--allow-backfilled`. Both commands work
 without SFTP credentials and exclude nested additional/status directories from sample discovery.
 Backfill can also repair missing text markers from an immutable completed record.
+Repairs first compare the current destination with that record (checksums for transfers, counts
+for listing-only backfills). A changed destination is skipped as `destination_changed`, so a
+partial replacement cannot acquire the old export's completion markers.
 
 Manual `inventory` and `pull` use this same `destinations` block plus an `sftp` block containing
 `host`, `port` and an independently verified `host_key` (`key-type base64-key`). They prompt for

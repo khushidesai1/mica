@@ -8,6 +8,7 @@ import hashlib
 import json
 import time
 from contextlib import suppress
+from email.message import EmailMessage
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -16,6 +17,7 @@ from googleapiclient.errors import HttpError
 from mica.agents.analysis.batch import BatchBridge
 from mica.agents.analysis.config import CHECKPOINT_PREFIX
 from mica.agents.analysis.surface import EMAIL_STATE_PREFIX, email_keys
+from mica.agents.analysis.transfers import redact_passwords
 from mica.api.auth import Principal, get_principal
 from mica.api.dependencies import Services
 from mica.connectors import gmail_client as client
@@ -53,9 +55,11 @@ async def ingest(bridge: BatchBridge, api: Any, message_id: str, label: str, sin
         return
     body = message.get_body(preferencelist=("plain",))
     original_text = str(body.get_content()) if body else ""
+    original_text, credential_removed = redact_passwords(original_text)
     if len(original_text) > 50_000:
         original_text = original_text[:50_000] + "\n[Message truncated at 50,000 characters.]"
-    text = client.request_text(original_text)
+    extracted = client.request_text(original_text)
+    text = extracted.text
     parts = [p for p in message.walk() if p.get_filename() and not p.is_multipart()]
     payload: dict[str, Any] = {
         "type": "event_callback",
@@ -66,7 +70,7 @@ async def ingest(bridge: BatchBridge, api: Any, message_id: str, label: str, sin
             "user": sender,
             "channel": "E" + item["threadId"].upper(),
             "ts": f"{int(item['internalDate']) // 1000}.{int(item['internalDate']) % 1000:06d}",
-            "text": text or "Please review the attached files.",
+            "text": text or "(No message text.)",
         },
         "_email": {
             "mailbox": client.mailbox(bridge.app),
@@ -74,6 +78,8 @@ async def ingest(bridge: BatchBridge, api: Any, message_id: str, label: str, sin
             "thread_id": item["threadId"],
             "message_id": str(message["Message-ID"]),
             "subject": str(message["Subject"] or "Mica"),
+            "trailing_text": extracted.trailing_text,
+            "quoted_text": extracted.quoted_text,
             "recipients": [
                 a.addr_spec.lower()
                 for h in ("To", "Cc")
@@ -83,10 +89,18 @@ async def ingest(bridge: BatchBridge, api: Any, message_id: str, label: str, sin
     }
     if text != original_text:
         payload["_email"]["original_text"] = original_text
+    if credential_removed:
+        payload["event"]["atomx_password_removed"] = True
     event_id, _ = email_keys(payload, sender)
     if parts:
         key = f"{CHECKPOINT_PREFIX}/gmail/inputs/{event_id}.eml"
-        await asyncio.to_thread(bridge.storage.put, key, raw)
+        # Attachment ingestion needs only these parts. Never persist a second,
+        # unscrubbed copy of the body (including an HTML alternative) in raw MIME.
+        attachment_source = EmailMessage()
+        attachment_source.make_mixed()
+        for part in parts:
+            attachment_source.attach(part)
+        await asyncio.to_thread(bridge.storage.put, key, attachment_source.as_bytes())
         payload["_email"]["raw_key"] = key
         payload["event"]["files"] = [{"name": p.get_filename()} for p in parts]
     await bridge.accept(payload, principal=sender, surface_name="email")
