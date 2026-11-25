@@ -665,18 +665,6 @@ async def handle(
         return await finish(bridge, event_id, record, access.deny_text(grant))
     cmd = (commands.Command("init", tuple(record["direct_init_command"]))
            if record.get("direct_init_command") else None)
-    if (
-        not grant.allowed
-        and cmd is None
-        and not grant.private
-        and not surface.is_email(record)
-        and bridge.settings.access_request_owner_id
-    ):
-        from . import access_requests
-
-        return await finish(
-            bridge, event_id, record, await access_requests.propose(bridge, record, grant)
-        )
     files = event.get("files") or []
     registry = Registry(storage)
     if cmd is None:

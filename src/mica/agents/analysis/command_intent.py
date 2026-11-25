@@ -169,7 +169,6 @@ def command(
         )
     if op in {"share", "unshare"} and (
         proposal.scope.strip().lower() not in {"", "member", "collaborator"}
-        or re.search(r"\b(?:co[- ]?owners?|owners?|ownership)\b", source_text, re.I)
     ):
         raise ValueError(
             "Sharing changes collaborator access only. To change ownership, ask me to "

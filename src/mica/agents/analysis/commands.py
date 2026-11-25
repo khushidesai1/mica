@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 from . import observability, surface
 from .access import Grant
@@ -18,6 +19,7 @@ from .registry import ProjectEntry, Registry, RegistryDoc
 class Spec:
     """Policy shared by structured proposals, execution and confirmation cards."""
 
+    requires: Literal["", "owner", "write_admin"] = ""
     approval: bool = False
     dm_only: bool = False
     exact_dm_only: bool = False
@@ -36,9 +38,11 @@ class Spec:
 
 
 COMMANDS: dict[str, Spec] = {
-    "bind channel": Spec(channel=True, approval=True, dm_only=True, exact_dm_only=True,
+    "bind channel": Spec(requires="owner", channel=True, approval=True,
+        dm_only=True, exact_dm_only=True,
         email_read_only=True, natural=True, registry=True),
     "add-owner": Spec(
+        requires="owner",
         approval=True,
         exact_dm_only=True,
         email_read_only=True,
@@ -64,6 +68,7 @@ COMMANDS: dict[str, Spec] = {
         handoff=True
     ),
     "data-root": Spec(
+        requires="owner",
         approval=True,
         exact_dm_only=True,
         email_read_only=True,
@@ -95,6 +100,7 @@ COMMANDS: dict[str, Spec] = {
         dm_only=True,
     ),
     "publish": Spec(
+        requires="owner",
         channel=True,
         approval=True,
         exact_dm_only=True,
@@ -104,6 +110,7 @@ COMMANDS: dict[str, Spec] = {
         dm_only=True,
     ),
     "remove-owner": Spec(
+        requires="owner",
         approval=True,
         exact_dm_only=True,
         email_read_only=True,
@@ -114,6 +121,7 @@ COMMANDS: dict[str, Spec] = {
         dm_only=True,
     ),
     "rename": Spec(
+        requires="owner",
         approval=True,
         exact_dm_only=True,
         email_read_only=True,
@@ -125,6 +133,7 @@ COMMANDS: dict[str, Spec] = {
         dm_only=True, handoff=True, arguments="none"),
     "repos": Spec(exact_dm_only=True, natural=True, registry=True),
     "repos add": Spec(
+        requires="owner",
         approval=True,
         exact_dm_only=True,
         email_read_only=True,
@@ -134,6 +143,7 @@ COMMANDS: dict[str, Spec] = {
         dm_only=True,
     ),
     "repos remove": Spec(
+        requires="owner",
         approval=True,
         exact_dm_only=True,
         email_read_only=True,
@@ -144,6 +154,7 @@ COMMANDS: dict[str, Spec] = {
     ),
     "scripts": Spec(sender_reply=True, natural=True, mutating=True),
     "share": Spec(
+        requires="owner",
         approval=True,
         exact_dm_only=True,
         email_read_only=True,
@@ -155,6 +166,7 @@ COMMANDS: dict[str, Spec] = {
     "transfer": Spec(transfer=True),
     "transfers": Spec(natural=True, transfer=True, arguments="none"),
     "unpublish": Spec(
+        requires="owner",
         channel=True,
         approval=True,
         exact_dm_only=True,
@@ -164,6 +176,7 @@ COMMANDS: dict[str, Spec] = {
         dm_only=True,
     ),
     "unshare": Spec(
+        requires="owner",
         approval=True,
         exact_dm_only=True,
         email_read_only=True,
@@ -174,8 +187,10 @@ COMMANDS: dict[str, Spec] = {
     ),
     "use": Spec(sender_reply=True, natural=True, registry=True, arguments="project",
         dm_only=True, mutating=True),
-    "write grant": Spec(approval=True, email_read_only=True, natural=True, dm_only=True),
+    "write grant": Spec(requires="write_admin", approval=True, email_read_only=True,
+        natural=True, dm_only=True),
     "write revoke": Spec(
+        requires="write_admin",
         approval=True, email_read_only=True, natural=True, arguments="project", dm_only=True
     ),
     "write status": Spec(email_read_only=True, natural=True, arguments="project", dm_only=True),
@@ -184,6 +199,91 @@ COMMANDS: dict[str, Spec] = {
 
 def spec(name: str) -> Spec:
     return COMMANDS.get(name, Spec())
+
+
+class PermissionRequired(ValueError):
+    """Repairable policy failure with a gateway the model can explain."""
+
+    def __init__(self, operation: str, reason: str, gateway: str) -> None:
+        self.operation, self.reason, self.gateway = operation, reason, gateway
+        super().__init__(json.dumps({
+            "operation": operation, "reason": reason, "gateway": gateway,
+        }))
+
+
+def visible_project(grant: Grant, project_id: str) -> ProjectEntry | None:
+    """Match deny_text's disclosure boundary even when registry metadata is present."""
+    project = grant.doc.projects.get(project_id)
+    if project and grant.email and (
+        (grant.private and grant.doc.can_use(project_id, grant.email))
+        or (not grant.private and grant.channel_key in project.published_channels)
+    ):
+        return project
+    return None
+
+
+def permission_blocks(
+    name: str, grant: Grant, record: dict[str, Any], settings: Settings,
+    *, project_id: str | None = None,
+) -> list[PermissionRequired]:
+    """Render surface and role policy from the same table used by approvals."""
+    policy = spec(name)
+    blocked = []
+    if surface.is_email(record) and policy.email_read_only:
+        blocked.append(PermissionRequired(name, "email_read_only", "in Slack"))
+    if not grant.private and (policy.dm_only or policy.exact_dm_only):
+        blocked.append(PermissionRequired(name, "dm_only", "in their DM with Mica"))
+    pid = grant.project_id if project_id is None else project_id
+    if policy.requires == "owner" and not grant.doc.owns(pid, grant.email):
+        project = visible_project(grant, pid)
+        gateway = "the project owner" + (f" ({project.owner})" if project else "")
+        blocked.append(PermissionRequired(name, "owner", gateway))
+    if policy.requires == "write_admin":
+        payload = record["payload"]
+        admin = f"{payload.get('team_id', '')}:{payload['event'].get('user', '')}"
+        if admin not in settings.csv("write_admin_ids"):
+            blocked.append(PermissionRequired(name, "write_admin", "a write administrator"))
+    return blocked
+
+
+def permission_view(grant: Grant, record: dict[str, Any], settings: Settings) -> dict[str, Any]:
+    """Compact requester context; omitted operations retain their normal approvals."""
+    project: dict[str, str] | None = None
+    if grant.allowed:
+        entry = grant.project
+        role = ("owner" if entry.owner == grant.email else
+                "co_owner" if grant.email in entry.co_owners else "member")
+        project = {"id": grant.project_id, "name": entry.name, "role": role}
+    elif visible_project(grant, grant.project_id):
+        project = {"name": grant.project.name, "owner": grant.project.owner}
+    blocked: dict[str, Any] = {}
+    for name in COMMANDS:
+        for failure in permission_blocks(name, grant, record, settings):
+            group = blocked.setdefault(failure.reason, {
+                "operations": [], "gateway": failure.gateway,
+            })
+            group["operations"].append(name)
+    accessible = bool(grant.doc.visible(grant.email))
+    gateway = None
+    if grant.email and not grant.allowed and not (
+        grant.private and not grant.project_id and accessible
+    ):
+        owner = settings.access_request_owner_id
+        team = record["payload"].get("team_id", "")
+        gateway = ("request_access owner card" if not surface.is_email(record)
+                   and owner and owner.startswith(team + ":") else "ask the project owner")
+    return {
+        "surface": "email" if surface.is_email(record) else
+                   "slack_dm" if grant.private else "slack_channel",
+        "project": project,
+        "blocked": blocked,
+        "project_access": {
+            "allowed": grant.allowed,
+            "has_accessible_projects": accessible,
+            "channel_authorization_required": not grant.private and not grant.allowed,
+            "gateway": gateway,
+        },
+    }
 
 
 @dataclass(frozen=True)

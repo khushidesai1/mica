@@ -44,7 +44,8 @@ def authorize(
     if cmd.name not in ADMIN or cmd.force or not cmd.args:
         raise ValueError("Unsupported administrative change")
     pid = cmd.args[0]
-    if cmd.name.startswith("write "):
+    policy = commands.spec(cmd.name)
+    if policy.requires == "write_admin":
         event = record["payload"]["event"]
         admin = f"{record['payload']['team_id']}:{event['user']}"
         if admin not in bridge.settings.csv("write_admin_ids"):
@@ -54,7 +55,7 @@ def authorize(
         if cmd.name == "write grant":
             write_access.validate_scope(cmd.args[1], bridge.settings)
             write_access.validate_project(cmd.args[1], grant.doc, pid, grant.email)
-    elif not grant.doc.owns(pid, grant.email):
+    elif policy.requires == "owner" and not grant.doc.owns(pid, grant.email):
         raise ValueError("Only the project owner can change this setting.")
     if cmd.name == "bind channel":
         grant.doc.model_copy(deep=True).bind(

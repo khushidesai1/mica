@@ -197,11 +197,10 @@ DESCRIPTIONS = {
     ),
     backchannel.TOOL: backchannel.DESCRIPTION,
     "request_access": (
-        "Request an owner approval card when project work is requested but "
-        "project_access.allowed is false. No permissions or work are started. "
-        "For accessible but unselected projects, ask which to use instead. "
-        "Account/help/setup uses propose_command. Missing authorization does "
-        "not mean workers are unavailable."
+        "Request an owner approval card for requested project work when "
+        "permissions.project_access.gateway is request_access owner card. "
+        "For accessible but unselected projects, ask which to use. "
+        "This requests approval; it grants no access and starts no work."
     ),
     ("list_folders"): (
         "List metadata under this project's read-only data root. Paths are "
@@ -390,16 +389,11 @@ async def pending_context(
 
 def validate_command(
     proposal: command_intent.Proposal, grant: access.Grant, record: dict[str, Any],
-    *, input_text: str = "",
+    *, settings: Settings, input_text: str = "",
 ) -> commands.Command:
-    policy = commands.spec(proposal.operation)
-    if surface.is_email(record) and policy.email_read_only:
-        raise ValueError(surface.EMAIL_READ_ONLY)
-    if not grant.private and (policy.dm_only or policy.exact_dm_only):
-        raise ValueError(
-            "Please continue in a private conversation with Mica for account and "
-            "project selection requests."
-        )
+    for failure in commands.permission_blocks(proposal.operation, grant, record, settings):
+        if failure.reason in {"email_read_only", "dm_only"}:
+            raise failure
     referents = record.get("intent_referents")
     if referents and (
         referents["expires"] < time.time()
@@ -408,7 +402,7 @@ def validate_command(
         raise ValueError(
             "Those project choices changed or expired. Ask for the current list again."
         )
-    return command_intent.command(
+    cmd = command_intent.command(
         proposal,
         grant,
         source_text=record["payload"]["event"].get("text", "")
@@ -416,6 +410,12 @@ def validate_command(
         + record.get("intent_prior_request", ""),
         input_text=input_text,
     )
+    for failure in commands.permission_blocks(
+        cmd.name, grant, record, settings,
+        project_id=cmd.args[0] if cmd.args else grant.project_id,
+    ):
+        raise failure
+    return cmd
 
 
 async def persist(
@@ -490,11 +490,7 @@ async def run(
         toolkit_catalog.saved_runtimes, storage, bridge.settings
     )
     data["compute_capabilities"] = tiers.capabilities(bridge.settings, runtime_records)
-    data["project_access"] = {
-        "allowed": grant.allowed,
-        "has_accessible_projects": bool(grant.doc.visible(grant.email)),
-        "channel_authorization_required": not grant.private and not grant.allowed,
-    }
+    data["permissions"] = commands.permission_view(grant, record, bridge.settings)
     data["operations"] = record.get("operations", {})
     data["addressed_to_mica"] = record.get("addressed", True)
     if record.get("active_work"):
@@ -973,7 +969,7 @@ async def run(
                             result = await task_graph.control(bridge, record, current, value)
                     elif isinstance(value, command_intent.Proposal):
                         cmd = validate_command(
-                            value, current, record,
+                            value, current, record, settings=bridge.settings,
                             input_text=await thread_history.supplied_inputs(
                                 bridge.repository, current, record
                             ),

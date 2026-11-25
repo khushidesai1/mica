@@ -2,6 +2,8 @@
 
 # ruff: noqa: F811
 
+import json
+
 import pytest
 from analysis_helpers import save_command
 from test_analysis_batch import bridge, payload  # noqa: F401
@@ -99,7 +101,7 @@ async def test_owner_change_requires_confirmation_and_replay_cannot_repromote(ch
 
 
 @pytest.mark.parametrize("scope", ["", "owner"])
-async def test_ownership_misclassified_as_share_never_silently_shares(chat, scope):
+async def test_share_scope_requires_explicit_collaborator_confirmation(chat, scope):
     chat.intent.return_value = conversation.Decision(reply="Request received.",
         route="command",
         command_proposal=command_intent.Proposal(
@@ -109,9 +111,14 @@ async def test_ownership_misclassified_as_share_never_silently_shares(chat, scop
     eid = await chat.accept(payload(text="Can you make <@U2> an owner of the project?"))
     assert await chat.process(eid, 0) == "complete"
     record = await chat.repository.get_connector_state("claude-event:" + eid)
-    assert "co-owner" in record["notice_text"]
+    if scope == "owner":
+        assert "co-owner" in record["notice_text"]
+        assert not chat.store.keys("projects/_command_approvals/")
+    else:
+        assert "collaborator access" in record["notice_text"]
+        saved = json.loads(chat.store.get(command_approval.key(eid))[0])
+        assert saved["state"] == "pending" and saved["command"]["name"] == "share"
     assert not Registry(chat.store).load().can_use(chat.pid, B)
-    assert not chat.store.keys("projects/_command_approvals/")
 
 
 async def test_member_cannot_promote_and_role_listing_is_private(chat):
