@@ -21,13 +21,6 @@ def chat(bridge, monkeypatch):  # noqa: F811
     monkeypatch.setattr(command_approval, "AsyncWebClient", lambda **kw: bridge.test_slack)
     bridge.intent = decision
 
-    async def control(_bridge, _event_id, record, _grant):
-        proposal = decision.return_value.command_proposal or {}
-        operation = proposal.get("operation", "")
-        record["conversation_amendable"] = not operation
-        return operation if operation in {"cancel", "write revoke"} else "none"
-
-    bridge.control.side_effect = control
     return bridge
 
 

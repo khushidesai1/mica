@@ -7,7 +7,8 @@ import hashlib
 import json
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import urlsplit
@@ -26,6 +27,7 @@ from . import (
     reference_repos,
     surface,
     task_graph,
+    thread_checkpoint,
     thread_history,
     thread_memory,
     tiers,
@@ -116,6 +118,8 @@ def record_exchange(
     text: str,
     reply: str,
     *,
+    speaker: str = "",
+    seq: int = 0,
     files: Sequence[str] = (),
     outputs: Sequence[str] = (),
     success: bool = True,
@@ -126,6 +130,8 @@ def record_exchange(
 ) -> None:
     full = {
         "id": event_id,
+        "speaker": speaker,
+        "seq": seq,
         "user": text,
         "assistant": reply,
         "files": list(files),
@@ -146,6 +152,8 @@ def record_exchange(
     messages.append(
         {
             "id": event_id,
+            "speaker": speaker,
+            "seq": seq,
             "user": text if not success else text[:6000],
             "assistant": reply[:6000],
             "files": list(files),
@@ -238,6 +246,7 @@ async def dispatch_command(
         connection_reply = await Transfers(bridge, storage).command(cmd, grant, record, event_id)
         return await finish(bridge, event_id, record, connection_reply)
     if cmd.name == "cancel":
+        record["cancel_control"] = True
         if not (grant.private or grant.allowed):
             return await finish(bridge, event_id, record, access.deny_text(grant))
         await bridge.cancel(event_id, record)
@@ -419,9 +428,9 @@ async def read_information(
                         grant.state.get("thread_files", []), [file.model_dump()]
                     )
                     await asyncio.to_thread(
-                        storage.put,
-                        access.checkpoint_key(record["thread_key"]),
-                        json.dumps(grant.state).encode(),
+                        thread_checkpoint.merge, storage,
+                        access.checkpoint_key(record["thread_key"]), grant.state,
+                        messages_only=bool(record.get("active_work")),
                     )
                     result["memory"].append(
                         {
@@ -545,6 +554,86 @@ async def reenter_project(
     await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
 
 
+async def hold_busy(
+    bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage,
+    decision: dict[str, Any],
+) -> bool:
+    """Persist queued work; discard unsafe busy decisions without running their actions."""
+    if not record.get("active_work"):
+        return False
+    active = await bridge.repository.get_connector_state(
+        "claude-event:" + record["active_work"]["identity"][0]
+    )
+    record["side_replies_allowed"] = bool(bridge.settings.side_replies and active and (
+        active.get("route") != "compute"
+        or ("attempt" in active and active.get("checkpoint_merge_attempt") == active["attempt"])
+    ))
+    operation = (decision.get("command_proposal") or {}).get("operation")
+    safe_control = operation in {"cancel", "write revoke"}
+    record["conversation_amendable"] = decision["route"] == "compute"
+    if not record.get("side_replies_allowed") and not safe_control:
+        from . import conversation_state
+
+        await conversation_state.discard(storage, event_id)
+        record.pop("control_bypass", None)
+        for field in ("direct_decision", "direct_decision_pending", "decision_access",
+                      "routing_budget", "routing_retry_at", "conversation_steps"):
+            record.pop(field, None)
+        record["busy_checked"] = record["active_work"]["identity"]
+        record["busy_waiting"] = True
+        await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+        return True
+    if decision["route"] in {"compute", "transfer", "storage", "workflow"} or operation == "init":
+        record["busy_waiting"] = True
+        return True
+    record["control_bypass"] = True
+    record.pop("busy_waiting", None)
+    await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+    return False
+
+
+@asynccontextmanager
+async def checkpoint_turn(
+    bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage,
+) -> AsyncIterator[bool]:
+    """Prevent launch/recovery between the capability check and a side exchange write."""
+    active = record.get("active_work")
+    if not active:
+        yield True
+        return
+    mutex = "claude-poll:" + active["identity"][0]
+    claim = await bridge.repository.begin_event(mutex, lease_seconds=60)
+    if claim.status != "claimed":
+        raise RuntimeError("Active turn is changing; retry the saved side decision")
+    try:
+        yield not await hold_busy(bridge, event_id, record, storage, record["direct_decision"])
+    finally:
+        await bridge.repository.release_event(mutex, claim.token)
+
+
+async def silent(
+    bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage,
+    grant: access.Grant,
+) -> bool:
+    if record.get("addressed", True):
+        raise ValueError("Silence is only available for unaddressed messages.")
+    current = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
+    if current.signature != grant.signature or not current.allowed:
+        return await finish(bridge, event_id, record, "Project access changed. Send a new request.")
+    state = current.state
+    event = record["payload"]["event"]
+    async with checkpoint_turn(bridge, event_id, record, storage) as permitted:
+        if not permitted:
+            return True
+        record_exchange(state, event_id, message_text(event.get("text", "")), "",
+                        speaker=event.get("user", ""), seq=record.get("seq", 0), keep_summary=False)
+        await asyncio.to_thread(thread_checkpoint.merge, storage,
+                                access.checkpoint_key(record["thread_key"]), state,
+                                messages_only=True)
+    record.update(status="complete", terminal_recorded=True)
+    return True
+
+
 async def handle(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage
 ) -> bool:
@@ -565,7 +654,7 @@ async def handle(
         await reenter_project(bridge, event_id, record, storage)
     conversation.start(record)
     saved = conversation.saved_decision(record)
-    if saved.get("route") == "cloud_access":
+    if saved.get("route") == "cloud_access" and not record.get("active_work"):
         return await cloud_request(bridge, event_id, record, storage, saved)
     grant = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
     if observability.capture_project(record, grant):
@@ -603,6 +692,10 @@ async def handle(
                 bridge, event_id, record, storage, grant, {"request": text}, []
             )
             saved = opening.model_dump()
+        if saved and await hold_busy(bridge, event_id, record, storage, saved):
+            return True
+        if saved.get("route") == "no_reply":
+            return await silent(bridge, event_id, record, storage, grant)
         if saved.get("route") == "access":
             from . import access_requests
 
@@ -797,7 +890,8 @@ async def handle(
             state["private_owner"] = grant.email
         # Bind the thread before a router/memory failure can end its first turn.
         await asyncio.to_thread(
-            storage.put, access.checkpoint_key(record["thread_key"]), json.dumps(state).encode()
+            thread_checkpoint.merge, storage, access.checkpoint_key(record["thread_key"]), state,
+            messages_only=bool(record.get("active_work")),
         )
     # Rebind the next turn to the registry's current data root. Do not resume an SDK
     # session whose sandbox was initialized with the previous mount scope. Preserve
@@ -809,7 +903,8 @@ async def handle(
         await asyncio.to_thread(bridge.resolve_data, record, uri=grant.project.data_uri)
         ctx.update(data_path=expected_path, session_id=None)
         await asyncio.to_thread(
-            storage.put, access.checkpoint_key(record["thread_key"]), json.dumps(state).encode()
+            thread_checkpoint.merge, storage, access.checkpoint_key(record["thread_key"]), state,
+            messages_only=bool(record.get("active_work")),
         )
     if surface.is_email(record):
         # Gmail message timestamps change on every reply. Worker sessions are keyed by
@@ -890,6 +985,8 @@ async def handle(
             )
         model_context = {
             "request": text,
+            "active_work": record.get("active_work"),
+            "addressed_to_mica": record.get("addressed", True),
             "task_queues": await task_graph.context(bridge, record, grant),
             "task_queue_guidance": task_graph.GUIDANCE,
             "brief": ctx["project_md"],
@@ -987,6 +1084,10 @@ async def handle(
             record["decision_access"] = grant.signature
             record["memory_project_id"] = grant.project_id
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
+    if await hold_busy(bridge, event_id, record, storage, decision.model_dump()):
+        return True
+    if decision.route == "no_reply":
+        return await silent(bridge, event_id, record, storage, grant)
     if decision.route in {"command", "cloud_access"}:
         # Re-enter the exact/validated command path using the durable terminal proposal.
         # No further model call is made, and init retains its existing admission sequence.
@@ -1033,23 +1134,28 @@ async def handle(
             record["memory_init_saved"] = saved_guide.model_dump()
         ctx["project_md"] = decision.guide
         await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
-    if decision.route == "reply" and not cmd:
-        record_exchange(
-            state,
-            event_id,
-            text,
-            decision.reply,
-            files=[f["name"] for f in record.get("attachments", [])],
-            history=thread_history.History(storage, record["thread_key"], grant.project_id)
-            if thread_memory.legacy(bridge.settings)
-            else None,
-            keep_summary=not thread_memory.github_reads(bridge.settings),
+    async with checkpoint_turn(bridge, event_id, record, storage) as permitted:
+        if not permitted:
+            return True
+        if decision.route == "reply" and not cmd:
+            record_exchange(
+                state,
+                event_id,
+                text,
+                decision.reply,
+                speaker=event.get("user", ""), seq=record.get("seq", 0),
+                files=[f["name"] for f in record.get("attachments", [])],
+                history=thread_history.History(storage, record["thread_key"], grant.project_id)
+                if thread_memory.legacy(bridge.settings)
+                else None,
+                keep_summary=not thread_memory.github_reads(bridge.settings),
+            )
+        else:
+            state["direct_version"] = 1
+        await asyncio.to_thread(
+            thread_checkpoint.merge, storage, access.checkpoint_key(record["thread_key"]), state,
+            messages_only=bool(record.get("control_bypass") or record.get("active_work")),
         )
-    else:
-        state["direct_version"] = 1
-    await asyncio.to_thread(
-        storage.put, access.checkpoint_key(record["thread_key"]), json.dumps(state).encode()
-    )
     if decision.route == "transfer":
         if decision.transfer_request is None:
             raise ValueError("Name the AtoMx sample to transfer.")

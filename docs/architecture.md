@@ -174,11 +174,24 @@ compute worker. Each tool rechecks access; terminal decisions are persisted befo
 idempotent handlers and approval controls run. Signed thinking stays in the private provider
 transcript. Stored step logs contain tool names, argument sizes and status, never source text.
 Exact command grammar and handlers share the policy table in `agents/analysis/commands.py`.
-Natural-language cancellation is checked before queueing only when work is already active.
+Every thread message uses the conversation step, including while work is active. Its bounded
+`active_work` context describes the running request, route, status, elapsed time and progress title.
+With `AGENT_SIDE_REPLIES`, replies and in-turn operations can run immediately; computation,
+transfers, storage changes, workflows and project setup keep their saved decision in the queue.
+Cancellation uses the existing authorized handler; write revocation retains its approval card.
 Pending requests from the retired router restart in the conversation loop without reusing
 legacy decisions. Already running workers retain their saved launch and recovery state.
-An active predecessor triggers one control check for cancellation, write revocation and
-amendment eligibility; queued commands retain their normal authorization and approval flow.
+Every API and new worker checkpoint write uses a generation-checked message merge, ordered by
+receipt sequence and deduplicated by event ID. Side turns append messages while the active turn
+owns session/context fields. Compute concurrency requires the current worker attempt's authenticated
+`checkpoint_protocol=2` startup confirmation. Unconfirmed or old-image attempts, and a disabled
+flag, still queue all outcomes except cancel and write revoke. Recovery must confirm again.
+Only compute decisions offer amendment buttons, subject to the existing eligibility checks.
+
+DMs, mentions and email are addressed turns. Other channel thread replies carry the speaker ID
+and may finish with `no_reply`: no Slack post or memory task, but the exchange remains in thread
+history. Their status and answer streaming stay suppressed until a decision exists. The standalone
+stop/cancel fast path applies only to addressed messages.
 
 Worker sizing uses assessed resource needs and expected duration. CPU jobs estimated at two
 hours or more use on-demand capacity unless the requester chose Spot; the operator can change

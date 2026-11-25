@@ -299,7 +299,7 @@ def conversation_turn(record: dict[str, Any]) -> bool:
             or record.get("cancelled_by")):
         return False
     return (record.get("reply_scope") != "account"
-            and record.get("direct_decision", {}).get("route") != "command")
+            and record.get("direct_decision", {}).get("route") not in {"command", "no_reply"})
 
 
 def eligible(bridge: BatchBridge, record: dict[str, Any]) -> bool:

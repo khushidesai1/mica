@@ -47,6 +47,8 @@ async def test_failed_request_reaches_followup_router_once_with_original_intent(
     assert state["messages"] == [
         {
             "id": event,
+            "speaker": "U1",
+            "seq": record["seq"],
             "user": REQUEST,
             "assistant": NOTICE,
             "success": False,

@@ -104,7 +104,8 @@ def saved_decision(record: dict[str, Any]) -> dict[str, Any]:
 
 class Decision(DecisionFields):
     route: Literal[
-        "reply", "compute", "transfer", "storage", "command", "access", "cloud_access", "workflow"
+        "reply", "no_reply", "compute", "transfer", "storage", "command", "access",
+        "cloud_access", "workflow"
     ]
     command_proposal: dict[str, Any] | None = None
 
@@ -172,9 +173,8 @@ class Init(Input):
     guide: str = Field(min_length=1, max_length=99999)
 
 
-class Control(Input):
-    operation: Literal["cancel", "write revoke", "none"]
-    amendable: bool = False
+class NoReply(Input):
+    """An unaddressed turn that needs no response."""
 
 
 class RequestAccess(Input):
@@ -187,6 +187,7 @@ CLOUD_ACCESS_DESCRIPTION = (
     "Never infer a Mica project. Email requires approval; Slack links the form."
 )
 DESCRIPTIONS = {
+    "no_reply": "Stay silent when a message is for someone else or needs no response from Mica.",
     "propose_gcs_operations": (
         "Propose requested GCS moves/renames or deletes; wait for Slack confirmation. "
         "Use exact gs:// paths within the write grant, trailing / for folders. "
@@ -209,13 +210,11 @@ DESCRIPTIONS = {
         "samples from an incomplete listing. No file contents or computation."
     ),
     ("view_files"): (
-        "View up to four attached image/PDF IDs, including older thread "
-        "attachments. Returns actual media. For figures already visible, answer"
-        " directly; use a worker only for quantitative image processing or "
-        "generation."
+        "View up to four thread image/PDF IDs. Answer directly for visible figures; "
+        "workers handle quantitative processing or generation."
     ),
     ("read_sources"): (
-        "Read authorized reference repository source, small text/CSV/TSV/JSON "
+        "Read authorized repository source, small text/CSV/TSV/JSON "
         "attachments, or this conversation's history without a worker. Repos "
         "are full owner/repo names from the available catalog. paths optionally"
         " selects exact eligible paths per repo; empty selects a bounded source"
@@ -273,6 +272,7 @@ DESCRIPTIONS = {
     ),
 }
 MODELS: dict[str, type[BaseModel]] = {
+    "no_reply": NoReply,
     "propose_gcs_operations": gcs_operations.Request,
     backchannel.TOOL: backchannel.Call,
     "request_cloud_access": CloudAccessProposal,
@@ -326,7 +326,9 @@ def strict_schema(model: type[BaseModel]) -> dict[str, Any]:
     return dict(clean(schema))
 
 
-def tools_for(allowed: bool, settings: Settings | None = None) -> list[dict[str, Any]]:
+def tools_for(
+    allowed: bool, settings: Settings | None = None, *, addressed: bool = True,
+) -> list[dict[str, Any]]:
     result = [
         {
             "name": name,
@@ -338,7 +340,8 @@ def tools_for(allowed: bool, settings: Settings | None = None) -> list[dict[str,
             "strict": name not in {"start_worker", "task_queue"},
         }
         for name, model in MODELS.items()
-        if (allowed and name not in {"request_access", "request_cloud_access"})
+        if (name == "no_reply" and not addressed)
+        or (allowed and name not in {"request_access", "request_cloud_access", "no_reply"})
         or (not allowed and name in {"propose_command", "request_access"})
     ]
     if settings and settings.cloud_access:
@@ -493,6 +496,9 @@ async def run(
         "channel_authorization_required": not grant.private and not grant.allowed,
     }
     data["operations"] = record.get("operations", {})
+    data["addressed_to_mica"] = record.get("addressed", True)
+    if record.get("active_work"):
+        data["active_work"] = record["active_work"]
     if record.get("project_reentry"):
         data["project_selection"] = "Selection already completed for this request. " \
             "Continue the original request in this project; do not select it again."
@@ -511,7 +517,7 @@ async def run(
             "content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False)}, *media],
         }
     ]
-    tool_specs = tools_for(grant.allowed, bridge.settings)
+    tool_specs = tools_for(grant.allowed, bridge.settings, addressed=record.get("addressed", True))
     if record.get("workflow_parent"):
         tool_specs = [t for t in tool_specs if t["name"] in {
             "list_folders", "view_files", "read_sources", "start_worker", "project_backchannel"
@@ -532,6 +538,13 @@ async def run(
                     Decision(route="reply", reply="Project access changed. Send a new request."))
             checkpoint = saved_state
             messages = checkpoint["messages"]
+            if record.get("active_work"):
+                messages.append({"role": "user", "content": [{
+                    "type": "text", "text": json.dumps({
+                        "context_update": "Current active work; supersedes earlier status.",
+                        "active_work": record["active_work"],
+                    }),
+                }]})
             if data["operations"]:
                 messages.append({"role": "user", "content": [{
                     "type": "text", "text": json.dumps({
@@ -783,6 +796,7 @@ async def run(
                 note = progress_note(blocks, thinking_updates=updates_enabled)
                 has_note = has_note or bool(note)
                 title = {
+                    "no_reply": "",
                     "request_access": "Requesting owner approval…",
                     "request_cloud_access": "Preparing the access request…",
                     "list_folders": "Checking the requested folders…",
@@ -805,9 +819,14 @@ async def run(
                 result: Any = None
                 terminal: Decision | None = None
                 async with asyncio.timeout_at(deadline):
-                    if isinstance(value, RequestAccess):
+                    if isinstance(value, NoReply):
+                        terminal = Decision(route="no_reply", reply="No response needed")
+                    elif isinstance(value, RequestAccess):
                         terminal = Decision(route="access", reply="Owner review requested")
                     elif isinstance(value, backchannel.Call):
+                        if (record.get("active_work") and not record.get("side_replies_allowed")
+                                and value.action != "read"):
+                            raise ValueError("Wait for active work before changing coordination.")
                         result = await asyncio.to_thread(
                             backchannel.operate, storage,
                             {**record, "project_id": current.project_id, "event_id": event_id},
@@ -947,6 +966,10 @@ async def run(
                                 route="workflow", reply="Task queue requested", task_queue=value
                             )
                         else:
+                            if (record.get("active_work")
+                                    and not record.get("side_replies_allowed")
+                                    and value.action != "status"):
+                                raise ValueError("Wait for active work before changing queues.")
                             result = await task_graph.control(bridge, record, current, value)
                     elif isinstance(value, command_intent.Proposal):
                         cmd = validate_command(
@@ -955,7 +978,9 @@ async def run(
                                 bridge.repository, current, record
                             ),
                         )
-                        if command_intent.terminal(cmd, current, record):
+                        if (command_intent.terminal(cmd, current, record)
+                                or (record.get("active_work")
+                                    and not record.get("side_replies_allowed"))):
                             record["command_protocol"] = 2
                             terminal = Decision(
                                 route="command", reply="Operation requested",
@@ -1012,71 +1037,6 @@ async def run(
         if flexible:
             record.pop("routing_budget", None)
         else:
-            record["routing_budget"] = max(
-                0.0, remaining - (asyncio.get_running_loop().time() - started)
-            )
-        await bridge.repository.set_connector_state(f"claude-event:{event_id}", record)
-
-
-async def control(
-    bridge: BatchBridge, event_id: str, record: dict[str, Any], grant: access.Grant
-) -> str:
-    """Only active predecessors need a model check before the request is queued."""
-    if record.get("conversation_control_actor") == grant.email and (
-        not record.get("amendable") or "conversation_amendable" in record
-    ):
-        return str(record.get("conversation_control", "none"))
-    started = asyncio.get_running_loop().time()
-    flexible = bool(record.get("flexible_harness", False))
-    remaining = (bridge.settings.conversation_slice_seconds if flexible else
-                 min(float(record.get("routing_budget", ROUTING_SECONDS)), ROUTING_SECONDS))
-    if remaining <= 0:
-        raise RoutingUnavailable("Conversation time budget exhausted.")
-    try:
-        async with AsyncAnthropic(
-            api_key=bridge.app.anthropic_api_key.get_secret_value(), max_retries=0
-        ) as client:
-            async with asyncio.timeout(remaining):
-                response = await client.beta.messages.create(
-                    model=bridge.settings.model,
-                    max_tokens=1000,
-                    messages=[
-                        {"role": "user", "content": record["payload"]["event"].get("text", "")}
-                    ],
-                    system=(
-                        "Identify only an explicit current request to stop/cancel this running "
-                        "work, or revoke a project's write grant. Historical discussion, quoted"
-                        " messages and all other requests mean none. Return operation cancel, "
-                        "write revoke, or none. Set amendable=true only for ordinary analysis "
-                        "requests or added context that can follow the current work. Account, "
-                        "project-management, access, connection, delivery-preference and other "
-                        "Mica commands are not amendable; they retain their normal command flow. "
-                        "No actions are performed here."
-                    ),
-                    thinking={"type": "adaptive"},
-                    output_config={
-                        "effort": bridge.settings.conversation_effort,
-                        "format": {"type": "json_schema", "schema": strict_schema(Control)},
-                    },
-                    fallbacks="default",
-                    betas=[FALLBACK_BETA],
-                    timeout=remaining,
-                )
-        if response.stop_reason != "end_turn":
-            raise RoutingUnavailable("Control check did not finish.")
-        value = Control.model_validate_json(
-            "".join(b.text for b in response.content if b.type == "text")
-        )
-        record.update(
-            conversation_control=value.operation,
-            conversation_control_actor=grant.email,
-            conversation_amendable=value.operation == "none" and value.amendable,
-        )
-        return value.operation
-    except (APIError, TimeoutError, ValueError) as exc:
-        raise RoutingUnavailable("Control check temporarily unavailable.") from exc
-    finally:
-        if not flexible:
             record["routing_budget"] = max(
                 0.0, remaining - (asyncio.get_running_loop().time() - started)
             )

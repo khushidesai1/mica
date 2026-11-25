@@ -25,7 +25,6 @@ from mica.agents.analysis.storage import LocalStorage
 from mica.api import slack_analysis
 
 CONVERSATION_RUN = conversation.run
-CONVERSATION_CONTROL = conversation.control
 
 
 def payload(
@@ -102,17 +101,11 @@ def bridge(monkeypatch, settings, repository, tmp_path):
     )
     monkeypatch.setattr(conversation, "run", decision)
 
-    async def ordinary_request(_bridge, _event_id, record, _grant):
-        record["conversation_amendable"] = True
-        return "none"
-
-    control = AsyncMock(side_effect=ordinary_request)
-    monkeypatch.setattr(conversation, "control", control)
     slack.conversations_replies.return_value = {"messages": []}
     result = BatchBridge(settings, repository)
     result.test_client, result.test_states, result.test_slack = client, states, slack
     result.store, result.pid = storage, pid
-    result.decision, result.control = decision, control
+    result.decision = decision
     result.memory_backend, result.github = memory, github
     return result
 
@@ -361,6 +354,7 @@ async def test_existing_dm_routes_and_worker_credential_boundary(bridge, monkeyp
         {
             "type": "http",
             "headers": [(b"authorization", b"Bearer identity")],
+            "query_string": b"",
             "app": SimpleNamespace(state=SimpleNamespace(services=services)),
         }
     )
