@@ -62,7 +62,8 @@ class Proposal(BaseModel):
                        description="Recipient, channel, repository or new name for rename.")
     scope: str = Field(default="", max_length=2048,
                       description="Exact gs:// location for init, data-root or write grant.")
-    duration: str = Field(default="", max_length=40)
+    duration: str = Field(default="", max_length=40,
+                          description="Write duration such as 1h, 7d, or explicitly until revoked.")
     path: str = Field(default="", max_length=200)
     preference: Literal["", "on", "off"] = ""
     request: str = Field(default="", max_length=3000,
@@ -245,6 +246,8 @@ def command(
         if not proposal.scope or not proposal.duration:
             raise ValueError("What exact GCS scope and duration should the write grant cover?")
         uri = scope(proposal.scope)
+        if proposal.duration.strip().lower() == "until revoked":
+            return commands.Command(op, (pid, uri))
         duration(proposal.duration)
         return commands.Command(op, (pid, uri, proposal.duration))
     target = proposal.target.strip()

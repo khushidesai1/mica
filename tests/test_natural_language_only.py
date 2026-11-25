@@ -499,3 +499,28 @@ async def test_contextless_existing_thread_is_never_detached(bridge, state):
     assert not access.unused_context(state, "new")
     await access.detach_thread(bridge.store, record, "new")
     assert bridge.store.get(path) == before
+
+
+def test_explicit_nonexpiring_write_grant_remains_an_approval(bridge):
+    grant = access.Grant(
+        "alice@example.com", True, {}, Registry(bridge.store).load(), bridge.pid, True, "T1:D1"
+    )
+    cmd = command_intent.command(
+        command_intent.Proposal(
+            operation="write grant",
+            selector="this project",
+            scope="gs://lab-data/output/",
+            duration="until revoked",
+        ),
+        grant,
+    )
+    assert cmd.args == (bridge.pid, "gs://lab-data/output/")
+    assert commands.spec(cmd.name).approval
+    assert command_intent.terminal(cmd, grant, {"event_id": "test"})
+    with pytest.raises(ValueError, match="duration"):
+        command_intent.command(
+            command_intent.Proposal(
+                operation="write grant", selector="this project", scope="gs://lab-data/output/"
+            ),
+            grant,
+        )

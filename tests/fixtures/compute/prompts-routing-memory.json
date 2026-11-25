@@ -643,6 +643,7 @@
             "type": "string"
           },
           "duration": {
+            "description": "Write duration such as 1h, 7d, or explicitly until revoked.",
             "type": "string"
           },
           "path": {
