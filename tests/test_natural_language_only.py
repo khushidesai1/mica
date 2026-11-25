@@ -481,3 +481,21 @@ async def test_channel_binding_confirmation_applies_once(bridge, monkeypatch):
     assert doc.bound("T1", "C1") == target
     await command_approval.handle(bridge, bridge.store, action(record["event_id"]))
     assert Registry(bridge.store).load() == doc
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        {"messages": [{"id": "older", "user": "A discussion"}]},
+        {"turn": 1},
+        {"conversation_origin_event": "older"},
+    ],
+)
+async def test_contextless_existing_thread_is_never_detached(bridge, state):
+    record = {"thread_key": "existing"}
+    path = access.checkpoint_key(record["thread_key"])
+    bridge.store.put(path, json.dumps(state).encode())
+    before = bridge.store.get(path)
+    assert not access.unused_context(state, "new")
+    await access.detach_thread(bridge.store, record, "new")
+    assert bridge.store.get(path) == before

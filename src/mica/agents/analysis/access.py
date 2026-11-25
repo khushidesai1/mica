@@ -66,10 +66,10 @@ def checkpoint_key(thread_key: str) -> str:
 
 
 def unused_context(state: dict[str, Any], event_id: str) -> bool:
-    return not state.get("context") or (
-        state.get("conversation_origin_event") == event_id
-        and not state.get("messages") and not state.get("turn")
-    )
+    if state.get("messages") or state.get("turn"):
+        return False
+    origin = state.get("conversation_origin_event")
+    return origin == event_id or (not state.get("context") and not origin)
 
 
 async def detach_thread(storage: Storage, record: dict[str, Any], event_id: str) -> None:
