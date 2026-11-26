@@ -228,10 +228,14 @@ three-attempt ceiling. Active context is compacted while the original transcript
 Invalid tool input returns to the model for correction. Refusals and permanent provider errors
 end with an explanation. Starting a worker still requires a validated terminal tool call.
 
-Slack check-ins offer **Keep working**, **Cancel task**, and **Report a problem** after two minutes
-of routing, six routing calls, three transient routing failures, or 24 hours of unresolved routing.
-The last threshold applies only to routing, never to an active analysis. Silence continues work;
-acknowledging a reason suppresses repeat notifications for that reason. Reports are idempotently
+Routine elapsed time and routing-call counts do not trigger Slack check-ins. Long requests and
+delivery continuations keep working automatically. Three transient routing failures or 24 hours
+of unresolved routing still trigger an update with **Dismiss update**, **Cancel task**, and
+**Report a problem** (native Slack sessions use their existing Stop control). The 24-hour threshold
+applies only to routing, never to an active analysis. Dismissing an update acknowledges it;
+silence continues work. Older saved two-minute/six-call notices retire on their next controller
+poll, without new posts or continuation buttons. This controller-only change can use an API-only
+release with the existing worker pins. Reports are idempotently
 saved to the existing failure queue, then delivered to `AGENT_FAILURE_CHANNEL`, with request and
 project identifiers, phase, bounded counters, provider status and worker-attempt evidence. Reports
 do not cancel or restart work. Only the original requester, in the original card, with current

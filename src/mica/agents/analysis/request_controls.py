@@ -33,8 +33,6 @@ if TYPE_CHECKING:
 
 PREFIX = "mica_request_"
 REASONS = {
-    "routing_slow": "I'm still working out how to handle this request after two minutes.",
-    "routing_steps": "This request needs more investigation before I can finish or start the work.",
     "routing_retry": "I'm retrying a service problem and keeping the information already gathered.",
     "routing_day": "This request has been routing for 24 hours and needs attention.",
     "worker_effort": "This analysis has needed more agent steps than usual.",
@@ -72,14 +70,6 @@ async def reconcile_cancel(bridge: BatchBridge, event_id: str, record: dict[str,
 
 def reasons(record: dict[str, Any]) -> list[str]:
     found = []
-    if (
-        record.get("routing_started")
-        and not record.get("route")
-        and time.time() - record["routing_started"] >= 120
-    ):
-        found.append("routing_slow")
-    if record.get("routing_calls", 0) >= 6:
-        found.append("routing_steps")
     if record.get("routing_failures", 0) >= 3:
         found.append("routing_retry")
     if (
@@ -112,7 +102,7 @@ def blocks(
                         "value": event_id,
                     }
                     for action, label in (
-                        ("continue", "Keep working"),
+                        ("continue", "Dismiss update"),
                         ("cancel", "Cancel task"),
                         ("report", "Report a problem"),
                     )
@@ -159,10 +149,17 @@ async def sync(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> No
             generation = await asyncio.to_thread(
                 approvals.save, storage, key(event_id), state, generation
             )
-        state["reasons"] = sorted(set(state["reasons"]) | set(current))
+        # Retire old time/call-count notices on the next poll, including saved deliveries.
+        retired = set(state["reasons"]) - REASONS.keys()
+        state["reasons"] = sorted((set(state["reasons"]) | set(current)) & REASONS.keys())
+        state["acknowledged"] = [r for r in state["acknowledged"] if r in REASONS]
+        if not any(state.get(k) for k in ("reasons", "ts", "sending", "reported", "cancel")):
+            if retired:
+                await asyncio.to_thread(approvals.save, storage, key(event_id), state, generation)
+            return
         remaining = [r for r in state["reasons"] if r not in state["acknowledged"]]
         if active and not remaining and not state.get("cancel"):
-            text = "Continuing your request. Your saved progress is kept."
+            text = "Work is continuing automatically. No confirmation is needed."
         elif active:
             text = " ".join(REASONS[r] for r in remaining)
             text += " Work continues unless you cancel. Reporting a problem does not stop it."
@@ -173,7 +170,10 @@ async def sync(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> No
         if state.get("cancel") and active:
             text = "Cancellation requested. Waiting for active work to stop."
         native_session = agent_session.eligible(bridge, record)
-        signature = json.dumps([text, active, state.get("cancel", False), native_session])
+        show_actions = active and not state.get("cancel") and bool(state["reasons"])
+        signature = json.dumps(
+            [text, active, state.get("cancel", False), native_session, show_actions]
+        )
         if signature == state.get("rendered"):
             return
         event = record["payload"]["event"]
@@ -205,7 +205,7 @@ async def sync(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> No
                 ts=state["ts"],
                 text=text,
                 blocks=blocks(
-                    event_id, text, active and not state.get("cancel"),
+                    event_id, text, show_actions,
                     native_session=native_session,
                 ),
             )
@@ -219,7 +219,7 @@ async def sync(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> No
                     channel=event["channel"],
                     thread_ts=event.get("thread_ts") or event["ts"],
                     text=text,
-                    blocks=blocks(event_id, text, active, native_session=native_session),
+                    blocks=blocks(event_id, text, show_actions, native_session=native_session),
                     client_msg_id=message_id,
                     unfurl_links=False,
                     unfurl_media=False,
