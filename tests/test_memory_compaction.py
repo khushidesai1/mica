@@ -314,11 +314,12 @@ async def test_compaction_reads_candidates_and_persists_read_authorization(monke
 
     from mica.agents.analysis.config import Settings
 
-    settings = Settings(_env_file=None, memory_index_target_chars=500)
-    base = index_snapshot(settings)
+    settings = Settings(_env_file=None, memory_index_target_chars=260)
+    base = index_snapshot(settings, count=5)
     context, _ = compact.working_set(base, settings)
     requests = []
-    changes = {"results/old-00.md": NOTE + "Merged", "results/old-01.md": None}
+    changes = {"results/old-00.md": NOTE + "Merged",
+               "results/old-01.md": None, "results/old-03.md": None}
     mock_model(monkeypatch, [read_response(["results/old-00.md", "results/old-01.md"]),
                             {"content": [{"type": "tool_use", "name": "compact",
                                           "input": {"changes": changes}}]}], requests)
@@ -349,26 +350,20 @@ async def test_index_demotion_archives_original_and_reaches_target(chat, monkeyp
         assert latest.files[memory_archive.archive_path(path, text)].text == text
 
 
-async def test_partial_index_progress_schedules_remaining_pressure_after_cooldown(
-    chat, monkeypatch,
-):
+async def test_partial_index_proposal_is_rejected_before_any_commit(chat, monkeypatch):
     chat.settings.memory_auto_edit = True
     chat.settings.memory_index_target_chars = 300
     base = index_snapshot(chat.settings, count=10)
     chat.github.seed({f"projects/{chat.pid}/" + p: f.text for p, f in base.files.items()})
     base = await chat.memory_backend.read(chat.pid)
     monkeypatch.setattr(compact, "compact", AsyncMock(return_value={"results/old-00.md": None}))
-    dispatch = AsyncMock()
-    monkeypatch.setattr(job_lifecycle, "enqueue", dispatch)
+    monkeypatch.setattr(job_lifecycle, "enqueue", AsyncMock())
     await compact.process(chat, chat.pid, base.head_oid, chat.store)
     latest = await chat.memory_backend.read(chat.pid)
-    assert compact.index_pressure(latest, chat.settings)
-    assert not compact.candidates(latest, chat.settings)
+    assert latest.head_oid == base.head_oid
+    assert latest.files == base.files
     state = await chat.repository.get_connector_state(compact.state_key(chat.pid))
-    assert state.get("settled") != compact.fingerprint(latest)
-    assert state["pending"]["head"] == latest.head_oid
-    assert 0 < state["pending"]["delay"] <= chat.settings.memory_compaction_cooldown_seconds
-    dispatch.assert_awaited_once()
+    assert state["outcome"] == "exhausted:index_target_not_reached"
 
 
 def test_demotion_rejects_core_required_archived_and_missing_entries():
@@ -405,3 +400,60 @@ async def test_repeated_index_pressure_obeys_cooldown_and_hourly_budget(chat, mo
     assert model.await_count == 3
     state = await chat.repository.get_connector_state(compact.state_key(chat.pid))
     assert state["outcome"] == "deferred:project_call_budget"
+
+
+async def test_index_shortfall_repairs_in_same_attempt_and_one_commit(chat, monkeypatch):
+    from test_memory_editor import mock_model
+    from test_memory_reads import read_response
+
+    chat.settings.memory_auto_edit = True
+    chat.settings.memory_index_target_chars = 300
+    base = index_snapshot(chat.settings, count=10)
+    chat.github.seed({f"projects/{chat.pid}/" + p: f.text for p, f in base.files.items()})
+    base = await chat.memory_backend.read(chat.pid)
+    partial = {"results/old-00.md": None}
+    complete = {p: None for p in base.files if p.startswith("results/")}
+    requests = []
+    mock_model(monkeypatch, [
+        read_response(["results/old-00.md"]),
+        {"content": [{"type": "tool_use", "id": "proposal-1", "name": "compact",
+                      "input": {"changes": partial}}]},
+        {"content": [{"type": "tool_use", "id": "proposal-2", "name": "compact",
+                      "input": {"changes": complete}}]},
+    ], requests)
+    monkeypatch.setattr(job_lifecycle, "enqueue", AsyncMock())
+    commit = AsyncMock(wraps=chat.memory_backend.commit)
+    monkeypatch.setattr(chat.memory_backend, "commit", commit)
+    await compact.process(chat, chat.pid, base.head_oid, chat.store)
+    commit.assert_awaited_once()
+    assert len(requests) == 3 and requests[2]["tool_choice"]["type"] == "tool"
+    feedback = json.loads(requests[2]["messages"][-1]["content"][0]["content"])
+    assert feedback["error"] == "index_target_not_reached"
+    assert feedback["proposed_index_chars"] > feedback["target_chars"] == 300
+    latest = await chat.memory_backend.read(chat.pid)
+    assert len(latest.files["INDEX.md"].text) <= 300
+    state = await chat.repository.get_connector_state(compact.state_key(chat.pid))
+    assert state["calls"] == 1
+    key = f"{CHECKPOINT_PREFIX}/memory-compaction-v2/{chat.pid}/{compact.fingerprint(base)}.json"
+    assert json.loads(chat.store.get(key)[0])["attempts"] == 1
+
+
+async def test_shortfall_exhausts_existing_loop_without_partial_commit(monkeypatch):
+    from test_memory_editor import mock_model
+
+    from mica.agents.analysis.config import Settings
+
+    settings = Settings(_env_file=None, memory_index_target_chars=300)
+    base = index_snapshot(settings, count=10)
+    context, _ = compact.working_set(base, settings)
+    requests = []
+    mock_model(monkeypatch, [
+        {"content": [{"type": "tool_use", "id": f"proposal-{i}", "name": "compact",
+                      "input": {"changes": {"results/old-00.md": None}}}]}
+        for i in range(3)
+    ], requests)
+    with pytest.raises(ValueError, match="index_target_not_reached"):
+        await compact.compact("test", "test", context, snapshot=base, settings=settings)
+    assert len(requests) == 3
+    assert [r["tool_choice"]["type"] for r in requests] == ["any", "tool", "tool"]
+    assert "read_paths" not in context

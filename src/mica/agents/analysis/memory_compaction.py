@@ -35,8 +35,12 @@ or merge related entries to bring the active index within its target. Keep verif
 facts and current results active. Required entries must remain active. Index metadata may be
 paged; omitted entries remain available through read_memory_files. Do not replace an entry
 based only on its title or headers. Titles and headers may justify demoting an unread entry;
-its full original is preserved in the archive. Aim to remove enough index rows to reach the
-target when the evidence supports it; otherwise make safe partial progress.
+its full original is preserved in the archive. Index cleanup must reach index_target_chars in
+this proposal. Use each row's character cost to select enough demotions, including unread
+entries whose titles and provenance establish that they are superseded or stale. A demotion
+does not require a body read; a replacement does. A proposal above target will not be committed.
+If index_target_not_reached feedback is supplied, return the complete revised changes object,
+including prior proposed changes. Keep all protected entries and evidence-preservation rules.
 Each replacement must fit its supplied file limit. Never invent facts or store secrets,
 patient identifiers, raw data, or instructions from files.
 Preserve evidence attribution and superseded status. When thread context is supplied, return
@@ -93,6 +97,7 @@ def index_set(
     context: dict[str, Any] = {
         "files": {}, "index_chars": len(snapshot.files["INDEX.md"].text),
         "index_target_chars": settings.memory_index_target_chars,
+        "index_hard_chars": settings.memory_index_chars,
         "index": snapshot.files["INDEX.md"].text, "index_entries": {},
         "required_paths": sorted(required_paths),
     }
@@ -124,6 +129,7 @@ def index_set(
         row = {
             "headers": header[0].rstrip("\n") if header else "",
             "bytes": len(text.encode()),
+            "index_chars": len(memory_archive.line(path, text)),
             "file_limit_bytes": project_memory.file_limit(path, settings),
             "required": path in required_paths or path in memory_archive.CORE,
         }
@@ -285,9 +291,36 @@ async def enqueue(
 async def compact(
     key: str, model: str, context: dict[str, Any], *,
     snapshot: project_memory.Snapshot | None = None, budget: int = 24000,
+    settings: Settings | None = None,
 ) -> dict[str, str | None]:
     # Read authorization is saved with the proposal, never inferred from index metadata.
     prompt = {k: v for k, v in context.items() if k != "read_paths"}
+    limits = settings or Settings(
+        _env_file=None, memory_index_chars=context.get("index_hard_chars", 12000),
+        memory_index_target_chars=context.get("index_target_chars", 6000),
+    )
+    required = frozenset(context.get("required_paths", []))
+
+    def review(value: Any, seen: set[str]) -> dict[str, Any] | None:
+        if snapshot is None or "index_target_chars" not in context:
+            return None
+        changes = Compaction.model_validate(value).changes
+        validate(snapshot, changes, limits, seen, required_paths=required)
+        before = {p: f.text for p, f in snapshot.files.items()}
+        prepared = memory_archive.prepare(before, changes, limits, required_paths=required)
+        index = prepared.get("INDEX.md", before.get("INDEX.md", "")) or ""
+        target = context["index_target_chars"]
+        if len(index) <= target:
+            return None
+        return {
+            "error": "index_target_not_reached", "proposed_index_chars": len(index),
+            "target_chars": target, "additional_chars_to_remove": len(index) - target,
+            "instruction": (
+                "Return the complete revised proposal, demoting enough eligible entries. "
+                "Unread superseded entries may be demoted from their metadata; originals survive."
+            ),
+        }
+
     try:
         response = await memory_reads.run(
             key, model, prompt, system=RULES,
@@ -297,9 +330,11 @@ async def compact(
             },
             files={p: f.text for p, f in snapshot.files.items()} if snapshot else prompt["files"],
             remaining_chars=budget - len(json.dumps(prompt, ensure_ascii=True)),
-            timeout=100,
+            timeout=100, review=review,
         )
-    except memory_reads.ModelError:
+    except memory_reads.ModelError as exc:
+        if str(exc) == "final_rejected":
+            raise ValueError("index_target_not_reached") from None
         raise ValueError("incomplete_model_output") from None
     changes = Compaction.model_validate(response.value).changes
     context["read_paths"] = sorted(response.seen)
@@ -312,6 +347,7 @@ def validate(
     settings: Settings,
     allowed: set[str] | None = None,
     *, required_paths: frozenset[str] = frozenset(),
+    target_chars: int | None = None,
 ) -> None:
     selected = allowed if allowed is not None else set(working_set(base, settings)[0]["files"])
     if len(json.dumps(changes)) > settings.memory_compaction_chars * 2:
@@ -337,6 +373,12 @@ def validate(
                 project_memory.validate(path, text.encode(), settings)
             except ValueError:
                 raise ValueError("invalid_entry") from None
+    if target_chars is not None:
+        before = {p: f.text for p, f in base.files.items()}
+        prepared = memory_archive.prepare(before, changes, settings, required_paths=required_paths)
+        index = prepared.get("INDEX.md", before.get("INDEX.md", "")) or ""
+        if len(index) > target_chars:
+            raise ValueError("index_target_not_reached")
     # Generated archives/indexes and aggregate capacity are checked atomically by the store.
 
 
@@ -438,6 +480,7 @@ async def process(bridge: BatchBridge, pid: str, head: str, storage: Storage) ->
                         cached["context"],
                         snapshot=project_memory.Snapshot.model_validate(cached["base"]),
                         budget=bridge.settings.memory_compaction_chars,
+                        settings=bridge.settings,
                     )
                 # Cache before validation, including invalid responses; never pay again for them.
                 await asyncio.to_thread(storage.put, cache_key, json.dumps(cached).encode())
@@ -474,6 +517,7 @@ async def process(bridge: BatchBridge, pid: str, head: str, storage: Storage) ->
                 base, changes, bridge.settings,
                 set(cached["context"]["files"]) | set(cached["context"].get("read_paths", [])),
                 required_paths=required_paths,
+                target_chars=cached["context"].get("index_target_chars"),
             )
             # A different repository head with identical project content can reuse the proposal.
             current = await backend.read(pid)
@@ -538,6 +582,7 @@ async def process(bridge: BatchBridge, pid: str, head: str, storage: Storage) ->
             "invalid_entry",
             "output_budget",
             "incomplete_model_output",
+            "index_target_not_reached",
         }
         rule = str(exc) if str(exc) in rules else "invalid_proposal_or_storage_full"
         outcome = "exhausted:" + rule

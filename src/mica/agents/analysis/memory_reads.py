@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -43,6 +43,7 @@ async def run(
     key: str, model: str, context: dict[str, Any], *, system: str,
     final_tool: dict[str, Any], files: Mapping[str, str], remaining_chars: int,
     timeout: float, allow_reads: bool = True,
+    review: Callable[[Any, set[str]], dict[str, Any] | None] | None = None,
 ) -> Result:
     """Share one deadline and one file budget across reads and the final proposal.
 
@@ -57,9 +58,10 @@ async def run(
         "input_schema": ReadFiles.model_json_schema(),
     }
     remaining = max(0, remaining_chars)
+    final_only = False
     async with asyncio.timeout(timeout), httpx.AsyncClient(timeout=timeout) as client:
         for round_number in range(3):
-            can_read = allow_reads and round_number < 2
+            can_read = allow_reads and not final_only and round_number < 2
             response = await client.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={"x-api-key": key, "anthropic-version": "2023-06-01"},
@@ -85,27 +87,36 @@ async def run(
                 raise ModelError("incomplete_output")
             call = calls[0]
             if call.get("name") == final_tool["name"]:
-                return Result(value=call.get("input"), seen=seen)
-            if not can_read or call.get("name") != "read_memory_files" or not call.get("id"):
-                raise ModelError("incomplete_output")
-            output: dict[str, Any] = {}
-            try:
-                paths = ReadFiles.model_validate(call.get("input")).paths
-            except ValidationError:
-                output = {"error": "invalid_paths", "max_paths": 8}
+                feedback = review(call.get("input"), seen) if review else None
+                if feedback is None:
+                    return Result(value=call.get("input"), seen=seen)
+                if round_number == 2:
+                    raise ModelError("final_rejected")
+                output: dict[str, Any] = feedback
+                final_only = True
             else:
-                for path in dict.fromkeys(paths):
-                    if path not in files:
-                        output[path] = {"error": "unavailable"}
-                        continue
-                    text = files[path]
-                    cost = chars({path: text})
-                    if cost > remaining:
-                        output[path] = {"error": "context_limit"}
-                        continue
-                    output[path] = text
-                    remaining -= cost
-                    seen.add(path)
+                if not can_read or call.get("name") != "read_memory_files":
+                    raise ModelError("incomplete_output")
+                output = {}
+                try:
+                    paths = ReadFiles.model_validate(call.get("input")).paths
+                except ValidationError:
+                    output = {"error": "invalid_paths", "max_paths": 8}
+                else:
+                    for path in dict.fromkeys(paths):
+                        if path not in files:
+                            output[path] = {"error": "unavailable"}
+                            continue
+                        text = files[path]
+                        cost = chars({path: text})
+                        if cost > remaining:
+                            output[path] = {"error": "context_limit"}
+                            continue
+                        output[path] = text
+                        remaining -= cost
+                        seen.add(path)
+            if not call.get("id"):
+                raise ModelError("incomplete_output")
             messages.extend([
                 {"role": "assistant", "content": body["content"]},
                 {"role": "user", "content": [{

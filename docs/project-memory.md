@@ -270,8 +270,11 @@ no entry bodies. Inventory rows are paged when needed, reserving room for on-dem
 The model demotes stale, superseded, narrow or duplicate entries, or merges related entries,
 while keeping verified data facts and current results active. Replacements require a complete
 supplied/read file; demotions require an active non-core, non-required entry. Originals are
-archived by application code even when a model merge omits a fact. Partial progress remains
-eligible for another bounded maintenance attempt.
+archived by application code even when a model merge omits a fact. Index cleanup must produce
+an index within the target before committing. A shortfall receives the exact remaining character
+count and can be repaired using unused calls within the same three-call, 100-second loop.
+Repairs force the final tool and do not extend read, attempt or hourly budgets. A proposal that
+still misses the target is rejected without any partial commit; protected entries stay active.
 
 A project lease coalesces concurrent tasks. Content fingerprints ignore unrelated projects'
 commits. Model attempts are persisted before calls: at most two attempts per input and three
