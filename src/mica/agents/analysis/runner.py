@@ -423,6 +423,7 @@ def build_options(
     return ClaudeAgentOptions(
         model=settings.model,
         fallback_model=settings.fallback_model or None,
+        effort=settings.worker_effort,
         cwd=str(ctx.workdir),
         add_dirs=[] if ctx.survey_only else [str(ctx.data_path)],
         resume=ctx.session_id,

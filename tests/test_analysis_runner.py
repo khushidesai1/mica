@@ -99,6 +99,7 @@ async def test_runner_resume_and_files(setup, monkeypatch):
     assert first.text.startswith("Data:") and first.files[0].name == "figure.png"
     assert calls[1].resume == "session-1" and calls[0].cwd == calls[1].cwd
     assert all(o.cwd == str(ctx.workdir) for o in calls)
+    assert all(o.model == "claude-opus-5-5" and o.effort == "high" for o in calls)
     assert all(o.env["CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR"] == "1" for o in calls)
     assert first.run_log[0]["timestamp"] and first.cost == 0.1
 

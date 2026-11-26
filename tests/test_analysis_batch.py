@@ -136,6 +136,31 @@ def test_job_reuses_spot_resources_and_has_no_credentials(bridge):
     )
 
 
+@pytest.mark.parametrize("tier", ["standard", "gpu"])
+@pytest.mark.parametrize("effort", [None, "medium"])
+def test_worker_effort_reaches_sdk_for_cpu_and_gpu_jobs(
+    bridge, tier, effort, monkeypatch, tmp_path
+):
+    from mica.agents.analysis.runner import Context, build_options
+
+    if effort is not None:
+        bridge.settings.worker_effort = effort
+    bridge.settings.gpu_tier_enabled = True
+    bridge.settings.gpu_image = "us-docker.pkg.dev/project/images/gpu@sha256:" + "b" * 64
+    bridge.settings.batch_proc_mount_opt_in = True
+    bridge.app.batch_nested_sandbox_opt_in = True
+    job = job_spec(bridge.app, bridge.settings, "a" * 32, tier=tier, gpu_type="t4")
+    worker = next(run for run in job.task_groups[0].task_spec.runnables if run.container.image_uri)
+    for name in ("AGENT_MODEL", "AGENT_WORKER_EFFORT"):
+        monkeypatch.setenv(name, worker.environment.variables[name])
+    settings = Settings(_env_file=None)
+    options = build_options(Context(tmp_path / "work", tmp_path / "data"), settings)
+    assert options.model == "claude-opus-5-5"
+    assert options.effort == (effort or "high")
+    assert options.fallback_model == settings.fallback_model
+    assert settings.conversation_effort == "medium"
+
+
 def test_proc_exception_is_separate_and_staging_only(bridge):
     bridge.app.batch_nested_sandbox_opt_in = True
     assert not bridge.settings.batch_proc_mount_opt_in
