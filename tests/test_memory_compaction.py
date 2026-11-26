@@ -366,6 +366,30 @@ async def test_partial_index_proposal_is_rejected_before_any_commit(chat, monkey
     assert state["outcome"] == "exhausted:index_target_not_reached"
 
 
+async def test_regenerated_titled_index_still_schedules_new_pressure(chat, monkeypatch):
+    chat.settings.memory_auto_edit = True
+    chat.settings.memory_index_target_chars = 500
+    base = index_snapshot(chat.settings, count=10)
+    base.files["INDEX.md"].text = "".join(
+        f"- [{p}]({p})\n" for p in base.files if p.startswith("results/")
+    )
+    assert len(base.files["INDEX.md"].text) < 500
+    chat.github.seed({f"projects/{chat.pid}/" + p: f.text for p, f in base.files.items()})
+    base = await chat.memory_backend.read(chat.pid)
+    model = AsyncMock()
+    monkeypatch.setattr(compact, "compact", model)
+    dispatch = AsyncMock()
+    monkeypatch.setattr(job_lifecycle, "enqueue", dispatch)
+    await compact.process(chat, chat.pid, base.head_oid, chat.store)
+    model.assert_not_awaited()
+    latest = await chat.memory_backend.read(chat.pid)
+    assert compact.index_pressure(latest, chat.settings)
+    state = await chat.repository.get_connector_state(compact.state_key(chat.pid))
+    assert state.get("settled") != compact.fingerprint(latest)
+    assert state["pending"]["head"] == latest.head_oid
+    dispatch.assert_awaited_once()
+
+
 def test_demotion_rejects_core_required_archived_and_missing_entries():
     from test_memory_editor import snapshot
 

@@ -559,8 +559,7 @@ async def process(bridge: BatchBridge, pid: str, head: str, storage: Storage) ->
                 else:
                     result.files[path] = project_memory.File(text=value, oid="")
             if (
-                cached["changes"]
-                and fingerprint(result) != fp
+                fingerprint(result) != fp
                 and pressure(result, bridge.settings)
             ):
                 state.pop("settled", None)
