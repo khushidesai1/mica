@@ -115,11 +115,11 @@ def test_native_endings_match_legacy(task_status, error):
     assert activity_blocks([], native_session=True, **options) == activity_blocks([], **options)
 
 
-async def test_checkin_updates_on_flag_change_and_keeps_report_and_continue(bridge, monkeypatch):
+async def test_checkin_updates_on_flag_change_and_keeps_report_and_dismiss(bridge, monkeypatch):
     monkeypatch.setattr(request_controls, "AsyncWebClient", lambda **kw: bridge.test_slack)
     event_id = await bridge.accept(payload())
     record = await bridge.repository.get_connector_state("claude-event:" + event_id)
-    record.update(flexible_harness=True, routing_calls=6, routing_started=time.time() - 130)
+    record.update(flexible_harness=True, routing_failures=3, routing_started=time.time() - 130)
     await request_controls.sync(bridge, event_id, record)
     posted = bridge.test_slack.chat_postMessage.call_args.kwargs["blocks"]
     assert "Cancel task" in repr(posted)
@@ -128,7 +128,8 @@ async def test_checkin_updates_on_flag_change_and_keeps_report_and_continue(brid
         await request_controls.sync(bridge, event_id, record)
         blocks = bridge.test_slack.chat_update.call_args.kwargs["blocks"]
         assert ("Cancel task" in repr(blocks)) is not native
-        assert "Keep working" in repr(blocks) and "Report a problem" in repr(blocks)
+        assert "Dismiss update" in repr(blocks) and "Report a problem" in repr(blocks)
+        assert "Keep working" not in repr(blocks)
 
 
 @pytest.mark.parametrize("native", [False, True])

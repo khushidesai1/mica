@@ -207,7 +207,7 @@ async def checkin(bridge, monkeypatch):
     bridge.settings.flexible_harness = True
     event_id = await bridge.accept(payload())
     record = await bridge.repository.get_connector_state("claude-event:" + event_id)
-    record.update(routing_calls=6, routing_started=time.time() - 130)
+    record.update(routing_calls=6, routing_started=time.time() - 130, routing_failures=3)
     await bridge.repository.set_connector_state("claude-event:" + event_id, record)
     await request_controls.sync(bridge, event_id, record)
     return bridge, event_id, record
@@ -225,6 +225,108 @@ def action(event_id, operation, **changes):
     }
 
 
+@pytest.mark.parametrize(
+    "elapsed,calls,route",
+    [(130, 0, None), (1, 6, None), (3600, 100, None), (172800, 100, "compute")],
+)
+async def test_routine_long_requests_do_not_post_checkins(
+    bridge, monkeypatch, elapsed, calls, route
+):
+    monkeypatch.setattr(request_controls, "AsyncWebClient", lambda **kw: bridge.test_slack)
+    bridge.settings.flexible_harness = True
+    event_id = await bridge.accept(payload())
+    record = await bridge.repository.get_connector_state("claude-event:" + event_id)
+    record.update(routing_started=time.time() - elapsed, routing_calls=calls, route=route)
+    bridge.test_slack.reset_mock()
+    for _ in range(2):
+        await request_controls.sync(bridge, event_id, record)
+    bridge.test_slack.chat_postMessage.assert_not_awaited()
+    bridge.test_slack.chat_update.assert_not_awaited()
+    assert approvals.load_json(bridge.store, request_controls.key(event_id)) is None
+    assert record["status"] == "pending"
+    assert not await request_controls.cancelled(bridge.store, event_id)
+
+
+@pytest.mark.parametrize("posted", [False, True])
+@pytest.mark.parametrize("acknowledged", [False, True])
+async def test_retired_notice_is_not_reposted_and_has_no_continue_prompt(
+    bridge, monkeypatch, posted, acknowledged
+):
+    monkeypatch.setattr(request_controls, "AsyncWebClient", lambda **kw: bridge.test_slack)
+    bridge.settings.flexible_harness = True
+    event_id = await bridge.accept(payload())
+    record = await bridge.repository.get_connector_state("claude-event:" + event_id)
+    record.update(routing_started=time.time() - 3600, routing_calls=100)
+    old = ["routing_slow", "routing_steps"]
+    approvals.save(bridge.store, request_controls.key(event_id), {
+        "reasons": old, "acknowledged": old if acknowledged else [],
+        "ts": "9.0" if posted else None,
+    }, None)
+    bridge.test_slack.reset_mock()
+    await request_controls.sync(bridge, event_id, record)
+    state, generation = approvals.load_json(bridge.store, request_controls.key(event_id))
+    assert state["reasons"] == state["acknowledged"] == []
+    bridge.test_slack.chat_postMessage.assert_not_awaited()
+    if posted:
+        update = bridge.test_slack.chat_update.call_args.kwargs
+        assert update["ts"] == "9.0" and "No confirmation is needed" in update["text"]
+        assert all(b["type"] != "actions" for b in update["blocks"])
+    else:
+        bridge.test_slack.chat_update.assert_not_awaited()
+    bridge.test_slack.reset_mock()
+    await request_controls.sync(bridge, event_id, record)
+    bridge.test_slack.chat_update.assert_not_awaited()
+    assert approvals.load_json(bridge.store, request_controls.key(event_id))[1] == generation
+
+
+async def test_retired_notice_preserves_pending_report_and_genuine_alert(checkin):
+    bridge, event_id, record = checkin
+    state, generation = approvals.load_json(bridge.store, request_controls.key(event_id))
+    state["reasons"].extend(["routing_slow", "routing_steps"])
+    state["report_pending"] = True
+    approvals.save(bridge.store, request_controls.key(event_id), state, generation)
+    await request_controls.sync(bridge, event_id, record)
+    incident = await bridge.repository.request_failure(
+        observability.request_scope(bridge.app), event_id
+    )
+    assert incident.observation.cause == "request_reported"
+    state, _ = approvals.load_json(bridge.store, request_controls.key(event_id))
+    assert state["reasons"] == ["routing_retry"]
+    assert state["reported"] and not state["report_pending"]
+    update = bridge.test_slack.chat_update.call_args.kwargs
+    assert "retrying a service problem" in update["text"]
+    assert "two minutes" not in update["text"]
+    assert "Dismiss update" in repr(update["blocks"])
+    assert "Keep working" not in repr(update["blocks"])
+
+
+@pytest.mark.parametrize("delivered", [False, True])
+async def test_retired_ambiguous_delivery_recovers_without_duplicate_notice(
+    bridge, monkeypatch, delivered
+):
+    monkeypatch.setattr(request_controls, "AsyncWebClient", lambda **kw: bridge.test_slack)
+    bridge.settings.flexible_harness = True
+    event_id = await bridge.accept(payload())
+    record = await bridge.repository.get_connector_state("claude-event:" + event_id)
+    approvals.save(bridge.store, request_controls.key(event_id), {
+        "reasons": ["routing_slow"], "acknowledged": [], "sending": True,
+    }, None)
+    bridge.test_slack.auth_test.return_value = {"user_id": "BOT"}
+    message_id = str(request_controls.uuid5(
+        request_controls.NAMESPACE_URL, "mica-request-controls:" + event_id
+    ))
+    bridge.test_slack.conversations_replies.return_value = {"messages": [
+        {"ts": "9.0", "user": "BOT", "client_msg_id": message_id}
+    ] if delivered else []}
+    bridge.test_slack.reset_mock()
+    await request_controls.sync(bridge, event_id, record)
+    bridge.test_slack.chat_postMessage.assert_not_awaited()
+    assert bridge.test_slack.chat_update.await_count == int(delivered)
+    if delivered:
+        assert all(b["type"] != "actions" for b in
+                   bridge.test_slack.chat_update.call_args.kwargs["blocks"])
+
+
 async def test_checkin_silence_continue_and_day_are_nonblocking(checkin):
     bridge, event_id, record = checkin
     posts = bridge.test_slack.chat_postMessage.await_count
@@ -233,7 +335,7 @@ async def test_checkin_silence_continue_and_day_are_nonblocking(checkin):
     assert not await request_controls.cancelled(bridge.store, event_id)
     await approvals.handle(bridge, bridge.store, action(event_id, "continue"), BackgroundTasks())
     state, _ = approvals.load_json(bridge.store, request_controls.key(event_id))
-    assert set(state["acknowledged"]) == {"routing_steps", "routing_slow"}
+    assert state["acknowledged"] == ["routing_retry"]
     record["routing_started"] = time.time() - 86401
     await request_controls.sync(bridge, event_id, record)
     assert "24 hours" in bridge.test_slack.chat_update.call_args.kwargs["text"]
@@ -405,7 +507,7 @@ async def test_rejected_post_can_retry_without_duplicate_accepted_post(bridge, m
     monkeypatch.setattr(request_controls, "AsyncWebClient", lambda **kw: bridge.test_slack)
     event_id = await bridge.accept(payload())
     record = await bridge.repository.get_connector_state("claude-event:" + event_id)
-    record["routing_calls"] = 6
+    record["routing_failures"] = 3
     bridge.test_slack.chat_postMessage.side_effect = SlackApiError(
         "Rate limited", {"error": "ratelimited"}
     )
