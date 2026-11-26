@@ -731,6 +731,8 @@ The coordinated pipeline prepares the pinned API, shared-worker and Claude CPU/G
 overlaying new code. At 100 layers it uses the existing filesystem-flattening helper, verifies the same runtime
 environment, user, entrypoint, command, labels and exposed ports, and retains every release gate.
 This prevents repeated application overlays from exceeding Docker's layer-depth limit.
+The coordinated build allows 60 minutes for preparation, verification and first publication of
+large flattened scientific runtime layers.
 
 ### Model-selected memory reads
 

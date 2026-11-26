@@ -139,7 +139,8 @@ options:
   logging: CLOUD_LOGGING_ONLY
   machineType: E2_HIGHCPU_32
   diskSizeGb: 300
-timeout: 1800s
+# Flattened scientific runtime layers need time for their first registry upload.
+timeout: 3600s
 substitutions:
   _VERIFY_SPATIAL: '0'
   _VERIFY_CELLPOSE: '0'
