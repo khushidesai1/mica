@@ -293,7 +293,7 @@ async def editor_proposal(
 
 
 def conversation_turn(record: dict[str, Any]) -> bool:
-    if record.get("reply_scope") == "cloud_access":
+    if record.get("private_contribution") or record.get("reply_scope") == "cloud_access":
         return False
     if (record.get("cancel_control") or record.get("cancel_requested")
             or record.get("cancelled_by")):
@@ -318,6 +318,18 @@ def eligible(bridge: BatchBridge, record: dict[str, Any]) -> bool:
 
 
 async def enqueue(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> None:
+    from . import contribution_privacy
+
+    await asyncio.to_thread(contribution_privacy.inherit, bridge.storage, record)
+    if record.get("private_contribution"):
+        record.update(
+            memory_editor_done=True, memory_privacy="requester_only", memory_pending=False
+        )
+        await bridge.repository.patch_connector_state(f"claude-event:{event_id}", {
+            "memory_editor_done": True, "memory_privacy": "requester_only", "memory_pending": False,
+            "private_contribution": True,
+        })
+        return
     if eligible(bridge, record):
         # A terminal poll can race the async completion patch. Its durable receipt
         # repairs that lost projection without re-running a model or relying on task ids.
@@ -360,6 +372,10 @@ async def process(bridge: BatchBridge, event_id: str, storage: Storage) -> None:
     try:
         async with asyncio.timeout(270):
             record = await bridge.repository.get_connector_state(f"claude-event:{event_id}")
+            from . import contribution_privacy
+
+            if record:
+                await asyncio.to_thread(contribution_privacy.inherit, storage, record)
             if not record or not eligible(bridge, record):
                 outcome = "skipped"
                 return

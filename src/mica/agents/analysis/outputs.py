@@ -87,6 +87,8 @@ def retention_reason(relative: Path, size: int, *, recovery: bool = False) -> st
         and not any(Path(p).suffix.lower() in DATA_SUFFIXES for p in relative.parts[:-1])
     ):
         return "" if size <= MAX_ATTACHMENT_BYTES else "large-or-unsupported-output"
+    if relative.parts and relative.parts[0] == "contrib":
+        return "" if size <= 512 * 1024**2 else "large-contribution-file"
     if any(Path(p).suffix.lower() in DATA_SUFFIXES for p in relative.parts):
         return "dataset"
     if relative.parts[:2] == ("outputs", "gcs"):

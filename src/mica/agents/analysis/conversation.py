@@ -155,6 +155,7 @@ class Constraints(Input):
 
 
 class Worker(Input):
+    pull_request_repo: str | None = Field(default=None, max_length=150)
     task: str = Field(min_length=5, max_length=16000)
     expected_hours: float | None = Field(default=None, gt=0, allow_inf_nan=False)
     tier: Literal["standard", "large", "xlarge", "gpu"] = "standard"
@@ -235,7 +236,8 @@ DESCRIPTIONS = {
         "runs a CUDA model (deep-learning segmentation, scVI-family models, "
         "training) at a scale where CPU would take hours. Bounded crops, statistics "
         "and plotting stay on CPU. Repository reading uses read_sources. "
-        "reference_repos selects source snapshots. write_paths names explicit GCS "
+        "Set pull_request_repo only for a requested PR. "
+        "reference_repos selects snapshots. write_paths names GCS "
         "destinations; grants and overwrite approvals are separate. constraints "
         "records assessed sizing and user limits: tier_explicit, max_tier, "
         "allow_resize, on_demand, allow_gpu_fallback, min_memory_gib (host RAM), "
@@ -513,7 +515,14 @@ async def run(
             "content": [{"type": "text", "text": json.dumps(data, ensure_ascii=False)}, *media],
         }
     ]
+    from . import contribution_privacy
+
+    await asyncio.to_thread(contribution_privacy.inherit, storage, record)
     tool_specs = tools_for(grant.allowed, bridge.settings, addressed=record.get("addressed", True))
+    if record.get("private_contribution"):
+        tool_specs = [t for t in tool_specs if t["name"] not in {
+            backchannel.TOOL, "propose_gcs_operations", "task_queue", "propose_transfer",
+        }]
     if record.get("workflow_parent"):
         tool_specs = [t for t in tool_specs if t["name"] in {
             "list_folders", "view_files", "read_sources", "start_worker", "project_backchannel"
@@ -789,6 +798,11 @@ async def run(
                 if name not in {tool["name"] for tool in tool_specs}:
                     raise ValueError("This tool is unavailable in this conversation.")
                 value = MODELS[name].model_validate(args)
+                if record.get("private_contribution") and isinstance(
+                    value, (gcs_operations.Request, backchannel.Call, TransferRequest,
+                            task_graph.Call)
+                ):
+                    raise ValueError("Use a separate thread for shared project operations.")
                 note = progress_note(blocks, thinking_updates=updates_enabled)
                 has_note = has_note or bool(note)
                 title = {
@@ -903,9 +917,18 @@ async def run(
                             write_operations=value.operations,
                         )
                     elif isinstance(value, Worker):
+                        from . import pull_requests
                         from .tiers import launch_choice
 
-                        record["backchannel_enabled"] = bridge.settings.backchannel
+                        if value.pull_request_repo:
+                            await pull_requests.admission(
+                                bridge, storage, event_id, record, value.pull_request_repo
+                            )
+                        record["backchannel_enabled"] = (
+                            bridge.settings.backchannel and not record.get("private_contribution")
+                        )
+                        if record.get("private_contribution") and value.write_paths:
+                            raise ValueError("Use a separate thread for project publishing.")
 
                         selected_repos = {
                             reference_repos.valid_repo(repo, bridge.settings.reference_github_org)
@@ -936,6 +959,7 @@ async def run(
                             worker=worker,
                             reference_repos=sorted(selected_repos),
                             write_paths=value.write_paths,
+                            pull_request_repo=value.pull_request_repo,
                         )
                     elif isinstance(value, TransferRequest):
                         from .transfers import Transfers

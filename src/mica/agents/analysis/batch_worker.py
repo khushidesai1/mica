@@ -80,6 +80,9 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
     settings = Settings()
     storage = GCSStorage(settings.bucket)
     request = json.loads(storage.get(f"{PREFIX}/events/{event_id}/request.json")[0])
+    if request.get("private_contribution"):
+        request["write_grant"] = None
+        request["backchannel_enabled"] = False
     native_session = request.get("native_session") is True
     thread_key = request["thread_key"]
     home = settings.work_root.parent
@@ -138,6 +141,8 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             await asyncio.sleep(min(delay, deadline - time.monotonic()))
             delay = min(delay * 2, 30)
     settings = Settings(**keys)
+    if request.get("private_contribution"):
+        settings = settings.model_copy(update={"memory_auto_edit": False, "thread_memory": "dual"})
     settings.require_credentials()
     if not surface.is_email(request) and not settings.slack_bot_token.get_secret_value():
         raise ValueError("Slack credential has not been configured")
@@ -247,6 +252,13 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             for item in request.get("reference_repos", [])
         ],
     )
+    if request.get("pull_request"):
+        from . import pull_request_files
+
+        await asyncio.to_thread(
+            pull_request_files.materialize, storage, Path(saved["context"]["workdir"]),
+            pull_request_files.Pin.model_validate(request["pull_request"]), resume=bool(resume),
+        )
     memory_base = project_memory.Snapshot.model_validate(
         request.get("memory", {"head_oid": "", "files": {}})
     )
@@ -414,6 +426,9 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         compute.manifest["sdk_cost_total"] = saved.get("sdk_cost_total")
         sample_task = asyncio.create_task(sampler.run())
 
+    from .pull_request_worker import Proposer
+
+    proposer = Proposer(storage, request, event_id, url) if request.get("pull_request") else None
     publisher = write_worker.Publisher(storage, request, event_id, url)
     if compute:
         compute.stop_tools = publisher.cancel
@@ -541,6 +556,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             compute_manager=compute,
             on_attention=attention if compute else None,
             gcs_publisher=publisher if current_write_grant else None,
+            pr_proposer=proposer,
             project_name=request.get("project_name", ""),
             memory_context=project_memory.context(
                 memory_base, payload["event"].get("text", ""), settings
@@ -945,7 +961,8 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
         checkpoint["runtimes"] = sorted(runtimes.thread_ids)
     elif saved.get("runtimes"):
         checkpoint["runtimes"] = saved["runtimes"]
-    if surface.is_email(request):
+    if surface.is_email(request) or request.get("private_contribution"):
+        checkpoint["private_contribution"] = bool(request.get("private_contribution"))
         checkpoint["private_owner"] = request["principal"]
     checkpoint["messages"] = saved.get("messages", [])
     checkpoint["thread_files"] = attachments.merge(saved.get("thread_files", []), agent.delivered)

@@ -230,7 +230,7 @@
     },
     {
       "name": "start_worker",
-      "description": "Run code for analyses, large/binary files, downloadable reports/plots or package execution. task states the authorized work. Size CPU tiers (standard, large, xlarge) from assessed min_memory_gib, data size and calibration history. expected_hours is advisory; long CPU jobs use on-demand unless Spot was requested. GPU choices come from compute_capabilities and require approval. Request a GPU when the work runs a CUDA model (deep-learning segmentation, scVI-family models, training) at a scale where CPU would take hours. Bounded crops, statistics and plotting stay on CPU. Repository reading uses read_sources. reference_repos selects source snapshots. write_paths names explicit GCS destinations; grants and overwrite approvals are separate. constraints records assessed sizing and user limits: tier_explicit, max_tier, allow_resize, on_demand, allow_gpu_fallback, min_memory_gib (host RAM), min_gpu_memory_gib (VRAM/device), gpu_sizing, gpu_hours, compute_budget_usd. Long tasks may checkpoint and continue; never shrink scientific scope merely because it is long. Never invent consent, budgets, write access or hardware requirements.",
+      "description": "Run code for analyses, large/binary files, downloadable reports/plots or package execution. task states the authorized work. Size CPU tiers (standard, large, xlarge) from assessed min_memory_gib, data size and calibration history. expected_hours is advisory; long CPU jobs use on-demand unless Spot was requested. GPU choices come from compute_capabilities and require approval. Request a GPU when the work runs a CUDA model (deep-learning segmentation, scVI-family models, training) at a scale where CPU would take hours. Bounded crops, statistics and plotting stay on CPU. Repository reading uses read_sources. Set pull_request_repo only for a requested PR. reference_repos selects snapshots. write_paths names GCS destinations; grants and overwrite approvals are separate. constraints records assessed sizing and user limits: tier_explicit, max_tier, allow_resize, on_demand, allow_gpu_fallback, min_memory_gib (host RAM), min_gpu_memory_gib (VRAM/device), gpu_sizing, gpu_hours, compute_budget_usd. Long tasks may checkpoint and continue; never shrink scientific scope merely because it is long. Never invent consent, budgets, write access or hardware requirements.",
       "input_schema": {
         "$defs": {
           "Constraints": {
@@ -365,6 +365,16 @@
         },
         "additionalProperties": false,
         "properties": {
+          "pull_request_repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "task": {
             "type": "string"
           },
@@ -428,6 +438,7 @@
           }
         },
         "required": [
+          "pull_request_repo",
           "task",
           "expected_hours",
           "tier",
@@ -608,6 +619,9 @@
               "transfers",
               "atomx login status",
               "connect atomx",
+              "connect github",
+              "github status",
+              "disconnect github",
               "cancel transfer",
               "forget atomx login",
               "replace atomx login",

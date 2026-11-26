@@ -703,3 +703,18 @@ settings. Saved terminal operations finish through their existing handlers; old 
 remain readable. Verify compound selection with two different test projects, established-thread
 isolation, interrupted-operation replay, and requester-bound channel confirmations. Prompt/schema
 budgets and worker compatibility gates remain required. The worker session contract is unchanged.
+
+## Personal GitHub PR connections
+
+GitHub PR support requires a coordinated `cloudbuild/build-slack-release.yaml` build of the API,
+Claude CPU/GPU workers and shared worker. Preserve existing runtime images as immutable bases,
+then update the new API and worker pins in one revision. Keep `AGENT_PULL_REQUESTS=false` until
+the operator has registered the Mica GitHub App, provisioned its numeric client-secret version,
+and completed the private sandbox acceptance checks. Routine deployment does not apply Terraform
+or change secrets. See [GitHub PR connections](github-pull-requests.md) for permissions, connection
+commands, private thread retention, supported changes and pilot settings.
+
+The coordinated pipeline prepares the pinned API and shared-worker bases before overlaying new
+code. At 100 layers it uses the existing filesystem-flattening helper, verifies the same runtime
+environment, user, entrypoint, command, labels and exposed ports, and retains every release gate.
+This prevents repeated application overlays from exceeding Docker's layer-depth limit.

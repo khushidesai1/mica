@@ -1,13 +1,22 @@
 # Build coordinated API, Slack, and science workers from one source snapshot.
 steps:
+  - id: prepare-overlay-bases
+    name: gcr.io/cloud-builders/docker
+    waitFor: ['-']
+    entrypoint: bash
+    args:
+      - -ceu
+      - |
+        bash tools/prepare_release_base.sh api '${_API_BASE}' mica-release-api-base
+        bash tools/prepare_release_base.sh shared '${_SHARED_BASE}' mica-release-shared-base
   - id: build-proseg-cli
     name: gcr.io/cloud-builders/docker
     waitFor: ['-']
     args: [build, --target, proseg-build, --build-arg, 'BASE_IMAGE=${_API_BASE}', -f, docker/Dockerfile.slack-release, -t, mica-proseg-build, .]
   - id: build-api
     name: gcr.io/cloud-builders/docker
-    waitFor: [build-proseg-cli]
-    args: [build, --build-arg, 'BASE_IMAGE=${_API_BASE}', --build-arg, 'SOURCE_COMMIT=${_SOURCE_COMMIT}', -f, docker/Dockerfile.slack-release, -t, '${_API_IMAGE}', .]
+    waitFor: [build-proseg-cli, prepare-overlay-bases]
+    args: [build, --build-arg, 'BASE_IMAGE=mica-release-api-base', --build-arg, 'SOURCE_COMMIT=${_SOURCE_COMMIT}', -f, docker/Dockerfile.slack-release, -t, '${_API_IMAGE}', .]
   - id: build-slack-worker
     name: gcr.io/cloud-builders/docker
     waitFor: [build-proseg-cli]
@@ -112,7 +121,7 @@ steps:
   - id: refresh-shared-worker
     name: gcr.io/cloud-builders/docker
     waitFor: [build-api]
-    args: [build, --build-arg, 'API_IMAGE=${_API_IMAGE}', --build-arg, 'SCIENCE_IMAGE=${_SHARED_BASE}', -f, docker/Dockerfile.worker-refresh, -t, '${_SHARED_IMAGE}', .]
+    args: [build, --build-arg, 'API_IMAGE=${_API_IMAGE}', --build-arg, 'SCIENCE_IMAGE=mica-release-shared-base', -f, docker/Dockerfile.worker-refresh, -t, '${_SHARED_IMAGE}', .]
   - id: verify-shared-worker
     name: gcr.io/cloud-builders/docker
     waitFor: [export-api-contract, refresh-shared-worker]

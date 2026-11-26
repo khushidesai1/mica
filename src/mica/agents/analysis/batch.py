@@ -610,7 +610,9 @@ class BatchBridge:
             record = await self.repository.get_connector_state(key)
             if not record:
                 raise LookupError("Unknown Slack event")
-            from . import answer_stream
+            from . import answer_stream, contribution_privacy
+
+            await asyncio.to_thread(contribution_privacy.inherit, self.storage, record)
 
             await answer_stream.cleanup(self, event_id, record, tick=tick)
             # Save the presentation outbox before slow work, including unchanged pending turns.
@@ -1257,7 +1259,10 @@ class BatchBridge:
                 available = grant.project.reference_repos | await reference_repos.shared_repos(
                     self.repository, self.settings
                 )
-                selected = record.get("reference_repos", sorted(grant.project.reference_repos))
+                selected = [
+                    r for r in record.get("reference_repos", sorted(grant.project.reference_repos))
+                    if r != record.get("pull_request_repo")
+                ]
                 for repo in selected:
                     try:
                         if repo not in available:
@@ -1280,6 +1285,12 @@ class BatchBridge:
                 await asyncio.to_thread(
                     storage.put, references_key, json.dumps(references).encode()
                 )
+            if record.get("pull_request_repo"):
+                from . import pull_requests
+
+                pin = await pull_requests.stage(self, storage, event_id, record)
+                record["pull_request"] = pin.model_dump()
+                await self.repository.set_connector_state(f"claude-event:{event_id}", record)
             manifest = {
                 "event_id": event_id,
                 "payload": record["payload"],
@@ -1315,6 +1326,11 @@ class BatchBridge:
             }
             from . import session_review, session_sources
 
+            if record.get("pull_request"):
+                manifest["pull_request"] = record["pull_request"]
+            if record.get("private_contribution"):
+                manifest["private_contribution"] = True
+                manifest["write_grant"] = None
             if agent_session.eligible(self, record):
                 manifest["native_session"] = True
             sources = await asyncio.to_thread(

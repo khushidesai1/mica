@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 LEAD_SECONDS = 20 * 60
 LABELS = {
+    "pull_request": "draft pull request approval",
     "compute": "compute approval",
     "write": "file-operation approval",
     "command": "project confirmation",
@@ -128,6 +129,16 @@ async def pending(
         if row["state"] != "pending":
             return None
         return from_record(record, row["expires"])
+    if kind == "pull_request":
+        from . import pull_requests
+
+        if row["status"] != "pending":
+            return None
+        try:
+            await asyncio.to_thread(pull_requests.authorize, bridge, storage, identifier, record)
+        except (ValueError, PermissionError):
+            return None
+        return from_record({**record, "notice_ts": row["notice_ts"]}, row["expires_at"])
     flag = "gpu_approval" if kind == "compute" else "overwrite_approval"
     if (row["status"] != "pending" or not record.get(flag) or record.get("job")
             or record.get("status") != "awaiting_approval"):

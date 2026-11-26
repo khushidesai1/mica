@@ -42,6 +42,8 @@ Cause = Literal[
     "compute_control_failed",
     "compute_deadline",
     "reference_repo_failed",
+    "pull_request_failed",
+    "connection_delivery_failed",
     "runtime_install_failed",
     "memory_editor_failed",
     "memory_compaction_retry",

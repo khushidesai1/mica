@@ -407,6 +407,9 @@ async def worker_context(
         or record.get("access_signature") != grant.signature
     ):
         raise HTTPException(403, "This worker grant is inactive")
+    from mica.agents.analysis import contribution_privacy
+
+    await asyncio.to_thread(contribution_privacy.inherit, storage, record)
     return bridge, storage, record
 
 
@@ -509,6 +512,32 @@ async def recovery_operation(event_id: str, request: Request, response: Response
         await bridge.repository.release_event(mutex, claim.token)
 
 
+class PullRequestProposal(BaseModel):
+    model_config = {"extra": "forbid"}
+    proposal_id: str = Field(pattern=r"^[a-f0-9]{32}$")
+    attempt: int = Field(ge=0)
+
+
+@router.post("/pull-request/{event_id}", include_in_schema=False)
+async def propose_pull_request(
+    event_id: str, body: PullRequestProposal, request: Request, response: Response,
+) -> dict[str, str]:
+    from mica.agents.analysis import pull_requests
+
+    bridge, storage, record = await worker_context(event_id, request)
+    response.headers["Cache-Control"] = "no-store"
+    if surface.is_email(record):
+        raise HTTPException(403, surface.EMAIL_READ_ONLY)
+    try:
+        return await pull_requests.propose(
+            bridge, storage, event_id, body.proposal_id, body.attempt
+        )
+    except identity.IdentityUnavailable:
+        raise HTTPException(503, "Slack identity verification is unavailable; retry") from None
+    except (ValueError, PermissionError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
 @router.post("/write/{event_id}", include_in_schema=False)
 async def write_output(
     event_id: str, body: WriteUpload, request: Request, response: Response
@@ -521,6 +550,8 @@ async def write_output(
     response.headers["Cache-Control"] = "no-store"
     if surface.is_email(record):
         raise HTTPException(403, surface.EMAIL_READ_ONLY)
+    if record.get("private_contribution"):
+        raise HTTPException(403, "Use a separate thread for project publishing.")
     frozen = record.get("write_grant")
     if not frozen or frozen.get("id") != body.grant_id:
         raise HTTPException(403, "This run has no matching write grant.")

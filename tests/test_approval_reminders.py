@@ -18,6 +18,7 @@ from mica.agents.analysis import (
     atomx_delivery,
     cloud_access,
     job_lifecycle,
+    pull_requests,
     transfers,
 )
 from mica.agents.analysis import approval_reminders as reminders
@@ -55,6 +56,20 @@ async def seed(bridge, kind, monkeypatch):
         row = {"status": "pending", "state": "pending", "expires_at": DEADLINE,
                "expires": DEADLINE}
         approvals.save(bridge.store, approvals.resolve(kind).key(ID), row, None)
+    elif kind == "pull_request":
+        from test_pull_request_files import checkout, proposal
+
+        from mica.agents.analysis.pull_request_files import Change
+
+        pin, index, _ = checkout(bridge.store)
+        patch = proposal([Change(path="README.md", content="updated")])
+        row = pull_requests.Approval(
+            event_id=ID, proposal=patch, pin=pin, tree="a" * 40, branch="mica/change-cccccccc",
+            patch="diff", summary=["README.md"], expires_at=DEADLINE, notice_ts="9.0",
+            principal="alice@example.com", connection_revision="revision", github_id="123",
+        )
+        approvals.save(bridge.store, pull_requests.key(ID), row, None)
+        monkeypatch.setattr(pull_requests, "authorize", Mock())
     elif kind == "amendment":
         record.update(status="pending", amendable=True, amendment_expires=DEADLINE)
         await bridge.repository.set_connector_state("claude-event:" + ID, record)
@@ -159,10 +174,10 @@ async def test_delayed_stale_or_early_timer_cannot_notify(
 @pytest.mark.parametrize("kind", reminders.LABELS)
 async def test_resolved_approval_never_notifies(bridge, clock, slack, monkeypatch, kind):
     await seed(bridge, kind, monkeypatch)
-    if kind in {"compute", "write", "command"}:
+    if kind in {"compute", "write", "command", "pull_request"}:
         key = approvals.resolve(kind).key(ID)
         row, generation = approvals.load_json(bridge.store, key)
-        row.update(status="approved", state="completed")
+        row.update(status="discarded" if kind == "pull_request" else "approved", state="completed")
         approvals.save(bridge.store, key, row, generation)
     else:
         key = ("transfer-pending:" + ID if kind == "transfer" else "claude-event:" + ID
