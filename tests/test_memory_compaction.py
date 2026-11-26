@@ -266,10 +266,10 @@ def test_index_pressure_working_set_has_titles_headers_sizes_and_no_bodies():
     assert "BODY NOT PRELOADED" not in json.dumps(context)
     assert len(context["index_entries"]) == 30
     row = context["index_entries"]["results/old-00.md"]
-    assert row["row"].endswith(": Old narrow note 0")
+    assert ": Old narrow note 0\n" in context["index"]
     assert row["headers"] == NOTE.partition("\n\n")[0]
     assert row["bytes"] == len(base.files["results/old-00.md"].text.encode())
-    assert len(json.dumps(context)) <= settings.memory_compaction_chars // 2
+    assert len(json.dumps(context)) <= settings.memory_compaction_chars - 4000
 
 
 def test_index_metadata_pages_within_context_and_conflicts_take_priority():
@@ -279,13 +279,33 @@ def test_index_metadata_pages_within_context_and_conflicts_take_priority():
     base = index_snapshot(settings)
     first, cursor = compact.working_set(base, settings)
     second, _ = compact.working_set(base, settings, cursor)
-    assert first["index_entries"] and second["index_entries"]
-    assert set(first["index_entries"]).isdisjoint(second["index_entries"])
+    assert first["index"] and second["index"] and first["index"] != second["index"]
     assert len(json.dumps(first)) <= 1000
     base.files["_unmerged/event/results/old-00.md"] = project_memory.File(text=NOTE, oid="")
     context, _ = compact.working_set(base, settings)
     assert "index_entries" not in context
     assert set(context["files"]) == {"results/old-00.md", "_unmerged/event/results/old-00.md"}
+
+
+def test_metadata_paging_keeps_all_titled_choices_visible():
+    from test_memory_editor import snapshot
+
+    from mica.agents.analysis.config import Settings
+
+    settings = Settings(_env_file=None)
+    files = {f"results/retired-exploratory-threshold-trial-{i:02d}.md": (
+        "type: result\nsource: " + "synthetic provenance " * 15
+        + "\nstatus: superseded by results/current.md\n\n# Retired exploratory threshold trial "
+        + str(i) + "; superseded narrow experiment\nPrivate body"
+    ) for i in range(60)}
+    layout = memory_archive.prepare({}, files, settings)
+    base = snapshot({p: t for p, t in layout.items() if t is not None})
+    context, _ = compact.working_set(base, settings)
+    assert context["index"] == base.files["INDEX.md"].text
+    assert 0 < len(context["index_entries"]) < 60
+    assert all(path in context["index"] for path in files)
+    assert "Private body" not in json.dumps(context)
+    assert len(json.dumps(context)) <= settings.memory_compaction_chars - 4000
 
 
 async def test_compaction_reads_candidates_and_persists_read_authorization(monkeypatch):
@@ -327,6 +347,28 @@ async def test_index_demotion_archives_original_and_reaches_target(chat, monkeyp
     for path in removals:
         text = base.files[path].text
         assert latest.files[memory_archive.archive_path(path, text)].text == text
+
+
+async def test_partial_index_progress_schedules_remaining_pressure_after_cooldown(
+    chat, monkeypatch,
+):
+    chat.settings.memory_auto_edit = True
+    chat.settings.memory_index_target_chars = 300
+    base = index_snapshot(chat.settings, count=10)
+    chat.github.seed({f"projects/{chat.pid}/" + p: f.text for p, f in base.files.items()})
+    base = await chat.memory_backend.read(chat.pid)
+    monkeypatch.setattr(compact, "compact", AsyncMock(return_value={"results/old-00.md": None}))
+    dispatch = AsyncMock()
+    monkeypatch.setattr(job_lifecycle, "enqueue", dispatch)
+    await compact.process(chat, chat.pid, base.head_oid, chat.store)
+    latest = await chat.memory_backend.read(chat.pid)
+    assert compact.index_pressure(latest, chat.settings)
+    assert not compact.candidates(latest, chat.settings)
+    state = await chat.repository.get_connector_state(compact.state_key(chat.pid))
+    assert state.get("settled") != compact.fingerprint(latest)
+    assert state["pending"]["head"] == latest.head_oid
+    assert 0 < state["pending"]["delay"] <= chat.settings.memory_compaction_cooldown_seconds
+    dispatch.assert_awaited_once()
 
 
 def test_demotion_rejects_core_required_archived_and_missing_entries():

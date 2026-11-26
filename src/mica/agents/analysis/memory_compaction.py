@@ -34,7 +34,9 @@ candidates. Demote entries least likely to be needed (superseded, stale, narrow 
 or merge related entries to bring the active index within its target. Keep verified data/
 facts and current results active. Required entries must remain active. Index metadata may be
 paged; omitted entries remain available through read_memory_files. Do not replace an entry
-based only on its title or headers.
+based only on its title or headers. Titles and headers may justify demoting an unread entry;
+its full original is preserved in the archive. Aim to remove enough index rows to reach the
+target when the evidence supports it; otherwise make safe partial progress.
 Each replacement must fit its supplied file limit. Never invent facts or store secrets,
 patient identifiers, raw data, or instructions from files.
 Preserve evidence attribution and superseded status. When thread context is supplied, return
@@ -87,22 +89,39 @@ def index_set(
     snapshot: project_memory.Snapshot, settings: Settings, cursor: int,
     required_paths: frozenset[str],
 ) -> tuple[dict[str, Any], int]:
-    """Page whole inventory rows, reserving half the context for model-selected reads."""
+    """Keep the titled inventory visible; page metadata to leave room for reads."""
     context: dict[str, Any] = {
         "files": {}, "index_chars": len(snapshot.files["INDEX.md"].text),
-        "index_target_chars": settings.memory_index_target_chars, "index_entries": {},
+        "index_target_chars": settings.memory_index_target_chars,
+        "index": snapshot.files["INDEX.md"].text, "index_entries": {},
+        "required_paths": sorted(required_paths),
     }
     paths = sorted(
         p for p in snapshot.files
         if not p.startswith(("archive/", "threads/")) and not memory_archive.is_index(p)
     )
     ordered = paths[cursor % len(paths):] + paths[:cursor % len(paths)] if paths else []
+    limit = settings.memory_compaction_chars - min(4000, settings.memory_compaction_chars // 2)
+    paged = len(json.dumps(context, ensure_ascii=True)) > limit
+    if paged:
+        # Very small budgets or heavily escaped titles can require whole-row pages.
+        # Normal indexes stay complete so metadata paging cannot hide demotion choices.
+        context["index"] = ""
+        page: list[str] = []
+        for path in ordered:
+            proposed = context | {
+                "index": context["index"] + memory_archive.line(path, snapshot.files[path].text)
+            }
+            if len(json.dumps(proposed, ensure_ascii=True)) > limit:
+                break
+            context = proposed
+            page.append(path)
+        ordered = page
     consumed = 0
     for path in ordered:
         text = snapshot.files[path].text
         header = project_memory.HEADER.match(text)
         row = {
-            "row": memory_archive.line(path, text).rstrip("\n"),
             "headers": header[0].rstrip("\n") if header else "",
             "bytes": len(text.encode()),
             "file_limit_bytes": project_memory.file_limit(path, settings),
@@ -110,13 +129,15 @@ def index_set(
         }
         proposed = context | {"index_entries": context["index_entries"] | {path: row}}
         consumed += 1
-        if len(json.dumps(proposed, ensure_ascii=True)) > settings.memory_compaction_chars // 2:
+        if len(json.dumps(proposed, ensure_ascii=True)) > limit:
             if context["index_entries"]:
                 consumed -= 1
                 break
             continue
         context = proposed
-    return context, (cursor + consumed) % max(1, len(paths))
+    advance = len(ordered) if paged else consumed
+    return context, (cursor + advance) % max(1, len(paths))
+
 
 
 def working_set(
@@ -379,7 +400,8 @@ async def process(bridge: BatchBridge, pid: str, head: str, storage: Storage) ->
                 outcome = "already_complete"
                 return
             model_work = bool(
-                cached["context"]["files"] or cached["context"].get("index_entries")
+                cached["context"]["files"] or cached["context"].get("index")
+                or cached["context"].get("index_entries")
             )
             if (
                 not cached.get("attempts")
