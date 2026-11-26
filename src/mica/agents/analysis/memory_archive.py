@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import time
 from collections.abc import Mapping
@@ -38,9 +39,24 @@ def archive_path(path: str, text: str) -> str:
     return f"archive/{digest}/{path}"
 
 
-def line(path: str, *, relative: str = "") -> str:
+def title(text: str) -> str:
+    """Describe an entry without exposing mechanical metadata as its title."""
+    body = re.sub(r"\A(?:(?:type|source|status):[^\n]*(?:\n|$))+", "", text).lstrip("\n")
+    heading = re.search(
+        r"^ {0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$|^([^\n]+)\n {0,3}(?:=+|-+)[ \t]*$",
+        body, re.M,
+    )
+    value = (
+        (heading[1] or heading[2]) if heading else
+        next((s for s in body.splitlines() if s.strip()), "")
+    )
+    return " ".join(value.replace("[", "").replace("]", "").split())[:80]
+
+
+def line(path: str, text: str = "", *, relative: str = "") -> str:
     label = original_path(path)
-    return f"- [{label}]({path.removeprefix(relative)})\n"
+    suffix = f": {title(text)}" if path.endswith(".md") and not relative else ""
+    return f"- [{label}]({path.removeprefix(relative)}){suffix}\n"
 
 
 def prepare(
@@ -85,13 +101,21 @@ def prepare(
         else:
             files[path] = value
 
-    # Reserve directory navigation even before the first archive. New/changed entries
-    # get priority, then the prior index order, then stable path order for older stores.
+    # Reserve archive navigation only when needed. Above the hard limit, changed
+    # entries get priority, then prior index order and stable path order for older stores.
     navigation = "- [Archived originals and entries](archive/INDEX.md)\n"
-    index = "".join(line(p) for p in CORE if p in files)
+    index = "".join(line(p, files[p]) for p in CORE if p in files)
     required = sorted(p for p in required_paths if p in files and p not in CORE)
-    index += "".join(line(p) for p in required)
-    if len(index + navigation) > settings.memory_index_chars:
+    index += "".join(line(p, files[p]) for p in required)
+    has_archive = any(re.fullmatch(ARCHIVE_ENTRY, p) for p in files)
+    full = index + "".join(
+        line(p, files[p]) for p in files
+        if p not in CORE and p not in required and not is_index(p)
+        and not p.startswith("archive/")
+    )
+    overflow = len(full + (navigation if has_archive else "")) > settings.memory_index_chars
+    reserve = navigation if has_archive or overflow else ""
+    if len(index + reserve) > settings.memory_index_chars:
         raise ValueError("index_budget_too_small_for_core_and_active_recipes")
     prior = re.findall(r"\[[^\]]+\]\(([^)]+)\)", before.get("INDEX.md", ""))
     active = sorted(
@@ -99,14 +123,20 @@ def prepare(
         and not is_index(p) and not p.startswith("archive/")
     )
     order = list(dict.fromkeys([p for p in changes if p in active] + prior + active))
+    demoted = 0
     for path in order:
         if path not in active:
             continue
-        entry = line(path)
-        if len(index + entry + navigation) <= settings.memory_index_chars:
+        entry = line(path, files[path])
+        if len(index + entry + reserve) <= settings.memory_index_chars:
             index += entry
         else:
             preserve(path, files.pop(path))
+            demoted += 1
+    if demoted:
+        logging.warning(
+            "memory_index_backstop demoted=%d hard_limit=%d", demoted, settings.memory_index_chars
+        )
     archived = sorted(p for p in files if re.fullmatch(ARCHIVE_ENTRY, p))
     # Remove only generated indexes, never entries; pages are regenerated deterministically.
     for path in list(files):

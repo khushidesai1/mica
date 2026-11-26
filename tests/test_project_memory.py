@@ -48,7 +48,7 @@ async def test_round_trip_and_historical_snapshot(store, caplog):
         ("data/token.md", FACT + "password=secret", "Secret"),
         ("PROJECT.md", "x" * 100_001, "size"),
         ("lessons.md", FACT + "x" * 16_384, "size"),
-        ("INDEX.md", "x" * 4001, "Index"),
+        ("INDEX.md", "x" * 12001, "Index"),
     ],
 )
 async def test_rejected_files_have_reasons(store, path, text, reason):

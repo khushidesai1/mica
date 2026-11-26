@@ -318,7 +318,11 @@ def check(source: Path, mode: str) -> None:
         )
         memory_workspace.materialize(work / "memory-work", snapshot, settings)
         assert memory_workspace.proposal(work / "memory-work", snapshot, settings).changes == {}
-        assert "viridis" in project_memory.context(snapshot, "heatmaps", settings)
+        assert "viridis" in project_memory.context(snapshot, settings)
+        assert settings.memory_index_chars == 12000 and settings.memory_index_target_chars == 6000
+        snapshot.files["results/hidden.md"] = project_memory.File(text="TOPIC BODY", oid="")
+        assert "TOPIC BODY" not in project_memory.context(snapshot, settings)
+        assert memory_archive.line("results/x.md", "# Filter").endswith(": Filter\n")
         assert project_memory.GUIDE_POLICY in prompts.build_system_append(
             SimpleNamespace(survey_only=True), settings
         )
@@ -336,7 +340,7 @@ def check(source: Path, mode: str) -> None:
         )
         original = "type: fact\nsource: synthetic image gate\nstatus: current\n\nArchived evidence."
         layout = memory_archive.prepare(
-            {}, {f"data/note-{n:03d}.md": original for n in range(200)}, settings
+            {}, {f"data/note-{n:03d}.md": original for n in range(350)}, settings
         )
         archived = project_memory.Snapshot(
             head_oid="a" * 40,
@@ -350,7 +354,7 @@ def check(source: Path, mode: str) -> None:
         assert len([p for p in archived.files if p.startswith("archive/index-")]) > 1
         memory_workspace.materialize(work / "archive-work", archived, settings)
         assert not memory_workspace.proposal(work / "archive-work", archived, settings).changes
-        context = project_memory.context(archived, "archived evidence", settings)
+        context = project_memory.context(archived, settings)
         assert len(context) <= settings.memory_router_chars and "File: archive/" not in context
         path = next(
             p for p in archived.files if p.startswith("archive/") and not memory_archive.is_index(p)

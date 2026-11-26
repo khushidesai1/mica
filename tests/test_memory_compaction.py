@@ -129,7 +129,7 @@ async def test_parallel_heads_share_project_lease(chat, monkeypatch):
     base = await seed(chat)
     started, release = asyncio.Event(), asyncio.Event()
 
-    async def model(*args):
+    async def model(*args, **kwargs):
         started.set()
         await release.wait()
         return edits()
@@ -242,3 +242,124 @@ async def test_unavailable_repository_input_stops_after_two_attempts(chat, monke
     await compact.process(chat, chat.pid, "a" * 40, chat.store)
     state = await chat.repository.get_connector_state(compact.state_key(chat.pid))
     assert state["outcome"] == "exhausted:unavailable_input"
+
+
+def index_snapshot(settings, count=30):
+    from test_memory_editor import snapshot
+
+    files = {f"results/old-{i:02d}.md": NOTE + f"# Old narrow note {i}\nBODY NOT PRELOADED"
+             for i in range(count)}
+    layout = memory_archive.prepare({}, files, settings)
+    return snapshot({p: t for p, t in layout.items() if t is not None})
+
+
+def test_index_pressure_working_set_has_titles_headers_sizes_and_no_bodies():
+    from mica.agents.analysis.config import Settings
+
+    settings = Settings(_env_file=None, memory_index_target_chars=500)
+    base = index_snapshot(settings)
+    context, _ = compact.working_set(base, settings)
+    assert compact.pressure(base, settings)
+    assert context["files"] == {}
+    assert context["index_chars"] == len(base.files["INDEX.md"].text)
+    assert context["index_target_chars"] == 500
+    assert "BODY NOT PRELOADED" not in json.dumps(context)
+    assert len(context["index_entries"]) == 30
+    row = context["index_entries"]["results/old-00.md"]
+    assert row["row"].endswith(": Old narrow note 0")
+    assert row["headers"] == NOTE.partition("\n\n")[0]
+    assert row["bytes"] == len(base.files["results/old-00.md"].text.encode())
+    assert len(json.dumps(context)) <= settings.memory_compaction_chars // 2
+
+
+def test_index_metadata_pages_within_context_and_conflicts_take_priority():
+    from mica.agents.analysis.config import Settings
+
+    settings = Settings(_env_file=None, memory_index_target_chars=500, memory_compaction_chars=2000)
+    base = index_snapshot(settings)
+    first, cursor = compact.working_set(base, settings)
+    second, _ = compact.working_set(base, settings, cursor)
+    assert first["index_entries"] and second["index_entries"]
+    assert set(first["index_entries"]).isdisjoint(second["index_entries"])
+    assert len(json.dumps(first)) <= 1000
+    base.files["_unmerged/event/results/old-00.md"] = project_memory.File(text=NOTE, oid="")
+    context, _ = compact.working_set(base, settings)
+    assert "index_entries" not in context
+    assert set(context["files"]) == {"results/old-00.md", "_unmerged/event/results/old-00.md"}
+
+
+async def test_compaction_reads_candidates_and_persists_read_authorization(monkeypatch):
+    from test_memory_editor import mock_model
+    from test_memory_reads import read_response
+
+    from mica.agents.analysis.config import Settings
+
+    settings = Settings(_env_file=None, memory_index_target_chars=500)
+    base = index_snapshot(settings)
+    context, _ = compact.working_set(base, settings)
+    requests = []
+    changes = {"results/old-00.md": NOTE + "Merged", "results/old-01.md": None}
+    mock_model(monkeypatch, [read_response(["results/old-00.md", "results/old-01.md"]),
+                            {"content": [{"type": "tool_use", "name": "compact",
+                                          "input": {"changes": changes}}]}], requests)
+    result = await compact.compact("test", "test", context, snapshot=base)
+    assert result == changes
+    assert context["read_paths"] == ["results/old-00.md", "results/old-01.md"]
+    compact.validate(base, result, settings, set(context["read_paths"]))
+    with pytest.raises(ValueError, match="outside_working_set"):
+        compact.validate(base, {"results/old-02.md": NOTE}, settings, set(context["read_paths"]))
+
+
+async def test_index_demotion_archives_original_and_reaches_target(chat, monkeypatch):
+    chat.settings.memory_auto_edit = True
+    chat.settings.memory_index_target_chars = 500
+    base = index_snapshot(chat.settings, count=10)
+    chat.github.seed({f"projects/{chat.pid}/" + p: f.text for p, f in base.files.items()})
+    base = await chat.memory_backend.read(chat.pid)
+    removals = {p: None for p in base.files if p.startswith("results/")}
+    model = AsyncMock(return_value=removals)
+    monkeypatch.setattr(compact, "compact", model)
+    monkeypatch.setattr(job_lifecycle, "enqueue", AsyncMock())
+    await compact.process(chat, chat.pid, base.head_oid, chat.store)
+    latest = await chat.memory_backend.read(chat.pid)
+    model.assert_awaited_once()
+    assert len(latest.files["INDEX.md"].text) <= 500
+    for path in removals:
+        text = base.files[path].text
+        assert latest.files[memory_archive.archive_path(path, text)].text == text
+
+
+def test_demotion_rejects_core_required_archived_and_missing_entries():
+    from test_memory_editor import snapshot
+
+    from mica.agents.analysis.config import Settings
+
+    settings = Settings(_env_file=None)
+    base = snapshot({"PROJECT.md": "guide", "recipes/active.md": NOTE, "data/fact.md": NOTE})
+    for path, reason in [("PROJECT.md", "core_deletion"),
+                         ("recipes/active.md", "required_deletion"),
+                         ("data/missing.md", "outside_working_set"),
+                         ("archive/INDEX.md", "outside_working_set")]:
+        with pytest.raises(ValueError, match=reason):
+            compact.validate(base, {path: None}, settings, set(),
+                             required_paths=frozenset({"recipes/active.md"}))
+    compact.validate(base, {"data/fact.md": None}, settings, set())
+
+
+async def test_repeated_index_pressure_obeys_cooldown_and_hourly_budget(chat, monkeypatch):
+    chat.settings.memory_auto_edit = True
+    chat.settings.memory_index_target_chars = 500
+    now = [10000.0]
+    monkeypatch.setattr(compact.time, "time", lambda: now[0])
+    monkeypatch.setattr(job_lifecycle, "enqueue", AsyncMock())
+    model = AsyncMock(return_value={})
+    monkeypatch.setattr(compact, "compact", model)
+    for i in range(4):
+        base = index_snapshot(chat.settings, count=10 + i)
+        chat.github.seed({f"projects/{chat.pid}/" + p: f.text for p, f in base.files.items()})
+        base = await chat.memory_backend.read(chat.pid)
+        await compact.process(chat, chat.pid, base.head_oid, chat.store)
+        now[0] += 601
+    assert model.await_count == 3
+    state = await chat.repository.get_connector_state(compact.state_key(chat.pid))
+    assert state["outcome"] == "deferred:project_call_budget"

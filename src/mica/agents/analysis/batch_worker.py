@@ -558,9 +558,7 @@ async def main(event_id: str, *, hard_stop: bool = False) -> None:
             gcs_publisher=publisher if current_write_grant else None,
             pr_proposer=proposer,
             project_name=request.get("project_name", ""),
-            memory_context=project_memory.context(
-                memory_base, payload["event"].get("text", ""), settings
-            ),
+            memory_context=project_memory.context(memory_base, settings),
             write_access=write_access.instructions(
                 current_write_grant, request.get("overwrite_paths")
             ),

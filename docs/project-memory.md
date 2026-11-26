@@ -24,7 +24,7 @@ never file contents.
 Allowed files: `PROJECT.md`, `INDEX.md`, `conventions.md`, `open.md`, `lessons.md`,
 `data/*.md`, `results/*.md`, and `recipes/*.{md,py,R,sh}`. Markdown entries require
 `type:`, `source:`, and `status:` headers, except the guide and index. Default limits are
-4,000 index characters, 16 KiB per Markdown entry, 100,000 guide bytes, 64 KiB per recipe,
+12,000 index characters (hard limit), a 6,000-character active-index target, 16 KiB per Markdown entry, 100,000 guide bytes, 64 KiB per recipe,
 500 files, and 4 MiB per project, including archives and generated indexes. Secret-like content and unsafe paths are rejected.
 
 The active service sets `AGENT_MEMORY_FILE_KB=18` (18 KiB). This preserves an existing
@@ -46,16 +46,25 @@ everyone using that project, and repository readers can see it.
 
 ## Active entries and retained originals
 
-The application generates `INDEX.md` from active entries. It reserves core entries and gives
-new or changed entries priority; overflow moves to the archive without changing its bytes.
+The application generates `INDEX.md` from every active entry, appending a cleaned title from
+its first Markdown heading or body line (at most 80 characters). Script recipe links and archive
+pages keep their existing format. All entries remain active while the index fits
+`AGENT_MEMORY_INDEX_CHARS=12000`. Above `AGENT_MEMORY_INDEX_TARGET_CHARS=6000`, the compaction
+model chooses entries to merge or demote. Core files and enabled ambient recipes stay active.
+Fixed-order archiving (changed entries first, then prior index order) is only a logged backstop
+above the hard limit; it preserves each demoted entry's exact bytes.
 `archive/INDEX.md` links to bounded `archive/index-0001.md` pages. Every overwritten or deleted
 entry is retained at `archive/<sha256-of-original-path-and-content>/<original-path>`.
 This includes recipes, conflict copies, guide updates, and entries demoted by compaction.
 The original path, provenance headers, and exact contents remain available. Repeating a version
 reuses its archive object; same-named entries from different directories cannot collide.
 
-The active index is not a complete inventory. The 12,000-character router budget stays unchanged;
-archive text is never automatically injected. Workers can Read the archive pages or Grep
+The active index excludes archived originals. The 12,000-character router budget stays unchanged.
+Conversation and worker preloads contain `INDEX.md`, `open.md`, `conventions.md`, `lessons.md`
+and `THREADS.md`, in that order. Whole files are supplied while they fit; the first cut stops
+at a line boundary and names its path and the remaining unread core files. No topic bodies are
+preloaded or ranked by shared words. Conversations select entries with `read_sources.memory_paths`;
+workers read them under `knowledge/`. Archive text is never automatically injected. Workers can Read the archive pages or Grep
 `knowledge/archive/`, and users can request `memory archive/INDEX.md` or a specific archived path.
 Archives can contain superseded facts: check the current entry and provenance before reuse.
 
@@ -86,7 +95,7 @@ nested GraphQL metadata queries timing out as thread history grows.
 
 ## Turns and viewing memory
 
-Each eligible terminal turn has one writer: a forced-tool editor for chat, or the worker's
+Each eligible terminal turn has one writer: a bounded tool-based editor for chat, or the worker's
 workspace proposal for computation. `init` commits its guide immediately. Workers receive
 an immutable snapshot in the request, edit `knowledge/`, and return a proposal through GCS;
 they never connect to GitHub. Recovery keeps the same snapshot and any pending edits.
@@ -94,8 +103,8 @@ New turns read the current repository head. Editing memory or sharing another pr
 not reset SDK sessions, messages, attachments, or saved working directories.
 
 Use `memory` for the index and active work (or a file listing until an index exists), `memory conventions.md` for a file, or `brief`
-for the guide. Correct mistakes in plain language. The old `remember`, `forget`, `knowledge`,
-`save brief`, and `clean brief` commands explain this change without editing memory.
+for the guide. Correct mistakes in plain language. `remember` and `forget` requests edit memory
+through the conversation; they are not separate memory commands.
 Memory saves run silently; use `memory` or `brief` when you want to inspect saved content.
 
 The conversational editor allows up to 16,384 output tokens and 240 seconds for full-file
@@ -105,10 +114,19 @@ an overlapping writer after an interrupted dispatch. Token-truncated output is r
 the original pending turn for retry; it is never committed or marked saved.
 
 The conversational editor has its own `AGENT_MEMORY_EDITOR_CHARS=32000` file budget,
-separate from router context. It reserves room for the complete `open.md` before optional
-files. Failed turns receive only that pending-work file. Existing files may be replaced
-only when their complete contents were supplied; oversized required files remain pending
-with a `context_limit` diagnostic rather than being truncated.
+separate from router context. It reserves the complete `open.md`, required repair paths and
+titled index, then includes core files that fit. Other entries are read on demand. Before creating
+a topic, the model reads entries that may already cover it and corrects them instead.
+Failed turns receive only the pending-work file and have no read tool. Existing files may be
+replaced only when their complete contents were supplied or successfully read. Oversized
+required files remain pending with a `context_limit` diagnostic rather than being truncated.
+
+The editor and compaction share one read loop: at most two rounds of `read_memory_files`,
+up to eight paths per round, then the final tool is forced. Reads use the cached base snapshot
+and return complete files; an over-budget file returns `context_limit` without any partial text.
+The complete loop shares the caller's existing deadline (240 seconds for editing, 100 for
+compaction) and consumes one persisted attempt. File budgets count serialized characters,
+including escaped Unicode. A failed or unavailable read never authorizes a replacement.
 
 Rejected model proposals retain a safe validation reason for the next attempt. An attempted
 edit to an omitted existing topic prioritizes that complete file on retry. Inputs from older
@@ -243,16 +261,21 @@ change is part of this workflow.
 ## Compaction and operations
 
 After a turn, maintenance is eligible for unresolved conflicts, superseded entries, entries
-above 85% of their individual limit, quarantined invalid files, or an outdated generated index.
-Ordinary growth alone does not trigger a model call. Archive growth is not compaction pressure.
-Maintenance works on at most 24,000 serialized characters, keeping each conflict and its canonical
-entry together. It skips an individually oversized group without truncating it. The model may
-change only selected paths and cannot delete core files. Originals are archived by application
-code even when a model merge omits a fact. There is no whole-project reduction target.
+above 85% of their individual limit, quarantined invalid files, an outdated generated index,
+or an index above its target. Archive growth is not compaction pressure.
+Maintenance works within 24,000 serialized context characters, keeping each conflict and its
+canonical entry together. Pending thread summaries and conflict groups take priority. Index
+pressure supplies titled rows, provenance headers, sizes and current/target index sizes, with
+no entry bodies. Inventory rows are paged when needed, reserving room for on-demand reads.
+The model demotes stale, superseded, narrow or duplicate entries, or merges related entries,
+while keeping verified data facts and current results active. Replacements require a complete
+supplied/read file; demotions require an active non-core, non-required entry. Originals are
+archived by application code even when a model merge omits a fact. Partial progress remains
+eligible for another bounded maintenance attempt.
 
 A project lease coalesces concurrent tasks. Content fingerprints ignore unrelated projects'
 commits. Model attempts are persisted before calls: at most two attempts per input and three
-calls per project per hour, with a ten-minute cooldown between new inputs. Pending work resumes
+model loops per project per hour, with a ten-minute cooldown between new inputs. Pending work resumes
 after the budget window. Cached proposals survive transient commit failures. Invalid, oversized,
 or truncated output is terminal for that input; it is never repeatedly purchased on retries.
 A changed project snapshot supersedes a proposal before commit. Maintenance remains silent.
@@ -311,8 +334,8 @@ Memory preserves the definitions needed to reproduce, cite or extend a result: t
 rule and threshold, unit of analysis and n, test/model, covariates and correction, input file,
 script version, date and attribution. Unknown qualifiers stay explicitly unknown. Concise
 entries remove repetition, not evidence. Split entries by topic when they reach the file limit.
-Chat edits receive complete files within a bounded working set and cannot replace unseen
-existing files. New topic files and corrections in `results/` are supported. Workers receive
+Chat edits navigate the titled index and read complete entries within a bounded working set;
+they cannot replace unseen existing files. New topic files and corrections in `results/` are supported. Workers receive
 up to two reminders to add a Definitions section to changed result entries; ordinary content,
 path, size and thread-persistence validation remains authoritative.
 

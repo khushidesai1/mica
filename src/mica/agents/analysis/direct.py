@@ -1031,7 +1031,9 @@ async def handle(
         }
         messages = model_context.pop("recent_messages")
         handoff = model_context.pop("thread_handoff")
-        model_context["project_memory"] = project_memory.context(memory, text, bridge.settings)
+        model_context["project_memory"] = project_memory.context(memory, bridge.settings) + (
+            "\nRead entries with read_sources memory_paths."
+        )
         model_context["thread_memory"] = (
             thread_memory.context(
                 {p: f.text for p, f in memory.files.items()}, record["thread_key"]

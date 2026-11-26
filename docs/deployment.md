@@ -727,3 +727,18 @@ The coordinated pipeline prepares the pinned API and shared-worker bases before 
 code. At 100 layers it uses the existing filesystem-flattening helper, verifies the same runtime
 environment, user, entrypoint, command, labels and exposed ports, and retains every release gate.
 This prevents repeated application overlays from exceeding Docker's layer-depth limit.
+
+### Model-selected memory reads
+
+Build the API and Claude CPU/GPU workers with the coordinated release pipeline so both
+conversation and worker preloads use the titled memory index. Preserve pinned scientific
+runtimes and existing release gates. Set `AGENT_MEMORY_INDEX_CHARS=12000` and
+`AGENT_MEMORY_INDEX_TARGET_CHARS=6000` on the API; workers receive the hard limit at dispatch.
+Keep every other runtime setting unchanged. No infrastructure or secret changes are required.
+
+Verify whole-file model reads, unseen-file rejection, index-pressure demotion with exact archived
+originals, retry limits and the worker preload offline. Use only the reserved test memory folder
+for a live model/store probe and remove its exact recorded paths after verification. Slack
+save/correct/recall and a tiny worker request belong in the owner's test conversation. An older
+API with the 4,000-character limit quarantines an oversized index on read and regenerates it;
+rollback does not erase retained originals.
