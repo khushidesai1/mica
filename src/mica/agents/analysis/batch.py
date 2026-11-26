@@ -126,6 +126,7 @@ def job_spec(
         "AGENT_ACCESS_CACHE_SECONDS": str(settings.access_cache_seconds),
         "AGENT_ACCESS_UNAVAILABLE_GRACE_SECONDS": str(settings.access_unavailable_grace_seconds),
         "AGENT_MODEL": settings.model,
+        "AGENT_WORKER_EFFORT": settings.worker_effort,
         "AGENT_FLEXIBLE_HARNESS": str(flexible_harness).lower(),
         "AGENT_LOADING_EMOJI": settings.loading_emoji,
         "AGENT_FALLBACK_MODEL": settings.fallback_model,

@@ -207,6 +207,15 @@ Run live Slack smoke checks only in the owner's private DM, never in shared proj
 Simulate malformed model output, outages, and retry timing locally with fakes; do not inject
 failures into collaborators' conversations. Remove synthetic DM messages after verification.
 
+Conversations and analysis workers default to `AGENT_MODEL=claude-opus-5-5`.
+Everyday conversations use `AGENT_CONVERSATION_EFFORT=medium`; when the conversation launches
+an analysis worker, it uses `AGENT_WORKER_EFFORT=high` for more demanding reasoning and tool use.
+Both effort settings accept `low`, `medium`, or `high`. CPU and GPU Batch jobs receive the
+configured worker effort, and the local `mica-analyze` runner uses the same setting. Existing
+Batch jobs retain their launch environment. Roll out effort changes with matching API and Claude
+CPU/GPU worker sources; the SDK fallback model also receives the configured worker effort.
+The existing Opus 5 memory, failure-assessment and fallback model defaults remain unchanged.
+
 All requests use the conversation loop with `AGENT_MODEL`. Enable `AGENT_FLEXIBLE_HARNESS=true`
 on a coordinated API and Slack CPU/GPU worker release. The policy is pinned when each request
 is received; already accepted requests retain their policy. Disabling the flag affects new

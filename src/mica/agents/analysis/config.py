@@ -44,6 +44,7 @@ class Settings(BaseSettings):
     ], max_length=4)
     model: str = "claude-opus-5-5"
     conversation_effort: Literal["low", "medium", "high"] = "medium"
+    worker_effort: Literal["low", "medium", "high"] = "high"
     flexible_harness: bool = False  # Rollout: new requests only; pinned on the receipt.
     conversation_slice_seconds: int = Field(default=90, ge=30, le=600)
     conversation_max_calls: int = Field(default=6, ge=1, le=12)
