@@ -1,8 +1,9 @@
 # Architecture
 
 Operator-configured [ambient tasks](ambient-tasks.md) use the existing reconciliation schedule
-to discover newly completed samples and submit trusted presets into ordinary private worker
-threads. Create-only discovery receipts, event-bound output grants and fixed run deadlines keep
+to discover sample arrivals, including new marker generations for earlier samples. Ordinary
+private conversation turns consult project memory to run, skip, or ask; code enforces the
+operator's worker preset and permits collaborator notices only when compute launches. Create-only discovery receipts, event-bound output grants and fixed run deadlines keep
 starts idempotent and publishing scoped. Tasks default off; project recipes determine the
 scientific method and the bundled segmentation-report skill provides reusable QC outputs.
 

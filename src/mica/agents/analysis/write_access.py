@@ -188,8 +188,11 @@ def description(grant: WriteGrant) -> str:
     return f"Write files in `{escape(grant.uri, quote=False)}`; {expiry}."
 
 
-def status(storage: Storage, project_id: str, settings: Settings) -> str:
-    grant = active(storage, project_id, settings)
+def status(storage: Storage, project_id: str, settings: Settings, event_id: str = "") -> str:
+    grant = active(storage, project_id, settings, event_id)
+    if isinstance(grant, EventWriteGrant):
+        return description(grant) + " Create new objects only for this arrival; no replacements, " \
+            "moves or deletes."
     if grant:
         return (
             description(grant)

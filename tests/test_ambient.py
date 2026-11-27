@@ -21,8 +21,10 @@ from mica.agents.analysis import (
     access,
     ambient,
     ambient_delivery,
+    conversation,
     identity,
     recovery,
+    tiers,
     write_access,
     write_approval,
     write_broker,
@@ -131,12 +133,190 @@ async def scan(background):
     return await ambient.scan(background, team="T1")
 
 
+def receipt_key(background, sample="sample"):
+    return background.repository.connector_state[f"ambient-sample:test:{sample}"]["key"]
+
+
 async def event_record(background, sample="sample"):
-    state = await background.repository.get_connector_state(f"ambient:test:{sample}")
+    state = await background.repository.get_connector_state(receipt_key(background, sample))
     return await background.repository.get_connector_state("claude-event:" + state["event_id"])
 
 
-async def test_markers_cutoff_skip_and_missing(background):
+def replace_markers(background, generation="2", created=None):
+    for path, marker in list(background.bucket_fake.paths.items()):
+        background.bucket_fake.paths[path] = {
+            **marker, "generation": generation, "created": created or time.time() - 1,
+        }
+
+
+async def test_replaced_markers_create_linked_arrival_with_memory_and_previous_decision(background):
+    background.bucket_fake.add("sample")
+    background.decision.return_value = conversation.Decision(
+        route="reply", reply="Already processed."
+    )
+    await scan(background)
+    first = receipt_key(background)
+    event = await event_record(background)
+    assert await background.process(event["event_id"], 0) == "complete"
+    replace_markers(background)
+    await scan(background)
+    second = receipt_key(background)
+    assert second != first
+    arrival = await ambient.latest_arrival(background, "test", "sample")
+    assert arrival["previous"] == first
+    assert arrival["earlier_arrivals"][0]["decision"] == {
+        "route": "reply", "reason": "Already processed.",
+    }
+    event = await event_record(background)
+    assert "arrived again" in background.sent[-1]["text"]
+    assert "Already processed." in event["payload"]["event"]["text"]
+    assert await background.process(event["event_id"], 0) == "complete"
+    context = background.decision.call_args.args[5]
+    assert "project_memory" in context and "memory_paths" in context["project_memory"]
+    assert "Already processed." in context["request"]
+    assert (await scan(background))["ambient_queued"] == 0
+    assert receipt_key(background) == second
+    assert len([k for k in background.repository.connector_state
+                if k.startswith("ambient-arrival:")]) == 2
+
+
+@pytest.mark.parametrize("status", ["done", "ignored"])
+async def test_legacy_receipts_deduplicate_generations_and_allow_new_arrival(background, status):
+    background.bucket_fake.add("sample")
+    key = "ambient:test:sample"
+    legacy = {
+        "key": key, "task": "test", "project": background.pid, "sample": "sample",
+        "status": status, "markers": list(background.bucket_fake.paths.values()),
+        "marker_at": time.time() - 10,
+    }
+    await background.repository.create_connector_state(key, legacy)
+    assert (await scan(background))["ambient_queued"] == 0
+    assert not background.sent
+    replace_markers(background)
+    assert (await scan(background))["ambient_queued"] == 1
+    assert (await ambient.latest_arrival(background, "test", "sample"))["previous"] == key
+    assert background.repository.connector_state[key] == legacy
+    assert (await scan(background))["ambient_queued"] == 0
+
+
+async def test_cutoff_is_per_arrival_and_output_is_reported_not_skipped(background):
+    background.bucket_fake.add("sample", time.time() - 200000)
+    background.bucket_fake.outputs.add("results/sample/")
+    await scan(background)
+    first = receipt_key(background)
+    assert background.repository.connector_state[first]["status"] == "ignored"
+    replace_markers(background)
+    await scan(background)
+    event = await event_record(background)
+    assert '"output_exists": true' in event["payload"]["event"]["text"]
+    assert (await ambient.latest_arrival(background, "test", "sample"))["previous"] == first
+    assert await background.process(event["event_id"], 0) == "running"
+
+
+async def test_changed_queued_markers_supersede_without_block_or_quota(background):
+    background.bucket_fake.add("sample")
+    leases = [await background.repository.begin_event(f"claude-slot:{i}")
+              for i in range(background.settings.max_concurrent_runs)]
+    await scan(background)
+    first = receipt_key(background)
+    replace_markers(background)
+    await scan(background)
+    second = receipt_key(background)
+    assert first != second
+    assert background.repository.connector_state[first]["status"] == "superseded"
+    assert "ambient_due" not in background.repository.connector_state[first]
+    assert background.repository.connector_state[second]["status"] == "queued"
+    assert not background.sent
+    assert not background.repository.connector_state["ambient-task:test"]["starts"]
+    for i, lease in enumerate(leases):
+        await background.repository.release_event(f"claude-slot:{i}", lease.token)
+    await scan(background)
+    assert background.repository.connector_state["ambient-task:test"]["starts"] == [second]
+
+
+async def test_marker_change_during_start_supersedes_without_notifying(background):
+    background.bucket_fake.add("sample")
+    task = background.settings.ambient_tasks[0]
+    markers = list(background.bucket_fake.paths.values())
+    state = {"key": ambient.arrival_key(task.id, "sample", markers), "sample": "sample",
+             "task": task.id, "markers": markers, "status": "queued", "ambient_due": 0}
+    replace_markers(background)
+    await ambient.start(background, task, state, "T1", 0)
+    assert state["status"] == "superseded" and "ambient_due" not in state
+    assert not background.sent
+
+
+async def test_lost_latest_pointer_write_does_not_duplicate_arrival(background, monkeypatch):
+    background.bucket_fake.add("sample")
+    save = background.repository.set_connector_state
+
+    async def fail_pointer(key, state):
+        if key.startswith("ambient-sample:"):
+            raise httpx.ReadTimeout("lost pointer write")
+        await save(key, state)
+
+    monkeypatch.setattr(background.repository, "set_connector_state", fail_pointer)
+    assert (await scan(background))["ambient_errors"] == 1
+    monkeypatch.setattr(background.repository, "set_connector_state", save)
+    await scan(background)
+    assert len([k for k in background.repository.connector_state
+                if k.startswith("ambient-arrival:")]) == 1
+    assert (await event_record(background))["status"] == "pending"
+
+
+@pytest.mark.parametrize("route", ["reply", "no_reply", "storage", "transfer", "workflow",
+                                  "command", "access", "cloud_access", "pr"])
+async def test_noncompute_decisions_finish_owner_only(background, route):
+    task = background.settings.ambient_tasks[0]
+    task.recipients.append(
+        task.authorized_by.model_copy(update={"email": "bob@example.com", "slack_user": "U2"})
+    )
+    doc = Registry(background.store).load()
+    doc.projects[background.pid].members.add("bob@example.com")
+    background.store.put(REGISTRY_KEY, doc.model_dump_json().encode())
+    background.decision.return_value = conversation.Decision(
+        route="compute" if route == "pr" else route, reply="This sample was already processed.",
+        pull_request_repo="owner/repo" if route == "pr" else None,
+    )
+    background.bucket_fake.add("sample")
+    await scan(background)
+    record = await event_record(background)
+    assert await background.process(record["event_id"], 0) == "complete"
+    state = await ambient.latest_arrival(background, "test", "sample")
+    assert state["status"] == "done" and state["decision"]["route"] == "reply"
+    assert not state.get("notices")
+    assert all(m["channel"] == "D1" for m in background.sent)
+    background.test_client.create_job.assert_not_called()
+
+
+async def test_compute_envelope_replaces_resources_and_keeps_configured_worker_text(background):
+    background.decision.return_value = conversation.Decision(
+        route="compute", reply="Run an unrelated task", reference_repos=["evil/repo"],
+        write_paths=["gs://lab-data/unrelated/"],
+        worker=tiers.WorkerChoice(tier="gpu", on_demand=False, expected_hours=100,
+                                 gpu_type="h100", allow_resize=True, min_memory_gib=1000,
+                                 reason="Model requested larger resources"),
+    )
+    background.bucket_fake.add("sample")
+    await scan(background)
+    record = await event_record(background)
+    assert await background.process(record["event_id"], 0) == "running"
+    record = await event_record(background)
+    decision = record["direct_decision"]
+    assert decision["worker"]["tier"] == "standard"
+    assert decision["worker"]["on_demand"] and not decision["worker"]["allow_resize"]
+    assert decision["worker"]["expected_hours"] == 12
+    assert not decision["worker"]["gpu_type"] and not decision["reference_repos"]
+    assert not decision["write_paths"] and not record.get("pull_request_repo")
+    manifest = json.loads(background.store.get(
+        f"tasks/slack-analysis/events/{record['event_id']}/request.json"
+    )[0])
+    assert manifest["payload"]["event"]["text"] == record["ambient"]["worker_prompt"]
+    assert "Follow recipes/ambient.md" in manifest["payload"]["event"]["text"]
+    assert "Run an unrelated task" not in manifest["payload"]["event"]["text"]
+
+
+async def test_markers_cutoff_output_facts_and_missing(background):
     fake = background.bucket_fake
     fake.add("old", time.time() - 200000)
     fake.add("published")
@@ -145,10 +325,11 @@ async def test_markers_cutoff_skip_and_missing(background):
     fake.add("sample")
     await scan(background)
     states = background.repository.connector_state
-    assert states["ambient:test:old"]["status"] == "ignored"
-    assert states["ambient:test:published"]["status"] == "skipped"
+    assert states[receipt_key(background, "old")]["status"] == "ignored"
+    assert states[receipt_key(background, "published")]["status"] == "running"
+    assert states[receipt_key(background, "published")]["output_exists"]
     assert "ambient:test:partial" not in states
-    assert states["ambient:test:sample"]["status"] == "running"
+    assert states[receipt_key(background)]["status"] == "queued"
 
 
 async def test_dry_run_has_no_state_or_posts(background):
@@ -166,7 +347,7 @@ async def test_dry_run_has_no_state_or_posts(background):
 async def test_two_scans_and_restart_create_one_run(background):
     background.bucket_fake.add("sample")
     await asyncio.gather(scan(background), scan(background))
-    state = await background.repository.get_connector_state("ambient:test:sample")
+    state = await background.repository.get_connector_state(receipt_key(background))
     original = await event_record(background)
     await ambient.start(background, background.settings.ambient_tasks[0], state, "T1", 0)
     assert (await event_record(background))["event_id"] == original["event_id"]
@@ -190,12 +371,12 @@ async def test_fifo_concurrency_and_daily_cap(background):
     background.bucket_fake.add("old", time.time() - 50)
     await scan(background)
     assert (await event_record(background, "old"))["ambient"]["sample"] == "old"
-    assert background.repository.connector_state["ambient:test:new"]["status"] == "queued"
+    assert (await ambient.latest_arrival(background, "test", "new"))["status"] == "queued"
     record = await event_record(background, "old")
     record["status"] = "complete"
     await background.repository.set_connector_state("claude-event:" + record["event_id"], record)
     await scan(background)
-    assert background.repository.connector_state["ambient:test:new"]["status"] == "queued"
+    assert (await ambient.latest_arrival(background, "test", "new"))["status"] == "queued"
 
 
 @pytest.mark.parametrize("problem", ["owner", "recipient", "identity", "recipe"])
@@ -216,7 +397,7 @@ async def test_blocked_start_notifies_once_and_recovers(background, problem):
     background.store.put(REGISTRY_KEY, doc.model_dump_json().encode())
     background.bucket_fake.add("sample")
     await scan(background)
-    state = background.repository.connector_state["ambient:test:sample"]
+    state = background.repository.connector_state[receipt_key(background)]
     assert state["status"] == "blocked"
     assert not [k for k in background.repository.connector_state if k.startswith("claude-event:")]
     expected = 0 if problem == "identity" else 1
@@ -228,10 +409,10 @@ async def test_blocked_start_notifies_once_and_recovers(background, problem):
     task.recipients = [task.authorized_by]
     background.app.slack_user_map["T1:U1"] = "alice@example.com"
     background.memory_backend.read_bytes.side_effect = None
-    background.repository.connector_state["ambient:test:sample"]["ambient_due"] = 0
+    background.repository.connector_state[receipt_key(background)]["ambient_due"] = 0
     await scan(background)
     assert (await event_record(background))["status"] == "pending"
-    assert "reason" not in background.repository.connector_state["ambient:test:sample"]
+    assert "reason" not in background.repository.connector_state[receipt_key(background)]
     await scan(background)
     assert background.test_slack.chat_update.await_count == expected
     if expected:
@@ -253,7 +434,7 @@ async def test_dependency_failure_retries_without_block_alert_or_quota(backgroun
     background.bucket_fake.add("sample")
     background.memory_backend.read_bytes.side_effect = failure
     result = await scan(background)
-    state = background.repository.connector_state["ambient:test:sample"]
+    state = background.repository.connector_state[receipt_key(background)]
     assert result["ambient_retrying"] == 1 and result["ambient_blocked"] == 0
     assert state["status"] == "retrying" and state["ambient_due"] > time.time()
     assert "PRIVATE_" not in state["reason"] and "PRIVATE_" not in caplog.text
@@ -262,11 +443,11 @@ async def test_dependency_failure_retries_without_block_alert_or_quota(backgroun
     background.memory_backend.read_bytes.side_effect = None
     state["ambient_due"] = 0
     await scan(background)
-    state = background.repository.connector_state["ambient:test:sample"]
+    state = background.repository.connector_state[receipt_key(background)]
     assert state["status"] == "running" and "reason" not in state
     eid = state["event_id"]
     await scan(background)
-    state = background.repository.connector_state["ambient:test:sample"]
+    state = background.repository.connector_state[receipt_key(background)]
     assert state["event_id"] == eid and len(background.sent) == 1
     background.test_slack.chat_update.assert_not_awaited()
 
@@ -283,14 +464,14 @@ async def test_failed_enqueue_response_keeps_reservation_identity_and_deadline(
 
     monkeypatch.setattr(background, "accept", lost_response)
     await scan(background)
-    state = background.repository.connector_state["ambient:test:sample"]
+    state = background.repository.connector_state[receipt_key(background)]
     assert state["status"] == "retrying"
     original = {k: state[k] for k in ["root", "start", "deadline_at", "event_id"]}
     assert background.repository.connector_state["ambient-task:test"]["active"] == [state["key"]]
     monkeypatch.setattr(background, "accept", accept)
     state["ambient_due"] = 0
     await scan(background)
-    state = background.repository.connector_state["ambient:test:sample"]
+    state = background.repository.connector_state[receipt_key(background)]
     assert state["status"] == "running" and "reason" not in state
     assert {k: state[k] for k in original} == original
     assert background.repository.connector_state["ambient-task:test"]["starts"] == [state["key"]]
@@ -307,8 +488,8 @@ async def test_dependency_failure_does_not_abort_other_task_admission(background
     ]
     result = await scan(background)
     assert result["ambient_retrying"] == 1 and result["ambient_started"] == 1
-    assert background.repository.connector_state["ambient:other:sample"]["status"] == "retrying"
-    assert background.repository.connector_state["ambient:test:sample"]["status"] == "running"
+    assert (await ambient.latest_arrival(background, "other", "sample"))["status"] == "retrying"
+    assert background.repository.connector_state[receipt_key(background)]["status"] == "running"
 
 
 async def recovered_receipt(background):
@@ -316,11 +497,11 @@ async def recovered_receipt(background):
     background.bucket_fake.add("sample")
     background.memory_backend.read_bytes.side_effect = FileNotFoundError("recipe")
     await scan(background)
-    state = background.repository.connector_state["ambient:test:sample"]
+    state = background.repository.connector_state[receipt_key(background)]
     background.memory_backend.read_bytes.side_effect = None
     state["ambient_due"] = 0
     await scan(background)
-    state = background.repository.connector_state["ambient:test:sample"]
+    state = background.repository.connector_state[receipt_key(background)]
     state["reason"] = "The configured project recipe is missing"
     state.pop("recovery_notice_pending", None)
     return state
@@ -330,7 +511,7 @@ async def test_existing_running_receipt_clears_stale_reason_and_edits_original_n
     state = await recovered_receipt(background)
     original = {k: state[k] for k in ["event_id", "root", "start", "deadline_at"]}
     await scan(background)
-    state = background.repository.connector_state["ambient:test:sample"]
+    state = background.repository.connector_state[receipt_key(background)]
     assert "reason" not in state and "recovery_notice_pending" not in state
     assert {k: state[k] for k in original} == original
     assert len(background.sent) == 2  # Original block and run-root; recovery only edits.
@@ -349,7 +530,7 @@ async def test_recovery_edit_requires_identity_and_confirmed_delivery(background
     else:
         background.app.slack_user_map["T1:U1"] = "other@example.com"
     await scan(background)
-    state = background.repository.connector_state["ambient:test:sample"]
+    state = background.repository.connector_state[receipt_key(background)]
     assert state["status"] == "running" and "reason" not in state
     assert state["recovery_notice_pending"]
     background.test_slack.chat_update.assert_not_awaited()
@@ -363,14 +544,14 @@ async def test_recovery_edit_retries_after_completion_without_restarting_work(ba
     record["status"] = "complete"
     await background.repository.set_connector_state("claude-event:" + record["event_id"], record)
     await scan(background)
-    state = background.repository.connector_state["ambient:test:sample"]
+    state = background.repository.connector_state[receipt_key(background)]
     assert state["status"] == "done" and "reason" not in state
     assert state["recovery_notice_pending"] and state["ambient_due"] > time.time()
     assert not background.repository.connector_state["ambient-task:test"]["active"]
     background.test_slack.chat_update.side_effect = None
     state["ambient_due"] = 0
     await scan(background)
-    state = background.repository.connector_state["ambient:test:sample"]
+    state = background.repository.connector_state[receipt_key(background)]
     assert state["status"] == "done" and "ambient_due" not in state
     assert "recovery_notice_pending" not in state
     assert background.test_slack.chat_update.await_count == 2
@@ -404,7 +585,7 @@ async def test_finished_legacy_receipt_recovers_notice_without_admission(backgro
     assert sum(k.startswith("claude-event:") for k in background.repository.connector_state) == 1
 
 
-async def test_preset_and_seed_win_over_active_project_and_no_model(background):
+async def test_preset_and_seed_win_over_active_project_with_model_context(background):
     other = seed_project(background.store, name="other", channel="D2")
     assert other != background.pid
     background.settings.ambient_tasks.append(AmbientTask(**(definition(other) | {"id": "other"})))
@@ -412,7 +593,11 @@ async def test_preset_and_seed_win_over_active_project_and_no_model(background):
     await scan(background)
     record = await event_record(background)
     assert await background.process(record["event_id"], 0) == "running"
-    background.decision.assert_not_called()
+    background.decision.assert_awaited_once()
+    model_context = background.decision.call_args.args[5]
+    assert "gs://lab-data/results/sample/" in model_context["write_access"]
+    assert "Create new objects only" in model_context["write_access"]
+    assert "after confirmation" not in model_context["write_access"]
     record = await event_record(background)
     assert record["project_id"] == background.pid and record["reference_repos"] == []
     assert record["request_deadline"] == record["deadline_at"]
@@ -655,6 +840,9 @@ async def test_terminal_fanout_rechecks_recipients_and_deduplicates(background, 
     background.bucket_fake.add("sample")
     await scan(background)
     record = await event_record(background)
+    assert not any(m["channel"] == "D2" for m in background.sent)
+    assert await background.process(record["event_id"], 0) == "running"
+    record = await event_record(background)
     record["status"] = "complete"
     event = record["event_id"]
     pdf = b"%PDF-fake"
@@ -674,10 +862,11 @@ async def test_terminal_fanout_rechecks_recipients_and_deduplicates(background, 
     monkeypatch.setattr(ambient_delivery, "pdf_once", upload)
     await ambient_delivery.terminal(background, event, record)
     await ambient_delivery.terminal(background, event, record)
-    assert len(background.sent) == 3  # Owner root, Bob start, Bob final.
-    assert background.sent[-1]["channel"] == "D2" and background.sent[-1]["thread_ts"] == "101.0"
+    collaborator_posts = [m for m in background.sent if m["channel"] == "D2"]
+    assert len(collaborator_posts) == 2  # Bob's start and final; owner has routing progress.
+    assert collaborator_posts[-1]["thread_ts"] == collaborator_posts[0]["ts"]
     assert upload.await_count == 1
-    assert background.repository.connector_state["ambient:test:sample"]["status"] == "done"
+    assert background.repository.connector_state[receipt_key(background)]["status"] == "done"
 
 
 async def test_bot_echo_does_not_accept_a_second_run(background):
@@ -693,7 +882,7 @@ async def test_global_slots_delay_admission(background):
     for slot in range(background.settings.max_concurrent_runs):
         await background.repository.begin_event(f"claude-slot:{slot}")
     await scan(background)
-    assert background.repository.connector_state["ambient:test:sample"]["status"] == "queued"
+    assert background.repository.connector_state[receipt_key(background)]["status"] == "queued"
     assert not background.sent
 
 
@@ -718,7 +907,7 @@ async def test_gpu_preset_requires_existing_approval(background):
     record = await event_record(background)
     assert await background.process(record["event_id"], 0) == "awaiting_approval"
     background.test_client.create_job.assert_not_called()
-    background.decision.assert_not_called()
+    background.decision.assert_awaited_once()
 
 
 async def test_lost_post_response_is_reconciled_without_reposting(background):
