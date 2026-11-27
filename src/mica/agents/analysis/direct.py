@@ -44,6 +44,7 @@ from .survey import inventory
 from .transfer_config import TransferRequest
 
 if TYPE_CHECKING:
+    from . import conversation
     from .batch import BatchBridge
 
 
@@ -667,6 +668,36 @@ def message_context(record: dict[str, Any]) -> dict[str, Any]:
     return context
 
 
+def ambient_decision(
+    record: dict[str, Any], decision: conversation.Decision
+) -> conversation.Decision:
+    """Limit trusted arrival turns before persistence, replay, or action dispatch."""
+    from . import ambient, conversation
+    from .ambient_config import AmbientWorker
+
+    if not ambient.is_arrival(record):
+        return decision
+    if decision.route == "reply":
+        return conversation.Decision(route="reply", reply=decision.reply)
+    if decision.route != "compute" or decision.pull_request_repo:
+        return conversation.Decision(
+            route="reply",
+            reply=f"{decision.reply}\nPlease request this operation in this thread; "
+            "the ambient task only authorizes its configured run.",
+        )
+    preset = AmbientWorker.model_validate(record["ambient"]["preset"])
+    return conversation.Decision(
+        route="compute", reply=decision.reply,
+        worker=tiers.WorkerChoice(
+            tier=preset.tier, on_demand=preset.on_demand,
+            expected_hours=preset.max_hours,
+            gpu_hours=preset.max_hours if preset.tier == "gpu" else None,
+            gpu_type=preset.gpu_type, gpu_sizing=preset.gpu_sizing,
+            allow_resize=False, reason="Operator-configured background task",
+        ),
+    )
+
+
 async def handle(
     bridge: BatchBridge, event_id: str, record: dict[str, Any], storage: Storage
 ) -> bool:
@@ -687,6 +718,9 @@ async def handle(
         await reenter_project(bridge, event_id, record, storage)
     conversation.start(record)
     saved = conversation.saved_decision(record)
+    if saved:
+        saved = ambient_decision(record, conversation.Decision.model_validate(saved)).model_dump()
+        record["direct_decision"] = saved
     if saved.get("route") == "cloud_access" and not record.get("active_work"):
         return await cloud_request(bridge, event_id, record, storage, saved)
     grant = await asyncio.to_thread(access.resolve, bridge.app, bridge.settings, storage, record)
@@ -964,7 +998,7 @@ async def handle(
         )
     current_ids = {f["id"] for f in record.get("attachments", [])}
     decision: conversation.Decision
-    if record.get("ambient"):
+    if (record.get("ambient") or {}).get("kind") == "session_import":
         from .ambient_config import AmbientWorker
 
         preset = AmbientWorker.model_validate(record["ambient"]["preset"])
@@ -1092,6 +1126,7 @@ async def handle(
             init=is_init,
             memory=memory,
         )
+        decision = ambient_decision(record, decision)
         if is_init and (decision.route != "reply" or decision.guide is None):
             raise ValueError(
                 "I couldn’t draft the initial guide. Please ask me to try again in this thread."

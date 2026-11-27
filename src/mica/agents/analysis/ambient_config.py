@@ -56,7 +56,7 @@ class AmbientTask(BaseModel):
     enabled_at: AwareDatetime
     authorized_by: AmbientPerson
     markers: list[str] = Field(min_length=1, max_length=8)
-    skip_if_exists: str
+    skip_if_exists: str = Field(description="Output folder reported to triage; never a skip gate")
     output: str
     recipe: str
     recipients: list[AmbientPerson] = Field(min_length=1, max_length=20)

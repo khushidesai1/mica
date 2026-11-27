@@ -1349,6 +1349,11 @@ class BatchBridge:
             if record.get("ambient"):
                 manifest["ambient"] = record["ambient"]
                 manifest["deadline_at"] = record["deadline_at"]
+                if worker_prompt := record["ambient"].get("worker_prompt"):
+                    manifest["payload"] = {
+                        **record["payload"],
+                        "event": {**record["payload"]["event"], "text": worker_prompt},
+                    }
             if references["snapshots"] or references["unavailable"]:
                 manifest["reference_repos"] = references["snapshots"]
                 manifest["reference_repos_unavailable"] = references["unavailable"]
@@ -1397,6 +1402,9 @@ class BatchBridge:
                     # A previously accepted submission is reconciled on the next poll.
                     record.update(status="running", started=time.time())
                     return
+            from . import ambient_delivery
+
+            await ambient_delivery.launched(self, record)
             try:
                 await asyncio.to_thread(
                     client.create_job,

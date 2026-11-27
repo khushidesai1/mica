@@ -124,6 +124,64 @@ async def test_plain_reply_private_thinking_and_provider_settings(turn):
     assert record["routing_budget"] <= direct.ROUTING_SECONDS
 
 
+@pytest.mark.parametrize("name,args", [
+    ("propose_command", {"operation": "scripts", "preference": "off"}),
+    ("task_queue", {"action": "cancel", "queue_id": "a" * 32}),
+    ("propose_transfer", {"sample": "sample-7"}),
+    ("propose_gcs_operations", {"operations": [
+        {"action": "delete", "source": "gs://lab-data/results/", "destination": ""}
+    ]}),
+])
+async def test_ambient_tools_cannot_mutate_before_returning_a_decision(
+    turn, monkeypatch, name, args
+):
+    from mica.agents.analysis import task_graph
+    from mica.agents.analysis.ambient_config import AmbientWorker
+    from mica.agents.analysis.transfers import Transfers
+
+    bridge, _, record, _ = turn
+    record["ambient"] = {"preset": AmbientWorker().model_dump()}
+    execute = AsyncMock(side_effect=AssertionError("Ambient must not execute commands"))
+    control = AsyncMock(side_effect=AssertionError("Ambient must not control queues"))
+    transfer = AsyncMock(side_effect=AssertionError("Ambient must not prepare transfers"))
+    monkeypatch.setattr(command_intent, "execute", execute)
+    monkeypatch.setattr(task_graph, "control", control)
+    monkeypatch.setattr(Transfers, "configuration", transfer)
+    decision = await run(turn, Client(tool(name, **args)))
+    assert decision.route == "reply" and "Please request" in decision.reply
+    assert record["direct_decision"]["route"] == "reply"
+    execute.assert_not_called()
+    control.assert_not_called()
+    transfer.assert_not_called()
+    bridge.test_client.create_job.assert_not_called()
+
+
+async def test_ambient_worker_tool_uses_preset_before_resource_validation(turn):
+    from mica.agents.analysis.ambient_config import AmbientWorker
+
+    turn[2]["ambient"] = {"preset": AmbientWorker(max_hours=2).model_dump()}
+    # GPUs are unavailable here; that cannot reject a configured standard CPU run.
+    client = Client(tool("start_worker", task="Run the configured recipe", tier="gpu",
+                         gpu_type="h100", reference_repos=["evil/repo"],
+                         constraints={"min_memory_gib": 1000, "allow_resize": True}))
+    decision = await run(turn, client)
+    assert decision.route == "compute" and decision.worker.tier == "standard"
+    assert decision.worker.expected_hours == 2 and not decision.worker.allow_resize
+    assert decision.reference_repos == [] and decision.write_paths == []
+
+
+async def test_ambient_read_tools_still_reach_project_memory(turn, monkeypatch):
+    from mica.agents.analysis.ambient_config import AmbientWorker
+
+    turn[2]["ambient"] = {"preset": AmbientWorker().model_dump()}
+    read = AsyncMock(return_value={"references": [], "memory": [{"text": "Archived sample"}]})
+    monkeypatch.setattr(conversation, "read_information", read)
+    client = Client(tool("read_sources", memory_paths=["lessons.md"]), reply("Already processed."))
+    assert (await run(turn, client)).route == "reply"
+    assert read.call_args.args[4].memory_paths == ["lessons.md"]
+    assert "Archived sample" in json.dumps(client.calls[1]["messages"])
+
+
 async def test_usage_logs_with_production_root_warning_level(turn, caplog):
     with caplog.at_level(logging.WARNING):
         caplog.handler.setLevel(logging.INFO)

@@ -47,12 +47,31 @@ The existing five-minute Batch reconciliation route runs an isolated ambient sca
 45-second budget. Delimiter listings visit one page of 50 sample folders per task, retain the
 page cursor, and wrap at the end; they never recurse through whole sample contents. Queue work
 is bounded at 500 records per scan. All configured marker objects must exist. Their creation
-times and generations are recorded with a create-only Firestore receipt named
-`ambient:<task>:<sample>`. A marker older than `enabled_at` permanently ignores that sample;
-existing output permanently skips it. Existing receipts never retrigger on marker replacement.
+times and generations identify a create-only Firestore receipt named
+`ambient-arrival:<task>:<sample>:<generation-hash>`. Identical generations never retrigger;
+replacing markers creates a new arrival linked to the previous receipt. Existing
+`ambient:<task>:<sample>` receipts remain valid first arrivals without migration. A separate
+`ambient-sample:<task>:<sample>` pointer identifies the latest receipt. A marker older than
+`enabled_at` ignores only that arrival; newer generations of the same sample can still trigger.
+Markers changed before admission supersede the queued arrival instead of blocking it.
+
+Each arrival goes through the ordinary owner conversation with project memory, source reads
+and folder listings. Mica chooses whether to run the configured task, skip with a reason, or
+ask the owner. Marker times, existing output, and up to ten linked earlier arrivals (outcome,
+decision and thread) are facts for that decision. The compatible `skip_if_exists` field names
+the output folder to report; it no longer skips work automatically. Earlier receipts remain
+linked beyond the bounded context window.
+
+Code replaces any model-selected worker resources with the operator preset, clears reference
+repositories and overwrite requests, and permits publishing only through the create-only
+event grant. Any other proposed action becomes an owner reply requesting an ordinary follow-up;
+queue control, preferences, transfers, access changes and PRs cannot execute during triage.
+The worker receives the configured run instructions, while the receipt records the triage route
+and first line of its reason. Session imports retain their separate trusted compute path.
 
 Queued samples start in marker-completion order, subject to per-task concurrency, UTC-day start
-limits and the normal worker slots. Admission is serialized across scans and reserves a start
+limits and the normal worker slots. Start limits count admitted arrivals, including replies.
+Admission is serialized across scans and reserves a start
 before posting. The worker allocator still enforces its slot leases. Failed starts remain
 recoverable using their original root message, event identity, deadline and grant. Use a new
 task ID if changing authority after startup has already posted notices.
@@ -68,11 +87,13 @@ reasons on already-accepted receipts (including finished runs) and updates a con
 blocked notice to say the run recovered. The edit rechecks owner identity and project access,
 never posts a replacement,
 and retries delivery without restarting the run. Missing recipes and actual permission or
-marker changes still block admission.
+scope changes still block admission.
 
 The owner gets a new DM thread explicitly attributed to their configured automation. Other
-configured collaborators get a start notice and the final summary/PDF under that notice.
-Recipient lists are frozen at start; current membership and identity are checked before delivery.
+configured collaborators get a start notice only when a compute job is submitted, after any
+required approval and capacity checks, and the final summary/PDF under that notice. A skip or
+question is delivered only in the owner's thread. Recipient lists are frozen at admission;
+current membership and identity are checked before delivery.
 Replies are ordinary private project threads. Delivery receipts suppress retries; a network
 failure with an uncertain Slack send is reconciled by message/file identity. If Slack history
 cannot prove what happened, delivery remains pending for operator reconciliation rather than
@@ -142,7 +163,13 @@ the same bounded model turn correct malformed prose; identity and coverage remai
 Use the coordinated `cloudbuild/build-slack-release.yaml` pipeline, preserving the current
 service configuration and compatible image pins. Its report gate uses tiny synthetic local
 inputs under `/opt/sap`; no new image family, infrastructure, IAM or secret changes are needed.
-Preserve existing operator task configuration during code releases. Do not clear an enabled
+For the first rollout of generation-based arrivals, list changed-generation arrivals read-only
+for each enabled task before promotion. Advance only each live task's `enabled_at` to the
+rollout cutoff in the verified configuration update, preserving every other field, to avoid
+replaying historical arrivals or duplicating manual work. Older revisions ignore the new
+per-arrival receipts if rolled back.
+
+Preserve existing operator task configuration during subsequent code releases. Do not clear an enabled
 task or its recipients; configuration changes require their own verified rollout.
 
 Before enabling a scientific task:
@@ -154,9 +181,12 @@ Before enabling a scientific task:
    verified sample and a smoke recipe that checks it, reports it and publishes `qc/`.
 4. Verify one root, one run, one delivered PDF, a terminal receipt, no retrigger, correct event
    grant metadata and the one-hour deadline. Do not message collaborators for this check.
-5. Disable the smoke task, delete the exact synthetic prefixes/state/config and temporary DM
+5. Replace the markers after noting in memory that the earlier copy was archived; verify a
+   linked arrival and observe whether Mica runs or asks. Then record that the re-transfer is a
+   duplicate, replace markers again, and verify an owner-only skip with no job.
+6. Disable the smoke task, delete the exact synthetic prefixes/state/config and temporary DM
    messages, and verify deletion. Do not run full scientific segmentation for smoke validation.
-6. The project owner reviews a report on an existing published sample, finalizes the project
+7. The project owner reviews a report on an existing published sample, finalizes the project
    recipe and explicitly enables the real task with `enabled_at` set to the current time.
 
 The first genuine arrival verifies the scientific end-to-end workflow. Unit tests and synthetic

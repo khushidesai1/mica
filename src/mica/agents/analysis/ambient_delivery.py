@@ -12,7 +12,7 @@ import httpx
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_client import AsyncWebClient
 
-from .ambient_config import AmbientPerson
+from .ambient_config import AmbientPerson, AmbientTask
 from .config import CHECKPOINT_PREFIX
 from .slack_format import answer_blocks, chunks, neutralize
 from .transport import SlackTransport
@@ -188,6 +188,43 @@ async def pdf_once(
     await bridge.repository.set_connector_state(key, saved)
 
 
+async def launched(bridge: BatchBridge, record: dict[str, Any]) -> None:
+    """Announce configured recipients only once a compute submission is authorized."""
+    from . import ambient
+
+    if not ambient.is_arrival(record):
+        return
+    key = record["ambient"]["key"]
+    state = await bridge.repository.get_connector_state(key) or {}
+    task = AmbientTask.model_validate(state["definition"])
+    doc = await ambient.validate_start(bridge, task, state["sample"], state["team"])
+    notices = state.setdefault("notices", {})
+    for person in task.recipients:
+        if person.email == task.authorized_by.email:
+            continue
+        notices[person.email] = await post_once(
+            bridge, key + ":start:" + person.slack_user, person.slack_user,
+            f"Ambient task set up by {task.authorized_by.email}: checking and processing "
+            f"{state['sample']}. I'll post the final summary and report in this thread.",
+        )
+        await ambient.seed(
+            bridge, doc, task.project, person, notices[person.email]["channel"],
+            notices[person.email]["ts"], state["team"],
+        )
+        await bridge.repository.set_connector_state(key, state)
+    state["decision"] = decision_summary(record)
+    await bridge.repository.set_connector_state(key, state)
+
+
+def decision_summary(record: dict[str, Any]) -> dict[str, str]:
+    decision = record.get("direct_decision") or {}
+    reply = str(decision.get("reply", "")).strip()
+    return {
+        "route": decision.get("route", ""),
+        "reason": reply.splitlines()[0][:1000] if reply else "",
+    }
+
+
 async def terminal(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -> None:
     from . import ambient
     from .registry import Registry
@@ -223,14 +260,14 @@ async def terminal(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -
         doc = await asyncio.to_thread(Registry(bridge.storage).load)
         for raw in state.get("recipients", []):
             person = AmbientPerson.model_validate(raw)
-            if person.email == state["owner"]["email"]:
+            notice = state.get("notices", {}).get(person.email)
+            if person.email == state["owner"]["email"] or not notice:
                 continue
             if not await asyncio.to_thread(
                 ambient.person_permitted, bridge, person, state["project"], state["team"]
             ):
                 state.setdefault("withheld", []).append(person.email)
                 continue
-            notice = state["notices"][person.email]
             # Bind the reply thread to the configured project, independent of DM defaults.
             await ambient.seed(
                 bridge,
@@ -269,7 +306,7 @@ async def terminal(bridge: BatchBridge, event_id: str, record: dict[str, Any]) -
                         notice["ts"],
                         file,
                     )
-        state.update(status="done", outcome=record["status"])
+        state.update(status="done", outcome=record["status"], decision=decision_summary(record))
         if not state.get("recovery_notice_pending"):
             state.pop("ambient_due", None)
         await bridge.repository.set_connector_state(origin["key"], state)

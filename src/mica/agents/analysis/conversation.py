@@ -427,6 +427,9 @@ async def persist(
     grant: access.Grant,
     decision: Decision,
 ) -> Decision:
+    from .direct import ambient_decision
+
+    decision = ambient_decision(record, decision)
     if record.get("flexible_harness") and await request_controls.cancelled(
         bridge.storage, event_id
     ):
@@ -829,7 +832,27 @@ async def run(
                 result: Any = None
                 terminal: Decision | None = None
                 async with asyncio.timeout_at(deadline):
-                    if isinstance(value, NoReply):
+                    from . import ambient
+
+                    if ambient.is_arrival(record) and isinstance(value, Worker):
+                        # Do not validate a model-selected resource or admit a PR: the
+                        # trusted preset replaces resources, and PRs require an owner turn.
+                        terminal = Decision(
+                            route="compute", reply=value.task,
+                            pull_request_repo=value.pull_request_repo,
+                        )
+                    elif ambient.is_arrival(record) and not isinstance(
+                        value, (Folders, Views, Sources)
+                    ):
+                        # Queue control, command preferences and coordination can write
+                        # inside the loop; stop before any such operation is dispatched.
+                        terminal = Decision(
+                            route="reply",
+                            reply=f"The proposed operation is {name.replace('_', ' ')}. "
+                            "Please request it in this thread; the ambient task only "
+                            "authorizes its configured run.",
+                        )
+                    elif isinstance(value, NoReply):
                         terminal = Decision(route="no_reply", reply="No response needed")
                     elif isinstance(value, RequestAccess):
                         terminal = Decision(route="access", reply="Owner review requested")
