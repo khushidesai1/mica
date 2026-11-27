@@ -594,6 +594,10 @@ async def test_preset_and_seed_win_over_active_project_with_model_context(backgr
     record = await event_record(background)
     assert await background.process(record["event_id"], 0) == "running"
     background.decision.assert_awaited_once()
+    model_context = background.decision.call_args.args[5]
+    assert "gs://lab-data/results/sample/" in model_context["write_access"]
+    assert "Create new objects only" in model_context["write_access"]
+    assert "after confirmation" not in model_context["write_access"]
     record = await event_record(background)
     assert record["project_id"] == background.pid and record["reference_repos"] == []
     assert record["request_deadline"] == record["deadline_at"]

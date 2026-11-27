@@ -1057,7 +1057,7 @@ async def handle(
                 surface.EMAIL_READ_ONLY
                 if surface.is_email(record)
                 else await asyncio.to_thread(
-                    write_access.status, storage, grant.project_id, bridge.settings
+                    write_access.status, storage, grant.project_id, bridge.settings, event_id
                 )
             ),
             "recent_messages": state.get("messages", []),

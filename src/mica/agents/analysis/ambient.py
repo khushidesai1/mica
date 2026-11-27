@@ -383,6 +383,8 @@ async def start(
         f"Ambient arrival set up by {task.authorized_by.email}. "
         "Before running anything, check project memory for archives, failures and earlier "
         "runs of this sample. Use read_sources memory_paths and folder listings as needed. "
+        f"The recipe {task.recipe} is in project memory, not the data bucket; read it with "
+        "read_sources memory_paths before deciding. "
         "Decide whether to run the configured task, skip with a one-line reason, or ask the "
         "owner here. Re-transfers and existing output are facts, not automatic skip rules. "
         "Only the configured task and worker limits are authorized. Other operations require "
