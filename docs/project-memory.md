@@ -158,12 +158,17 @@ Each project has an application-generated `THREADS.md` overview and a folder und
 `scripts/`. Small retained outputs live in `outputs/turn-N/`; `outputs/MANIFEST.json` records
 copy receipts and reasons a source was retained. Model-authored thread content is a compact
 entry and summary. The application supplies identity, sequence, event id and summary coverage.
-Worker proposals use `knowledge/threads/<this-thread>/turn.json`; other threads are read-only.
+Workers call `record_turn` with the thread prose schema before finishing, including init surveys.
+The tool validates the fields and atomically writes `knowledge/threads/<this-thread>/turn.json`
+without following links. A later call replaces this turn's previous record. Direct file writes
+from resumed sessions still work, and proposal collection and recovery use the same file.
+Other threads are read-only. The Stop hook gives at most two short reminders to call the tool.
 
 Memory saves run after delivery. A late save appends its event once, even if a newer turn saved
 first. A newer summary cannot discard the previous summary's covered events. Readers include
 entries not covered by the summary regardless of their sequence, including entries in older
-log pages. Prompt limits produce explicit continuation paths rather than a claim of complete
+log pages. Within prompt limits, the newest fitting uncovered entries appear in chronological
+order. Prompt limits produce explicit continuation paths rather than a claim of complete
 coverage. Thread log pages preserve each compact event; Git history preserves replaced summary
 and script versions without duplicating the growing log into the project archive each turn.
 
@@ -173,14 +178,22 @@ and script manifest before the event is marked done. Pending proposals live unde
 re-dispatches pending saves with a new task id and reports saves pending for more than 24 hours.
 Capacity rejection, conflicts and unavailable GitHub never block the user's completed turn or
 silently discard its recovery handoff. Rejected scripts retain their source and a reason.
-Failed routed turns may update pending work in `open.md` and their failure entry; partial
+Failed routed turns may update pending work in `open.md` and evidence-based lessons in
+`lessons.md`. New failure lessons start with `Unverified (failed <date>):` and describe only
+what was attempted and how it failed. Thread entries retain attempted methods with
+`success: false`; scripts and unreviewed failed-worker workspace edits are discarded. Partial
 results are not promoted as verified findings.
 
 The router reads project context before thread context and recent exchanges. `read_sources`
 accepts `memory_paths` for project files and cross-thread lookup under its existing 384 KiB
 content budget. `history_query` and `history_event_id` search the current thread's GitHub log
 pages in `github` and `github_only` modes, with bounded pages and exact-event reads. The latter
-mode never falls back to retired GCS transcripts. Recent and recalled original event receipts
+mode never falls back to retired GCS transcripts. Native and legacy search match casefolded
+whole words. A query with no matches returns an outline of up to 20 recent entries, with event
+IDs, dates, success status and paraphrases of at most 160 characters, for an exact-event lookup.
+Legacy outlines cover the current 100-record storage page and retain its next-page offset;
+records lacking a date or paraphrase use an unknown date and a status-only description.
+Recent and recalled original event receipts
 can supply prior tool parameters for the same requester, project and thread; remembered values
 do not carry forward access grants or action approvals. Workers receive bounded text snapshots,
 including log pages, and the current
@@ -338,9 +351,11 @@ rule and threshold, unit of analysis and n, test/model, covariates and correctio
 script version, date and attribution. Unknown qualifiers stay explicitly unknown. Concise
 entries remove repetition, not evidence. Split entries by topic when they reach the file limit.
 Chat edits navigate the titled index and read complete entries within a bounded working set;
-they cannot replace unseen existing files. New topic files and corrections in `results/` are supported. Workers receive
-up to two reminders to add a Definitions section to changed result entries; ordinary content,
-path, size and thread-persistence validation remains authoritative.
+they cannot replace unseen existing files. New topic files and corrections in `results/` are supported.
+The project-knowledge skill guides ordinary turns to retain result definitions. Session-import
+passes receive up to two reminders to add the exact `## Definitions` heading to changed results;
+ordinary turns are not blocked by that heading check. Content, path, size and thread-persistence
+validation remains authoritative.
 
 In an enabled project's Slack DM, send `import session`, then use the upload card to select a
 Claude Code `.jsonl` file. Optional highlights are one per line (ten maximum, 300 characters

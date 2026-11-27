@@ -172,17 +172,26 @@ def context(files: Mapping[str, str], thread: str, limit: int = 16000) -> str:
         f"File: {root}summary.md\n{summary.text}\n" if summary else "No saved thread summary.\n"
     )
     omitted = False
-    for row in log_entries(files, thread):
+    selected = []
+    used = len(result)
+    for row in reversed(log_entries(files, thread)):
         if row.event_id in covered:
             continue
         line = row.line()
-        if len(result) + len(line) > limit - 150:
+        if used + len(line) > limit - 150:
             omitted = True
             continue
-        result += line
+        selected.append(line)
+        used += len(line)
+    result += "".join(reversed(selected))
     if omitted:
         result += f"\nMore uncovered entries: read {root}log*.md; this view is incomplete.\n"
     return result[:limit]
+
+
+def match_score(words: set[str], text: str) -> int:
+    """Match casefolded whole tokens, shared by native and legacy recall."""
+    return len(words & set(re.findall(r"\w+", text.casefold())))
 
 
 def recall(
@@ -201,7 +210,7 @@ def recall(
         }
     words = set(re.findall(r"\w+", query.casefold()))
     ranked = sorted(
-        ((sum(word in row.line().casefold() for word in words), row) for row in rows),
+        ((match_score(words, row.line()), row) for row in rows),
         key=lambda item: (item[0], item[1].seq), reverse=True,
     )
     matches = [row for score, row in ranked if score or not words]
@@ -209,6 +218,11 @@ def recall(
     return {
         "source": "project_thread_memory",
         "matches": [row.model_dump() for row in page],
+        **({"outline": [
+            {"event_id": row.event_id, "date": row.date, "success": row.success,
+             "paraphrase": " ".join(row.paraphrase.split())[:160]}
+            for row in reversed(rows[-20:])
+        ]} if words and not matches else {}),
         "next_offset": offset + len(page) if offset + len(page) < len(matches) else None,
     }
 
@@ -365,8 +379,8 @@ def make_update(
                 speaker=speaker,
                 success=success,
                 paraphrase=prose.paraphrase,
-                methods=prose.methods if success else "",
-                scripts=sorted(scripts or {}),
+                methods=prose.methods,
+                scripts=sorted(scripts or {}) if success else [],
                 outputs=outputs or [],
                 rejected=rejected or {},
             ),

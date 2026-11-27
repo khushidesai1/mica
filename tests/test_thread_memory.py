@@ -47,6 +47,41 @@ def test_native_history_search_paging_and_event_lookup_stay_in_the_thread():
         tm.recall(files, "t_one", event_id="event_7")
 
 
+def test_context_keeps_newest_fitting_entries_in_chronological_order():
+    rows = [update(seq).entry for seq in range(1, 7)]
+    files = tm.pages(rows, "t_one", Settings(_env_file=None))
+    limit = len("No saved thread summary.\n") + len(rows[-1].line()) * 2 + 150
+    view = tm.context(files, "t_one", limit)
+    assert rows[-2].line() in view and rows[-1].line() in view
+    assert view.index(rows[-2].line()) < view.index(rows[-1].line())
+    assert rows[-3].line() not in view and "log*.md" in view
+    assert len(view) <= limit
+
+
+def test_recall_whole_words_and_bounded_newest_outline():
+    rows = [update(seq).entry for seq in range(1, 26)]
+    for row in rows:
+        row.paraphrase = "Excellent " + "outcome " * 30
+    rows[0].methods = "A CELL measurement."
+    files = tm.pages(rows, "t_one", Settings(_env_file=None))
+    assert [r["seq"] for r in tm.recall(files, "t_one", "cell")["matches"]] == [1]
+    missing = tm.recall(files, "t_one", "unknown-query")
+    assert not missing["matches"] and missing["next_offset"] is None
+    assert [r["event_id"] for r in missing["outline"]] == [
+        f"event_{seq}" for seq in range(25, 5, -1)
+    ]
+    assert all(len(r["paraphrase"]) == 160 for r in missing["outline"])
+    assert set(missing["outline"][0]) == {"event_id", "date", "success", "paraphrase"}
+
+
+def test_failed_update_keeps_attempted_methods_but_never_scripts():
+    item = tm.make_update("t_one", "failed", 1, "2026-11-26", "Alice", "dm", False,
+                         tm.Prose(paraphrase="Failed run.", methods="Tried the T4 GPU."), [],
+                         scripts={"partial.py": "unfinished"})
+    assert not item.entry.success and item.entry.methods == "Tried the T4 GPU."
+    assert item.entry.scripts == [] and item.scripts is None
+
+
 @pytest.fixture
 def store():
     github = FakeGitHub()

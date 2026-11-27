@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 
     from .access import Grant
 
+from . import thread_memory
 from .storage import Conflict, Storage
 
 SUMMARY_CHARS = 8000
@@ -152,17 +153,31 @@ class History:
         # Paging bounds storage work. Report the next page even when this page has no matches.
         for key in keys[offset : offset + 100]:
             raw = self.storage.read_prefix(key, 512 * 1024).decode(errors="replace")
-            if not words or any(word in raw.casefold() for word in words):
-                try:
-                    row = json.loads(raw)
-                except ValueError:
-                    continue
+            try:
+                row = json.loads(raw)
+            except ValueError:
+                continue
+            if isinstance(row, dict):
                 rows.append(row)
         ranked = sorted(
-            rows, key=lambda r: sum(w in json.dumps(r).casefold() for w in words), reverse=True
+            ((thread_memory.match_score(words, json.dumps(row, ensure_ascii=False)), row)
+             for row in rows),
+            key=lambda item: (item[0], item[1].get("seq", 0)), reverse=True,
         )
+        matches = [row for score, row in ranked if score or not words]
         return {
-            "matches": json.loads(context(list(reversed(ranked[:6])))),
+            "matches": json.loads(context(list(reversed(matches[:6])))),
+            **({"outline": [
+                {"event_id": row.get("id"), "date": row.get("date"),
+                 "success": row.get("success"), "paraphrase": " ".join(str(
+                     row.get("paraphrase") or (
+                         "Completed turn." if row.get("success") is True else
+                         "Failed or interrupted turn." if row.get("success") is False else
+                         "Recorded turn; outcome unknown."
+                     )
+                 ).split())[:160]}
+                for row in sorted(rows, key=lambda row: row.get("seq", 0), reverse=True)[:20]
+            ]} if words and not matches else {}),
             "next_offset": offset + 100 if len(keys) > offset + 100 else None,
         }
 

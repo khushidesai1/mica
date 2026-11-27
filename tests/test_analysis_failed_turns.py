@@ -167,7 +167,13 @@ async def test_routed_failure_uses_editor_not_missing_worker_proposal(chat, monk
     chat.settings.memory_auto_edit = True
     queued = AsyncMock()
     monkeypatch.setattr(job_lifecycle, "enqueue", queued)
-    editor = AsyncMock(return_value=memory_edits({"open.md": OPEN, "lessons.md": OPEN}))
+    lesson = (
+        "type: lesson\nsource: Alice\nstatus: current\n\n"
+        "Unverified (failed 2026-10-13): The attempt stopped at output-folder approval.\n"
+    )
+    editor = AsyncMock(return_value=memory_edits({
+        "open.md": OPEN, "lessons.md": lesson, "conventions.md": OPEN,
+    }))
     monkeypatch.setattr(memory_tasks, "edit", editor)
     event = await fail(chat, monkeypatch)
     assert queued.call_args.args[2].endswith("/memory/" + event)
@@ -178,7 +184,9 @@ async def test_routed_failure_uses_editor_not_missing_worker_proposal(chat, monk
     assert context["reply"] == NOTICE and context["user"] == REQUEST
     assert context["success"] is False
     snapshot = await chat.memory_backend.read(chat.pid)
-    assert snapshot.files["open.md"].text == OPEN and "lessons.md" not in snapshot.files
+    assert snapshot.files["open.md"].text == OPEN
+    assert snapshot.files["lessons.md"].text == lesson
+    assert "conventions.md" not in snapshot.files
 
 
 async def test_pending_line_updates_on_retry_and_disappears_on_success(chat, monkeypatch):
