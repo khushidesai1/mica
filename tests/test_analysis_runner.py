@@ -63,7 +63,9 @@ async def test_final_memory_gate_repairs_malformed_model_prose(setup, via_repo):
     options = build_options(ctx, settings, thread_key="t_smoke")
     hook = options.hooks["Stop"][0].hooks[0]
     event = {"hook_event_name": "Stop"}
-    assert (await hook(event, None, {}))["decision"] == "block"
+    assert await hook(event, None, {}) == {
+        "decision": "block", "reason": "Call record_turn before finishing."
+    }
     path = ctx.workdir / "knowledge/threads/t_smoke/turn.json"
     path.parent.mkdir(parents=True)
     path.write_text(json.dumps({"summary": "Done", "entries": [], "covered": ["forged"]}))

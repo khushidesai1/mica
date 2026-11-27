@@ -748,3 +748,13 @@ for a live model/store probe and remove its exact recorded paths after verificat
 save/correct/recall and a tiny worker request belong in the owner's test conversation. An older
 API with the 4,000-character limit quarantines an oversized index on read and regenerates it;
 rollback does not erase retained originals.
+
+### Turn records and failed-turn lessons
+
+Use the coordinated API and CPU/GPU/shared-worker release pipeline for the `record_turn` tool,
+failed-turn editor and thread recall changes. Preserve all runtime settings and immutable worker
+pins until the new coordinated revision is verified. The existing `turn.json` transport remains
+compatible with direct writes and older workers. No infrastructure or secret changes are needed.
+Verify tool validation and link rejection, failed-turn path restrictions, import-only Definitions
+reminders, newest-entry context and bounded recall offline. Owner acceptance uses a tiny worker
+request and a failure scoped to one test event, followed by recall in the same test thread.

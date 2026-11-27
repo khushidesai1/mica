@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+import uuid
 from contextlib import suppress
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from pydantic import BaseModel, Field
 from . import memory_archive, session_review, thread_memory
 from .config import CHECKPOINT_PREFIX, Settings
 from .project_memory import Snapshot, file_limit, normalize, valid_path, validate
+from .script_capture import MAX_BYTES
 from .storage import Storage
 
 
@@ -26,6 +28,40 @@ class Proposal(BaseModel):
     base_head: str
     changes: dict[str, str | None] = Field(default_factory=dict)
     rejected: dict[str, str] = Field(default_factory=dict)
+
+
+def record_turn(work: Path, thread: str, value: dict[str, Any]) -> None:
+    """Validate first, then replace the current turn without following workspace links."""
+    prose = thread_memory.Prose.model_validate(value)
+    data = prose.model_dump_json().encode()
+    if len(data) > MAX_BYTES:
+        raise ValueError("Turn record exceeds the collection read limit")
+    path = Path("knowledge") / thread_memory.prefix(thread) / "turn.json"
+    fd = os.open(work, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    temporary = ".turn-" + uuid.uuid4().hex + ".json"
+    try:
+        for part in path.parts[:-1]:
+            with suppress(FileExistsError):
+                os.mkdir(part, mode=0o700, dir_fd=fd)
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        with suppress(FileNotFoundError):
+            info = os.stat(path.name, dir_fd=fd, follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("Turn record must be an ordinary file")
+        target = os.open(
+            temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd
+        )
+        try:
+            with os.fdopen(target, "wb") as stream:
+                stream.write(data)
+            os.replace(temporary, path.name, src_dir_fd=fd, dst_dir_fd=fd)
+        finally:
+            with suppress(FileNotFoundError):
+                os.unlink(temporary, dir_fd=fd)
+    finally:
+        os.close(fd)
 
 
 def materialize(work: Path, base: Snapshot, settings: Settings) -> None:

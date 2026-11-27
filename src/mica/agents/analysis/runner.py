@@ -169,9 +169,12 @@ def build_options(
         compute_tools.append(pr_proposer.tool(ctx.workdir))
     if history and not ctx.survey_only:
         compute_tools.append(history.tool())
-    tools.extend(f"mcp__pistachio__{t.name}" for t in compute_tools)
 
     from . import thread_memory
+
+    if thread_key and thread_memory.enabled(settings):
+        compute_tools.append(memory_checks.turn_tool(ctx.workdir, thread_key))
+    tools.extend(f"mcp__pistachio__{t.name}" for t in compute_tools)
 
     visual_reads = 0
     capture = (
@@ -375,14 +378,7 @@ def build_options(
                 "Read project memory first, then knowledge/threads/"
                 + thread_key
                 + "/. Grep other threads when project context is ambiguous. "
-                "Before finishing write knowledge/threads/"
-                + thread_key
-                + "/turn.json as one object matching this exact JSON schema: "
-                + json.dumps(thread_memory.Prose.model_json_schema())
-                + ". In particular paraphrase is a required top-level string. Do not include "
-                "entries, covered, identity, sequence or other application-owned fields. "
-                "Use concise paraphrases only, never transcripts. Incorporate prior context "
-                "into summary; do not copy the supplied log/summary wrappers into turn.json. "
+                "Before finishing, call record_turn. "
                 "Other thread files are read-only. Scripts are collected from code/.\n"
                 + thread_context
             )

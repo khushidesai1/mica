@@ -2,14 +2,42 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
-from . import project_memory, session_review, thread_memory
+from . import memory_workspace, project_memory, session_review, thread_memory
 from .config import Settings
 from .script_capture import read_regular
+
+if TYPE_CHECKING:
+    from claude_agent_sdk import SdkMcpTool
+
+
+def turn_tool(work: Path, thread: str) -> SdkMcpTool[Any]:
+    from claude_agent_sdk import tool
+
+    @tool(
+        "record_turn",
+        "Record this turn before finishing. Use concise paraphrases and methods, never "
+        "transcripts. Incorporate prior context into the rolling summary; do not copy log or "
+        "summary wrappers. Identity, sequence and coverage are supplied by the application. "
+        "A later call replaces this turn's earlier record.",
+        thread_memory.Prose.model_json_schema(),
+    )
+    async def record(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            await asyncio.to_thread(memory_workspace.record_turn, work, thread, args)
+        except (OSError, ValueError):
+            return {"isError": True, "content": [{"type": "text", "text":
+                "Invalid or oversized turn fields, or unsafe thread folder/file. Use the schema "
+                "and an ordinary knowledge thread folder."}]}
+        return {"content": [{"type": "text", "text": "Turn recorded."}]}
+
+    return record
 
 
 class Checks:
@@ -32,18 +60,15 @@ class Checks:
             try:
                 thread_memory.Prose.model_validate_json(read_regular(self.work, path))
             except (OSError, ValueError):
-                reasons["thread"] = (
-                    f"Write valid {path.as_posix()} before finishing. Exact JSON schema: "
-                    + json.dumps(thread_memory.Prose.model_json_schema())
-                )
-        if self.base is not None:
+                reasons["thread"] = "Call record_turn before finishing."
+        if self.base is not None and self.highlights is not None:
             missing = []
             for path in sorted((self.work / "knowledge/results").glob("*.md")):
                 try:
                     text = read_regular(self.work, path.relative_to(self.work)).decode()
                     before = self.base.files.get("results/" + path.name)
                     if (not before or before.text != text) and not re.search(
-                        r"(?im)^#{1,6}\s+definitions\b", text
+                        r"(?m)^## Definitions[ \t]*\r?$", text
                     ):
                         missing.append(path.name)
                 except (OSError, ValueError):

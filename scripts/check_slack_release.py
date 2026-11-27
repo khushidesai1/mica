@@ -318,6 +318,23 @@ def check(source: Path, mode: str) -> None:
         )
         memory_workspace.materialize(work / "memory-work", snapshot, settings)
         assert memory_workspace.proposal(work / "memory-work", snapshot, settings).changes == {}
+        from mica.agents.analysis import memory_checks
+
+        turn_fields = {"paraphrase": "Verified worker recording."}
+        if mode == "worker":
+            turn_tool = memory_checks.turn_tool(work / "memory-work", "t_gate")
+            assert not asyncio.run(turn_tool.handler(turn_fields)).get("isError")
+            assert asyncio.run(turn_tool.handler({"summary": "Missing paraphrase"}))["isError"]
+            print("SCHEMA_BACKED_TURN_RECORD_VERIFIED")
+        else:
+            # The API intentionally has no worker SDK. Its transport uses the same validator.
+            memory_workspace.record_turn(work / "memory-work", "t_gate", turn_fields)
+        checks = memory_checks.Checks(
+            work / "memory-work", Settings(_env_file=None, thread_memory_enabled=True),
+            "t_gate", snapshot, None,
+        )
+        assert not checks.reasons()
+        print("TURN_RECORD_TRANSPORT_VERIFIED")
         assert "viridis" in project_memory.context(snapshot, settings)
         assert settings.memory_index_chars == 12000 and settings.memory_index_target_chars == 6000
         snapshot.files["results/hidden.md"] = project_memory.File(text="TOPIC BODY", oid="")

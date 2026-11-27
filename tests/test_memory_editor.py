@@ -135,15 +135,55 @@ async def test_validation_reports_safe_reason_and_preserves_unseen_file_guard(
     assert schema["properties"]["thread"] == {"$ref": "#/$defs/Prose"}
 
 
-async def test_failed_turn_rejects_verified_result_and_only_allows_pending_work(monkeypatch):
+@pytest.mark.parametrize("path", ["results/new.md", "data/new.md", "conventions.md", "PROJECT.md"])
+async def test_failed_turn_rejects_facts_and_allows_only_pending_work_and_lessons(
+    monkeypatch, path
+):
     requests = []
-    mock_model(monkeypatch, model_response({"results/new.md": "Unverified result"}), requests)
+    mock_model(monkeypatch, model_response({path: "Unverified result"}), requests)
     with pytest.raises(memory_tasks.EditorError, match="failed_turn_path"):
         await memory_tasks.edit("test", "test", {"files": {}, "success": False})
     schema = requests[0]["tools"][0]["input_schema"]
-    assert schema["properties"]["changes"]["propertyNames"] == {"enum": ["open.md"]}
+    assert schema["properties"]["changes"]["propertyNames"] == {
+        "enum": ["open.md", "lessons.md"]
+    }
     assert [tool["name"] for tool in requests[0]["tools"]] == ["edit_project_memory"]
     assert requests[0]["tool_choice"]["type"] == "tool"
+
+
+async def test_failed_turn_saves_unverified_lesson_and_preserves_complete_files(chat, monkeypatch):
+    event, record, _ = await start(chat, monkeypatch)
+    lessons = "type: lesson\nsource: Alice\nstatus: current\n\nExisting lesson.\n"
+    base = await chat.memory_backend.read(chat.pid)
+    await chat.memory_backend.commit(
+        chat.pid, base, {"open.md": OPEN, "lessons.md": lessons},
+        source="editor", event_id="setup",
+    )
+    await chat.repository.patch_connector_state("claude-event:" + event, {
+        "status": "failed", "route": "compute", "memory_reply": "GPU ran out of memory.",
+    })
+    # Failed workspace output must not become an alternate source of project facts.
+    chat.store.put(
+        f"projects/_threads/{record['thread_key']}/pending/{event}/memory-proposal.json",
+        json.dumps({"base_head": base.head_oid, "changes": {"results/partial.md": "unsafe"}})
+        .encode(),
+    )
+    requests = []
+    mock_model(monkeypatch, model_response({
+        "open.md": OPEN + "Alice: GPU run pending after memory exhaustion.\n",
+        "lessons.md": lessons + "Unverified (failed 2026-11-26): The T4 run exhausted memory.\n",
+    }, thread={"paraphrase": "GPU attempt failed.", "methods": "Attempted the T4 run."}), requests)
+    await memory_tasks.process(chat, event, chat.store)
+    supplied = json.loads(requests[0]["messages"][0]["content"])
+    assert supplied["files"] == {"open.md": OPEN, "lessons.md": lessons}
+    saved = await chat.memory_backend.read(chat.pid)
+    assert saved.files["lessons.md"].text.startswith(lessons)
+    assert "Unverified (failed 2026-11-26):" in saved.files["lessons.md"].text
+    assert "results/partial.md" not in saved.files
+    row = thread_memory.log_entries(
+        {p: f.text for p, f in saved.files.items()}, record["thread_key"]
+    )[0]
+    assert not row.success and row.methods == "Attempted the T4 run." and not row.scripts
 
 
 async def test_large_full_file_replacement_keeps_unrelated_memory(monkeypatch):
