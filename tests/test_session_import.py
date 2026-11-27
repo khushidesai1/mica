@@ -19,6 +19,7 @@ from mica.agents.analysis import (
     ambient_delivery,
     job_lifecycle,
     memory_checks,
+    memory_reads,
     memory_tasks,
     memory_workspace,
     project_memory,
@@ -174,9 +175,9 @@ def test_editor_whole_files_with_budget():
             "data/small.md": project_memory.File(oid="", text="small data"),
         },
     )
-    selected = memory_tasks.editor_files(snapshot, "model", 40000)
-    assert selected["results/model.md"].endswith("IMPORTANT TAIL")
-    selected = memory_tasks.editor_files(snapshot, "model", 100)
+    selected = memory_tasks.editor_files(snapshot, 40000)
+    assert "results/model.md" not in selected  # Topics are read on demand.
+    selected = memory_tasks.editor_files(snapshot, 100)
     assert "results/model.md" not in selected
     assert selected["PROJECT.md"] == "guide"
 
@@ -210,7 +211,7 @@ async def test_editor_rejects_unseen_replacements_but_allows_new_topics(monkeypa
             )
         )
 
-    monkeypatch.setattr(memory_tasks.httpx, "AsyncClient", factory)
+    monkeypatch.setattr(memory_reads.httpx, "AsyncClient", factory)
     context = {
         "files": {"results/shown.md": "old result"},
         "existing_paths": ["results/unseen.md", "results/shown.md"],

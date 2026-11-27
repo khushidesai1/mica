@@ -76,7 +76,8 @@ class Settings(BaseSettings):
     memory_repo: str = ""
     memory_branch: str = "main"
     memory_token_secret: str = ""  # Control-plane-only Secret Manager version.
-    memory_index_chars: int = Field(default=4000, ge=1, le=16000)
+    memory_index_chars: int = Field(default=12000, ge=1, le=16000)
+    memory_index_target_chars: int = Field(default=6000, ge=1, le=16000)
     memory_file_kb: int = Field(default=16, ge=1, le=64)
     memory_max_files: int = Field(default=500, ge=1, le=1000)
     memory_total_kb: int = Field(default=4096, ge=1, le=MAX_MEMORY_TOTAL_KB)

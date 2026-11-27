@@ -13,7 +13,7 @@ from mica.agents.analysis.config import Settings
 async def test_growth_beyond_old_megabyte_and_flat_index_is_lossless(store):  # noqa: F811
     backend, _ = store
     base = await backend.read("p_test")
-    texts = {f"data/note-{n:03d}.md": FACT + str(n) + "x" * 6000 for n in range(250)}
+    texts = {f"data/note-{n:03d}.md": FACT + str(n) + "x" * 6000 for n in range(350)}
     saved = await backend.commit("p_test", base, texts, source="worker", event_id="growth")
     assert saved.commit_oid and not saved.rejected
     result = await backend.read("p_test")
@@ -23,7 +23,7 @@ async def test_growth_beyond_old_megabyte_and_flat_index_is_lossless(store):  # 
     for path, text in texts.items():
         version = result.files.get(path) or result.files[memory_archive.archive_path(path, text)]
         assert version.text == text
-    context = project_memory.context(result, "x note", backend.settings)
+    context = project_memory.context(result, backend.settings)
     assert len(context) <= backend.settings.memory_router_chars
     assert "File: archive/" not in context
     for path, file in result.files.items():
@@ -194,3 +194,66 @@ def test_required_recipe_index_overflow_rejects_instead_of_archiving():
     recipes = {f"recipes/{'long-' * 12}{i}.md": FACT for i in range(3)}
     with pytest.raises(ValueError, match="index_budget_too_small"):
         memory_archive.prepare(recipes, {}, settings, required_paths=frozenset(recipes))
+
+
+@pytest.mark.parametrize("body,expected", [
+    ("intro\n## [Feature] cutoff ##\nMore", "Feature cutoff"),
+    ("\nFirst [body] line\nSecond", "First body line"),
+    ("# " + "a" * 100, "a" * 80),
+    ("# One\t two\n## Later", "One two"),
+    ("Setext [title]\n====\nLater", "Setext title"),
+])
+def test_index_titles_skip_headers_and_clean_single_line(body, expected):
+    text = "type: fact\nsource: Alice\nstatus: current\n\n" + body
+    assert memory_archive.line("data/x.md", text) == f"- [data/x.md](data/x.md): {expected}\n"
+    assert memory_archive.line("recipes/x.py", "# code") == "- [recipes/x.py](recipes/x.py)\n"
+    archived = memory_archive.archive_path("data/x.md", text)
+    assert memory_archive.line(archived, text, relative="archive/") == (
+        f"- [data/x.md]({archived.removeprefix('archive/')})\n"
+    )
+
+
+@pytest.mark.parametrize("suffix", ["", ": Prior title"])
+def test_old_and_titled_index_order_preserved_without_unnecessary_archiving(suffix, caplog):
+    files = {"data/a.md": FACT, "data/b.md": FACT}
+    files["INDEX.md"] = f"- [data/b.md](data/b.md){suffix}\n- [data/a.md](data/a.md){suffix}\n"
+    size = sum(len(memory_archive.line(p, files[p])) for p in ("data/a.md", "data/b.md"))
+    settings = Settings(_env_file=None, memory_index_chars=size)
+    changes = memory_archive.prepare(files, {}, settings)
+    assert len(changes["INDEX.md"]) == size
+    assert changes["INDEX.md"].startswith("- [data/b.md]")
+    assert not any(p.startswith("archive/") for p in changes)
+    assert "memory_index_backstop" not in caplog.text
+    settings.memory_index_chars = size - 1
+    changes = memory_archive.prepare(files, {}, settings)
+    assert "memory_index_backstop" in caplog.text
+
+
+async def test_rollback_quarantines_old_limit_index_and_regenerates(store):  # noqa: F811
+    backend, github = store
+    texts = {f"data/note-{n:03d}.md": FACT for n in range(90)}
+    layout = memory_archive.prepare({}, texts, backend.settings)
+    assert 4000 < len(layout["INDEX.md"]) < 12000
+    github.seed({"projects/p_test/" + p: t for p, t in layout.items() if t is not None})
+    backend.settings.memory_index_chars = 4000
+    base = await backend.read("p_test")
+    assert "INDEX.md" in base.invalid and "INDEX.md" not in base.files
+    saved = await backend.commit("p_test", base, {}, source="compaction", event_id="rollback")
+    assert saved.commit_oid and not saved.rejected
+    result = await backend.read("p_test")
+    assert not result.invalid and len(result.files["INDEX.md"].text) <= 4000
+    for path, text in texts.items():
+        version = result.files.get(path) or result.files[memory_archive.archive_path(path, text)]
+        assert version.text == text
+
+
+async def test_unicode_titles_obey_character_limit_instead_of_entry_byte_limit(store):  # noqa: F811
+    backend, _ = store
+    base = await backend.read("p_test")
+    texts = {f"data/unicode-{i}.md": FACT + "# " + "字" * 80 for i in range(85)}
+    saved = await backend.commit("p_test", base, texts, source="worker", event_id="unicode")
+    assert saved.commit_oid and not saved.rejected
+    result = await backend.read("p_test")
+    assert not result.invalid
+    assert len(result.files["INDEX.md"].text.encode()) > backend.settings.memory_file_kb * 1024
+    assert len(result.files["INDEX.md"].text) <= backend.settings.memory_index_chars

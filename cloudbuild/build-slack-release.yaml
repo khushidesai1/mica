@@ -9,6 +9,10 @@ steps:
       - |
         bash tools/prepare_release_base.sh api '${_API_BASE}' mica-release-api-base
         bash tools/prepare_release_base.sh shared '${_SHARED_BASE}' mica-release-shared-base
+        bash tools/prepare_release_base.sh cpu '${_SLACK_BASE}' mica-release-cpu-base
+        if [ -n '${_GPU_BASE}' ]; then
+          bash tools/prepare_release_base.sh gpu '${_GPU_BASE}' mica-release-gpu-base
+        fi
   - id: build-proseg-cli
     name: gcr.io/cloud-builders/docker
     waitFor: ['-']
@@ -19,11 +23,11 @@ steps:
     args: [build, --build-arg, 'BASE_IMAGE=mica-release-api-base', --build-arg, 'SOURCE_COMMIT=${_SOURCE_COMMIT}', -f, docker/Dockerfile.slack-release, -t, '${_API_IMAGE}', .]
   - id: build-slack-worker
     name: gcr.io/cloud-builders/docker
-    waitFor: [build-proseg-cli]
-    args: [build, --build-arg, 'BASE_IMAGE=${_SLACK_BASE}', --build-arg, 'INSTALL_BOT_DEPENDENCIES=1', --build-arg, 'SOURCE_COMMIT=${_SOURCE_COMMIT}', -f, docker/Dockerfile.slack-release, -t, '${_SLACK_IMAGE}', .]
+    waitFor: [build-proseg-cli, prepare-overlay-bases]
+    args: [build, --build-arg, 'BASE_IMAGE=mica-release-cpu-base', --build-arg, 'INSTALL_BOT_DEPENDENCIES=1', --build-arg, 'SOURCE_COMMIT=${_SOURCE_COMMIT}', -f, docker/Dockerfile.slack-release, -t, '${_SLACK_IMAGE}', .]
   - id: build-gpu-worker
     name: gcr.io/cloud-builders/docker
-    waitFor: [build-proseg-cli]
+    waitFor: [build-proseg-cli, prepare-overlay-bases]
     entrypoint: bash
     args:
       - -ceu
@@ -31,7 +35,7 @@ steps:
         if [ -n '${_GPU_BASE}' ]; then
           [[ '${_GPU_BASE}' =~ @sha256:[a-f0-9]{64}$ ]]
           test -n '${_GPU_IMAGE}'
-          docker build --build-arg 'BASE_IMAGE=${_GPU_BASE}' --build-arg INSTALL_BOT_DEPENDENCIES=1 --build-arg 'SOURCE_COMMIT=${_SOURCE_COMMIT}' -f docker/Dockerfile.slack-release -t '${_GPU_IMAGE}' .
+          docker build --build-arg 'BASE_IMAGE=mica-release-gpu-base' --build-arg INSTALL_BOT_DEPENDENCIES=1 --build-arg 'SOURCE_COMMIT=${_SOURCE_COMMIT}' -f docker/Dockerfile.slack-release -t '${_GPU_IMAGE}' .
         fi
   - id: verify-headless-api
     name: gcr.io/cloud-builders/docker
@@ -135,7 +139,8 @@ options:
   logging: CLOUD_LOGGING_ONLY
   machineType: E2_HIGHCPU_32
   diskSizeGb: 300
-timeout: 1800s
+# Flattened scientific runtime layers need time for their first registry upload.
+timeout: 3600s
 substitutions:
   _VERIFY_SPATIAL: '0'
   _VERIFY_CELLPOSE: '0'

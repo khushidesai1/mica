@@ -10,7 +10,7 @@ import pytest
 from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 
-from mica.agents.analysis import job_lifecycle, memory_tasks, thread_memory
+from mica.agents.analysis import job_lifecycle, memory_reads, memory_tasks, thread_memory
 
 
 def compact_edit():
@@ -24,7 +24,7 @@ def compact_edit():
 async def test_delivery_queues_but_does_not_run_editor(chat, monkeypatch):
     chat.settings.memory_auto_edit = True
     enqueue = AsyncMock()
-    editor = AsyncMock(side_effect=lambda *args: compact_edit())
+    editor = AsyncMock(side_effect=lambda *args, **kwargs: compact_edit())
     monkeypatch.setattr(job_lifecycle, "enqueue", enqueue)
     monkeypatch.setattr(memory_tasks, "edit", editor)
     event = await chat.accept(payload(text="Explain this result"))
@@ -62,7 +62,7 @@ async def test_editor_has_time_for_large_response(chat, monkeypatch):
         budgets.append(seconds)
         return timeout(seconds)
 
-    async def slow_model(*args):
+    async def slow_model(*args, **kwargs):
         # The full-file writer can spend 240 seconds generating a large proposal.
         assert budgets[-1] > 240
         await asyncio.sleep(0)
@@ -133,7 +133,7 @@ async def test_editor_budget_leaves_time_for_commit_and_verification(monkeypatch
 
         return factory(transport=httpx.MockTransport(respond))
 
-    monkeypatch.setattr(memory_tasks.httpx, "AsyncClient", client)
+    monkeypatch.setattr(memory_reads.httpx, "AsyncClient", client)
     await memory_tasks.edit("test", "model", {})
     assert budgets == [240]  # Within the 270-second process and 300-second dispatch.
 

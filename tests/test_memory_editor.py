@@ -10,7 +10,13 @@ from test_analysis_batch import bridge, payload  # noqa: F401
 from test_analysis_direct import chat  # noqa: F401
 from test_analysis_memory_tasks import compact_edit
 
-from mica.agents.analysis import job_lifecycle, memory_tasks, project_memory, thread_memory
+from mica.agents.analysis import (
+    job_lifecycle,
+    memory_reads,
+    memory_tasks,
+    project_memory,
+    thread_memory,
+)
 
 OPEN = "type: open\nsource: Alice\nstatus: current\n\nUnrelated work must remain.\n"
 
@@ -47,10 +53,10 @@ def mock_model(monkeypatch, body, requests):
 
     def respond(request):
         requests.append(json.loads(request.content))
-        return httpx.Response(200, json=body)
+        return httpx.Response(200, json=body.pop(0) if isinstance(body, list) else body)
 
     monkeypatch.setattr(
-        memory_tasks.httpx,
+        memory_reads.httpx,
         "AsyncClient",
         lambda **kwargs: factory(transport=httpx.MockTransport(respond)),
     )
@@ -63,13 +69,13 @@ def test_required_open_precedes_optional_files_and_never_truncates():
         "open.md": "o" * 10011,
         "lessons.md": "l" * 5917,
     }
-    selected = memory_tasks.editor_files(snapshot(files), "pending work", 12000)
+    selected = memory_tasks.editor_files(snapshot(files), 12000)
     assert selected["open.md"] == files["open.md"]
     assert "PROJECT.md" not in selected
-    selected = memory_tasks.editor_files(snapshot(files), "pending work", 32000)
+    selected = memory_tasks.editor_files(snapshot(files), 32000)
     assert selected == files
     with pytest.raises(memory_tasks.EditorError, match="context_limit"):
-        memory_tasks.editor_files(snapshot(files), "pending work", 1000)
+        memory_tasks.editor_files(snapshot(files), 1000)
 
 
 def test_repair_includes_required_topic_before_optional_core():
@@ -81,7 +87,6 @@ def test_repair_includes_required_topic_before_optional_core():
     }
     selected = memory_tasks.editor_files(
         snapshot(files),
-        "unrelated request",
         3200,
         required=("open.md", "results/topic.md"),
     )
@@ -137,6 +142,8 @@ async def test_failed_turn_rejects_verified_result_and_only_allows_pending_work(
         await memory_tasks.edit("test", "test", {"files": {}, "success": False})
     schema = requests[0]["tools"][0]["input_schema"]
     assert schema["properties"]["changes"]["propertyNames"] == {"enum": ["open.md"]}
+    assert [tool["name"] for tool in requests[0]["tools"]] == ["edit_project_memory"]
+    assert requests[0]["tool_choice"]["type"] == "tool"
 
 
 async def test_large_full_file_replacement_keeps_unrelated_memory(monkeypatch):
@@ -201,7 +208,7 @@ async def test_old_cache_recovers_against_current_files_preserving_original_turn
         ).encode(),
     )
 
-    async def edit(_key, _model, context):
+    async def edit(_key, _model, context, **kwargs):
         assert all(context[k] == v for k, v in original.items())
         assert context["files"]["open.md"] == OPEN
         assert context["thread"]["covered"] == []
@@ -249,7 +256,7 @@ async def test_unseen_topic_feedback_is_durable_and_repairs_next_attempt(chat, m
     chat.settings.memory_editor_chars = 1400
     calls = []
 
-    async def edit(_key, _model, context):
+    async def edit(_key, _model, context, **kwargs):
         calls.append(json.loads(json.dumps(context)))
         if len(calls) == 1:
             assert "results/topic.md" not in context["files"]
@@ -323,7 +330,7 @@ async def test_oversized_utf8_proposal_repairs_before_any_commit(chat, monkeypat
     assert len(oversized) < 16384 < len(oversized.encode())
     calls = []
 
-    async def edit(_key, _model, context):
+    async def edit(_key, _model, context, **kwargs):
         calls.append(context.copy())
         assert context["file_limit_bytes"] == 16384
         if len(calls) == 1:
@@ -364,7 +371,7 @@ async def test_cached_oversized_proposal_rebases_after_partial_thread_save(chat,
     latest = await chat.memory_backend.read(chat.pid)
     monkeypatch.setattr(memory_tasks, "validate_changes", validate)
 
-    async def edit(_key, _model, context):
+    async def edit(_key, _model, context, **kwargs):
         assert context["files"]["open.md"] == OPEN
         assert context["user"] == original["context"]["user"]
         assert context["editor_feedback"] == {"reason": "file_limit"}
@@ -402,7 +409,7 @@ async def test_conflict_repairs_only_unsaved_edits_preserving_thread(
     pending = "Original request remains pending.\n"
     newer = OPEN + "Newer unrelated work.\n" + (pending if already_covered else "")
 
-    async def first_edit(*args):
+    async def first_edit(*args, **kwargs):
         latest = await chat.memory_backend.read(chat.pid)
         await chat.memory_backend.commit(
             chat.pid, latest, {"open.md": newer}, source="editor", event_id="concurrent",
@@ -424,7 +431,7 @@ async def test_conflict_repairs_only_unsaved_edits_preserving_thread(
         {p: f.text for p, f in prior.files.items()}, record["thread_key"],
     )[0].digest()
 
-    async def repair(_key, _model, context):
+    async def repair(_key, _model, context, **kwargs):
         assert context["files"]["open.md"] == newer
         assert context["repair_paths"] == ["open.md"]
         assert context["editor_feedback"] == {"reason": "conflict"}

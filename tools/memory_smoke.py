@@ -40,7 +40,7 @@ async def smoke(use_cli: bool) -> None:
             text = (
                 f"type: fact\nsource: synthetic smoke {event}\nstatus: current\n\nOriginal fact.\n"
             )
-            entries = {f"data/note-{n:03d}.md": text + str(n) for n in range(200)}
+            entries = {f"data/note-{n:03d}.md": text + str(n) for n in range(350)}
             entries = {"data/fact.md": text} | entries
             first = await backend.commit("_smoke", base, entries, event_id=event, source="editor")
             readback = await backend.read("_smoke", event_id=event)
